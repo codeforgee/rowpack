@@ -7,6 +7,12 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
+// ErrDataFooterMismatch is returned by a DataFooterReader when an index
+// transaction references data that is missing, truncated or corrupt. Replay
+// treats it as an invalid index tail and stops, restoring to the last
+// consistent commit point.
+var ErrDataFooterMismatch = errors.New("rowpack: index txn references invalid data footer")
+
 // DataFooterReader supplies the data file SnapshotFooter CRC for the
 // cross-file verification of each index transaction. Implemented by the store
 // layer (M5/M8); may be nil to skip the cross-check.
@@ -63,10 +69,15 @@ func Replay(indexData []byte, startOffset int64, maxDepth uint32, verifier DataF
 		if verifier != nil {
 			crc, err := verifier.DataFooterCRC(txn.Snapshot.SnapshotID, txn.Snapshot.DataStart, txn.Snapshot.DataEnd)
 			if err != nil {
+				if errors.Is(err, ErrDataFooterMismatch) {
+					res.TailIgnored = int64(len(remaining))
+					break
+				}
 				return nil, fmt.Errorf("rowpack: replay snapshot %d: %w", txn.Snapshot.SnapshotID, err)
 			}
 			if crc != txn.Footer.DataFooterCRC32C {
-				return nil, fmt.Errorf("rowpack: index txn snapshot %d data footer CRC mismatch", txn.Snapshot.SnapshotID)
+				res.TailIgnored = int64(len(remaining))
+				break
 			}
 		}
 		nv, err := view.Apply(txn, maxDepth)

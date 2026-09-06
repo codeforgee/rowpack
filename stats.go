@@ -71,6 +71,13 @@ func (s *Store) Stats() Stats {
 	if l := s.loader; l != nil {
 		stt.Cache.CapacityBytes, stt.Cache.UsedBytes, stt.Cache.Hits, stt.Cache.Misses, stt.Cache.Evictions, stt.Cache.Loads = l.cacheStats()
 	}
+	if v := s.recoveryStats.Load(); v != nil {
+		r := v.(recoveryReport)
+		stt.Recovery.Performed = r.performed
+		stt.Recovery.DataTailIgnored = r.dataTailIgnored
+		stt.Recovery.IndexTailIgnored = r.indexTailIgnored
+		stt.Recovery.SnapshotsRebuilt = r.snapshotsRebuilt
+	}
 	return stt
 }
 

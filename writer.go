@@ -8,6 +8,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/rowpack/rowpack/internal/fault"
+
 	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -582,6 +584,9 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	if len(w.pending) == 0 && !w.allowEmpty && w.typ == SnapshotFull {
 		return SnapshotInfo{}, fmt.Errorf("%w: empty FULL snapshot", ErrInvalidArgument)
 	}
+	// Fault injection points (test-only): crash between these positions.
+	fault.Check("commit.data-header.before")
+
 	// Assign block IDs first so the snapshot header can record FirstBlockID.
 	for _, blk := range w.pending {
 		blk.header.BlockID = w.store.lastBlockID.Add(1)
@@ -607,6 +612,7 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 		return SnapshotInfo{}, err
 	}
 
+	fault.Check("commit.block.before")
 	var blockCount, metaBlockCount uint32
 	var rawBytes uint64
 	var blockCRCs []byte
@@ -653,15 +659,18 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	if _, err := w.store.data.Append(fb[:]); err != nil {
 		return SnapshotInfo{}, err
 	}
+	fault.Check("commit.data-footer.after")
 	dataEnd := w.store.data.Offset()
 
 	// Durability: data sync.
 	unknown := false
+	fault.Check("commit.data-sync.before")
 	if w.store.opts.Durability == SyncCommit {
 		if err := w.store.data.Sync(); err != nil {
 			return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: true, Err: err}
 		}
 	}
+	fault.Check("commit.data-sync.after")
 	// After the data sync, failures are "outcome unknown".
 	unknown = true
 
@@ -709,6 +718,7 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 			}
 		}
 	}
+	fault.Check("commit.index.before")
 	txnStart := w.store.index.Offset()
 	txnEnd := txnStart + int64(0)
 	txnBytes, err := txnBuilder.Build(uint64(snapStart), uint64(dataEnd), footerCRCValue(fb[:]), txnStart, txnEnd+int64(0))
@@ -719,11 +729,13 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	if _, err := w.store.index.Append(txnBytes); err != nil {
 		return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: unknown, Err: err}
 	}
+	fault.Check("commit.index-sync.before")
 	if w.store.opts.Durability == SyncCommit {
 		if err := w.store.index.Sync(); err != nil {
 			return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: unknown, Err: err}
 		}
 	}
+	fault.Check("commit.index-sync.after")
 
 	// Parse back the txn for view application.
 	txn, err := index.ParseTxn(txnBytes)
@@ -739,7 +751,9 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	if err != nil {
 		return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: unknown, Err: err}
 	}
+	fault.Check("commit.publish.before")
 	w.store.state.Store(&publishedState{view: newView, schemas: newSchemas})
+	fault.Check("commit.publish.after")
 	w.state = writerCommitted
 	w.store.writer.CompareAndSwap(w, nil)
 

@@ -1,8 +1,7 @@
 package rowpack
 
 import (
-	"math/big"
-
+	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
@@ -42,37 +41,23 @@ const (
 	TypeDecimal  Type = fileformat.TypeDecimal
 )
 
-// Date is a calendar date expressed as days since the Unix epoch
-// (1970-01-01). It maps to the v1 TypedTuple Date encoding (i32 days).
-type Date int32
+// Date is a calendar date expressed as days since the Unix epoch.
+type Date = codec.Date
 
 // TimeOfDay is a time of day expressed as nanoseconds since midnight in the
-// range [0, 86400e9). It maps to the v1 TypedTuple Time encoding (i64 ns).
-type TimeOfDay int64
+// range [0, 86400e9).
+type TimeOfDay = codec.TimeOfDay
 
 // Decimal is a decimal fixed-point value: Unscaled is the two's-complement
-// unscaled integer and Scale is the number of fractional digits. Negative
-// scale is not allowed in v1; Scale must be >= 0. Unscaled must be non-nil.
-type Decimal struct {
-	Unscaled *big.Int
-	Scale    int32
-}
+// unscaled integer and Scale is the number of fractional digits. Scale must
+// be >= 0 and Unscaled non-nil.
+type Decimal = codec.Decimal
 
 // Schema describes the ordered column layout of a table version.
-type Schema struct {
-	TableID TableID
-	Version SchemaVersion
-	Name    string
-	Columns []Column
-}
+type Schema = codec.Schema
 
 // Column describes one column of a Schema.
-type Column struct {
-	Name     string
-	Type     Type
-	Nullable bool
-	Scale    int32 // only used when Type == TypeDecimal
-}
+type Column = codec.Column
 
 // TableInfo is a lightweight table identity returned by Table listing APIs.
 type TableInfo struct {

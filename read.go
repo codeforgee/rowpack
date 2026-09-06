@@ -129,7 +129,7 @@ func (s *Store) readRow(view *index.View, si *SchemaIndex, loc *index.RowLoc) (R
 	if bl == nil {
 		return nil, 0, fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)
 	}
-	blk, err := s.reader.ReadAtBlock(int64(bl.DataOffset))
+	blk, err := s.loader.Load(int64(bl.DataOffset), bl.BlockID)
 	if err != nil {
 		return nil, 0, err
 	}

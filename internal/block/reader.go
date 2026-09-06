@@ -9,17 +9,17 @@ import (
 )
 
 // Reader reads blocks from a file via ReadAt (no shared seek cursor), so
-// concurrent readers never interfere. Decompression is bounded by Limits and
-// CRC failures never return a block.
+// concurrent readers never interfere. It is stateless and safe for concurrent
+// use; decompression allocates per call. Decompression is bounded by Limits
+// and CRC failures never return a block.
 type Reader struct {
-	ra      io.ReaderAt
-	limits  Limits
-	scratch []byte
+	ra     io.ReaderAt
+	limits Limits
 }
 
 // NewReader creates a block reader over ra.
 func NewReader(ra io.ReaderAt, limits Limits) *Reader {
-	return &Reader{ra: ra, limits: limits, scratch: make([]byte, 0, 1<<20)}
+	return &Reader{ra: ra, limits: limits}
 }
 
 // ReadAtBlock reads, validates and decompresses the block whose header starts
@@ -61,16 +61,11 @@ func (r *Reader) ReadAtBlock(offset int64) (*Block, error) {
 }
 
 func (r *Reader) decompress(h *fileformat.BlockHeader, stored []byte) ([]byte, error) {
-	out, err := Decompress(h.Compression, r.scratch, stored, r.limits.MaxRawBytes)
+	out, err := Decompress(h.Compression, nil, stored, r.limits.MaxRawBytes)
 	if err != nil {
 		return nil, fmt.Errorf("rowpack: block %d: %w", h.BlockID, err)
 	}
-	// Reuse whatever backing the decoder produced, but hand the caller an
-	// owned copy so cache eviction and concurrent reads never alias.
-	r.scratch = out[:0]
-	cp := make([]byte, len(out))
-	copy(cp, out)
-	return cp, nil
+	return out, nil
 }
 
 // Block is a validated block: header plus checked uncompressed payload.

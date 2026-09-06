@@ -14,6 +14,7 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/rowpack/rowpack/internal/index"
 	"github.com/rowpack/rowpack/internal/iofile"
+	"github.com/rowpack/rowpack/internal/lockfile"
 )
 
 // Test-only hooks, set only by tests in this package so golden files are
@@ -62,6 +63,8 @@ type Store struct {
 	data   *iofile.Appender
 	index  *iofile.Appender
 	reader *block.Reader
+	loader *blockLoader
+	lock   *lockfile.Lock
 
 	// writeMu serializes all writers, Commit and Close.
 	writeMu sync.Mutex
@@ -153,16 +156,30 @@ func openFiles(basePath, dataPath, indexPath string, opts Options, uuid [16]byte
 		readOnly:  readOnly,
 		data:      df,
 		index:     inf,
-		reader: block.NewReader(df, block.Limits{
-			MaxRawBytes:    opts.Limits.MaxRawBlockBytes,
-			MaxStoredBytes: opts.Limits.MaxStoredBlockBytes,
-		}),
 	}
+	s.reader = block.NewReader(df, block.Limits{
+		MaxRawBytes:    opts.Limits.MaxRawBlockBytes,
+		MaxStoredBytes: opts.Limits.MaxStoredBlockBytes,
+	})
+	s.loader = newBlockLoader(s.reader, opts.CacheBytes)
 	s.uuid = uuid
 	s.header = header
+	// Cross-process single-writer lock for read-write opens.
+	if !readOnly {
+		lock, err := lockfile.Acquire(basePath + ".lock")
+		if err != nil {
+			df.Close()
+			inf.Close()
+			return nil, err
+		}
+		s.lock = lock
+	}
 	if err := s.initOpen(); err != nil {
 		df.Close()
 		inf.Close()
+		if s.lock != nil {
+			s.lock.Release()
+		}
 		return nil, err
 	}
 	return s, nil
@@ -200,6 +217,11 @@ func (s *Store) Close() error {
 		errs = append(errs, err)
 	}
 	s.state.Store(nil)
+	if s.lock != nil {
+		if err := s.lock.Release(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	return errors.Join(errs...)
 }
 

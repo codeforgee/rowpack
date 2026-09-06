@@ -68,6 +68,9 @@ func (s *Store) Stats() Stats {
 	if sz, err := s.index.Size(); err == nil {
 		stt.IndexFileBytes = sz
 	}
+	if l := s.loader; l != nil {
+		stt.Cache.CapacityBytes, stt.Cache.UsedBytes, stt.Cache.Hits, stt.Cache.Misses, stt.Cache.Evictions, stt.Cache.Loads = l.cacheStats()
+	}
 	return stt
 }
 

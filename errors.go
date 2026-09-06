@@ -45,11 +45,13 @@ type CorruptionError struct {
 	Reason     string
 }
 
+// Error implements error.
 func (e *CorruptionError) Error() string {
 	return fmt.Sprintf("rowpack: %s: file=%s offset=%d snapshot=%d table=%d block=%d: %s",
 		e.Kind, e.File, e.Offset, e.SnapshotID, e.TableID, e.BlockID, e.Reason)
 }
 
+// Unwrap returns the underlying error kind.
 func (e *CorruptionError) Unwrap() error { return e.Kind }
 
 // CommitError reports a snapshot commit failure. Unknown is true when the
@@ -62,6 +64,7 @@ type CommitError struct {
 	Err        error
 }
 
+// Error implements error.
 func (e *CommitError) Error() string {
 	if e.Unknown {
 		return fmt.Sprintf("rowpack: commit of snapshot %d: outcome unknown: %v", e.SnapshotID, e.Err)
@@ -69,6 +72,7 @@ func (e *CommitError) Error() string {
 	return fmt.Sprintf("rowpack: commit of snapshot %d: %v", e.SnapshotID, e.Err)
 }
 
+// Unwrap returns the underlying error.
 func (e *CommitError) Unwrap() error { return e.Err }
 
 // newCorruption builds a CorruptionError over ErrCorruptData.

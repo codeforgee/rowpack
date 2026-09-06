@@ -1,0 +1,138 @@
+# RowPack
+
+RowPack 是一个使用 Go 实现的轻量级嵌入式二维表存储引擎，面向备份、快照、
+差异归档和本地分析等「顺序写入、随机读取」场景。
+
+- 双文件格式：`<base>.rpk`（数据，append-only，提交权威）+ `<base>.rpi`（索引，可重建）。
+- 支持 FULL / DELTA 快照以及 INSERT / UPDATE / DELETE 变更。
+- Zstandard 块压缩（默认 256 KiB 目标块）。
+- 按快照、表和行随机访问，历史快照不可变、不受后续提交影响。
+- 多读单写：读操作无锁并发，写操作单写者串行，提交原子可见。
+- 校验、崩溃恢复与索引重建，不依赖独立 WAL。
+- 内建 13 类核心数据库元数据模型，字段级无损往返。
+
+## 快速开始
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/rowpack/rowpack"
+)
+
+func main() {
+	ctx := context.Background()
+	db, err := rowpack.Create("/data/users-backup", rowpack.DefaultOptions())
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	w, err := db.BeginSnapshot(ctx, rowpack.SnapshotFull, rowpack.SnapshotOptions{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer w.Abort()
+
+	schema := rowpack.Schema{
+		TableID: 1,
+		Version: 1,
+		Name:    "users",
+		Columns: []rowpack.Column{
+			{Name: "id", Type: rowpack.TypeUint64},
+			{Name: "name", Type: rowpack.TypeString},
+			{Name: "created_at", Type: rowpack.TypeDateTime},
+		},
+	}
+	if err := w.DefineSchema(schema); err != nil {
+		log.Fatal(err)
+	}
+	if err := w.Insert(ctx, 1, 1001, 1, rowpack.Row{
+		rowpack.Uint64(1001),
+		rowpack.String("张三"),
+		rowpack.DateTime(time.Now()),
+	}); err != nil {
+		log.Fatal(err)
+	}
+	full, err := w.Commit(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	row, err := db.Get(ctx, full.ID, 1, 1001)
+	if err != nil {
+		log.Fatal(err)
+	}
+	name, _ := row[1].String()
+	fmt.Println("row:", name)
+
+	// DELTA 增量快照
+	d, err := db.BeginSnapshot(ctx, rowpack.SnapshotDelta, rowpack.SnapshotOptions{Parent: full.ID})
+	if err != nil {
+		log.Fatal(err)
+	}
+	_ = d.Update(ctx, 1, 1001, 1, rowpack.Row{
+		rowpack.Uint64(1001),
+		rowpack.String("张三 (更新)"),
+		rowpack.DateTime(time.Now()),
+	})
+	_ = d.Delete(ctx, 1, 1002)
+	_, err = d.Commit(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+## 关键概念
+
+- **Store**：一对 `<base>.rpk` / `<base>.rpi` 文件及其运行时状态。
+- **Snapshot**：不可变、原子提交的行变更集合，FULL 或 DELTA，形成父子链。
+- **RowID**：表内稳定逻辑行标识，与业务主键相互独立。
+- **Block**：压缩与校验单位，属于一个快照和一个表。
+- **TypedTuple**：按 Schema 顺序编码的行负载，NULL 用位图表达。
+
+## 文档
+
+- [需求规格](REQUIREMENTS.md)
+- [二进制格式 v1](BINARY_FORMAT_V1.md)
+- [元数据格式 v1](METADATA_FORMAT_V1.md)
+- [Go API 设计](GO_API_DESIGN.md)
+- [开发计划](DEVELOPMENT_PLAN.md)
+- [ADR-001：.rpk 是提交权威](docs/adr/ADR-001.md)
+- [ADR-002：强类型 API 与通用 TLV 边界](docs/adr/ADR-002.md)
+
+## 命令
+
+```sh
+make test        # go test ./...
+make race        # go test -race ./...
+make fuzz-short  # 每个 fuzz 目标 5s
+make golden      # 重新生成 golden files（格式变更时人工审查）
+```
+
+## 参考基准
+
+环境：Go 1.27 / darwin/arm64 / klauspost zstd v1.20 / BlockSize 256 KiB / Zstd / SyncCommit，
+数据集 100k 行 × 7 列。数值随磁盘与 CPU 变化，仅作相对参考。
+
+| 基准 | 结果 |
+| --- | --- |
+| FULL 顺序写 | ~286 krows/s, ~57 MB/s |
+| Get 冷读（缓存关闭） | ~413 µs/op |
+| Get 热读（缓存命中） | ~70 µs/op |
+| 并发 Get 1/8/32/64 goroutine | ~215–393 µs/op（读路径无锁） |
+| Scan 100k 行 | ~7.2 s（逐行解码，v1 正确性优先） |
+| Open 索引重放（100k 行） | ~8.7 ms |
+| RebuildIndex（100k 行） | ~92 ms |
+
+## 兼容性
+
+- v1 磁盘格式冻结：golden files 纳入 CI，任何字节级变化视为格式变更。
+- 枚举值、字段编号、golden 样本发布后不得修改。
+- 支持 Linux / macOS / Windows amd64/arm64（跨进程写锁在无 flock 平台明确报错）。

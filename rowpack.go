@@ -193,6 +193,9 @@ func (s *Store) Path() string { return s.basePath }
 // ReadOnly reports whether the store was opened read-only.
 func (s *Store) ReadOnly() bool { return s.readOnly }
 
+// UUID returns the store's pairing UUID shared by the .rpk and .rpi files.
+func (s *Store) UUID() [16]byte { return s.uuid }
+
 // Close aborts any active writer, flushes, and closes the files. It is
 // idempotent and safe to call concurrently; in-flight reads are allowed to
 // finish.
@@ -234,6 +237,9 @@ func (s *Store) readDataHeader() (fileformat.DataFileHeader, error) {
 		return h, fmt.Errorf("rowpack: read data header: %w", err)
 	}
 	if err := h.Unmarshal(buf); err != nil {
+		if fileformat.IsVersionError(err) {
+			return h, fmt.Errorf("%w: %v", ErrVersionUnsupported, err)
+		}
 		return h, err
 	}
 	return h, nil
@@ -246,6 +252,9 @@ func (s *Store) readIndexHeader() (fileformat.IndexFileHeader, error) {
 		return h, fmt.Errorf("rowpack: read index header: %w", err)
 	}
 	if err := h.Unmarshal(buf); err != nil {
+		if fileformat.IsVersionError(err) {
+			return h, fmt.Errorf("%w: %v", ErrVersionUnsupported, err)
+		}
 		return h, err
 	}
 	return h, nil

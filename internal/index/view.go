@@ -173,20 +173,6 @@ func (v *View) MetadataByType(snapshot uint64, recordType uint32) []uint64 {
 // MemoryBytes estimates the in-memory footprint of the view.
 func (v *View) MemoryBytes() uint64 { return v.memoryBytes }
 
-// RowTables returns the table IDs that have row entries at the snapshot.
-func (v *View) RowTables(snapshot uint64) []uint32 {
-	tbl := v.rows[snapshot]
-	if tbl == nil {
-		return nil
-	}
-	out := make([]uint32, 0, len(tbl))
-	for t := range tbl {
-		out = append(out, t)
-	}
-	sortU32s(out)
-	return out
-}
-
 // ResolveRow finds the row location for (snapshot, table, rowID) along the
 // parent chain. It returns nil when no record exists.
 func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) *RowLoc {
@@ -202,6 +188,111 @@ func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) *RowLoc {
 		}
 		cur = sm.Parent
 	}
+}
+
+// RowTables returns the table IDs that have row entries at the snapshot.
+func (v *View) RowTables(snapshot uint64) []uint32 {
+	tbl := v.rows[snapshot]
+	if tbl == nil {
+		return nil
+	}
+	out := make([]uint32, 0, len(tbl))
+	for t := range tbl {
+		out = append(out, t)
+	}
+	sortU32s(out)
+	return out
+}
+
+// LogicalRowCount returns the number of rows visible at a snapshot for a
+// table after resolving overrides and tombstones along the parent chain. It
+// merges the per-layer sorted incremental indexes without reading blocks.
+func (v *View) LogicalRowCount(snapshot uint64, table uint32) uint64 {
+	type layer struct {
+		keys  []RowKeyLoc
+		pos   int
+		depth int
+	}
+	type rowHeap []*layer
+	less := func(h rowHeap, i, j int) bool {
+		a, b := h[i].keys[h[i].pos], h[j].keys[h[j].pos]
+		if a.RowID != b.RowID {
+			return a.RowID < b.RowID
+		}
+		return h[i].depth < h[j].depth
+	}
+	push := func(h *rowHeap, l *layer) {
+		*h = append(*h, l)
+		i := len(*h) - 1
+		for i > 0 {
+			p := (i - 1) / 2
+			if less(*h, i, p) {
+				(*h)[i], (*h)[p] = (*h)[p], (*h)[i]
+				i = p
+			} else {
+				break
+			}
+		}
+	}
+	pop := func(h *rowHeap) *layer {
+		top := (*h)[0]
+		(*h)[0] = (*h)[len(*h)-1]
+		*h = (*h)[:len(*h)-1]
+		i := 0
+		for {
+			l, r := 2*i+1, 2*i+2
+			m := i
+			if l < len(*h) && less(*h, l, m) {
+				m = l
+			}
+			if r < len(*h) && less(*h, r, m) {
+				m = r
+			}
+			if m == i {
+				break
+			}
+			(*h)[i], (*h)[m] = (*h)[m], (*h)[i]
+			i = m
+		}
+		return top
+	}
+	advance := func(h *rowHeap, l *layer) {
+		l.pos++
+		if l.pos < len(l.keys) {
+			push(h, l)
+		}
+	}
+	var layers []*layer
+	cur := snapshot
+	for depth := 0; ; depth++ {
+		keys := v.RowKeys(cur, table)
+		if len(keys) > 0 {
+			layers = append(layers, &layer{keys: keys, depth: depth})
+		}
+		sm := v.Snapshot(cur)
+		if sm == nil || sm.Parent == 0 {
+			break
+		}
+		cur = sm.Parent
+	}
+	var h rowHeap
+	for _, l := range layers {
+		push(&h, l)
+	}
+	var count uint64
+	for len(h) > 0 {
+		winner := pop(&h)
+		rowID := winner.keys[winner.pos].RowID
+		loc := winner.keys[winner.pos].Loc
+		for len(h) > 0 && h[0].keys[h[0].pos].RowID == rowID {
+			advance(&h, pop(&h))
+		}
+		advance(&h, winner)
+		if loc == nil || loc.ChangeType != fileformat.ChangeDelete {
+			count++
+		}
+	}
+	return count
 }
 
 // Apply returns a NEW immutable view that adds the committed txn's entries.

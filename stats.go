@@ -53,12 +53,8 @@ func (s *Store) Stats() Stats {
 	// Tables + logical rows from the latest snapshot.
 	if latest := view.LatestSnapshot(); latest != nil {
 		stt.Tables = uint64(len(st.schemas.bySnapshot[latest.ID]))
-		for _, ts := range st.schemas.bySnapshot[latest.ID] {
-			_ = ts
-		}
-		// Logical rows: rows visible at the latest snapshot.
-		for _, tbl := range view.RowTables(latest.ID) {
-			stt.LogicalRows += uint64(tbl)
+		for _, tid := range view.RowTables(latest.ID) {
+			stt.LogicalRows += view.LogicalRowCount(latest.ID, tid)
 		}
 	}
 	stt.IndexMemoryBytes = view.MemoryBytes()

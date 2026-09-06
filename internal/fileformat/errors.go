@@ -1,6 +1,10 @@
 package fileformat
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 // FormatError describes a fixed-structure decode/validate failure. It carries
 // the structure name and, when known, the file offset. Higher layers wrap it
@@ -11,6 +15,7 @@ type FormatError struct {
 	Reason    string
 }
 
+// Error implements error.
 func (e *FormatError) Error() string {
 	if e.Offset >= 0 {
 		return fmt.Sprintf("%s at offset %d: %s", e.Structure, e.Offset, e.Reason)
@@ -34,3 +39,12 @@ const errBadSize = "bad size field"
 
 // errBadVersion is the shared reason for an unsupported version major.
 const errBadVersion = "unsupported version"
+
+// IsVersionError reports whether err is an unsupported-version FormatError.
+func IsVersionError(err error) bool {
+	var fe *FormatError
+	if errors.As(err, &fe) {
+		return strings.HasPrefix(fe.Reason, errBadVersion)
+	}
+	return false
+}

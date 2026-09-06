@@ -261,12 +261,3 @@ func ParseTxn(data []byte) (*Txn, error) {
 	}
 	return t, nil
 }
-
-// Marshal entries helper for tests.
-func marshalEntry(m interface{ MarshalTo([]byte) error }, size int) []byte {
-	b := make([]byte, size)
-	if err := m.MarshalTo(b); err != nil {
-		panic(err)
-	}
-	return b
-}

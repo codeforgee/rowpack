@@ -36,6 +36,7 @@ type RowsBlockBuilder struct {
 	entries []fileformat.RowDirectoryEntry
 	records []byte // raw record bytes in call order
 	count   uint32
+	rawBuf  []byte // reused uncompressed payload scratch
 
 	// Flush returns each finished block; the consumer supplies the BlockID.
 	onFlush func(*FlushedBlock) error
@@ -157,9 +158,17 @@ func (b *RowsBlockBuilder) Flush() error {
 }
 
 // buildRawPayload assembles the deterministic uncompressed Rows payload:
-// RowsPayloadHeader + directory + records.
+// RowsPayloadHeader + directory + records. The returned slice aliases the
+// builder's reused scratch buffer: it is valid only until the next build, so
+// Flush must consume it synchronously (compress + onFlush).
 func (b *RowsBlockBuilder) buildRawPayload() []byte {
 	dirBytes := len(b.entries) * fileformat.RowDirectoryEntrySize
+	total := fileformat.RowsPayloadHeaderSize + dirBytes + len(b.records)
+	if cap(b.rawBuf) < total {
+		b.rawBuf = make([]byte, 0, total)
+	}
+	b.rawBuf = b.rawBuf[:0]
+	raw := b.rawBuf
 	h := fileformat.RowsPayloadHeader{
 		ItemCount:      b.count,
 		DirectoryBytes: uint32(dirBytes),
@@ -167,7 +176,6 @@ func (b *RowsBlockBuilder) buildRawPayload() []byte {
 	}
 	var hdr [fileformat.RowsPayloadHeaderSize]byte
 	_ = h.MarshalTo(hdr[:])
-	raw := make([]byte, 0, fileformat.RowsPayloadHeaderSize+dirBytes+len(b.records))
 	raw = append(raw, hdr[:]...)
 	for i := range b.entries {
 		var e [fileformat.RowDirectoryEntrySize]byte
@@ -252,6 +260,76 @@ func ParseRowsPayload(raw []byte, itemCount uint32) (*RowsPayload, error) {
 		p.Records = append(p.Records, rec)
 	}
 	return p, nil
+}
+
+// RowsIndex is a lightweight view of a rows payload: the payload header and
+// directory entries only. Record bytes are sliced on demand, so building the
+// index costs O(ItemCount) without parsing every record header or allocating
+// per-record slices. Used by sequential scans where the caller walks the
+// directory in order.
+type RowsIndex struct {
+	Header  fileformat.RowsPayloadHeader
+	Entries []fileformat.RowDirectoryEntry
+	raw     []byte // entire payload
+	recBase int    // records region start
+}
+
+// ParseRowsDirectory validates a rows payload's header and directory region
+// and returns the directory index. Unlike ParseRowsPayload it does not parse
+// record headers or materialize record slices. The block's RawCRC already
+// guards payload integrity, so the per-record header cross-check is deferred
+// to the single-record reader when needed.
+func ParseRowsDirectory(raw []byte, itemCount uint32) (*RowsIndex, error) {
+	var h fileformat.RowsPayloadHeader
+	if err := h.Unmarshal(raw); err != nil {
+		return nil, err
+	}
+	if h.ItemCount != itemCount {
+		return nil, fmt.Errorf("rowpack: payload item count %d != block item count %d", h.ItemCount, itemCount)
+	}
+	base := fileformat.RowsPayloadHeaderSize + int(h.DirectoryBytes)
+	if base > len(raw) {
+		return nil, errors.New("rowpack: rows payload directory exceeds payload")
+	}
+	if h.RecordsBytes > uint64(len(raw)-base) || base+int(h.RecordsBytes) != len(raw) {
+		return nil, errors.New("rowpack: rows payload records region mismatch")
+	}
+	idx := &RowsIndex{Header: h, raw: raw, recBase: base}
+	pos := fileformat.RowsPayloadHeaderSize
+	for i := uint32(0); i < h.ItemCount; i++ {
+		if pos+fileformat.RowDirectoryEntrySize > base {
+			return nil, errors.New("rowpack: rows directory truncated")
+		}
+		var e fileformat.RowDirectoryEntry
+		if err := e.Unmarshal(raw[pos : pos+fileformat.RowDirectoryEntrySize]); err != nil {
+			return nil, err
+		}
+		pos += fileformat.RowDirectoryEntrySize
+		idx.Entries = append(idx.Entries, e)
+	}
+	// Validate every directory entry's record bounds once (still O(n), but
+	// cheap and allocation-free).
+	for i := range idx.Entries {
+		e := &idx.Entries[i]
+		if e.RecordLength < fileformat.RowRecordHeaderSize {
+			return nil, fmt.Errorf("rowpack: row record %d too short", i)
+		}
+		if int(e.RecordOffset)+int(e.RecordLength) > int(h.RecordsBytes) {
+			return nil, fmt.Errorf("rowpack: row record %d out of bounds", i)
+		}
+	}
+	return idx, nil
+}
+
+// RowBytes returns the row payload bytes of the record at ordinal (nil for
+// DELETE). It slices on demand; the result aliases the index's raw buffer.
+func (r *RowsIndex) RowBytes(ordinal int) []byte {
+	e := &r.Entries[ordinal]
+	rec := r.raw[r.recBase+int(e.RecordOffset) : r.recBase+int(e.RecordOffset)+int(e.RecordLength)]
+	if e.ChangeType == fileformat.ChangeDelete {
+		return nil
+	}
+	return rec[fileformat.RowRecordHeaderSize:]
 }
 
 // RowRef locates one record within a validated rows payload.

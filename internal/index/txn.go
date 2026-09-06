@@ -95,6 +95,25 @@ func (b *Builder) Counts() (meta, blocks uint32, rows uint64) {
 	return uint32(len(b.metadata)), uint32(len(b.blocks)), uint64(len(b.rows))
 }
 
+// Reserve pre-allocates the metadata/block/row slices and the row-dedup map,
+// so streaming Add* calls never reallocate. Call once after SetSnapshot and
+// before the first Add* when the totals are known (e.g. from already-flushed
+// blocks).
+func (b *Builder) Reserve(meta, blocks, rows int) {
+	if len(b.metadata) == 0 && b.metadata == nil {
+		b.metadata = make([]fileformat.MetadataIndexEntry, 0, meta)
+	}
+	if len(b.blocks) == 0 && b.blocks == nil {
+		b.blocks = make([]fileformat.BlockIndexEntry, 0, blocks)
+	}
+	if len(b.rows) == 0 && b.rows == nil {
+		b.rows = make([]fileformat.RowIndexEntry, 0, rows)
+	}
+	if len(b.seen) == 0 {
+		b.seen = make(map[[2]uint64]struct{}, rows)
+	}
+}
+
 // Build serializes the complete index transaction bytes for the .rpi file.
 // dataSnapshotStart/End locate the snapshot in the .rpk file; dataFooterCRC is
 // the data SnapshotFooter's FooterCRC32C used for cross-file verification.

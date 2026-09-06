@@ -9,9 +9,9 @@
 
 | 场景 | 指标 | 说明 |
 | --- | --- | --- |
-| FULL 顺序写 | 360 krows/s（72 MB/s），293 MB 分配/op | 提交边界一次 fsync |
-| Get 热读（缓存命中） | 20 µs/op，896 B/op，7 allocs | 零磁盘 I/O |
-| Get 冷读（缓存关闭） | 316 µs/op，466 KB/op | 单块读+解压+单条解码 |
+| FULL 顺序写 | 122 ms/op，196 MB 分配/op | 提交边界一次 fsync |
+| Get 热读（缓存命中） | 10.3 µs/op，898 B/op，8 allocs | 零磁盘 I/O |
+| Get 冷读（缓存关闭） | 291 µs/op，439 KB/op | 单块读+解压+单条解码 |
 | 并发 Get 1/8 goroutine | 195 µs / 195 µs | 读路径无全局锁，线性扩展 |
 | Scan（100k 行） | 69 ms（1450 krows/s），109 MB 分配 | 块内游标 |
 | Open 索引重放（100k 行） | 9.2 ms | 全量载入内存 |
@@ -30,7 +30,7 @@
 | 场景 | 指标 |
 | --- | --- |
 | 链头点查（父链解析 32 层） | 394 µs/op，23 allocs |
-| 链头全表 Scan（132k 行合并） | 109 ms（1210 krows/s） |
+| 链头全表 Scan（132k 行合并） | 89 ms（1480 krows/s） |
 
 ## 4. 端到端（200k 行，正确性 + 计时回归测试）
 
@@ -53,13 +53,16 @@
 
 ## 6. 优化手段
 
-1. zstd encoder/decoder sync.Pool 池化（按 level 分池）——消除每次块压缩/解压
-   新建实例的 ~1 MiB 直方图分配（此前占写路径分配 60%+）。
-2. `block.ParseRowAt` 单条读取——随机读不再解析整块目录，O(1) 于块大小。
-3. Scan 块内游标——迭代器缓存当前块已解析 payload，同块连续行复用。
-4. onFlush 直接传 raw——提交时不再重复解压刚压缩的块。
-5. index.Builder body 预分配 + Build 直接返回结构化 Txn——提交不再重复 ParseTxn。
+1. zstd encoder/decoder sync.Pool 池化 + encoder 输出缓冲池——消除每次块压缩/解压
+   新建实例的 ~1 MiB 直方图分配及 EncodeAll 的 256 KiB 输出预分配。
+2. `block.ParseRowAt` 单条读取——随机读 O(1) 于块大小。
+3. Scan 块内游标 + `ParseRowsDirectory` 轻量目录解析——同块连续行复用目录，
+   记录字节按需切片，不解析逐条记录头。
+4. `FlushedBlock`——builder 直接传递已构建目录条目，提交不再重复解析 payload。
+5. index.Builder body 预分配 + Build 直接返回结构化 Txn；`Reserve` 预分配
+   entries 切片与去重 map。
 6. codec.EncodeInto——写路径复用编码缓冲区。
+7. buildRawPayload 复用 uncompressed payload scratch 缓冲。
 
 ## 7. 正确性保障
 

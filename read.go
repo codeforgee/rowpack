@@ -147,10 +147,10 @@ func (s *Store) readRow(view *index.View, si *SchemaIndex, loc *index.RowLoc) (R
 	return row, ref.Entry.SchemaVersion, err
 }
 
-// rowFromPayload decodes the record at ordinal from an already-parsed block
-// payload (used by Scan's block cursor). Callers must already have filtered
+// rowFromPayload decodes the record at ordinal from an already-built rows
+// directory (used by Scan's block cursor). Callers must already have filtered
 // tombstones.
-func (s *Store) rowFromPayload(rp *block.RowsPayload, bl *index.BlockLoc, loc *index.RowLoc, si *SchemaIndex) (Row, error) {
+func (s *Store) rowFromPayload(rp *block.RowsIndex, bl *index.BlockLoc, loc *index.RowLoc, si *SchemaIndex) (Row, error) {
 	if int(loc.ItemOrdinal) >= len(rp.Entries) {
 		return nil, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", loc.ItemOrdinal, loc.BlockID)
 	}

@@ -667,6 +667,14 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 
 	// Build and append the index transaction.
 	txnBuilder := index.NewBuilder(w.store.txnSeq.Add(1))
+	// Pre-allocate for all flushed blocks.
+	var rBlocks, rMeta, rRows int
+	for _, blk := range w.pending {
+		rBlocks++
+		rMeta += len(blk.meta)
+		rRows += len(blk.rows)
+	}
+	txnBuilder.Reserve(rMeta, rBlocks, rRows)
 	snapEntry := fileformat.SnapshotIndexEntry{
 		SnapshotID:       w.id,
 		ParentSnapshotID: w.parent,

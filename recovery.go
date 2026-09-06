@@ -357,6 +357,7 @@ func (s *Store) buildIndexTxnFromData(c *committedSnapshot) (*index.Txn, error) 
 	}
 
 	builder := index.NewBuilder(0) // sequence filled by caller
+	builder.Reserve(len(metaEntries), len(blockEntries), len(rowEntries))
 	snapEntry := fileformat.SnapshotIndexEntry{
 		SnapshotID:       sh.SnapshotID,
 		ParentSnapshotID: sh.ParentSnapshotID,

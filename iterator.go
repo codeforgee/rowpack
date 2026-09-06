@@ -35,11 +35,11 @@ type Iterator struct {
 	curRow   Row
 	curLoc   *index.RowLoc
 
-	// Block cursor: reuses the parsed payload while consecutive rows fall in
-	// the same block, avoiding a per-row full-block parse.
+	// Block cursor: reuses the parsed rows directory while consecutive rows
+	// fall in the same block, avoiding a per-row full-block parse.
 	curBlockID uint64
 	curBlk     *index.BlockLoc
-	curPayload *block.RowsPayload
+	curPayload *block.RowsIndex
 
 	err    error
 	closed bool
@@ -173,7 +173,7 @@ func (it *Iterator) rowAt(loc *index.RowLoc) (Row, error) {
 		if err != nil {
 			return nil, err
 		}
-		rp, err := block.ParseRowsPayload(blk.Raw, bl.ItemCount)
+		rp, err := block.ParseRowsDirectory(blk.Raw, bl.ItemCount)
 		if err != nil {
 			return nil, err
 		}

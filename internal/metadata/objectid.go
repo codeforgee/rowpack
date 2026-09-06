@@ -7,10 +7,16 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
-// ObjectIDAllocator assigns stable Store-wide ObjectIDs. Header keeps
-// ObjectID 1; other objects start at 2. The same natural key always maps to
-// the same ObjectID, so identity is stable across snapshots and does not
-// depend on hashing or case policy.
+// TableSpaceEnd is the exclusive end of the uint32 table ObjectID space.
+// Table objects keep ObjectID == TableID below this bound; every other object
+// (columns, constraints, extensions) lives at or above it, so the two spaces
+// can never collide.
+const TableSpaceEnd = uint64(1) << 32
+
+// ObjectIDAllocator assigns stable Store-wide ObjectIDs for non-table objects.
+// Header keeps ObjectID 1; other objects start at TableSpaceEnd. The same
+// natural key always maps to the same ObjectID, so identity is stable across
+// snapshots and does not depend on hashing or case policy.
 type ObjectIDAllocator struct {
 	next  uint64
 	byKey map[string]uint64
@@ -21,7 +27,7 @@ type ObjectIDAllocator struct {
 // object.
 func NewObjectIDAllocator() *ObjectIDAllocator {
 	return &ObjectIDAllocator{
-		next:  fileformat.HeaderObjectID + 1,
+		next:  TableSpaceEnd,
 		byKey: make(map[string]uint64),
 		byID:  map[uint64]string{fileformat.HeaderObjectID: "header"},
 	}
@@ -49,6 +55,20 @@ func (a *ObjectIDAllocator) Alloc(namespace, key string) uint64 {
 // ExternalKey returns the natural key that was assigned to an ObjectID, or ""
 // if unknown.
 func (a *ObjectIDAllocator) ExternalKey(id uint64) string { return a.byID[id] }
+
+// Force registers an already-assigned ObjectID (e.g. from a previous snapshot)
+// so future allocations never collide with it.
+func (a *ObjectIDAllocator) Force(id uint64, key string) {
+	if id >= a.next {
+		a.next = id + 1
+	}
+	if _, ok := a.byKey[naturalKey("", key)]; !ok {
+		a.byKey[naturalKey("", key)] = id
+	}
+	if _, ok := a.byID[id]; !ok {
+		a.byID[id] = key
+	}
+}
 
 // Next returns the next ObjectID that will be assigned.
 func (a *ObjectIDAllocator) Next() uint64 { return a.next }

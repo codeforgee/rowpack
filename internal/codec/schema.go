@@ -18,6 +18,13 @@ type Schema struct {
 	Columns []Column
 }
 
+// Clone returns a deep copy of the schema.
+func (s *Schema) Clone() *Schema {
+	out := &Schema{TableID: s.TableID, Version: s.Version, Name: s.Name, Columns: make([]Column, len(s.Columns))}
+	copy(out.Columns, s.Columns)
+	return out
+}
+
 // Column describes one column of a Schema.
 type Column struct {
 	Name     string

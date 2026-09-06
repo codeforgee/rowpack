@@ -100,7 +100,7 @@ func (b *Builder) Counts() (meta, blocks uint32, rows uint64) {
 // the data SnapshotFooter's FooterCRC32C used for cross-file verification.
 // The returned bytes start with the IndexTxnHeader and end after the footer
 // (caller appends padding).
-func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC uint32) ([]byte, error) {
+func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC uint32, txnStart, txnEnd int64) ([]byte, error) {
 	if b.snapshot == nil {
 		return nil, errors.New("rowpack: no snapshot entry to build")
 	}
@@ -149,8 +149,8 @@ func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC
 	f := fileformat.IndexTxnFooter{
 		TxnSequence:      b.sequence,
 		SnapshotID:       b.snapshot.SnapshotID,
-		TxnStartOffset:   0, // filled by the store layer when writing
-		TxnEndOffset:     0,
+		TxnStartOffset:   uint64(txnStart),
+		TxnEndOffset:     uint64(txnEnd),
 		DataSnapshotEnd:  dataSnapshotEnd,
 		BodyCRC32C:       bodyCRC,
 		DataFooterCRC32C: dataFooterCRC,

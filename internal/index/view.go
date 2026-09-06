@@ -173,6 +173,37 @@ func (v *View) MetadataByType(snapshot uint64, recordType uint32) []uint64 {
 // MemoryBytes estimates the in-memory footprint of the view.
 func (v *View) MemoryBytes() uint64 { return v.memoryBytes }
 
+// RowTables returns the table IDs that have row entries at the snapshot.
+func (v *View) RowTables(snapshot uint64) []uint32 {
+	tbl := v.rows[snapshot]
+	if tbl == nil {
+		return nil
+	}
+	out := make([]uint32, 0, len(tbl))
+	for t := range tbl {
+		out = append(out, t)
+	}
+	sortU32s(out)
+	return out
+}
+
+// ResolveRow finds the row location for (snapshot, table, rowID) along the
+// parent chain. It returns nil when no record exists.
+func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) *RowLoc {
+	cur := snapshot
+	for {
+		loc := v.Row(cur, table, rowID)
+		if loc != nil {
+			return loc
+		}
+		sm := v.Snapshot(cur)
+		if sm == nil || sm.Parent == 0 {
+			return nil
+		}
+		cur = sm.Parent
+	}
+}
+
 // Apply returns a NEW immutable view that adds the committed txn's entries.
 // It validates the snapshot parent chain, uniqueness, and limits before
 // returning. The receiver is not modified.

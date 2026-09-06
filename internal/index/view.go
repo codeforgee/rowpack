@@ -133,7 +133,7 @@ func (v *View) Row(snapshot uint64, table uint32, rowID uint64) *RowLoc {
 }
 
 // RowKeys returns the row locations of a (snapshot, table), sorted by RowID.
-func (v *View) RowKeys(snapshot uint64, table uint32) []rowKeyLoc {
+func (v *View) RowKeys(snapshot uint64, table uint32) []RowKeyLoc {
 	tbl := v.rows[snapshot]
 	if tbl == nil {
 		return nil
@@ -142,16 +142,16 @@ func (v *View) RowKeys(snapshot uint64, table uint32) []rowKeyLoc {
 	if len(rows) == 0 {
 		return nil
 	}
-	out := make([]rowKeyLoc, 0, len(rows))
+	out := make([]RowKeyLoc, 0, len(rows))
 	for id, loc := range rows {
-		out = append(out, rowKeyLoc{RowID: id, Loc: loc})
+		out = append(out, RowKeyLoc{RowID: id, Loc: loc})
 	}
 	sortRowKeyLocs(out)
 	return out
 }
 
-// rowKeyLoc pairs a RowID with its location, for sorted iteration.
-type rowKeyLoc struct {
+// RowKeyLoc pairs a RowID with its location, for sorted iteration.
+type RowKeyLoc struct {
 	RowID uint64
 	Loc   *RowLoc
 }

@@ -10,6 +10,6 @@ func sortSnapshotMetas(s []*SnapshotMeta) {
 	sort.Slice(s, func(i, j int) bool { return s[i].ID < s[j].ID })
 }
 
-func sortRowKeyLocs(s []rowKeyLoc) {
+func sortRowKeyLocs(s []RowKeyLoc) {
 	sort.Slice(s, func(i, j int) bool { return s[i].RowID < s[j].RowID })
 }

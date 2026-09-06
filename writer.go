@@ -159,7 +159,7 @@ func (s *Store) BeginSnapshot(ctx context.Context, typ SnapshotType, opts Snapsh
 	}
 	created := opts.CreatedAt
 	if created.IsZero() {
-		created = time.Now().UTC()
+		created = time.Unix(0, effectiveNow()).UTC()
 	}
 	w := &SnapshotWriter{
 		store:       s,
@@ -492,7 +492,10 @@ func (w *SnapshotWriter) checkStrictParent(table TableID, rowID RowID, typ Chang
 	if st == nil {
 		return nil
 	}
-	exists := st.view.Row(w.parent, table, rowID) != nil
+	// Parent-view existence is resolved along the whole parent chain, not just
+	// the immediate parent layer.
+	loc := st.view.ResolveRow(w.parent, table, rowID)
+	exists := loc != nil && loc.ChangeType != fileformat.ChangeDelete
 	switch typ {
 	case ChangeInsert:
 		if exists {

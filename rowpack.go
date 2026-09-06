@@ -16,6 +16,31 @@ import (
 	"github.com/rowpack/rowpack/internal/iofile"
 )
 
+// Test-only hooks, set only by tests in this package so golden files are
+// byte-deterministic. The public API surface is unchanged.
+var (
+	testNowOverride  int64
+	testUUIDOverride *[16]byte
+)
+
+func effectiveNow() int64 {
+	if testNowOverride != 0 {
+		return testNowOverride
+	}
+	return time.Now().UTC().UnixNano()
+}
+
+func effectiveUUID() ([16]byte, error) {
+	if testUUIDOverride != nil {
+		return *testUUIDOverride, nil
+	}
+	var uuid [16]byte
+	if _, err := rand.Read(uuid[:]); err != nil {
+		return uuid, err
+	}
+	return uuid, nil
+}
+
 // publishedState is the atomically-published combination of the immutable
 // index view and the derived schema index. Readers load it once.
 type publishedState struct {
@@ -63,11 +88,11 @@ func Create(basePath string, opts Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	var uuid [16]byte
-	if _, err := rand.Read(uuid[:]); err != nil {
+	uuid, err := effectiveUUID()
+	if err != nil {
 		return nil, fmt.Errorf("rowpack: generate uuid: %w", err)
 	}
-	now := time.Now().UTC().UnixNano()
+	now := effectiveNow()
 	dataHdr := fileformat.DataFileHeader{}
 	dataHdr.FileHeader = fileformat.FileHeader{
 		StoreUUID:          uuid,

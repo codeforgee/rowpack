@@ -29,7 +29,7 @@ func buildTxn(t *testing.T, seq uint64, snap fileformat.SnapshotIndexEntry, meta
 			t.Fatal(err)
 		}
 	}
-	out, err := b.Build(snap.DataStart, dataEnd, footerCRC, 0, 0)
+	out, _, err := b.Build(snap.DataStart, dataEnd, footerCRC, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

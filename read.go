@@ -122,8 +122,8 @@ func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table TableID, 
 	return true, nil
 }
 
-// readRow reads and decodes one row from its block, returning the Row and the
-// schema version used.
+// readRow reads and decodes a single row from its block via ParseRowAt,
+// avoiding a full block directory parse for random reads.
 func (s *Store) readRow(view *index.View, si *SchemaIndex, loc *index.RowLoc) (Row, SchemaVersion, error) {
 	bl := view.Block(loc.BlockID)
 	if bl == nil {
@@ -133,31 +133,42 @@ func (s *Store) readRow(view *index.View, si *SchemaIndex, loc *index.RowLoc) (R
 	if err != nil {
 		return nil, 0, err
 	}
-	rp, err := block.ParseRowsPayload(blk.Raw, bl.ItemCount)
+	ref, err := block.ParseRowAt(blk.Raw, bl.ItemCount, loc.ItemOrdinal)
 	if err != nil {
 		return nil, 0, err
 	}
-	if int(loc.ItemOrdinal) >= len(rp.Entries) {
-		return nil, 0, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", loc.ItemOrdinal, loc.BlockID)
-	}
-	ent := &rp.Entries[loc.ItemOrdinal]
 	// Verify the row CRC for local diagnostics.
-	if ent.ChangeType != fileformat.ChangeDelete {
-		body := rp.RowBytes(int(loc.ItemOrdinal))
-		if got := fileformat.CRC32C(body); got != rp.RowCRC(int(loc.ItemOrdinal)) {
-			return nil, 0, fmt.Errorf("rowpack: row CRC mismatch in block %d", loc.BlockID)
+	if ref.Entry.ChangeType != fileformat.ChangeDelete {
+		if got := fileformat.CRC32C(ref.Row); got != ref.Header.RowCRC32C {
+			return nil, 0, fmt.Errorf("rowpack: row CRC mismatch in block %d", bl.BlockID)
 		}
 	}
+	row, err := s.decodeRow(ref, bl, si)
+	return row, ref.Entry.SchemaVersion, err
+}
+
+// rowFromPayload decodes the record at ordinal from an already-parsed block
+// payload (used by Scan's block cursor). Callers must already have filtered
+// tombstones.
+func (s *Store) rowFromPayload(rp *block.RowsPayload, bl *index.BlockLoc, loc *index.RowLoc, si *SchemaIndex) (Row, error) {
+	if int(loc.ItemOrdinal) >= len(rp.Entries) {
+		return nil, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", loc.ItemOrdinal, loc.BlockID)
+	}
+	ent := &rp.Entries[loc.ItemOrdinal]
 	schema := si.Schema(bl.SnapshotID, bl.TableID, ent.SchemaVersion)
 	if schema == nil {
-		// Try resolving from the block's snapshot with the derived index.
-		return nil, 0, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ent.SchemaVersion)
+		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ent.SchemaVersion)
 	}
-	row, err := codec.Decode(rp.RowBytes(int(loc.ItemOrdinal)), schema, s.opts.codecLimits())
-	if err != nil {
-		return nil, 0, err
+	return codec.Decode(rp.RowBytes(int(loc.ItemOrdinal)), schema, s.opts.codecLimits())
+}
+
+// decodeRow decodes a located row against its schema.
+func (s *Store) decodeRow(ref *block.RowRef, bl *index.BlockLoc, si *SchemaIndex) (Row, error) {
+	schema := si.Schema(bl.SnapshotID, bl.TableID, ref.Entry.SchemaVersion)
+	if schema == nil {
+		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ref.Entry.SchemaVersion)
 	}
-	return row, ent.SchemaVersion, nil
+	return codec.Decode(ref.Row, schema, s.opts.codecLimits())
 }
 
 // Schema returns the schema of a table version at a snapshot.

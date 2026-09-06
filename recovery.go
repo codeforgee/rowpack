@@ -386,11 +386,11 @@ func (s *Store) buildIndexTxnFromData(c *committedSnapshot) (*index.Txn, error) 
 			return nil, err
 		}
 	}
-	txnBytes, err := builder.Build(uint64(c.start), uint64(c.end), c.footerCRC, 0, 0)
+	_, txn, err := builder.Build(uint64(c.start), uint64(c.end), c.footerCRC, 0, 0)
 	if err != nil {
 		return nil, err
 	}
-	return index.ParseTxn(txnBytes)
+	return txn, nil
 }
 
 // marshalTxn serializes a rebuilt txn with the given sequence and offsets.
@@ -409,12 +409,12 @@ func marshalTxn(txn *index.Txn, seq uint64, start int64) []byte {
 	for i := range txn.Rows {
 		_ = b.AddRow(txn.Rows[i])
 	}
-	out1, err := b.Build(se.DataStart, se.DataEnd, se.DataFooterCRC32C, start, start)
+	out1, _, err := b.Build(se.DataStart, se.DataEnd, se.DataFooterCRC32C, start, start)
 	if err != nil {
 		panic(err)
 	}
 	end := start + int64(len(out1))
-	out, err := b.Build(se.DataStart, se.DataEnd, se.DataFooterCRC32C, start, end)
+	out, _, err := b.Build(se.DataStart, se.DataEnd, se.DataFooterCRC32C, start, end)
 	if err != nil {
 		panic(err)
 	}

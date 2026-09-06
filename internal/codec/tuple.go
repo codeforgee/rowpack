@@ -25,6 +25,13 @@ var ErrSchemaMismatch = errors.New("rowpack: schema mismatch")
 // types, NULL vs nullable, limits, string UTF-8 and time/decimal ranges. The
 // returned buffer is freshly allocated.
 func Encode(schema *Schema, row []Value, limits Limits) ([]byte, error) {
+	return EncodeInto(schema, row, limits, nil)
+}
+
+// EncodeInto is Encode with a caller-provided scratch buffer that is reused
+// across calls (the returned slice may alias reuse). The caller must not hold
+// the returned slice across the next EncodeInto call unless it copies it.
+func EncodeInto(schema *Schema, row []Value, limits Limits, reuse []byte) ([]byte, error) {
 	if schema == nil {
 		return nil, errors.New("rowpack: nil schema")
 	}
@@ -37,7 +44,13 @@ func Encode(schema *Schema, row []Value, limits Limits) ([]byte, error) {
 
 	bitmapBytes := (len(schema.Columns) + 7) / 8
 	// Estimate: header + bitmap + worst-case 9 bytes per value (u64).
-	buf := make([]byte, 0, 8+bitmapBytes+9*len(schema.Columns))
+	need := 8 + bitmapBytes + 9*len(schema.Columns)
+	var buf []byte
+	if cap(reuse) >= need {
+		buf = reuse[:0]
+	} else {
+		buf = make([]byte, 0, need)
+	}
 	buf = appendU32(buf, uint32(len(schema.Columns)))
 	buf = appendU32(buf, uint32(bitmapBytes))
 	bitmapOff := len(buf)

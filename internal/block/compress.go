@@ -1,12 +1,9 @@
-// Package block implements v1 block building, Zstd/None compression and
-// bounded block reading. A Block is the unit of compression and CRC: it
-// belongs to exactly one snapshot and one table, and its payload holds an
-// offset directory plus record bytes.
 package block
 
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -38,9 +35,9 @@ func Compress(alg fileformat.Compression, level int, src []byte) ([]byte, error)
 	return nil, fmt.Errorf("rowpack: unsupported compression %d", alg)
 }
 
-// Decompress decodes src into dst (reused scratch). It returns the decoded
-// bytes which never exceed maxOut; a larger result is a compression-bomb
-// rejection rather than an allocation.
+// Decompress decodes src, returning the decoded bytes which never exceed
+// maxOut; a larger result is a compression-bomb rejection rather than an
+// allocation.
 func Decompress(alg fileformat.Compression, dst, src []byte, maxOut uint32) ([]byte, error) {
 	switch alg {
 	case fileformat.CompressionNone:
@@ -54,29 +51,67 @@ func Decompress(alg fileformat.Compression, dst, src []byte, maxOut uint32) ([]b
 	return nil, fmt.Errorf("rowpack: unsupported compression %d", alg)
 }
 
-var zstdOpts = []zstd.EOption{
-	zstd.WithEncoderConcurrency(1), // deterministic output
-	zstd.WithEncoderCRC(true),
+// ---- pooled zstd encoder/decoder ----
+//
+// Creating a zstd encoder/decoder allocates a large histogram (~1 MiB) per
+// instance; reusing them via sync.Pool removes that cost from every block
+// compress/decompress.
+
+// zstdMaxDecoded is the decoder-level memory ceiling. Precise per-block limits
+// are still enforced by the caller's maxOut check.
+const zstdMaxDecoded = 512 << 20
+
+var (
+	encPoolsMu sync.Mutex
+	encPools   = map[int]*sync.Pool{}
+
+	decPool = sync.Pool{New: func() any {
+		d, err := zstd.NewReader(nil,
+			zstd.WithDecoderMaxMemory(zstdMaxDecoded),
+			zstd.WithDecoderLowmem(true),
+			zstd.WithDecoderConcurrency(1))
+		if err != nil {
+			// NewReader only fails on invalid options; none are invalid here.
+			panic(err)
+		}
+		return d
+	}}
+)
+
+// poolForLevel returns the encoder pool for a zstd level.
+func poolForLevel(level int) *sync.Pool {
+	encPoolsMu.Lock()
+	defer encPoolsMu.Unlock()
+	if p := encPools[level]; p != nil {
+		return p
+	}
+	p := &sync.Pool{New: func() any {
+		// Single-goroutine, CRC-enabled encoding for deterministic output.
+		e, err := zstd.NewWriter(nil,
+			zstd.WithEncoderConcurrency(1),
+			zstd.WithEncoderCRC(true),
+			zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)))
+		if err != nil {
+			panic(err)
+		}
+		return e
+	}}
+	encPools[level] = p
+	return p
 }
 
 func compressZstd(level int, src []byte) ([]byte, error) {
-	enc, err := zstd.NewWriter(nil, zstdOpts...)
-	if err != nil {
-		return nil, err
-	}
-	defer enc.Close()
-	return enc.EncodeAll(src, nil), nil
+	pool := poolForLevel(level)
+	enc := pool.Get().(*zstd.Encoder)
+	out := enc.EncodeAll(src, nil)
+	pool.Put(enc)
+	return out, nil
 }
 
 func decompressZstd(dst, src []byte, maxOut uint32) ([]byte, error) {
-	dec, err := zstd.NewReader(nil,
-		zstd.WithDecoderMaxMemory(uint64(maxOut)),
-		zstd.WithDecoderLowmem(true))
-	if err != nil {
-		return nil, err
-	}
-	defer dec.Close()
+	dec := decPool.Get().(*zstd.Decoder)
 	out, err := dec.DecodeAll(src, dst[:0])
+	decPool.Put(dec)
 	if err != nil {
 		return nil, fmt.Errorf("rowpack: zstd decode: %w", err)
 	}

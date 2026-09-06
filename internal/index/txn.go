@@ -100,33 +100,38 @@ func (b *Builder) Counts() (meta, blocks uint32, rows uint64) {
 // the data SnapshotFooter's FooterCRC32C used for cross-file verification.
 // The returned bytes start with the IndexTxnHeader and end after the footer
 // (caller appends padding).
-func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC uint32, txnStart, txnEnd int64) ([]byte, error) {
+func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC uint32, txnStart, txnEnd int64) ([]byte, *Txn, error) {
 	if b.snapshot == nil {
-		return nil, errors.New("rowpack: no snapshot entry to build")
+		return nil, nil, errors.New("rowpack: no snapshot entry to build")
 	}
 	var snapshotEntry [fileformat.SnapshotIndexEntrySize]byte
 	if err := b.snapshot.MarshalTo(snapshotEntry[:]); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	body := append([]byte(nil), snapshotEntry[:]...)
+	// Pre-allocate the body: counts are known, so append never reallocates.
+	body := make([]byte, 0, fileformat.SnapshotIndexEntrySize+
+		len(b.metadata)*fileformat.MetadataIndexEntrySize+
+		len(b.blocks)*fileformat.BlockIndexEntrySize+
+		len(b.rows)*fileformat.RowIndexEntrySize)
+	body = append(body, snapshotEntry[:]...)
 	for i := range b.metadata {
 		var e [fileformat.MetadataIndexEntrySize]byte
 		if err := b.metadata[i].MarshalTo(e[:]); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		body = append(body, e[:]...)
 	}
 	for i := range b.blocks {
 		var e [fileformat.BlockIndexEntrySize]byte
 		if err := b.blocks[i].MarshalTo(e[:]); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		body = append(body, e[:]...)
 	}
 	for i := range b.rows {
 		var e [fileformat.RowIndexEntrySize]byte
 		if err := b.rows[i].MarshalTo(e[:]); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		body = append(body, e[:]...)
 	}
@@ -144,7 +149,7 @@ func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC
 	}
 	var hdr [fileformat.IndexTxnHeaderSize]byte
 	if err := h.MarshalTo(hdr[:]); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	f := fileformat.IndexTxnFooter{
 		TxnSequence:      b.sequence,
@@ -157,13 +162,17 @@ func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC
 	}
 	var ftr [fileformat.IndexTxnFooterSize]byte
 	if err := f.MarshalTo(ftr[:]); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := make([]byte, 0, len(hdr)+len(body)+len(ftr))
 	out = append(out, hdr[:]...)
 	out = append(out, body...)
 	out = append(out, ftr[:]...)
-	return out, nil
+	txn := &Txn{Header: h, Snapshot: *b.snapshot, Footer: f}
+	txn.Metadata = b.metadata
+	txn.Blocks = b.blocks
+	txn.Rows = b.rows
+	return out, txn, nil
 }
 
 // ParseTxn parses and validates one index transaction from data, which must

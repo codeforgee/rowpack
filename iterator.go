@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/rowpack/rowpack/internal/index"
 )
@@ -33,6 +34,12 @@ type Iterator struct {
 	curRowID RowID
 	curRow   Row
 	curLoc   *index.RowLoc
+
+	// Block cursor: reuses the parsed payload while consecutive rows fall in
+	// the same block, avoiding a per-row full-block parse.
+	curBlockID uint64
+	curBlk     *index.BlockLoc
+	curPayload *block.RowsPayload
 
 	err    error
 	closed bool
@@ -135,7 +142,7 @@ func (it *Iterator) Next() bool {
 		if loc == nil || loc.ChangeType == fileformat.ChangeDelete {
 			continue // tombstone: hide the row entirely
 		}
-		row, _, err := it.store.readRow(it.state.view, it.state.schemas, loc)
+		row, err := it.rowAt(loc)
 		if err != nil {
 			it.err = err
 			return false
@@ -152,6 +159,29 @@ func (l *layerIter) advance(h *rowHeap) {
 	if l.pos < len(l.keys) {
 		heap.Push(h, l)
 	}
+}
+
+// rowAt resolves one row, reusing the parsed payload of the current block
+// when the location is inside it.
+func (it *Iterator) rowAt(loc *index.RowLoc) (Row, error) {
+	if it.curBlockID != loc.BlockID {
+		bl := it.state.view.Block(loc.BlockID)
+		if bl == nil {
+			return nil, fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)
+		}
+		blk, err := it.store.loader.Load(int64(bl.DataOffset), bl.BlockID)
+		if err != nil {
+			return nil, err
+		}
+		rp, err := block.ParseRowsPayload(blk.Raw, bl.ItemCount)
+		if err != nil {
+			return nil, err
+		}
+		it.curBlockID = loc.BlockID
+		it.curBlk = bl
+		it.curPayload = rp
+	}
+	return it.store.rowFromPayload(it.curPayload, it.curBlk, loc, it.state.schemas)
 }
 
 // RowID returns the current row's RowID.

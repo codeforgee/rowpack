@@ -90,6 +90,9 @@ type SnapshotWriter struct {
 
 	// schemas defined in this snapshot: (table, version) -> schema
 	schemas map[SchemaKey]*codec.Schema
+
+	// encBuf is reused across row encodes to cut per-row allocation.
+	encBuf []byte
 	// seen row keys to reject duplicates
 	seenRows map[RowKey]struct{}
 
@@ -346,13 +349,10 @@ func (w *SnapshotWriter) metaBuilderAdd(rec *metadata.Record, body []byte) error
 	return w.ensureMetaBuilder().Add(entry, body)
 }
 
-// metaFlush captures one completed metadata block.
-func (w *SnapshotWriter) metaFlush(h fileformat.BlockHeader, payload []byte) error {
-	blk := &pendingBlock{header: h, payload: payload}
-	raw, err := block.Decompress(h.Compression, nil, payload, w.store.opts.Limits.MaxRawBlockBytes)
-	if err != nil {
-		return err
-	}
+// metaFlush captures one completed metadata block. The builder hands us the
+// already-decompressed raw payload so we never re-decompress our own output.
+func (w *SnapshotWriter) metaFlush(h fileformat.BlockHeader, stored, raw []byte) error {
+	blk := &pendingBlock{header: h, payload: stored}
 	mp, err := metadata.Parse(raw)
 	if err != nil {
 		return err
@@ -373,13 +373,9 @@ func (w *SnapshotWriter) metaFlush(h fileformat.BlockHeader, payload []byte) err
 }
 
 // rowsFlush captures one completed rows block and its row index entries.
-func (w *SnapshotWriter) rowsFlush(table TableID) func(fileformat.BlockHeader, []byte) error {
-	return func(h fileformat.BlockHeader, payload []byte) error {
-		blk := &pendingBlock{header: h, payload: payload}
-		raw, err := block.Decompress(h.Compression, nil, payload, w.store.opts.Limits.MaxRawBlockBytes)
-		if err != nil {
-			return err
-		}
+func (w *SnapshotWriter) rowsFlush(table TableID) func(fileformat.BlockHeader, []byte, []byte) error {
+	return func(h fileformat.BlockHeader, stored, raw []byte) error {
+		blk := &pendingBlock{header: h, payload: stored}
 		rp, err := block.ParseRowsPayload(raw, h.ItemCount)
 		if err != nil {
 			return err
@@ -455,10 +451,11 @@ func (w *SnapshotWriter) put(ctx context.Context, typ ChangeType, table TableID,
 		if err != nil {
 			return err
 		}
-		encoded, err = codec.Encode(schema, row, w.store.opts.codecLimits())
+		w.encBuf, err = codec.EncodeInto(schema, row, w.store.opts.codecLimits(), w.encBuf)
 		if err != nil {
 			return err
 		}
+		encoded = w.encBuf
 		if err := w.checkStrictParent(table, rowID, typ); err != nil {
 			return err
 		}
@@ -721,7 +718,7 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	fault.Check("commit.index.before")
 	txnStart := w.store.index.Offset()
 	txnEnd := txnStart + int64(0)
-	txnBytes, err := txnBuilder.Build(uint64(snapStart), uint64(dataEnd), footerCRCValue(fb[:]), txnStart, txnEnd+int64(0))
+	txnBytes, txn, err := txnBuilder.Build(uint64(snapStart), uint64(dataEnd), footerCRCValue(fb[:]), txnStart, txnEnd+int64(0))
 	if err != nil {
 		return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: unknown, Err: err}
 	}
@@ -737,11 +734,6 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	}
 	fault.Check("commit.index-sync.after")
 
-	// Parse back the txn for view application.
-	txn, err := index.ParseTxn(txnBytes)
-	if err != nil {
-		return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: unknown, Err: err}
-	}
 	st := w.store.state.Load()
 	newView, err := st.view.Apply(txn, w.store.opts.Limits.MaxSnapshotDepth)
 	if err != nil {

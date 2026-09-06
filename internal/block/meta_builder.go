@@ -23,11 +23,11 @@ type MetadataBlockBuilder struct {
 	records [][]byte
 	count   uint32
 
-	onFlush func(h fileformat.BlockHeader, payload []byte) error
+	onFlush func(h fileformat.BlockHeader, stored, raw []byte) error
 }
 
 // NewMetadataBlockBuilder creates a builder for the given snapshot.
-func NewMetadataBlockBuilder(snapshotID uint64, tableID uint32, blockSize int, compress fileformat.Compression, level int, limits Limits, onFlush func(fileformat.BlockHeader, []byte) error) *MetadataBlockBuilder {
+func NewMetadataBlockBuilder(snapshotID uint64, tableID uint32, blockSize int, compress fileformat.Compression, level int, limits Limits, onFlush func(fileformat.BlockHeader, []byte, []byte) error) *MetadataBlockBuilder {
 	return &MetadataBlockBuilder{
 		snapshotID: snapshotID,
 		tableID:    tableID,
@@ -86,7 +86,7 @@ func (b *MetadataBlockBuilder) Flush() error {
 		StoredSize:  uint32(len(compressed)),
 		RawCRC32C:   fileformat.CRC32C(raw),
 	}
-	if err := b.onFlush(h, compressed); err != nil {
+	if err := b.onFlush(h, compressed, raw); err != nil {
 		return err
 	}
 	b.entries = b.entries[:0]

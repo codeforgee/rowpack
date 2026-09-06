@@ -31,7 +31,7 @@ func buildTxnFuzz(seq uint64, snap fileformat.SnapshotIndexEntry, meta []filefor
 	for _, e := range rows {
 		_ = b.AddRow(e)
 	}
-	out, err := b.Build(snap.DataStart, dataEnd, footerCRC, 0, 0)
+	out, _, err := b.Build(snap.DataStart, dataEnd, footerCRC, 0, 0)
 	if err != nil {
 		panic(err)
 	}

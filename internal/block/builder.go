@@ -24,11 +24,11 @@ type RowsBlockBuilder struct {
 	count   uint32
 
 	// Flush returns each finished block; the consumer supplies the BlockID.
-	onFlush func(h fileformat.BlockHeader, payload []byte) error
+	onFlush func(h fileformat.BlockHeader, stored, raw []byte) error
 }
 
 // NewRowsBlockBuilder creates a builder for the given snapshot/table.
-func NewRowsBlockBuilder(snapshotID uint64, tableID uint32, blockSize int, compress fileformat.Compression, level int, limits Limits, onFlush func(fileformat.BlockHeader, []byte) error) *RowsBlockBuilder {
+func NewRowsBlockBuilder(snapshotID uint64, tableID uint32, blockSize int, compress fileformat.Compression, level int, limits Limits, onFlush func(fileformat.BlockHeader, []byte, []byte) error) *RowsBlockBuilder {
 	return &RowsBlockBuilder{
 		snapshotID: snapshotID,
 		tableID:    tableID,
@@ -122,6 +122,7 @@ func (b *RowsBlockBuilder) Flush() error {
 	if err != nil {
 		return err
 	}
+	_ = err
 	h := fileformat.BlockHeader{
 		BlockKind:   fileformat.BlockKindRows,
 		Compression: b.compress,
@@ -132,7 +133,7 @@ func (b *RowsBlockBuilder) Flush() error {
 		StoredSize:  uint32(len(compressed)),
 		RawCRC32C:   fileformat.CRC32C(raw),
 	}
-	if err := b.onFlush(h, compressed); err != nil {
+	if err := b.onFlush(h, compressed, raw); err != nil {
 		return err
 	}
 	b.entries = b.entries[:0]
@@ -237,6 +238,75 @@ func ParseRowsPayload(raw []byte, itemCount uint32) (*RowsPayload, error) {
 		p.Records = append(p.Records, rec)
 	}
 	return p, nil
+}
+
+// RowRef locates one record within a validated rows payload.
+type RowRef struct {
+	Entry  fileformat.RowDirectoryEntry
+	Header fileformat.RowRecordHeader
+	// Row is the row payload bytes (nil for DELETE). It references the
+	// caller's raw buffer and must not outlive it.
+	Row []byte
+}
+
+// ParseRowAt validates the rows payload header and the single record at
+// ordinal, returning its directory entry, record header and row payload.
+// Unlike ParseRowsPayload it does not parse the whole directory, so single-row
+// random reads cost O(1) in the block size.
+func ParseRowAt(raw []byte, itemCount uint32, ordinal uint32) (*RowRef, error) {
+	var h fileformat.RowsPayloadHeader
+	if err := h.Unmarshal(raw); err != nil {
+		return nil, err
+	}
+	if h.ItemCount != itemCount {
+		return nil, fmt.Errorf("rowpack: payload item count %d != block item count %d", h.ItemCount, itemCount)
+	}
+	if ordinal >= itemCount {
+		return nil, fmt.Errorf("rowpack: ordinal %d out of range (count %d)", ordinal, itemCount)
+	}
+	base := fileformat.RowsPayloadHeaderSize + int(h.DirectoryBytes)
+	if base > len(raw) {
+		return nil, errors.New("rowpack: rows payload directory exceeds payload")
+	}
+	if h.RecordsBytes > uint64(len(raw)-base) || base+int(h.RecordsBytes) != len(raw) {
+		return nil, errors.New("rowpack: rows payload records region mismatch")
+	}
+	dirOff := fileformat.RowsPayloadHeaderSize + int(ordinal)*fileformat.RowDirectoryEntrySize
+	if dirOff+fileformat.RowDirectoryEntrySize > base {
+		return nil, errors.New("rowpack: rows directory truncated")
+	}
+	var e fileformat.RowDirectoryEntry
+	if err := e.Unmarshal(raw[dirOff : dirOff+fileformat.RowDirectoryEntrySize]); err != nil {
+		return nil, err
+	}
+	recOff := base + int(e.RecordOffset)
+	recLen := int(e.RecordLength)
+	if recOff < base || recOff+recLen > base+int(h.RecordsBytes) {
+		return nil, fmt.Errorf("rowpack: row record out of bounds")
+	}
+	rec := raw[recOff : recOff+recLen]
+	var rh fileformat.RowRecordHeader
+	if err := rh.Unmarshal(rec); err != nil {
+		return nil, err
+	}
+	if rh.RowID != e.RowID || rh.ChangeType != e.ChangeType || rh.SchemaVersion != e.SchemaVersion {
+		return nil, fmt.Errorf("rowpack: row record header mismatch with directory")
+	}
+	if uint32(len(rec)) != fileformat.RowRecordHeaderSize+rh.RowLength {
+		return nil, fmt.Errorf("rowpack: row record length mismatch")
+	}
+	if rh.ChangeType == fileformat.ChangeDelete {
+		if rh.RowEncoding != fileformat.RowEncodingNone || rh.RowLength != 0 || rh.RowCRC32C != 0 {
+			return nil, fmt.Errorf("rowpack: DELETE record carries row bytes")
+		}
+	} else if rh.RowEncoding != fileformat.RowEncodingTypedTuple {
+		return nil, fmt.Errorf("rowpack: record has row encoding %d", rh.RowEncoding)
+	}
+	ref := &RowRef{Entry: e, Header: rh}
+	if rh.ChangeType != fileformat.ChangeDelete {
+		ref.Row = rec[fileformat.RowRecordHeaderSize:]
+	}
+	return ref, nil
 }
 
 // RowBytes returns the row payload bytes of record i (nil for DELETE).

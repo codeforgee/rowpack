@@ -124,12 +124,12 @@ make golden      # 重新生成 golden files（格式变更时人工审查）
 
 | 基准 | 结果 |
 | --- | --- |
-| FULL 顺序写 | ~286 krows/s, ~57 MB/s |
-| Get 冷读（缓存关闭） | ~413 µs/op |
-| Get 热读（缓存命中） | ~70 µs/op |
-| 并发 Get 1/8/32/64 goroutine | ~215–393 µs/op（读路径无锁） |
-| Scan 100k 行 | ~7.2 s（逐行解码，v1 正确性优先） |
-| Open 索引重放（100k 行） | ~8.7 ms |
+| FULL 顺序写 | ~360 krows/s, ~72 MB/s |
+| Get 冷读（缓存关闭） | ~316 µs/op |
+| Get 热读（缓存命中） | ~20 µs/op |
+| 并发 Get 1/8 goroutine | ~195 µs/op（读路径无锁） |
+| Scan 100k 行 | ~69 ms（块内游标） |
+| Open 索引重放（100k 行） | ~9 ms |
 | RebuildIndex（100k 行） | ~92 ms |
 
 ## 兼容性

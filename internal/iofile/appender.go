@@ -116,45 +116,54 @@ func Exists(path string) bool {
 // their headers, and syncs them. On any failure it removes both files so a
 // partially created store never survives (rollback strategy).
 func CreatePair(dataPath, indexPath string, dataHeader, indexHeader []byte) error {
+	removeData := func() { os.Remove(dataPath) }
+	removeIndex := func() { os.Remove(indexPath) }
+
 	df, err := os.OpenFile(dataPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return fmt.Errorf("rowpack: create data file: %w", err)
 	}
-	cleanup := func() {
-		df.Close()
-		os.Remove(dataPath)
-		os.Remove(indexPath)
-	}
 	if _, err := df.Write(dataHeader); err != nil {
-		cleanup()
+		df.Close()
+		removeData()
 		return fmt.Errorf("rowpack: write data header: %w", err)
 	}
 	if err := df.Sync(); err != nil {
-		cleanup()
+		df.Close()
+		removeData()
 		return fmt.Errorf("rowpack: sync data header: %w", err)
 	}
 	inf, err := os.OpenFile(indexPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
-		cleanup()
+		df.Close()
+		removeData()
 		return fmt.Errorf("rowpack: create index file: %w", err)
 	}
+	// From here on both files were created by this call; any failure removes
+	// both so a partially created store never survives.
 	if _, err := inf.Write(indexHeader); err != nil {
 		inf.Close()
-		cleanup()
+		df.Close()
+		removeData()
+		removeIndex()
 		return fmt.Errorf("rowpack: write index header: %w", err)
 	}
 	if err := inf.Sync(); err != nil {
 		inf.Close()
-		cleanup()
+		df.Close()
+		removeData()
+		removeIndex()
 		return fmt.Errorf("rowpack: sync index header: %w", err)
 	}
 	if err := df.Close(); err != nil {
 		inf.Close()
-		cleanup()
+		removeData()
+		removeIndex()
 		return fmt.Errorf("rowpack: close data file: %w", err)
 	}
 	if err := inf.Close(); err != nil {
-		cleanup()
+		removeData()
+		removeIndex()
 		return fmt.Errorf("rowpack: close index file: %w", err)
 	}
 	return nil

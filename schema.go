@@ -234,7 +234,7 @@ func fieldSint(rec *metadata.Record, id uint16) int64 {
 }
 
 func isNullableString(s string) bool {
-	// SafeString 原文：NO / no / N 视为不可空，其余（YES、空、NULL、1…）视为可空。
+	// 可空性按 DefineSchema 写入的 YES/NO 原文判断（NO/no/N/0/FALSE 视为不可空）。
 	switch s {
 	case "NO", "No", "no", "N", "0", "FALSE", "false":
 		return false
@@ -339,7 +339,7 @@ func dialectName(t codec.Type) string {
 	return "unknown"
 }
 
-// nullString maps nullable to the SafeString-preserving YES/NO text.
+// nullString encodes nullable as the canonical YES/NO text written by DefineSchema.
 func nullString(nullable bool) string {
 	if nullable {
 		return "YES"

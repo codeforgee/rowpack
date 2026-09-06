@@ -5,9 +5,9 @@
 
 ## 1. 目标
 
-RowPack 除了行数据，还要保存能够解释、校验和还原这些行的数据库元信息。v1 将表结构建模为通用 Metadata Record，而不是固化为只能保存列名和类型的 Schema Record。
+RowPack 除了行数据，还要保存能够解释、校验和还原这些行的数据库元信息。v1 将一切元数据建模为通用 Metadata Record：引擎把元数据当作**普通存储数据**，通过通用 TLV 记录通道（`PutMetadata`）保存，**不内建任何数据库强类型语义**。
 
-v1 核心范围严格对应现有 `meta.Store`：Header、Table、Column、PrimaryKey、Index、UniqueKey、ForeignKey、AutoInc、TableComment、ColComment、View、Function、VirtualColumn。Sequence、Trigger、分区、统计信息等后续能力使用标准扩展记录。扩展新对象或新字段时，不修改外层 Block 格式。
+引擎行解码所需的最小 Schema 契约由 `DefineSchema` 提供（写引擎自有的规范类型字符串）；表结构、约束、注释等数据库元信息由上层适配器作为普通记录写入与读取。本文档 §6/§7 的 13 类 RecordType 编号与字段映射是**上层适配器的参考约定**，不是引擎内建能力——引擎按通用 TLV 规则保存/透传这些记录，不识别其语义。Sequence、Trigger、分区、统计信息等使用标准扩展记录。扩展新对象或新字段时，不修改外层 Block 格式。
 
 元数据和行属于同一个 Snapshot 并原子提交：
 
@@ -121,9 +121,14 @@ bytes Value
 
 未知 Field：Critical=0 时跳过并保留；Critical=1 时拒绝。Field 按 ID 升序规范编码；只有 Repeated=1 可重复，并保持原顺序。嵌套默认最多 32 层。
 
-## 6. 核心 RecordType
+## 6. 核心 RecordType（上层适配器参考约定）
 
-核心类型严格对应现有 `meta.Store` 的列表结构：
+> 以下 1–13 的编号与语义是**上层数据库适配器的参考约定**，用于组织从
+> `meta.Store` 采集的元数据。引擎本身不内建解释：这些记录通过通用 TLV 保存
+> 与透传，未知 RecordType 一律按第 4 节规则处理（Critical=0 跳过并保留原始
+> 字节，Critical=1 拒绝）。引擎不因不认识的元数据类型而失败。
+
+这些类型供上层适配器组织现有 `meta.Store` 的列表结构：
 
 | ID | 名称 | 对应 Go 类型 |
 | ---: | --- | --- |
@@ -143,9 +148,12 @@ bytes Value
 
 这些核心类型使用 Namespace=`rowpack.meta.v1`。14–1023 保留；新增通用对象放入标准扩展类型 1024–65535；数据库厂商类型从 65536 开始。
 
-## 7. 核心字段映射
+## 7. 核心字段映射（上层适配器参考约定）
 
-FieldID 以现有 msgpack tag 为兼容依据，但使用数值编号稳定写入 TLV。`SafeString` 必须保存原始 string，不能只保存 Yes/No 或 Normalize 结果。Go `int` 写盘统一转换为 i64，并在读回目标平台 int 前检查溢出。
+> 承接 §6，本节的 FieldID 与 WireType 供上层适配器按 `meta.Store` 字段组织
+> TLV。引擎不校验这些映射。字符串字段原样保存（引擎的 TLV 不做任何
+> 规范化），这是纯数据存储的固有行为。
+> Go `int` 写盘统一转换为 i64，并在读回目标平台 int 前检查溢出。
 
 ### 7.1 Header (RecordType=1)
 
@@ -177,7 +185,7 @@ Table 的 ObjectID 由 `(Schema, TableName)` 按当前大小写 Policy 查找或
 
 ### 7.3 Column / VirtualColumn (RecordType=3/13)
 
-1 TableName(String)，2 ColumnName(String)，3 DataType(String)，4 DataLength(Sint64)，5 CharLength(Sint64)，6 DataPrecision(Sint64)，7 DataScale(Sint64)，8 Nullable(String，保留 SafeString 原文)，9 DataDefault(String，保留 SafeString 原文)，10 ColumnID(Sint64)，11 CharUsed(String)，12 Schema(String)，13 ColumnType(String)。
+1 TableName(String)，2 ColumnName(String)，3 DataType(String)，4 DataLength(Sint64)，5 CharLength(Sint64)，6 DataPrecision(Sint64)，7 DataScale(Sint64)，8 Nullable(String)，9 DataDefault(String)，10 ColumnID(Sint64)，11 CharUsed(String)，12 Schema(String)，13 ColumnType(String)。
 
 TypedTuple 的逻辑 Type 由 `(Header.DBType, Header.Version, Column.DataType, Column.ColumnType, precision/scale)` 映射得到，属于派生索引，不替换上述源字段。IsUnsigned 仍由 ColumnType 判断。VirtualColumns 必须使用 RecordType=13，不能与 Columns 合并后丢失分类。
 
@@ -187,11 +195,11 @@ TypedTuple 的逻辑 Type 由 `(Header.DBType, Header.Version, Column.DataType, 
 
 ### 7.5 Index (RecordType=5)
 
-1 IndexName(String)，2 TableName(String)，3 IdxComment(String，SafeString 原文)，4 Columns(String)，5 Schema(String)。Columns 保存当前采集结果原文，未来结构化 KeyPart 使用扩展字段，不覆盖原值。
+1 IndexName(String)，2 TableName(String)，3 IdxComment(String)，4 Columns(String)，5 Schema(String)。Columns 保存当前采集结果原文，未来结构化 KeyPart 使用扩展字段，不覆盖原值。
 
 ### 7.6 UniqueKey (RecordType=6)
 
-1 TableName(String)，2 ConsName(String)，3 Columns(String，SafeString 原文)，4 Schema(String)。
+1 TableName(String)，2 ConsName(String)，3 Columns(String)，4 Schema(String)。
 
 ### 7.7 ForeignKey (RecordType=7)
 
@@ -203,8 +211,8 @@ TypedTuple 的逻辑 Type 由 `(Header.DBType, Header.Version, Column.DataType, 
 
 ### 7.9 TableComment / ColComment (RecordType=9/10)
 
-- TableComment：1 TableName，2 TableType，3 Comments(SafeString 原文)，4 Schema。
-- ColComment：1 TableName，2 ColumnName，3 Comments(SafeString 原文)，4 Schema。
+- TableComment：1 TableName，2 TableType，3 Comments(String)，4 Schema。
+- ColComment：1 TableName，2 ColumnName，3 Comments(String)，4 Schema。
 
 ### 7.10 View / Function (RecordType=11/12)
 

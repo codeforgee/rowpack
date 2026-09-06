@@ -196,30 +196,11 @@ func (s *Store) Metadata(ctx context.Context, snapshot SnapshotID, id MetadataID
 func (s *Store) ListMetadata(ctx context.Context, snapshot SnapshotID, query MetadataQuery) (*MetadataIterator, error)
 ```
 
-RowPack 自身提供核心元数据模型，字段名和列表分类固定为 Header、Tables、Columns、PrimaryKeys、Indexes、UniqueKeys、ForeignKeys、AutoInc、TabComments、ColComments、Views、Functions、VirtualColumns。`DBType`、`Version` 使用稳定字符串，`Property` 使用有序的 MetadataField 集合，不依赖外部 Go 类型。
+RowPack 引擎**不内建强类型元数据模型**：表结构、约束、注释等数据库元信息一律作为普通记录，通过上面的通用 Metadata API 存储与读取（保序、无损往返、未知字段透传）。引擎不解释这些记录的语义。
 
-```go
-type CoreMetadata struct {
-	Header         *MetaHeader
-	Tables         []*MetaTable
-	Columns        []*MetaColumn
-	PrimaryKeys    []*MetaPrimaryKey
-	Indexes        []*MetaIndex
-	UniqueKeys     []*MetaUniqueKey
-	ForeignKeys    []*MetaForeignKey
-	AutoInc        []*MetaAutoInc
-	TabComments    []*MetaTableComment
-	ColComments    []*MetaColumnComment
-	Views          []*MetaView
-	Functions      []*MetaFunction
-	VirtualColumns []*MetaColumn
-}
+行解码所需的最小 Schema 契约由 `DefineSchema` 提供（见 §7），类型字符串为引擎自产自销的规范值；引擎不猜测任何数据库方言类型。
 
-func (w *SnapshotWriter) PutCoreMetadata(ctx context.Context, src *CoreMetadata) error
-func (s *Store) CoreMetadata(ctx context.Context, snapshot SnapshotID) (*CoreMetadata, error)
-```
-
-`PutCoreMetadata` 按列表顺序写入全部对象，SafeString 对应字段保存原文；`VirtualColumns` 使用独立 RecordType，不能并入 Columns。Go int 语义字段在公开模型中使用 int64，从根源上消除平台宽度差异。通用 Metadata API 继续用于未来对象和数据库厂商扩展。
+如上层（数据库备份/还原工具）需要 13 类强类型模型与方言映射（对应 `meta.Store` 的 Header、Tables、Columns、PrimaryKeys、Indexes、UniqueKeys、ForeignKeys、AutoInc、TabComments、ColComments、Views、Functions、VirtualColumns），应在**引擎之外的独立适配层**实现，按真实数据库 fixture 设计，不冻结进引擎。字段编号参考见 METADATA_FORMAT_V1.md §6/§7。
 
 ## 5. 创建与打开
 

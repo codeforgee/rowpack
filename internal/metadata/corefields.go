@@ -52,8 +52,8 @@ const (
 	ColCharLength  uint16 = 5  // Sint
 	ColDataPrec    uint16 = 6  // Sint
 	ColDataScale   uint16 = 7  // Sint
-	ColNullable    uint16 = 8  // SafeString 原文
-	ColDataDefault uint16 = 9  // SafeString 原文
+	ColNullable    uint16 = 8  // 原始字符串
+	ColDataDefault uint16 = 9  // 原始字符串
 	ColColumnID    uint16 = 10 // Sint
 	ColCharUsed    uint16 = 11
 	ColSchema      uint16 = 12
@@ -73,7 +73,7 @@ const (
 const (
 	IdxIndexName uint16 = 1
 	IdxTableName uint16 = 2
-	IdxComment   uint16 = 3 // SafeString 原文
+	IdxComment   uint16 = 3 // 原始字符串
 	IdxColumns   uint16 = 4
 	IdxSchema    uint16 = 5
 )
@@ -82,7 +82,7 @@ const (
 const (
 	UKTableName uint16 = 1
 	UKConsName  uint16 = 2
-	UKColumns   uint16 = 3 // SafeString 原文
+	UKColumns   uint16 = 3 // 原始字符串
 	UKSchema    uint16 = 4
 )
 
@@ -113,12 +113,12 @@ const (
 
 // TableComment field IDs (RecordType 9).
 const (
-	TCComment uint16 = 3 // SafeString 原文
+	TCComment uint16 = 3 // 原始字符串
 )
 
 // ColComment field IDs (RecordType 10).
 const (
-	CCComment uint16 = 3 // SafeString 原文
+	CCComment uint16 = 3 // 原始字符串
 )
 
 // Expression sub-field IDs.

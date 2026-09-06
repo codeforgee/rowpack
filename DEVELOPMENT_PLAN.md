@@ -14,19 +14,19 @@
 
 - `.rpk` 数据文件和 `.rpi` 索引文件。
 - FULL、DELTA 快照及 INSERT、UPDATE、DELETE。
-- Header、Table、Column 等 13 类核心元数据。
+- 通用元数据记录（TLV）无损存储与透传；元数据即引擎中的数据。
 - Zstd Block 压缩和 None 模式。
 - 并发随机读、单写者和一致的快照可见性。
 - TypedTuple 行编码及全部 v1 数据类型。
 - Scan、Block Cache、校验与崩溃恢复。
-- RowPack 核心元数据模型的无损读写。
+- 元数据作为普通数据无损读写，引擎不解释其语义。
 - Golden files、Fuzz、race、故障注入和基准测试。
 
 ## 2. 实施原则
 
 1. 先锁定底层字节格式，再实现高层 API。
 2. 每个阶段必须通过对应质量门槛，不能把格式和恢复问题留到最后。
-3. 核心元数据类型由 RowPack 自身定义，不依赖外部项目的数据结构。
+3. 元数据作为引擎存储的普通数据（通用 TLV），引擎不内建强类型语义；行解码的最小 Schema 契约由 `DefineSchema` 提供。
 4. 优先交付垂直闭环：先完成最小 FULL 写入和重开读取，再扩展 DELTA、缓存和恢复。
 5. 文件解析默认将输入视为不可信数据；任何长度都先校验再分配。
 6. 已发布的 v1 枚举值、字段编号和 golden files 不得无版本变更地修改。
@@ -75,7 +75,7 @@ RowPack/
 | M6 | DELTA、历史读取与 Scan | 8–12 人日 |
 | M7 | Cache、并发与资源生命周期 | 6–9 人日 |
 | M8 | 崩溃恢复、校验与索引重建 | 9–13 人日 |
-| M9 | 核心元数据 API 与方言映射 | 5–8 人日 |
+| ~~M9~~ | 元数据适配层（引擎之外，2026-09-06 决策移出引擎核心） | — |
 | M10 | 性能、兼容性与 v1.0 发布 | 6–10 人日 |
 
 单人串行预计 66–97 人日。该估算包括测试和文档，不包括未知数据库方言的类型映射补齐。多人开发时可并行部分 codec、cache、工具和适配工作，但 M1–M5 的主路径应保持单一格式负责人审核。
@@ -98,7 +98,7 @@ RowPack/
 - `format_version.go` 和所有枚举常量。
 - `testdata/golden` 目录及生成策略。
 - ADR-001：为什么 `.rpk` 是提交权威、`.rpi` 可重建。
-- ADR-002：核心元数据强类型 API 与通用 TLV 的边界。
+- ADR-002：元数据是引擎存储的普通数据，引擎不内建强类型语义。
 
 ### 5.3 完成标准
 
@@ -142,7 +142,7 @@ RowPack/
 - 实现未知非 Critical 字段无损保留。
 - 实现未知 Critical 字段拒绝逻辑。
 - 固定 13 种核心 RecordType 及其 FieldID。
-- 实现 SafeString 原文保存约束。
+- 字符串字段原样保存（不做规范化）。
 - 实现 ObjectID 分配器和稳定 ExternalKey 映射。
 
 ### 7.2 核心元数据
@@ -165,7 +165,7 @@ RowPack/
 ### 7.4 完成标准
 
 - 每个核心元数据字段均有非零、零值、空值和 Unicode round-trip 测试。
-- SafeString 的空字符串、YES/NO、带空白原文不发生变化。
+- 字符串字段的空字符串、带空白原文往返一致。
 - 所有 TypedTuple 类型具有边界值测试。
 - 未知扩展记录读入再写出后字节完全一致。
 
@@ -311,32 +311,23 @@ RowPack/
 - 中间损坏明确失败，不跳过。
 - 满足 AC-007、AC-008、AC-009、AC-010。
 
-## 14. M9：核心元数据 API 与方言映射
+## 14. M9：元数据适配层（引擎之外，不冻结）
 
-### 14.1 任务
+> 2026-09-06 决策修订（ADR-002）：引擎不内建强类型元数据模型、不猜方言类型。
+> 元数据通过通用 TLV 记录通道作为普通数据存储；13 类强类型模型与方言映射
+> 属于上层数据库适配层，按真实 fixture 设计，不冻结进引擎核心 API。
 
-- 实现 RowPack 自有的 `CoreMetadata` 及 13 类强类型结构。
-- 实现稳定 string DBType/Version 和有序 Property FieldSet。
-- 实现 `PutCoreMetadata` 和 `CoreMetadata`。
-- 建立 13 类核心记录的双向字段映射表。
-- 实现数据库方言到 TypedTuple Type 的映射。
-- 保留 SafeString 原文和列表顺序。
-- 对 Includes/Excludes、Properties 和 Header Snapshot 字段做 round-trip。
-- 对 nil Header、nil slice、nil list item 给出明确规则。
+### 14.1 任务（如实施，放在引擎之外的独立包）
 
-### 14.2 建议 nil 规则
-
-- nil Header：写入失败，返回 `ErrMetadataInvalid`。
-- nil slice 与空 slice：磁盘均写 count=0；API 读回默认空非 nil slice，除非兼容测试要求区分。
-- slice 中 nil item：默认拒绝并报告列表名和下标。
-- nil Property：编码为空 FieldSet，不允许 panic。
-
-### 14.3 完成标准
-
+- 按 `meta.Store` 列表结构组织 13 类强类型模型（字段编号参考 METADATA_FORMAT_V1.md §6/§7）。
+- 实现数据库方言到 TypedTuple Type 的映射（引擎不内建；行解码只认 `DefineSchema` 的规范类型字符串）。
+- 字符串字段保存原文并保持列表顺序，复合 PK/FK 逐列 KeySeq。
 - 使用真实 MySQL、Oracle、SQL Server、PostgreSQL、DM 元数据 fixture 往返测试。
-- 输入和输出逐字段一致；仅允许文档明确的规范化差异。
-- VirtualColumns 不并入 Columns。
-- 复合 PK/FK 的列顺序一致。
+
+### 14.2 引擎已完成的部分（M5/M6）
+
+- `DefineSchema`：引擎行解码的最小 Schema 契约，写入自产自销的规范类型字符串。
+- 通用 `PutMetadata` / `Metadata`：无损存储/透传任意元数据记录，引擎不解释语义。
 
 ## 15. M10：性能、兼容性与发布
 
@@ -379,7 +370,6 @@ RowPack/
 M0
  └─ M1 fileformat
      ├─ M2 metadata/codec
-     │   └─ M9 core metadata API
      └─ M3 block/io
          └─ M4 index
              └─ M5 FULL vertical slice
@@ -423,7 +413,7 @@ M0
 5. 实现 Snapshot/Block Header/Footer。
 6. 实现 IndexTxn 固定结构。
 7. 实现 Metadata Field TLV。
-8. 实现 13 类核心 Metadata 映射。
+8. 实现通用 Metadata 记录（TLV）API。
 9. 实现 TypedTuple 定宽类型与 Null Bitmap。
 10. 实现 String/Bytes/DateTime/Decimal。
 11. 实现 None/Zstd Block。

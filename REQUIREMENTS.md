@@ -143,7 +143,7 @@ S1 FULL <- S2 DELTA <- S3 DELTA <- ...
 9. 系统必须支持保存数据库、Catalog、Namespace、约束、索引、Sequence、View、Trigger、分区和统计信息。
 10. 元数据必须支持命名空间、稳定对象 ID、Revision、Tombstone 和可扩展 TLV 字段；未知非关键字段必须可跳过并无损透传，未知关键字段必须拒绝处理。
 11. 元数据与行数据必须在同一 Snapshot 中原子提交，解释行所需的元数据必须可由当前快照或父链获得。
-12. v1 核心元数据必须无损映射现有 `meta.Store` 的 Header、Tables、Columns、PrimaryKeys、Indexes、UniqueKeys、ForeignKeys、AutoInc、TabComments、ColComments、Views、Functions 和 VirtualColumns 列表；不得合并后丢失原始列表分类、顺序或 SafeString 原文。
+12. 元数据以通用 TLV 记录形式作为引擎存储的普通数据保存（见第 10、11 条），引擎不内建强类型元数据模型、不解释其语义。现有 `meta.Store` 的 Header、Tables、Columns、PrimaryKeys、Indexes、UniqueKeys、ForeignKeys、AutoInc、TabComments、ColComments、Views、Functions 和 VirtualColumns 列表的无损映射（含原始列表分类、顺序与 SafeString 原文）由**引擎之外的上层适配层**实现；引擎的通用记录通道必须能够无损保存/透传这些记录所需的 TLV（未知非 Critical 透传、保序）。
 
 ### FR-003 快照生命周期
 

@@ -6,7 +6,21 @@ import (
 	"fmt"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/metadata"
 )
+
+// FlushedBlock is the result of one block flush, handed to the onFlush
+// callback. Stored is the compressed (or plain) payload written to disk; Raw
+// is the validated uncompressed payload; Rows/Meta carry the already-built
+// directory entries so callers never need to re-parse the payload to extract
+// index information.
+type FlushedBlock struct {
+	Header fileformat.BlockHeader
+	Stored []byte
+	Raw    []byte
+	Rows   []fileformat.RowDirectoryEntry // rows blocks only
+	Meta   []metadata.DirectoryEntry      // metadata blocks only
+}
 
 // RowsBlockBuilder accumulates row records of one (snapshot, table) and emits
 // Rows Blocks, flushing at the target raw size and isolating any single row
@@ -24,11 +38,11 @@ type RowsBlockBuilder struct {
 	count   uint32
 
 	// Flush returns each finished block; the consumer supplies the BlockID.
-	onFlush func(h fileformat.BlockHeader, stored, raw []byte) error
+	onFlush func(*FlushedBlock) error
 }
 
 // NewRowsBlockBuilder creates a builder for the given snapshot/table.
-func NewRowsBlockBuilder(snapshotID uint64, tableID uint32, blockSize int, compress fileformat.Compression, level int, limits Limits, onFlush func(fileformat.BlockHeader, []byte, []byte) error) *RowsBlockBuilder {
+func NewRowsBlockBuilder(snapshotID uint64, tableID uint32, blockSize int, compress fileformat.Compression, level int, limits Limits, onFlush func(*FlushedBlock) error) *RowsBlockBuilder {
 	return &RowsBlockBuilder{
 		snapshotID: snapshotID,
 		tableID:    tableID,
@@ -133,7 +147,7 @@ func (b *RowsBlockBuilder) Flush() error {
 		StoredSize:  uint32(len(compressed)),
 		RawCRC32C:   fileformat.CRC32C(raw),
 	}
-	if err := b.onFlush(h, compressed, raw); err != nil {
+	if err := b.onFlush(&FlushedBlock{Header: h, Stored: compressed, Raw: raw, Rows: b.entries}); err != nil {
 		return err
 	}
 	b.entries = b.entries[:0]

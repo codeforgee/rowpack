@@ -65,6 +65,14 @@ var (
 	encPoolsMu sync.Mutex
 	encPools   = map[int]*sync.Pool{}
 
+	// encodeDstPool holds output scratch buffers for EncodeAll. klauspost's
+	// EncodeAll pre-allocates a make([]byte, 0, len(src)) destination when the
+	// caller passes nil; passing our own large buffer avoids that per-block
+	// ~256 KiB allocation.
+	encodeDstPool = sync.Pool{New: func() any {
+		return make([]byte, 0, 1<<20) // 1 MiB scratch, plenty for any block
+	}}
+
 	decPool = sync.Pool{New: func() any {
 		d, err := zstd.NewReader(nil,
 			zstd.WithDecoderMaxMemory(zstdMaxDecoded),
@@ -103,9 +111,15 @@ func poolForLevel(level int) *sync.Pool {
 func compressZstd(level int, src []byte) ([]byte, error) {
 	pool := poolForLevel(level)
 	enc := pool.Get().(*zstd.Encoder)
-	out := enc.EncodeAll(src, nil)
+	dst := encodeDstPool.Get().([]byte)
+	out := enc.EncodeAll(src, dst[:0])
+	// out may alias dst; copy the (usually small) compressed frame to an owned
+	// buffer before returning dst to the pool.
+	res := make([]byte, len(out))
+	copy(res, out)
+	encodeDstPool.Put(dst)
 	pool.Put(enc)
-	return out, nil
+	return res, nil
 }
 
 func decompressZstd(dst, src []byte, maxOut uint32) ([]byte, error) {

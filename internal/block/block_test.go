@@ -19,8 +19,8 @@ type captureSink struct {
 	blocks []capturedBlock
 }
 
-func (s *captureSink) flush(h fileformat.BlockHeader, stored, _ []byte) error {
-	s.blocks = append(s.blocks, capturedBlock{h, append([]byte(nil), stored...)})
+func (s *captureSink) flush(fb *FlushedBlock) error {
+	s.blocks = append(s.blocks, capturedBlock{fb.Header, append([]byte(nil), fb.Stored...)})
 	return nil
 }
 

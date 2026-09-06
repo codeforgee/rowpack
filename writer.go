@@ -349,23 +349,20 @@ func (w *SnapshotWriter) metaBuilderAdd(rec *metadata.Record, body []byte) error
 	return w.ensureMetaBuilder().Add(entry, body)
 }
 
-// metaFlush captures one completed metadata block. The builder hands us the
-// already-decompressed raw payload so we never re-decompress our own output.
-func (w *SnapshotWriter) metaFlush(h fileformat.BlockHeader, stored, raw []byte) error {
-	blk := &pendingBlock{header: h, payload: stored}
-	mp, err := metadata.Parse(raw)
-	if err != nil {
-		return err
-	}
-	for i := range mp.Entries {
+// metaFlush captures one completed metadata block. The builder supplies the
+// directory entries directly, so no payload re-parse is needed.
+func (w *SnapshotWriter) metaFlush(fb *block.FlushedBlock) error {
+	blk := &pendingBlock{header: fb.Header, payload: fb.Stored}
+	blk.meta = make([]fileformat.MetadataIndexEntry, 0, len(fb.Meta))
+	for i := range fb.Meta {
 		blk.meta = append(blk.meta, fileformat.MetadataIndexEntry{
 			SnapshotID:  w.id,
-			ObjectID:    mp.Entries[i].ObjectID,
-			Revision:    mp.Entries[i].Revision,
-			RecordType:  mp.Entries[i].RecordType,
+			ObjectID:    fb.Meta[i].ObjectID,
+			Revision:    fb.Meta[i].Revision,
+			RecordType:  fb.Meta[i].RecordType,
 			ItemOrdinal: uint32(i),
-			Operation:   mp.Entries[i].Operation,
-			Critical:    mp.Entries[i].Critical,
+			Operation:   fb.Meta[i].Operation,
+			Critical:    fb.Meta[i].Critical,
 		})
 	}
 	w.pending = append(w.pending, blk)
@@ -373,19 +370,16 @@ func (w *SnapshotWriter) metaFlush(h fileformat.BlockHeader, stored, raw []byte)
 }
 
 // rowsFlush captures one completed rows block and its row index entries.
-func (w *SnapshotWriter) rowsFlush(table TableID) func(fileformat.BlockHeader, []byte, []byte) error {
-	return func(h fileformat.BlockHeader, stored, raw []byte) error {
-		blk := &pendingBlock{header: h, payload: stored}
-		rp, err := block.ParseRowsPayload(raw, h.ItemCount)
-		if err != nil {
-			return err
-		}
-		for i := range rp.Entries {
+func (w *SnapshotWriter) rowsFlush(table TableID) func(*block.FlushedBlock) error {
+	return func(fb *block.FlushedBlock) error {
+		blk := &pendingBlock{header: fb.Header, payload: fb.Stored}
+		blk.rows = make([]fileformat.RowIndexEntry, 0, len(fb.Rows))
+		for i := range fb.Rows {
 			blk.rows = append(blk.rows, fileformat.RowIndexEntry{
 				SnapshotID:  w.id,
 				TableID:     table,
-				ChangeType:  rp.Entries[i].ChangeType,
-				RowID:       rp.Entries[i].RowID,
+				ChangeType:  fb.Rows[i].ChangeType,
+				RowID:       fb.Rows[i].RowID,
 				ItemOrdinal: uint32(i),
 			})
 		}

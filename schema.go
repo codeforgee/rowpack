@@ -1,9 +1,9 @@
 package rowpack
 
 import (
+	"errors"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -93,7 +93,17 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64) (map[uint32]*tab
 				ts = &tableSchemas{byVer: make(map[uint32]*codec.Schema)}
 				result[tableID] = ts
 			}
+			before := len(ts.versions)
 			if err := s.addDerivedSchema(view, snap, ts, rec); err != nil {
+				if errors.Is(err, errUnknownColumnType) {
+					// The engine does not interpret this table's column type
+					// strings: the records are plain stored data. Skip the
+					// table without failing the open.
+					if len(ts.versions) == before {
+						delete(result, tableID)
+					}
+					continue
+				}
 				return err
 			}
 		}
@@ -184,7 +194,7 @@ func deriveColumn(rec *metadata.Record) (derivedColumn, error) {
 	dataType := fieldString(rec, metadata.ColDataType)
 	colType := fieldString(rec, metadata.ColColumnType)
 	nullableStr := fieldString(rec, metadata.ColNullable)
-	t, err := dialectType(dataType, colType)
+	t, err := columnType(dataType, colType)
 	if err != nil {
 		return derivedColumn{}, err
 	}
@@ -232,80 +242,25 @@ func isNullableString(s string) bool {
 	return true
 }
 
-// dialectType maps database-specific DataType/ColumnType strings to the
-// TypedTuple type. The mapping covers the canonical strings written by
-// DefineSchema plus common MySQL, Oracle, SQL Server, PostgreSQL and DM
-// (Dameng) spellings, with and without type parameters such as "varchar(320)".
-// Unsigned integer spellings map to the unsigned TypedTuple types.
-func dialectType(dataType, columnType string) (codec.Type, error) {
+// errUnknownColumnType marks a Column record whose type string the engine
+// does not interpret. Such records are treated as plain stored data: their
+// table is not added to the schema index, and opening never fails because of
+// them.
+var errUnknownColumnType = errors.New("rowpack: unknown column type string")
+
+// columnType resolves the engine-interpreted TypedTuple type of a Column
+// record. Only the canonical strings written by DefineSchema are understood;
+// database-specific type strings (mysql "bigint unsigned", oracle "NUMBER",
+// ...) are deliberately NOT guessed here. They live in metadata as plain
+// stored data and are interpreted by upper-layer adapters, if at all.
+func columnType(dataType, columnType string) (codec.Type, error) {
 	t := columnType
 	if t == "" {
 		t = dataType
 	}
-	t = lowerAscii(t)
-	unsigned := hasWord(t, "unsigned")
-	// Strip type parameters and known decorations.
-	base := t
-	if i := indexByte(base, '('); i >= 0 {
-		base = base[:i]
-	}
-	base = trimSpace(base)
-	base = strings.TrimSuffix(base, " unsigned")
-	base = strings.TrimSuffix(base, " zerofill")
-	switch base {
-	case "bool", "boolean", "bit":
-		return codec.TypeBool, nil
-	case "tinyint":
-		if unsigned {
-			return codec.TypeUint8, nil
-		}
-		return codec.TypeInt8, nil
-	case "smallint", "smallserial":
-		if unsigned {
-			return codec.TypeUint16, nil
-		}
-		return codec.TypeInt16, nil
-	case "int", "integer", "serial", "mediumint", "int4":
-		if unsigned {
-			return codec.TypeUint32, nil
-		}
-		return codec.TypeInt32, nil
-	case "bigint", "bigserial", "int8", "long", "int64":
-		if unsigned {
-			return codec.TypeUint64, nil
-		}
-		return codec.TypeInt64, nil
-	case "int1":
-		return codec.TypeInt8, nil
-	case "uint8":
-		return codec.TypeUint8, nil
-	case "uint16":
-		return codec.TypeUint16, nil
-	case "uint32":
-		return codec.TypeUint32, nil
-	case "uint64":
-		return codec.TypeUint64, nil
-	case "float", "real", "float4", "single":
-		return codec.TypeFloat32, nil
-	case "double", "float8", "double precision", "binary double":
-		return codec.TypeFloat64, nil
-	case "char", "character", "varchar", "character varying", "varchar2", "nvarchar", "nchar",
-		"text", "tinytext", "mediumtext", "longtext", "ntext", "clob", "nclob", "string", "citext":
-		return codec.TypeString, nil
-	case "blob", "binary", "varbinary", "tinyblob", "mediumblob", "longblob", "bytea",
-		"raw", "image", "uniqueidentifier", "bytes", "uuid":
-		return codec.TypeBytes, nil
-	case "date":
-		return codec.TypeDate, nil
-	case "time", "interval":
-		return codec.TypeTime, nil
-	case "datetime", "timestamp", "timestamptz", "datetime2", "smalldatetime", "timestamp with time zone":
-		return codec.TypeDateTime, nil
-	case "decimal", "numeric", "number", "money", "smallmoney", "dec":
-		return codec.TypeDecimal, nil
-	}
-	// Canonical names from DefineSchema (no parameters).
 	switch t {
+	case "bool":
+		return codec.TypeBool, nil
 	case "int8":
 		return codec.TypeInt8, nil
 	case "int16":
@@ -338,43 +293,12 @@ func dialectType(dataType, columnType string) (codec.Type, error) {
 		return codec.TypeDateTime, nil
 	case "decimal":
 		return codec.TypeDecimal, nil
-	case "bool":
-		return codec.TypeBool, nil
 	}
-	return 0, fmt.Errorf("rowpack: unknown column type %q", t)
-}
-
-func hasWord(s, w string) bool {
-	for _, part := range strings.Fields(s) {
-		if part == w {
-			return true
-		}
-	}
-	return false
-}
-
-func indexByte(s string, b byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == b {
-			return i
-		}
-	}
-	return -1
-}
-
-func trimSpace(s string) string {
-	i, j := 0, len(s)
-	for i < j && (s[i] == ' ' || s[i] == '\t') {
-		i++
-	}
-	for j > i && (s[j-1] == ' ' || s[j-1] == '\t') {
-		j--
-	}
-	return s[i:j]
+	return 0, fmt.Errorf("%w: %q", errUnknownColumnType, t)
 }
 
 // dialectName maps a codec type to the built-in canonical dialect string
-// (the inverse of dialectType).
+// (the inverse of columnType).
 func dialectName(t codec.Type) string {
 	switch t {
 	case codec.TypeBool:

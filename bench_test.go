@@ -207,3 +207,159 @@ func BenchmarkRebuildIndex(b *testing.B) {
 }
 
 func removeFile(path string) error { return os.Remove(path) }
+
+// ---- 大规模 / DELTA 链场景基准 ----
+
+// buildBenchStoreN writes nRows into a FULL snapshot.
+func buildBenchStoreN(b *testing.B, base string, nRows uint64) (*Store, SnapshotID) {
+	b.Helper()
+	db, err := Create(base, DefaultOptions())
+	if err != nil {
+		b.Fatal(err)
+	}
+	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	w.DefineSchema(benchSchema())
+	for i := uint64(0); i < nRows; i++ {
+		if err := w.Insert(context.Background(), 1, i+1, 1, benchRow(i)); err != nil {
+			b.Fatal(err)
+		}
+	}
+	full, err := w.Commit(context.Background())
+	if err != nil {
+		b.Fatal(err)
+	}
+	return db, full.ID
+}
+
+// BenchmarkWrite1M writes a million rows in one FULL snapshot.
+func BenchmarkWrite1M(b *testing.B) {
+	const rows = 1_000_000
+	var db *Store
+	var fullID SnapshotID
+	b.ResetTimer()
+	build := func() {
+		base := filepath.Join(b.TempDir(), "w1m")
+		db, fullID = buildBenchStoreN(b, base, rows)
+	}
+	build()
+	b.StopTimer()
+	b.SetBytes(rows * 100)
+	b.ReportMetric(float64(rows)/b.Elapsed().Seconds()/1000, "krows/s")
+	db.Close()
+	_ = fullID
+}
+
+// BenchmarkGetRandom1M reads 10k random RowIDs from a million-row store
+// (AC-003 scenario: random access must not scan the data file).
+func BenchmarkGetRandom1M(b *testing.B) {
+	const rows = 1_000_000
+	db, fullID := buildBenchStoreN(b, filepath.Join(b.TempDir(), "r1m"), rows)
+	defer db.Close()
+	var rng uint64 = 88172645463325252
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rng = rng*6364136223846793005 + 1442695040888963407
+		rowID := rng%rows + 1
+		if _, err := db.Get(context.Background(), fullID, 1, rowID); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds()/1000, "kget/s")
+}
+
+// BenchmarkScan1M scans a million-row table.
+func BenchmarkScan1M(b *testing.B) {
+	const rows = 1_000_000
+	db, fullID := buildBenchStoreN(b, filepath.Join(b.TempDir(), "s1m"), rows)
+	defer db.Close()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		n := 0
+		for it.Next() {
+			n++
+		}
+		if err := it.Err(); err != nil {
+			b.Fatal(err)
+		}
+		it.Close()
+		if n != int(rows) {
+			b.Fatalf("scan returned %d rows", n)
+		}
+	}
+	b.ReportMetric(float64(rows)/b.Elapsed().Seconds()/1000, "krows/s")
+}
+
+// buildDeltaChainStore builds a FULL + depth DELTAs, each touching deltaRows.
+func buildDeltaChainStore(b *testing.B, base string, depth, deltaRows int) (*Store, SnapshotID) {
+	b.Helper()
+	db, fullID := buildBenchStoreN(b, base, 100_000)
+	parent := fullID
+	nextID := uint64(100_001)
+	for d := 0; d < depth; d++ {
+		w, err := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: parent})
+		if err != nil {
+			b.Fatal(err)
+		}
+		for i := 0; i < deltaRows; i++ {
+			if err := w.Insert(context.Background(), 1, nextID, 1, Row{Uint64(nextID), String("delta-row"), Bool(false), Int32(int32(i)), Float64(0), DateTimeValueOf(1700000000000000000), DecimalValue(Decimal{Unscaled: bigI(1), Scale: 2})}); err != nil {
+				b.Fatal(err)
+			}
+			nextID++
+		}
+		info, err := w.Commit(context.Background())
+		if err != nil {
+			b.Fatal(err)
+		}
+		parent = info.ID
+	}
+	return db, parent
+}
+
+// BenchmarkGetDeepChain performs point reads at the head of a 32-deep DELTA
+// chain (parent-chain resolution cost).
+func BenchmarkGetDeepChain(b *testing.B) {
+	db, head := buildDeltaChainStore(b, filepath.Join(b.TempDir(), "chain"), 32, 1000)
+	defer db.Close()
+	var rng uint64 = 1442695040888963407
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rng = rng*6364136223846793005 + 1
+		rowID := rng%100_000 + 1
+		if _, err := db.Get(context.Background(), head, 1, rowID); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkScanDeepChain scans the head of a 32-deep DELTA chain.
+func BenchmarkScanDeepChain(b *testing.B) {
+	db, head := buildDeltaChainStore(b, filepath.Join(b.TempDir(), "scanchain"), 32, 1000)
+	defer db.Close()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		it, err := db.Scan(context.Background(), head, 1, ScanOptions{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		n := 0
+		for it.Next() {
+			n++
+		}
+		if err := it.Err(); err != nil {
+			b.Fatal(err)
+		}
+		it.Close()
+		if n != 132_000 {
+			b.Fatalf("scan returned %d rows, want 132000", n)
+		}
+	}
+}
+
+func DateTimeValueOf(ns int64) Value {
+	t := time.Unix(0, ns).UTC()
+	return DateTime(t)
+}

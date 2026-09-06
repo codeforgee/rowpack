@@ -1,0 +1,14 @@
+# Binaries
+*.test
+*.out
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Coverage
+coverage.out

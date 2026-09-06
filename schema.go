@@ -1,10 +1,9 @@
 package rowpack
 
 import (
-	"errors"
 	"fmt"
 	"sort"
-	"strconv"
+	"strings"
 
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -233,26 +232,87 @@ func isNullableString(s string) bool {
 	return true
 }
 
-// dialectType maps the built-in canonical DataType/ColumnType strings to the
-// TypedTuple type. Real database dialects register their own adapters (M9);
-// the built-in dialect accepts exactly the canonical strings written by
-// DefineSchema.
+// dialectType maps database-specific DataType/ColumnType strings to the
+// TypedTuple type. The mapping covers the canonical strings written by
+// DefineSchema plus common MySQL, Oracle, SQL Server, PostgreSQL and DM
+// (Dameng) spellings, with and without type parameters such as "varchar(320)".
+// Unsigned integer spellings map to the unsigned TypedTuple types.
 func dialectType(dataType, columnType string) (codec.Type, error) {
 	t := columnType
 	if t == "" {
 		t = dataType
 	}
 	t = lowerAscii(t)
-	switch t {
-	case "bool", "boolean":
+	unsigned := hasWord(t, "unsigned")
+	// Strip type parameters and known decorations.
+	base := t
+	if i := indexByte(base, '('); i >= 0 {
+		base = base[:i]
+	}
+	base = trimSpace(base)
+	base = strings.TrimSuffix(base, " unsigned")
+	base = strings.TrimSuffix(base, " zerofill")
+	switch base {
+	case "bool", "boolean", "bit":
 		return codec.TypeBool, nil
-	case "int8", "tinyint":
+	case "tinyint":
+		if unsigned {
+			return codec.TypeUint8, nil
+		}
 		return codec.TypeInt8, nil
-	case "int16", "smallint":
+	case "smallint", "smallserial":
+		if unsigned {
+			return codec.TypeUint16, nil
+		}
 		return codec.TypeInt16, nil
-	case "int32", "int", "integer":
+	case "int", "integer", "serial", "mediumint", "int4":
+		if unsigned {
+			return codec.TypeUint32, nil
+		}
 		return codec.TypeInt32, nil
-	case "int64", "bigint":
+	case "bigint", "bigserial", "int8", "long", "int64":
+		if unsigned {
+			return codec.TypeUint64, nil
+		}
+		return codec.TypeInt64, nil
+	case "int1":
+		return codec.TypeInt8, nil
+	case "uint8":
+		return codec.TypeUint8, nil
+	case "uint16":
+		return codec.TypeUint16, nil
+	case "uint32":
+		return codec.TypeUint32, nil
+	case "uint64":
+		return codec.TypeUint64, nil
+	case "float", "real", "float4", "single":
+		return codec.TypeFloat32, nil
+	case "double", "float8", "double precision", "binary double":
+		return codec.TypeFloat64, nil
+	case "char", "character", "varchar", "character varying", "varchar2", "nvarchar", "nchar",
+		"text", "tinytext", "mediumtext", "longtext", "ntext", "clob", "nclob", "string", "citext":
+		return codec.TypeString, nil
+	case "blob", "binary", "varbinary", "tinyblob", "mediumblob", "longblob", "bytea",
+		"raw", "image", "uniqueidentifier", "bytes", "uuid":
+		return codec.TypeBytes, nil
+	case "date":
+		return codec.TypeDate, nil
+	case "time", "interval":
+		return codec.TypeTime, nil
+	case "datetime", "timestamp", "timestamptz", "datetime2", "smalldatetime", "timestamp with time zone":
+		return codec.TypeDateTime, nil
+	case "decimal", "numeric", "number", "money", "smallmoney", "dec":
+		return codec.TypeDecimal, nil
+	}
+	// Canonical names from DefineSchema (no parameters).
+	switch t {
+	case "int8":
+		return codec.TypeInt8, nil
+	case "int16":
+		return codec.TypeInt16, nil
+	case "int32":
+		return codec.TypeInt32, nil
+	case "int64":
 		return codec.TypeInt64, nil
 	case "uint8":
 		return codec.TypeUint8, nil
@@ -262,24 +322,55 @@ func dialectType(dataType, columnType string) (codec.Type, error) {
 		return codec.TypeUint32, nil
 	case "uint64":
 		return codec.TypeUint64, nil
-	case "float32", "float", "real":
+	case "float32":
 		return codec.TypeFloat32, nil
-	case "float64", "double":
+	case "float64":
 		return codec.TypeFloat64, nil
-	case "string", "varchar", "text", "char":
+	case "string":
 		return codec.TypeString, nil
-	case "bytes", "blob", "binary":
+	case "bytes":
 		return codec.TypeBytes, nil
 	case "date":
 		return codec.TypeDate, nil
 	case "time":
 		return codec.TypeTime, nil
-	case "datetime", "timestamp":
+	case "datetime":
 		return codec.TypeDateTime, nil
-	case "decimal", "numeric":
+	case "decimal":
 		return codec.TypeDecimal, nil
+	case "bool":
+		return codec.TypeBool, nil
 	}
 	return 0, fmt.Errorf("rowpack: unknown column type %q", t)
+}
+
+func hasWord(s, w string) bool {
+	for _, part := range strings.Fields(s) {
+		if part == w {
+			return true
+		}
+	}
+	return false
+}
+
+func indexByte(s string, b byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == b {
+			return i
+		}
+	}
+	return -1
+}
+
+func trimSpace(s string) string {
+	i, j := 0, len(s)
+	for i < j && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	for j > i && (s[j-1] == ' ' || s[j-1] == '\t') {
+		j--
+	}
+	return s[i:j]
 }
 
 // dialectName maps a codec type to the built-in canonical dialect string
@@ -378,6 +469,3 @@ func (s *Store) readMetadataRecord(view *index.View, snapshot, objectID uint64) 
 	}
 	return rec, nil
 }
-
-var _ = errors.New
-var _ = strconv.Itoa

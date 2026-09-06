@@ -121,6 +121,25 @@ func (it *Iterator) Next() bool {
 		default:
 		}
 	}
+	rowID, loc, ok := it.nextLoc()
+	if !ok {
+		return false
+	}
+	row, err := it.rowAt(loc)
+	if err != nil {
+		it.err = err
+		return false
+	}
+	it.curRowID = rowID
+	it.curRow = row
+	it.curLoc = loc
+	return true
+}
+
+// nextLoc advances the k-way merge and returns the next visible row location
+// after applying range and tombstone filtering. It reports ok=false at the
+// end of the scan or when the EndRowID bound is reached.
+func (it *Iterator) nextLoc() (RowID, *index.RowLoc, bool) {
 	for it.heap.Len() > 0 {
 		winner := heap.Pop(&it.heap).(*layerIter)
 		rowID := winner.head().RowID
@@ -137,22 +156,51 @@ func (it *Iterator) Next() bool {
 			continue
 		}
 		if it.opts.EndRowID > 0 && rowID >= it.opts.EndRowID {
-			return false
+			return 0, nil, false
 		}
 		if loc == nil || loc.ChangeType == fileformat.ChangeDelete {
 			continue // tombstone: hide the row entirely
 		}
-		row, err := it.rowAt(loc)
-		if err != nil {
-			it.err = err
-			return false
-		}
-		it.curRowID = rowID
-		it.curRow = row
-		it.curLoc = loc
-		return true
+		return rowID, loc, true
 	}
-	return false
+	return 0, nil, false
+}
+
+// NextInto is Next with row reuse: the next visible row is decoded into dst,
+// reusing dst's backing array and any Decimal big.Int already held there. The
+// returned Row aliases dst and is overwritten by the next NextInto call on
+// the same dst; values that must outlive it must be copied (getters of
+// String/Bytes/Decimal return copies, so reading through them is always
+// safe). A nil dst grows on first use; keep the returned Row as the next
+// dst to preserve the reuse. Iterator.Row is not updated by NextInto; mixing
+// Next and NextInto on one iterator is allowed but each call still allocates
+// or borrows according to its own mode. It returns (nil, false) at the end;
+// call Err to distinguish completion from failure. It is not safe for
+// concurrent use.
+func (it *Iterator) NextInto(dst Row) (Row, bool) {
+	if it.closed || it.err != nil {
+		return nil, false
+	}
+	if it.ctx != nil {
+		select {
+		case <-it.ctx.Done():
+			it.err = it.ctx.Err()
+			return nil, false
+		default:
+		}
+	}
+	rowID, loc, ok := it.nextLoc()
+	if !ok {
+		return nil, false
+	}
+	row, err := it.rowAtInto(loc, dst)
+	if err != nil {
+		it.err = err
+		return nil, false
+	}
+	it.curRowID = rowID
+	it.curLoc = loc
+	return row, true
 }
 func (l *layerIter) advance(h *rowHeap) {
 	l.pos++
@@ -164,24 +212,42 @@ func (l *layerIter) advance(h *rowHeap) {
 // rowAt resolves one row, reusing the parsed payload of the current block
 // when the location is inside it.
 func (it *Iterator) rowAt(loc *index.RowLoc) (Row, error) {
-	if it.curBlockID != loc.BlockID {
-		bl := it.state.view.Block(loc.BlockID)
-		if bl == nil {
-			return nil, fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)
-		}
-		blk, err := it.store.loader.Load(int64(bl.DataOffset), bl.BlockID)
-		if err != nil {
-			return nil, err
-		}
-		rp, err := block.ParseRowsDirectory(blk.Raw, bl.ItemCount)
-		if err != nil {
-			return nil, err
-		}
-		it.curBlockID = loc.BlockID
-		it.curBlk = bl
-		it.curPayload = rp
+	if err := it.locateBlock(loc); err != nil {
+		return nil, err
 	}
 	return it.store.rowFromPayload(it.curPayload, it.curBlk, loc, it.state.schemas)
+}
+
+// rowAtInto is rowAt with a caller-owned destination row.
+func (it *Iterator) rowAtInto(loc *index.RowLoc, dst Row) (Row, error) {
+	if err := it.locateBlock(loc); err != nil {
+		return nil, err
+	}
+	return it.store.rowFromPayloadInto(it.curPayload, it.curBlk, loc, it.state.schemas, dst)
+}
+
+// locateBlock loads and parses the rows directory of loc's block, reusing the
+// parsed payload of the current block when consecutive rows fall inside it.
+func (it *Iterator) locateBlock(loc *index.RowLoc) error {
+	if it.curBlockID == loc.BlockID {
+		return nil
+	}
+	bl := it.state.view.Block(loc.BlockID)
+	if bl == nil {
+		return fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)
+	}
+	blk, err := it.store.loader.Load(int64(bl.DataOffset), bl.BlockID)
+	if err != nil {
+		return err
+	}
+	rp, err := block.ParseRowsDirectory(blk.Raw, bl.ItemCount)
+	if err != nil {
+		return err
+	}
+	it.curBlockID = loc.BlockID
+	it.curBlk = bl
+	it.curPayload = rp
+	return nil
 }
 
 // RowID returns the current row's RowID.

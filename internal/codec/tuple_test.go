@@ -356,3 +356,68 @@ func TestDecimalRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestDecodeIntoReuse verifies DecodeInto is behavior-identical to Decode and
+// reuses the caller's slice and Decimal big.Int across calls (V1.1-A).
+func TestDecodeIntoReuse(t *testing.T) {
+	s := allTypesSchema()
+	// Build a few distinct rows covering nulls, strings, decimals.
+	rows := [][]Value{
+		fullRow(),
+		[]Value{
+			Bool(false), Int8(0), Int16(0), Int32(0), Int64(0),
+			Uint8(0), Uint16(0), Uint32(0), Uint64(0),
+			Float32(1.5), Float64(2.5), String(""), Bytes(nil),
+			DateValue(0), TimeValue(0), DateTimeValueOf(0),
+			DecimalValue(Decimal{Unscaled: big.NewInt(-987654321), Scale: 4}),
+		},
+		[]Value{
+			Null(), Null(), Null(), Null(), Null(), Null(), Null(), Null(), Null(),
+			Null(), Null(), Null(), Null(), Null(), Null(), Null(),
+			DecimalValue(Decimal{Unscaled: big.NewInt(1 << 60), Scale: 4}),
+		},
+	}
+	var encs [][]byte
+	for _, r := range rows {
+		enc, err := Encode(s, r, DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		encs = append(encs, enc)
+	}
+
+	var dst []Value
+	prevDecPtr := map[int]*big.Int{}
+	for round := 0; round < 3; round++ {
+		for i, enc := range encs {
+			out, err := DecodeInto(dst, enc, s, DefaultLimits())
+			if err != nil {
+				t.Fatalf("round %d row %d: %v", round, i, err)
+			}
+			want, err := Decode(enc, s, DefaultLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(out) != len(want) {
+				t.Fatalf("round %d row %d: len %d", round, i, len(out))
+			}
+			for c := range want {
+				if !valuesEqual(want[c], out[c]) {
+					t.Fatalf("round %d row %d col %d: got %#v want %#v", round, i, c, out[c], want[c])
+				}
+			}
+			// Decimal columns must reuse the same big.Int after the first round.
+			// (Decimal() returns a copy, so compare the internal pointer.)
+			cell := out[len(s.Columns)-1]
+			if cell.typ != TypeDecimal || cell.d.Unscaled == nil {
+				t.Fatalf("round %d row %d: last col is not decimal", round, i)
+			}
+			if round == 0 {
+				prevDecPtr[i] = cell.d.Unscaled
+			} else if cell.d.Unscaled != prevDecPtr[i] {
+				t.Fatalf("round %d row %d: decimal big.Int not reused", round, i)
+			}
+			dst = out[:0]
+		}
+	}
+}

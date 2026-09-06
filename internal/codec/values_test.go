@@ -1,6 +1,7 @@
 package codec
 
 import (
+	"encoding/binary"
 	"math"
 	"math/big"
 	"reflect"
@@ -196,5 +197,47 @@ func TestFloat32NaNBitPreservation(t *testing.T) {
 	back, _ := v.Float32()
 	if math.Float32bits(back) != payload {
 		t.Fatalf("NaN payload not preserved: %08x vs %08x", math.Float32bits(back), payload)
+	}
+}
+
+// TestAppendDecimalEquivalence asserts the zero-allocation write path
+// (appendDecimalBytes) produces byte-identical output to the reference
+// encoder (encodeDecimalBytes) at boundaries and across random int64 values
+// (V1.1-B).
+func TestAppendDecimalEquivalence(t *testing.T) {
+	boundaries := []int64{
+		0, 1, -1, 127, 128, 255, 256, 32767, 32768, 65535, 65536,
+		-128, -129, -255, -256, -32768, -32769, -65536,
+		1 << 40, -(1 << 40), math.MaxInt64, math.MinInt64, math.MinInt64 + 1,
+	}
+	rng := uint64(88172645463325252)
+	for i := 0; i < 1000; i++ {
+		rng = rng*6364136223846793005 + 1442695040888963407
+		boundaries = append(boundaries, int64(rng), int64(rng>>1))
+	}
+	for _, v := range boundaries {
+		u := big.NewInt(v)
+		want, err := encodeDecimalBytes(u)
+		if err != nil {
+			t.Fatalf("%d: %v", v, err)
+		}
+		got, err := appendDecimalBytes(nil, u, 1<<20)
+		if err != nil {
+			t.Fatalf("%d: %v", v, err)
+		}
+		if toHex(got[4:]) != toHex(want) {
+			t.Errorf("%d: inline %s != reference %s", v, toHex(got[4:]), toHex(want))
+		}
+		if binary.LittleEndian.Uint32(got[:4]) != uint32(len(want)) {
+			t.Errorf("%d: length prefix %d != %d", v, binary.LittleEndian.Uint32(got[:4]), len(want))
+		}
+		// Round-trip through the decoder.
+		back, err := decodeDecimalBytes(want)
+		if err != nil {
+			t.Fatalf("%d: decode: %v", v, err)
+		}
+		if back.Int64() != v {
+			t.Errorf("%d: round trip got %d", v, back.Int64())
+		}
 	}
 }

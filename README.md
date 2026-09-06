@@ -98,6 +98,30 @@ func main() {
 - **Block**：压缩与校验单位，属于一个快照和一个表。
 - **TypedTuple**：按 Schema 顺序编码的行负载，NULL 用位图表达。
 
+## 行复用（v1.1）
+
+高吞吐批量读取可用 v1.1 新增的借用/复用入口：调用者提供目标 Row，引擎复用
+其存储，消除每行的 Row 切片与 Decimal big.Int 分配（Scan 场景每行分配降
+~86%）。`GetInto` / `Iterator.NextInto` 的返回值别名调用者自己的 dst，下
+一次调用覆盖其内容；通过 `String()`/`Bytes()`/`Decimal()` 访问器读值始终
+安全（返回副本）。默认的 `Get` / `Iterator.Row` 语义不变（每次返回独立、
+归调用者所有的行）。
+
+```go
+it, _ := db.Scan(ctx, full.ID, 1, rowpack.ScanOptions{})
+defer it.Close()
+var dst rowpack.Row
+for {
+	row, ok := it.NextInto(dst)
+	if !ok {
+		break
+	}
+	dst = row
+	name, _ := row[1].String()
+	_ = name
+}
+```
+
 ## 文档
 
 - [需求规格](REQUIREMENTS.md)
@@ -105,6 +129,7 @@ func main() {
 - [元数据格式 v1](METADATA_FORMAT_V1.md)
 - [Go API 设计](GO_API_DESIGN.md)
 - [开发计划](DEVELOPMENT_PLAN.md)
+- [v1.1 优化计划](docs/plan-v11.md)
 - [ADR-001：.rpk 是提交权威](docs/adr/ADR-001.md)
 - [ADR-002：强类型 API 与通用 TLV 边界](docs/adr/ADR-002.md)
 
@@ -124,11 +149,11 @@ make golden      # 重新生成 golden files（格式变更时人工审查）
 
 | 基准 | 结果 |
 | --- | --- |
-| FULL 顺序写 | ~360 krows/s, ~72 MB/s |
-| Get 冷读（缓存关闭） | ~316 µs/op |
-| Get 热读（缓存命中） | ~20 µs/op |
+| FULL 顺序写 | ~360 krows/s, ~72 MB/s（allocs 较 v1.0 -16%） |
+| Get 冷读（缓存关闭） | ~300 µs/op |
+| Get 热读（缓存命中） | ~8 µs/op（GetInto 复用 ~7 µs / 2 allocs） |
 | 并发 Get 1/8 goroutine | ~195 µs/op（读路径无锁） |
-| Scan 100k 行 | ~69 ms（块内游标） |
+| Scan 100k 行 | ~47 ms（ScanInto 复用 ~37 ms / 541 krows/s / -86% allocs） |
 | Open 索引重放（100k 行） | ~9 ms |
 | RebuildIndex（100k 行） | ~92 ms |
 

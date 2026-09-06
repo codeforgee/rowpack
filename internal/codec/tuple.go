@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"unicode/utf8"
 )
 
@@ -20,6 +21,11 @@ import (
 
 // ErrSchemaMismatch is returned when row and schema disagree.
 var ErrSchemaMismatch = errors.New("rowpack: schema mismatch")
+
+// bitmapScratch is a zeroed stack buffer used to zero-fill the null bitmap in
+// EncodeInto without a per-row allocation. 2 KiB covers the 16384-column
+// default limit; larger schemas fall back to make().
+var bitmapScratch [2048]byte
 
 // Encode serializes row according to schema. It validates column count, value
 // types, NULL vs nullable, limits, string UTF-8 and time/decimal ranges. The
@@ -54,7 +60,14 @@ func EncodeInto(schema *Schema, row []Value, limits Limits, reuse []byte) ([]byt
 	buf = appendU32(buf, uint32(len(schema.Columns)))
 	buf = appendU32(buf, uint32(bitmapBytes))
 	bitmapOff := len(buf)
-	buf = append(buf, make([]byte, bitmapBytes)...)
+	// Zero-fill the bitmap region from a stack array (bitmapBytes <= 2 KiB
+	// even at the 16384-column limit); appending via a make-free slice avoids
+	// a per-row allocation on the hot write path.
+	if bitmapBytes <= len(bitmapScratch) {
+		buf = append(buf, bitmapScratch[:bitmapBytes]...)
+	} else {
+		buf = append(buf, make([]byte, bitmapBytes)...)
+	}
 
 	for i, col := range schema.Columns {
 		v := row[i]
@@ -87,8 +100,20 @@ func EncodeInto(schema *Schema, row []Value, limits Limits, reuse []byte) ([]byt
 
 // Decode parses a TypedTuple payload against schema. It validates every
 // length before allocation, requires exactly the expected bitmap size, rejects
-// trailing bytes and unused bitmap bits, and enforces limits.
+// trailing bytes and unused bitmap bits, and enforces limits. The returned
+// Row is freshly allocated and owned by the caller.
 func Decode(data []byte, schema *Schema, limits Limits) ([]Value, error) {
+	return DecodeInto(nil, data, schema, limits)
+}
+
+// DecodeInto is Decode with a caller-provided destination slice. The decoded
+// values are written into dst (growing it when the schema has more columns
+// than dst can hold) and the returned Row aliases dst; the caller owns it and
+// must not retain it across the next reuses of dst. Column values are copied
+// with the same ownership semantics as Decode (String/Bytes payloads are
+// copied, Decimal reuses dst's existing *big.Int when the corresponding
+// column already holds one).
+func DecodeInto(dst []Value, data []byte, schema *Schema, limits Limits) ([]Value, error) {
 	if schema == nil {
 		return nil, errors.New("rowpack: nil schema")
 	}
@@ -128,13 +153,19 @@ func Decode(data []byte, schema *Schema, limits Limits) ([]Value, error) {
 		}
 	}
 
-	row := make([]Value, len(schema.Columns))
+	// Reuse the caller's slice capacity when it suffices; growth (if needed)
+	// is a fresh allocation, matching Decode.
+	row := dst
+	if cap(row) < len(schema.Columns) {
+		row = make([]Value, len(schema.Columns))
+	}
+	row = row[:len(schema.Columns)]
 	for i, col := range schema.Columns {
 		if bitmap[i/8]&(1<<uint(i%8)) != 0 {
 			row[i] = Null()
 			continue
 		}
-		v, n, err := readValue(data[pos:], col, limits)
+		v, n, err := readValueInto(row[i], data[pos:], col, limits)
 		if err != nil {
 			return nil, fmt.Errorf("rowpack: decode column %d (%q): %w", i, col.Name, err)
 		}
@@ -150,6 +181,14 @@ func Decode(data []byte, schema *Schema, limits Limits) ([]Value, error) {
 // readValue decodes one value of column type col from b, returning the value
 // and the number of bytes consumed.
 func readValue(b []byte, col Column, limits Limits) (Value, int, error) {
+	return readValueInto(Value{}, b, col, limits)
+}
+
+// readValueInto is readValue with a reuse slot: for Decimal columns the
+// existing *big.Int is kept and reused (colored by the caller decoding into
+// the same row slice across rows), avoiding a big.Int allocation per row. For
+// all other types the value is freshly built.
+func readValueInto(reuse Value, b []byte, col Column, limits Limits) (Value, int, error) {
 	need := func(n int) ([]byte, bool) {
 		if len(b) < n {
 			return nil, false
@@ -265,11 +304,14 @@ func readValue(b []byte, col Column, limits Limits) (Value, int, error) {
 		if !ok {
 			return Value{}, 0, errors.New("truncated decimal payload")
 		}
-		u, err := decodeDecimalBytes(raw[4 : 4+ln])
-		if err != nil {
+		u := reuse.d.Unscaled
+		if u == nil {
+			u = new(big.Int)
+		}
+		if err := decodeDecimalBytesInto(u, raw[4:4+ln]); err != nil {
 			return Value{}, 0, err
 		}
-		return DecimalValue(Decimal{Unscaled: u, Scale: col.Scale}), 4 + ln, nil
+		return Value{typ: TypeDecimal, d: Decimal{Unscaled: u, Scale: col.Scale}}, 4 + ln, nil
 	}
 	return Value{}, 0, fmt.Errorf("unsupported type %d", col.Type)
 }
@@ -315,15 +357,14 @@ func appendValue(buf []byte, v Value, limits Limits) ([]byte, error) {
 		if v.d.Scale < 0 {
 			return nil, fmt.Errorf("decimal scale %d is negative", v.d.Scale)
 		}
-		raw, err := encodeDecimalBytes(v.d.Unscaled)
+		buf, err := appendDecimalBytes(buf, v.d.Unscaled, limits.MaxValueBytes)
 		if err != nil {
 			return nil, err
 		}
-		if uint32(len(raw)) > limits.MaxValueBytes {
-			return nil, fmt.Errorf("decimal unscaled of %d bytes exceeds limit %d", len(raw), limits.MaxValueBytes)
+		if uint32(len(buf)) > limits.MaxRowBytes {
+			return nil, fmt.Errorf("encoded row of %d bytes exceeds limit %d", len(buf), limits.MaxRowBytes)
 		}
-		buf = appendU32(buf, uint32(len(raw)))
-		return append(buf, raw...), nil
+		return buf, nil
 	}
 	return nil, fmt.Errorf("unsupported type %d", v.Type())
 }

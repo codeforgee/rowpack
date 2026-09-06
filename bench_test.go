@@ -177,6 +177,56 @@ func BenchmarkScan(b *testing.B) {
 	}
 }
 
+// BenchmarkScanInto is BenchmarkScan with the v1.1 reuse mode: rows are
+// decoded into one reused buffer, eliminating the per-row Row allocation and
+// per-row Decimal big.Int churn.
+func BenchmarkScanInto(b *testing.B) {
+	db, fullID := buildBenchStore(b, filepath.Join(b.TempDir(), "scaninto"), 100000, 0)
+	defer db.Close()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		var dst Row
+		for {
+			row, ok := it.NextInto(dst)
+			if !ok {
+				break
+			}
+			dst = row
+		}
+		if err := it.Err(); err != nil {
+			b.Fatal(err)
+		}
+		it.Close()
+	}
+	b.ReportMetric(float64(100000)/b.Elapsed().Seconds()/1000, "krows/s")
+}
+
+// BenchmarkGetHotReadInto is BenchmarkGetHotRead with the v1.1 reuse mode:
+// a single dst Row is reused across all Gets.
+func BenchmarkGetHotReadInto(b *testing.B) {
+	db, fullID := buildBenchStore(b, filepath.Join(b.TempDir(), "hotinto"), 100000, 0)
+	defer db.Close()
+	// Warm a few blocks.
+	for i := uint64(0); i < 100; i++ {
+		if _, err := db.Get(context.Background(), fullID, 1, i+1); err != nil {
+			b.Fatal(err)
+		}
+	}
+	var dst Row
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		row, err := db.GetInto(context.Background(), fullID, 1, uint64(i%100)+1, dst)
+		if err != nil {
+			b.Fatal(err)
+		}
+		dst = row
+	}
+}
+
 func BenchmarkOpenReplay(b *testing.B) {
 	base := filepath.Join(b.TempDir(), "open")
 	db, _ := buildBenchStore(b, base, 100000, 0)

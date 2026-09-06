@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"math/bits"
 	"time"
 )
 
@@ -119,11 +120,144 @@ const decimalMaxBytes = 1 << 20 // 1 MiB, well above practical decimals
 
 // encodeDecimalBytes returns the canonical minimal big-endian two's-complement
 // bytes of u: no redundant 0x00 (positive) or 0xFF (negative) sign-extension
-// bytes, and zero encoded as a single 0x00 byte.
+// bytes, and zero encoded as a single 0x00 byte. Values that fit int64 take a
+// fast path that builds the bytes from the raw bits without temporary big.Ints
+// or a magnitude slice via Bytes().
 func encodeDecimalBytes(u *big.Int) ([]byte, error) {
 	if u == nil {
 		return nil, errors.New("rowpack: decimal unscaled is nil")
 	}
+	if u.IsInt64() {
+		return encodeDecimalInt64(u.Int64()), nil
+	}
+	return encodeDecimalBig(u)
+}
+
+// appendDecimalBytes appends the canonical big-endian two's-complement bytes
+// of u to buf (with a u32 length prefix) without allocating when u fits int64.
+// It is the write-path counterpart of encodeDecimalBytes used by appendValue.
+// maxValue bounds the raw unscaled length; the caller still enforces the full
+// row limit.
+func appendDecimalBytes(buf []byte, u *big.Int, maxValue uint32) ([]byte, error) {
+	if u == nil {
+		return nil, errors.New("rowpack: decimal unscaled is nil")
+	}
+	if u.IsInt64() {
+		v := u.Int64()
+		n := decimalInt64Len(v)
+		if uint32(n) > maxValue {
+			return nil, fmt.Errorf("decimal unscaled of %d bytes exceeds limit %d", n, maxValue)
+		}
+		buf = appendU32(buf, uint32(n))
+		return appendDecimalInt64Into(buf, v), nil
+	}
+	raw, err := encodeDecimalBig(u)
+	if err != nil {
+		return nil, err
+	}
+	if uint32(len(raw)) > maxValue {
+		return nil, fmt.Errorf("decimal unscaled of %d bytes exceeds limit %d", len(raw), maxValue)
+	}
+	buf = appendU32(buf, uint32(len(raw)))
+	return append(buf, raw...), nil
+}
+
+// decimalInt64Len returns the canonical encoding length of an int64 decimal
+// value: 1 for zero, ceil(bitlen/8) plus a leading 0x00 when the top byte's
+// high bit is set for positives, and the minimal two's-complement width for
+// negatives.
+func decimalInt64Len(v int64) int {
+	switch {
+	case v == 0:
+		return 1
+	case v > 0:
+		n := bits.Len64(uint64(v))
+		w := (n + 7) / 8
+		if n%8 == 0 {
+			w++ // top byte's high bit is set: prepend 0x00
+		}
+		return w
+	default:
+		w := 1
+		for w < 8 && v < -(int64(1)<<(8*w-1)) {
+			w++
+		}
+		return w
+	}
+}
+
+// appendDecimalInt64Into appends the canonical big-endian two's-complement
+// bytes of v to buf without allocating. Byte output matches
+// encodeDecimalInt64 exactly.
+func appendDecimalInt64Into(buf []byte, v int64) []byte {
+	switch {
+	case v == 0:
+		return append(buf, 0x00)
+	case v > 0:
+		n := bits.Len64(uint64(v))
+		w := (n + 7) / 8
+		if n%8 == 0 {
+			buf = append(buf, 0x00)
+		}
+		x := uint64(v)
+		for i := w - 1; i >= 0; i-- {
+			buf = append(buf, byte(x>>(8*i)))
+		}
+		return buf
+	default:
+		w := 1
+		for w < 8 && v < -(int64(1)<<(8*w-1)) {
+			w++
+		}
+		x := uint64(v)
+		for i := w - 1; i >= 0; i-- {
+			buf = append(buf, byte(x>>(8*i)))
+		}
+		return buf
+	}
+}
+
+// encodeDecimalInt64 builds the canonical encoding of an int64 decimal value
+// from its raw bits. Positive values need ceil(bitlen/8) bytes plus a leading
+// 0x00 when the top byte has its high bit set; negative values need the
+// minimal width w with -2^(8w-1) <= v, from which the low w bytes of the 64-bit
+// two's-complement form are the encoding.
+func encodeDecimalInt64(v int64) []byte {
+	if v >= 0 {
+		if v == 0 {
+			return []byte{0x00}
+		}
+		n := bits.Len64(uint64(v))
+		bytes := (n + 7) / 8
+		raw := make([]byte, bytes)
+		for i := 0; i < bytes; i++ {
+			raw[bytes-1-i] = byte(v >> (8 * i))
+		}
+		if raw[0]&0x80 != 0 {
+			out := make([]byte, bytes+1)
+			out[0], out[1] = 0, raw[0]
+			copy(out[2:], raw[1:])
+			return out
+		}
+		return raw
+	}
+	// Negative: minimal two's-complement width w, then the low w bytes of the
+	// 64-bit two's-complement form.
+	w := 1
+	for w < 8 && v < -(int64(1)<<(8*w-1)) {
+		w++
+	}
+	out := make([]byte, w)
+	u := uint64(v)
+	for i := 0; i < w; i++ {
+		out[w-1-i] = byte(u >> (8 * i))
+	}
+	return out
+}
+
+// encodeDecimalBig is the general big.Int path for decimals that do not fit
+// int64, preserving the original v1 canonical encoding.
+func encodeDecimalBig(u *big.Int) ([]byte, error) {
 	if u.Sign() == 0 {
 		return []byte{0x00}, nil
 	}
@@ -154,36 +288,72 @@ func encodeDecimalBytes(u *big.Int) ([]byte, error) {
 	return tc, nil
 }
 
-// decodeDecimalBytes interprets canonical two's-complement bytes.
-func decodeDecimalBytes(b []byte) (*big.Int, error) {
-	if len(b) == 0 {
-		return nil, errors.New("rowpack: empty decimal unscaled")
+// canonicalDecimalBytes checks the canonical big-endian two's-complement
+// form without allocating big.Ints: no redundant leading 0x00 (positive), no
+// redundant leading 0xFF (negative), and zero is a single 0x00 byte.
+func canonicalDecimalBytes(b []byte) bool {
+	n := len(b)
+	if n == 0 {
+		return false
 	}
-	x := new(big.Int).SetBytes(b)
+	if b[0]&0x80 != 0 {
+		// Negative: a redundant sign-extension 0xFF byte is only valid when
+		// the next byte's high bit is clear (i.e. the 0xFF carries a bit).
+		if b[0] == 0xFF && n > 1 && b[1]&0x80 != 0 {
+			return false
+		}
+		return true
+	}
+	// Non-negative: a leading 0x00 is only valid when it is needed to keep
+	// the number's high bit clear (value >= 2^(8*(n-1))). Zero is a single
+	// 0x00 byte.
+	if n == 1 {
+		return true
+	}
+	if b[0] == 0x00 && b[1]&0x80 == 0 {
+		return false
+	}
+	return true
+}
+
+// decodeDecimalBytesInto interprets canonical two's-complement bytes into dst
+// (reused across rows when the caller decodes into the same Value), avoiding
+// the temporary big.Int chain of the general path. It validates canonical form
+// and returns an error for non-canonical encodings.
+func decodeDecimalBytesInto(dst *big.Int, b []byte) error {
+	if len(b) == 0 {
+		return errors.New("rowpack: empty decimal unscaled")
+	}
+	if !canonicalDecimalBytes(b) {
+		return errors.New("rowpack: non-canonical decimal encoding")
+	}
+	if len(b) <= 8 {
+		// Fast path: sign-extended int64, no big.Int allocation at all.
+		var u uint64
+		for _, c := range b {
+			u = u<<8 | uint64(c)
+		}
+		if b[0]&0x80 != 0 && len(b) < 8 {
+			u |= ^uint64(0) << (8 * len(b))
+		}
+		dst.SetInt64(int64(u))
+		return nil
+	}
+	dst.SetBytes(b)
 	if b[0]&0x80 != 0 {
 		// Sign-extend: subtract 2^(8*len).
 		mod := new(big.Int).Lsh(big.NewInt(1), uint(8*len(b)))
-		x.Sub(x, mod)
+		dst.Sub(dst, mod)
 	}
-	// Reject non-canonical encodings (redundant sign-extension bytes).
-	back, err := encodeDecimalBytes(x)
-	if err != nil {
-		return nil, err
-	}
-	if len(back) != len(b) || !bytesEqual(back, b) {
-		return nil, errors.New("rowpack: non-canonical decimal encoding")
-	}
-	return x, nil
+	return nil
 }
 
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
+// decodeDecimalBytes interprets canonical two's-complement bytes, allocating
+// the result.
+func decodeDecimalBytes(b []byte) (*big.Int, error) {
+	x := new(big.Int)
+	if err := decodeDecimalBytesInto(x, b); err != nil {
+		return nil, err
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return x, nil
 }

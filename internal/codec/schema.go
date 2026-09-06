@@ -35,7 +35,10 @@ type Column struct {
 
 // Validate checks the schema against the given limits and the v1 type rules.
 // It returns an error for unknown types, too many columns, negative decimal
-// scale, empty names, or an illegal fixed-width combination.
+// scale, empty names, or an illegal fixed-width combination. Validation is
+// allocation-free for schemas with up to validateMapThreshold columns (it
+// uses O(n^2) name comparisons instead of a hash map), so calling it per row
+// on the hot encode/decode path does not allocate.
 func (s *Schema) Validate(limits Limits) error {
 	if s.Name == "" {
 		return errors.New("rowpack: schema name is empty")
@@ -43,15 +46,10 @@ func (s *Schema) Validate(limits Limits) error {
 	if uint32(len(s.Columns)) > limits.MaxColumns {
 		return fmt.Errorf("rowpack: schema %q has %d columns, limit %d", s.Name, len(s.Columns), limits.MaxColumns)
 	}
-	seen := make(map[string]struct{}, len(s.Columns))
-	for i, c := range s.Columns {
-		if c.Name == "" {
-			return fmt.Errorf("rowpack: schema %q column %d has empty name", s.Name, i)
-		}
-		if _, dup := seen[c.Name]; dup {
-			return fmt.Errorf("rowpack: schema %q duplicate column name %q", s.Name, c.Name)
-		}
-		seen[c.Name] = struct{}{}
+	if err := checkDuplicateColumnNames(s, limits.MaxColumns); err != nil {
+		return err
+	}
+	for _, c := range s.Columns {
 		if c.Type == 0 {
 			return fmt.Errorf("rowpack: schema %q column %q has zero type", s.Name, c.Name)
 		}
@@ -66,6 +64,39 @@ func (s *Schema) Validate(limits Limits) error {
 				return fmt.Errorf("rowpack: schema %q column %q has excessive scale %d", s.Name, c.Name, c.Scale)
 			}
 		}
+	}
+	return nil
+}
+
+// validateMapThreshold is the column count above which duplicate-name
+// checking switches from O(n^2) comparisons to a hash map. Schemas in the hot
+// path are almost always far below it and stay allocation-free.
+const validateMapThreshold = 64
+
+func checkDuplicateColumnNames(s *Schema, maxColumns uint32) error {
+	n := len(s.Columns)
+	if n <= validateMapThreshold {
+		for i := 0; i < n; i++ {
+			if s.Columns[i].Name == "" {
+				return fmt.Errorf("rowpack: schema %q column %d has empty name", s.Name, i)
+			}
+			for j := i + 1; j < n; j++ {
+				if s.Columns[i].Name == s.Columns[j].Name {
+					return fmt.Errorf("rowpack: schema %q duplicate column name %q", s.Name, s.Columns[i].Name)
+				}
+			}
+		}
+		return nil
+	}
+	seen := make(map[string]struct{}, n)
+	for i, c := range s.Columns {
+		if c.Name == "" {
+			return fmt.Errorf("rowpack: schema %q column %d has empty name", s.Name, i)
+		}
+		if _, dup := seen[c.Name]; dup {
+			return fmt.Errorf("rowpack: schema %q duplicate column name %q", s.Name, c.Name)
+		}
+		seen[c.Name] = struct{}{}
 	}
 	return nil
 }

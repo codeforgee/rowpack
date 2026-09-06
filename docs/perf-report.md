@@ -1,6 +1,6 @@
 # RowPack v1.0 性能测试报告
 
-> 日期：2026-09-06（性能优化后）
+> 日期：2026-09-06（性能优化后）；v1.1 首批优化见 docs/benchmarks-v1.md「v1.1 基准」
 > 环境：Go 1.27.0 / darwin arm64 (Apple Silicon, M 系列) / klauspost/compress v1.20.0 (zstd)
 > 格式：BlockSize 256 KiB / Zstd / SyncCommit / 块缓存 64 MiB
 > 复现：`go test ./ -run '^$' -bench . -benchtime=2x`；端到端 `go test ./ -run TestPerfEndToEnd -v`

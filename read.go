@@ -82,6 +82,17 @@ func snapshotInfoFromMeta(sm *index.SnapshotMeta) SnapshotInfo {
 // Get returns the row visible at the given snapshot (resolved along the
 // parent chain). A DELETE tombstone or an absent row returns ErrNotFound.
 func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table TableID, rowID RowID) (Row, error) {
+	return s.GetInto(ctx, snapshot, table, rowID, nil)
+}
+
+// GetInto is Get with row reuse: the visible row is decoded into dst,
+// reusing dst's backing array and any Decimal big.Int already held there. The
+// returned Row aliases dst and is overwritten by the next GetInto call on the
+// same dst; getters of String/Bytes/Decimal return copies, so reading through
+// them is always safe, but retained Value structs may observe overwritten
+// Decimals after the next call. A nil dst is equivalent to Get. The contents
+// of dst are unspecified if an error is returned.
+func (s *Store) GetInto(ctx context.Context, snapshot SnapshotID, table TableID, rowID RowID, dst Row) (Row, error) {
 	st, err := s.captureState()
 	if err != nil {
 		return nil, err
@@ -97,7 +108,7 @@ func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table TableID, row
 	if loc.ChangeType == fileformat.ChangeDelete {
 		return nil, fmt.Errorf("%w: (table %d, row %d) deleted in snapshot %d", ErrNotFound, table, rowID, snapshot)
 	}
-	row, _, err := s.readRow(view, st.schemas, loc)
+	row, _, err := s.readRowInto(view, st.schemas, loc, dst)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +136,11 @@ func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table TableID, 
 // readRow reads and decodes a single row from its block via ParseRowAt,
 // avoiding a full block directory parse for random reads.
 func (s *Store) readRow(view *index.View, si *SchemaIndex, loc *index.RowLoc) (Row, SchemaVersion, error) {
+	return s.readRowInto(view, si, loc, nil)
+}
+
+// readRowInto is readRow with a caller-owned destination row.
+func (s *Store) readRowInto(view *index.View, si *SchemaIndex, loc *index.RowLoc, dst Row) (Row, SchemaVersion, error) {
 	bl := view.Block(loc.BlockID)
 	if bl == nil {
 		return nil, 0, fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)
@@ -143,7 +159,7 @@ func (s *Store) readRow(view *index.View, si *SchemaIndex, loc *index.RowLoc) (R
 			return nil, 0, fmt.Errorf("rowpack: row CRC mismatch in block %d", bl.BlockID)
 		}
 	}
-	row, err := s.decodeRow(ref, bl, si)
+	row, err := s.decodeRowInto(ref, bl, si, dst)
 	return row, ref.Entry.SchemaVersion, err
 }
 
@@ -151,6 +167,11 @@ func (s *Store) readRow(view *index.View, si *SchemaIndex, loc *index.RowLoc) (R
 // directory (used by Scan's block cursor). Callers must already have filtered
 // tombstones.
 func (s *Store) rowFromPayload(rp *block.RowsIndex, bl *index.BlockLoc, loc *index.RowLoc, si *SchemaIndex) (Row, error) {
+	return s.rowFromPayloadInto(rp, bl, loc, si, nil)
+}
+
+// rowFromPayloadInto is rowFromPayload with a caller-owned destination row.
+func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc *index.RowLoc, si *SchemaIndex, dst Row) (Row, error) {
 	if int(loc.ItemOrdinal) >= len(rp.Entries) {
 		return nil, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", loc.ItemOrdinal, loc.BlockID)
 	}
@@ -159,16 +180,21 @@ func (s *Store) rowFromPayload(rp *block.RowsIndex, bl *index.BlockLoc, loc *ind
 	if schema == nil {
 		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ent.SchemaVersion)
 	}
-	return codec.Decode(rp.RowBytes(int(loc.ItemOrdinal)), schema, s.opts.codecLimits())
+	return codec.DecodeInto(dst, rp.RowBytes(int(loc.ItemOrdinal)), schema, s.opts.codecLimits())
 }
 
 // decodeRow decodes a located row against its schema.
 func (s *Store) decodeRow(ref *block.RowRef, bl *index.BlockLoc, si *SchemaIndex) (Row, error) {
+	return s.decodeRowInto(ref, bl, si, nil)
+}
+
+// decodeRowInto is decodeRow with a caller-owned destination row.
+func (s *Store) decodeRowInto(ref *block.RowRef, bl *index.BlockLoc, si *SchemaIndex, dst Row) (Row, error) {
 	schema := si.Schema(bl.SnapshotID, bl.TableID, ref.Entry.SchemaVersion)
 	if schema == nil {
 		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ref.Entry.SchemaVersion)
 	}
-	return codec.Decode(ref.Row, schema, s.opts.codecLimits())
+	return codec.DecodeInto(dst, ref.Row, schema, s.opts.codecLimits())
 }
 
 // Schema returns the schema of a table version at a snapshot.

@@ -134,6 +134,8 @@ for {
 - [Go API 设计](docs/GO_API_DESIGN.md)
 - [开发计划](docs/DEVELOPMENT_PLAN.md)
 - [v1.1 优化计划](docs/plan-v11.md)
+- [v1.2 优化计划](docs/plan-v12.md)
+- [性能测试报告](docs/perf-report.md)
 - [ADR-001：.rpk 是提交权威](docs/adr/ADR-001.md)
 - [ADR-002：元数据是引擎存储的数据](docs/adr/ADR-002.md)
 

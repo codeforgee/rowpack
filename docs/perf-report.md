@@ -1,11 +1,44 @@
-# RowPack v1.0 性能测试报告
+# RowPack 性能测试报告
 
-> 日期：2026-09-06（性能优化后）；v1.1 首批优化见 docs/benchmarks-v1.md「v1.1 基准」
+> 文档状态：统一基线；历史批次数据保留在本文末尾和 docs/benchmarks-v1.md
+> 日期：2026-09-07（当前基线）
 > 环境：Go 1.27.0 / darwin arm64 (Apple Silicon, M 系列) / klauspost/compress v1.20.0 (zstd)
 > 格式：BlockSize 256 KiB / Zstd / SyncCommit / 块缓存 64 MiB
-> 复现：`go test ./ -run '^$' -bench . -benchtime=2x`；端到端 `go test ./ -run TestPerfEndToEnd -v`
+> 复现命令见 §1；端到端：`go test ./ -run TestPerfEndToEnd -v`
 
-## 1. 微基准（100k 行 × 7 列）
+## 1. 当前统一基线（2026-09-07）
+
+以下数据是当前性能比较的唯一基准。除特别说明外，均为 Go 1.27 / darwin arm64
+(Apple M1 Pro) / zstd v1.20 / BlockSize 256 KiB / Cache 64 MiB / SyncCommit，
+数据集为 100k 行 × 7 列；运行方式为：
+
+```sh
+go test ./ -run '^$' -bench 'Benchmark(FullSequentialWrite|GetColdRead|GetHotRead|GetHotReadInto|ConcurrentGet|Scan|ScanInto|ScanDeepChain|GetDeepChain|OpenReplay|RebuildIndex|IsolatedWrite)$' -benchtime=5x -benchmem
+```
+
+| 场景 | 当前结果 | 备注 |
+| --- | --- | --- |
+| FULL 顺序写 | 95 ms/op | 包含一次 SyncCommit |
+| 隔离写入 | 49.8–51.3 ms/100k 行 | 预构造 Row，约 2M 行/s |
+| Get 热读 | 9.5 µs/op，4 allocs | 缓存命中 |
+| Get 热读（复用 dst） | 7.1 µs/op，2 allocs | 缓存命中 |
+| Get 冷读 | 269 µs/op，10 allocs | 缓存关闭，mmap |
+| 并发 Get | 5.9/5.0/6.0/4.9 µs | 1/8/32/64 goroutine，热缓存 |
+| Scan 100k | 15.6 ms/op，189 allocs | FULL，热缓存 |
+| Scan 1M | 238 ms/op | 约 841k rows/s |
+| Scan DeepChain | 30.8 ms/op | FULL + 32 层 DELTA |
+| Get DeepChain | 4.2 µs/op | 32 层，热缓存 |
+| Open Replay | 5.1 ms/op | 100k 行索引 |
+| RebuildIndex | 31.4 ms/op | 100k 行 |
+
+说明：历史报告中的 10.3/20/9.5 µs、47/62/69/15.6 ms 等数值来自不同优化批次或不同
+运行参数，不再并列作为当前结果。`benchmarks-v1.md` 保留这些历史数据，仅用于回溯。
+
+访问模式说明：快照的主要使用方式预计是按表、范围或 RowID 集合批量读取，因此单行冷读
+269 µs 仅作为诊断指标。v1.2 应以批量请求涉及的 Block 数、实际读取次数、解压次数、
+返回行吞吐和 p95 延迟作为主要读取指标。
+
+## 2. 历史微基准（v1.0，100k 行 × 7 列）
 
 | 场景 | 指标 | 说明 |
 | --- | --- | --- |

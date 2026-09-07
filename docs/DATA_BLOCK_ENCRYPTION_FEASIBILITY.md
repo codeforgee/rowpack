@@ -7,7 +7,7 @@
 
 数据分块加密与 RowPack 当前的 append-only、快照、压缩 Block 和随机读取模型相容，推荐作为 v1 之后的可选能力实现。
 
-推荐顺序为：先压缩，再对每个 Block 使用 AEAD 加密；`.rpk` 的 SnapshotFooter、Block Header 和必要的索引导航信息保持可解析，Block 的压缩负载和敏感元数据内容加密。首选 AES-256-GCM，平台无 AES 硬件时可提供 ChaCha20-Poly1305。
+推荐顺序为：先压缩，再对每个 Block 使用 AES-256-GCM 加密；`.rpk` 的 SnapshotFooter、Block Header 和必要的索引导航信息保持可解析，Block 的压缩负载和敏感元数据内容加密。
 
 ## 2. 为什么采用 Block 级别
 
@@ -31,7 +31,7 @@ Rows/Metadata payload → compress → encrypt(AEAD) → write
 
 加密应通过格式主版本或 Feature Bit 明确启用，不应改变已有 v1 未加密 Block 的解释方式。建议在 Store Header 增加：
 
-- EncryptionAlgorithm：None、AES-256-GCM、ChaCha20-Poly1305；
+- EncryptionAlgorithm：None、AES-256-GCM；
 - KeyID：外部密钥管理系统中的逻辑标识，不保存密钥本身；
 - NonceScheme：固定版本的 nonce 生成规则；
 - KeyEpoch：密钥轮换代次。
@@ -114,4 +114,3 @@ type KeyProvider interface {
 - 不建议每行独立加密；
 - 不建议为了隐藏 Block 大小而在 v1 引入复杂填充，除非威胁模型明确要求；
 - 不建议让 RowPack 核心理解 KMS、云厂商密钥服务或数据库账户体系。
-

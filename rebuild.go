@@ -16,6 +16,10 @@ import (
 type RebuildOptions struct {
 	ReplaceCorrupt bool
 	Durability     Durability
+	// Encryption supplies the key for an encrypted store. RebuildIndex reads
+	// every block payload to rebuild the row index, so an encrypted store
+	// rebuilds only with its key; without it, ErrKeyRequired.
+	Encryption *EncryptionConfig
 }
 
 // RebuildIndex rebuilds the .rpi index file from the authoritative .rpk data
@@ -73,6 +77,21 @@ func RebuildIndex(ctx context.Context, basePath string, opts RebuildOptions) err
 		MaxRawBytes:    fileformat.DefaultMaxRawBlockBytes,
 		MaxStoredBytes: fileformat.DefaultMaxStoredBlockBytes,
 	})
+	// Encrypted stores rebuild only with their key: the rebuild decompresses
+	// every block to re-derive the row navigation index.
+	if dh.EncryptionAlgorithm != fileformat.EncNone {
+		if opts.Encryption == nil || opts.Encryption.KeyProvider == nil {
+			return fmt.Errorf("%w: store %q is encrypted (key id %q)", ErrKeyRequired, basePath, dh.KeyID)
+		}
+		if dh.EncryptionAlgorithm != fileformat.EncAES256GCM {
+			return fmt.Errorf("%w: encryption algorithm %d", ErrVersionUnsupported, dh.EncryptionAlgorithm)
+		}
+		if dh.NonceScheme != fileformat.NonceCounterV1 {
+			return fmt.Errorf("%w: nonce scheme %d", ErrVersionUnsupported, dh.NonceScheme)
+		}
+		d := newStoreDecrypter(opts.Encryption.KeyProvider, string(dh.KeyID), dh.StoreUUID)
+		s.reader.SetDecrypter(d)
+	}
 	s.loader = newBlockLoader(s.reader, 0)
 	committed, _, err := s.scanDataFile()
 	if err != nil {

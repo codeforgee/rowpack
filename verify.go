@@ -63,12 +63,12 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 		rep.DataBytesRead += uint64(bl.StoredSize)
 		blk, err := s.loader.Load(int64(bl.DataOffset), bl.BlockID)
 		if err != nil {
-			return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Reason: err.Error()}
+			return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: err.Error()}
 		}
 		if mode == VerifyFull {
 			blk, err = s.loader.Load(int64(bl.DataOffset), bl.BlockID)
 			if err != nil {
-				return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, Kind: ErrCorruptData, Reason: err.Error()}
+				return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: err.Error()}
 			}
 			switch bl.Kind {
 			case fileformat.BlockKindRows:

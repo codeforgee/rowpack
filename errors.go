@@ -35,7 +35,8 @@ var (
 
 // CorruptionError describes a structured integrity failure with the file type,
 // byte offset and logical object identifiers available at detection time.
-// Unwrap returns ErrCorruptData or ErrCorruptIndex.
+// Unwrap returns ErrCorruptData or ErrCorruptIndex plus, when set, the
+// underlying Cause (e.g. ErrAuthFailed for a failed AEAD authentication).
 type CorruptionError struct {
 	File       string
 	Offset     int64
@@ -43,6 +44,7 @@ type CorruptionError struct {
 	TableID    TableID
 	BlockID    uint64
 	Kind       error
+	Cause      error // underlying error kept on the chain (optional)
 	Reason     string
 }
 
@@ -52,8 +54,14 @@ func (e *CorruptionError) Error() string {
 		e.Kind, e.File, e.Offset, e.SnapshotID, e.TableID, e.BlockID, e.Reason)
 }
 
-// Unwrap returns the underlying error kind.
-func (e *CorruptionError) Unwrap() error { return e.Kind }
+// Unwrap returns the error kind and, when present, the underlying cause so
+// errors.Is can match both ErrCorruptData and e.g. ErrAuthFailed.
+func (e *CorruptionError) Unwrap() []error {
+	if e.Cause != nil {
+		return []error{e.Kind, e.Cause}
+	}
+	return []error{e.Kind}
+}
 
 // CommitError reports a snapshot commit failure. Unknown is true when the
 // failure happened after the data file sync began, so the caller cannot know

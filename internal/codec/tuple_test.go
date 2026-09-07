@@ -77,6 +77,114 @@ func TestRoundTripAllTypes(t *testing.T) {
 	}
 }
 
+func TestRoundTripNumericBoundaries(t *testing.T) {
+	cases := []struct {
+		name string
+		col  Column
+		vals []Value
+	}{
+		{"int8", Column{Name: "v", Type: TypeInt8}, []Value{Int8(-128), Int8(0), Int8(127)}},
+		{"int16", Column{Name: "v", Type: TypeInt16}, []Value{Int16(-32768), Int16(0), Int16(32767)}},
+		{"int32", Column{Name: "v", Type: TypeInt32}, []Value{Int32(math.MinInt32), Int32(0), Int32(math.MaxInt32)}},
+		{"int64", Column{Name: "v", Type: TypeInt64}, []Value{Int64(math.MinInt64), Int64(0), Int64(math.MaxInt64)}},
+		{"uint8", Column{Name: "v", Type: TypeUint8}, []Value{Uint8(0), Uint8(math.MaxUint8)}},
+		{"uint16", Column{Name: "v", Type: TypeUint16}, []Value{Uint16(0), Uint16(math.MaxUint16)}},
+		{"uint32", Column{Name: "v", Type: TypeUint32}, []Value{Uint32(0), Uint32(math.MaxUint32)}},
+		{"uint64", Column{Name: "v", Type: TypeUint64}, []Value{Uint64(0), Uint64(math.MaxUint64)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := schemaOf(tc.col)
+			for _, want := range tc.vals {
+				enc, err := Encode(s, []Value{want}, DefaultLimits())
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := Decode(enc, s, DefaultLimits())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !valuesEqual(want, got[0]) {
+					t.Fatalf("got %#v want %#v", got[0], want)
+				}
+			}
+		})
+	}
+}
+
+func TestRoundTripFloatSpecialValues(t *testing.T) {
+	for _, want := range []Value{Float32(float32(math.Copysign(0, -1))), Float32(float32(math.Inf(1))), Float32(float32(math.Inf(-1))), Float32(float32(math.NaN()))} {
+		s := schemaOf(Column{Name: "v", Type: TypeFloat32})
+		enc, err := Encode(s, []Value{want}, DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Decode(enc, s, DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !valuesEqual(want, got[0]) {
+			t.Fatalf("float32 bits changed: got %#v want %#v", got[0], want)
+		}
+	}
+	for _, want := range []Value{Float64(math.Copysign(0, -1)), Float64(math.Inf(1)), Float64(math.Inf(-1)), Float64(math.NaN())} {
+		s := schemaOf(Column{Name: "v", Type: TypeFloat64})
+		enc, err := Encode(s, []Value{want}, DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Decode(enc, s, DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !valuesEqual(want, got[0]) {
+			t.Fatalf("float64 bits changed: got %#v want %#v", got[0], want)
+		}
+	}
+}
+
+func TestRoundTripTemporalAndVariableBoundaries(t *testing.T) {
+	cases := []struct {
+		name string
+		col  Column
+		want Value
+	}{
+		{"date-min", Column{Name: "v", Type: TypeDate}, DateValue(math.MinInt32)},
+		{"date-max", Column{Name: "v", Type: TypeDate}, DateValue(math.MaxInt32)},
+		{"time-zero", Column{Name: "v", Type: TypeTime}, TimeValue(0)},
+		{"time-max", Column{Name: "v", Type: TypeTime}, TimeValue(TimeOfDay(MaxTimeOfDay - 1))},
+		{"datetime-min", Column{Name: "v", Type: TypeDateTime}, DateTimeValueOf(math.MinInt64)},
+		{"datetime-max", Column{Name: "v", Type: TypeDateTime}, DateTimeValueOf(math.MaxInt64)},
+		{"string-empty", Column{Name: "v", Type: TypeString}, String("")},
+		{"string-utf8", Column{Name: "v", Type: TypeString}, String("aé中😀")},
+		{"bytes-empty", Column{Name: "v", Type: TypeBytes}, Bytes(nil)},
+		{"bytes-binary", Column{Name: "v", Type: TypeBytes}, Bytes([]byte{0, 1, 0xff})},
+		{"decimal-zero", Column{Name: "v", Type: TypeDecimal, Scale: 0}, DecimalValue(Decimal{Unscaled: big.NewInt(0)})},
+		{"decimal-negative", Column{Name: "v", Type: TypeDecimal, Scale: 6}, DecimalValue(Decimal{Unscaled: big.NewInt(-1), Scale: 6})},
+		{"decimal-long", Column{Name: "v", Type: TypeDecimal, Scale: 18}, DecimalValue(Decimal{Unscaled: new(big.Int).Exp(big.NewInt(10), big.NewInt(128), nil), Scale: 18})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			enc, err := Encode(schemaOf(tc.col), []Value{tc.want}, DefaultLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := Decode(enc, schemaOf(tc.col), DefaultLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !valuesEqual(tc.want, got[0]) {
+				t.Fatalf("got %#v want %#v", got[0], tc.want)
+			}
+		})
+	}
+	// The upper bound is rejected by the semantic Time range check.
+	s := schemaOf(Column{Name: "v", Type: TypeTime})
+	if _, err := Encode(s, []Value{TimeValue(TimeOfDay(MaxTimeOfDay))}, DefaultLimits()); err == nil {
+		t.Fatal("accepted out-of-range maximum Time value")
+	}
+}
+
 func valuesEqual(a, b Value) bool {
 	if a.IsNull() || b.IsNull() {
 		return a.IsNull() == b.IsNull()

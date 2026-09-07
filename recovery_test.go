@@ -40,7 +40,7 @@ func TestCrashChildHelper(t *testing.T) {
 	fault.Inject(fp, func() { os.Exit(0) })
 	t.Cleanup(fault.Clear)
 
-	db, err := Create(base, DefaultOptions())
+	db, err := Create(base, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestCrashChildHelper(t *testing.T) {
 // state (which snapshot count and row visibility are expected).
 func verifyCrashRecovery(t *testing.T, base string, wantSnapshots int) *Store {
 	t.Helper()
-	db, err := Open(base, DefaultOptions())
+	db, err := Open(base, Options{})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -81,7 +81,7 @@ func verifyCrashRecovery(t *testing.T, base string, wantSnapshots int) *Store {
 	// The committed snapshot's rows must be readable.
 	for _, sn := range snaps {
 		for i := uint64(1); i <= 100; i++ {
-			r, err := db.Get(context.Background(), sn.ID, 1, i)
+			r, err := db.Get(context.Background(), sn.ID, 1, i, nil)
 			if err != nil {
 				db.Close()
 				t.Fatalf("snapshot %d row %d: %v", sn.ID, i, err)
@@ -152,7 +152,7 @@ func fileSizes(t *testing.T, base string) map[string]int64 {
 // index file to a partial transaction.
 func TestM8IndexTruncated(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "it")
-	db, fullID := buildConcurrentStore(t, base, DefaultOptions())
+	db, fullID := buildConcurrentStore(t, base, Options{})
 	// Commit a second snapshot so the index has two txns.
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: fullID})
 	if err := w.Insert(context.Background(), 1, 9999, 1, Row{Uint64(9999), String("x")}); err != nil {
@@ -171,7 +171,7 @@ func TestM8IndexTruncated(t *testing.T) {
 	f.Truncate(truncLen)
 	f.Close()
 
-	db2, err := Open(base, DefaultOptions())
+	db2, err := Open(base, Options{})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestM8IndexTruncated(t *testing.T) {
 	if len(snaps) != 2 {
 		t.Fatalf("snapshots = %d, want 2 (index tail rebuilt from data)", len(snaps))
 	}
-	if r, err := db2.Get(context.Background(), snaps[1].ID, 1, 9999); err != nil {
+	if r, err := db2.Get(context.Background(), snaps[1].ID, 1, 9999, nil); err != nil {
 		t.Fatalf("row 9999: %v", err)
 	} else if v, _ := r[1].String(); v != "x" {
 		t.Fatalf("row 9999 = %q", v)
@@ -192,18 +192,18 @@ func TestM8IndexTruncated(t *testing.T) {
 // rebuilt store is fully readable.
 func TestM8IndexDeleted(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "noidx")
-	db, _ := buildConcurrentStore(t, base, DefaultOptions())
+	db, _ := buildConcurrentStore(t, base, Options{})
 	db.Close()
 	if err := os.Remove(base + ".rpi"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(base, DefaultOptions()); err == nil {
+	if _, err := Open(base, Options{}); err == nil {
 		t.Fatal("Open succeeded with a missing index file")
 	}
 	if err := RebuildIndex(context.Background(), base, RebuildOptions{Durability: SyncCommit}); err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
-	db2, err := Open(base, DefaultOptions())
+	db2, err := Open(base, Options{})
 	if err != nil {
 		t.Fatalf("reopen after rebuild: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestM8IndexDeleted(t *testing.T) {
 	if len(snaps) != 1 {
 		t.Fatalf("snapshots = %d, want 1", len(snaps))
 	}
-	if _, err := db2.Get(context.Background(), 1, 1, 42); err != nil {
+	if _, err := db2.Get(context.Background(), 1, 1, 42, nil); err != nil {
 		t.Fatalf("row 42: %v", err)
 	}
 }
@@ -221,7 +221,7 @@ func TestM8IndexDeleted(t *testing.T) {
 // snapshots is a hard error, never silently skipped.
 func TestM8MidFileCorruption(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "mid")
-	opts := DefaultOptions()
+	opts := Options{}
 	opts.BlockSize = 2048
 	db, fullID := buildConcurrentStore(t, base, opts)
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: fullID})
@@ -246,7 +246,7 @@ func TestM8MidFileCorruption(t *testing.T) {
 	if err := os.WriteFile(base+".rpk", data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(base, DefaultOptions()); err == nil {
+	if _, err := Open(base, Options{}); err == nil {
 		t.Fatal("mid-file corruption opened successfully")
 	}
 }
@@ -255,7 +255,7 @@ func TestM8MidFileCorruption(t *testing.T) {
 // store with payload corruption (AC-009).
 func TestM8Verify(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "verify")
-	db, fullID := buildConcurrentStore(t, base, DefaultOptions())
+	db, fullID := buildConcurrentStore(t, base, Options{})
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: fullID})
 	_ = w.Insert(context.Background(), 1, 5001, 1, Row{Uint64(5001), String("v")})
 	if _, err := w.Commit(context.Background()); err != nil {
@@ -287,7 +287,7 @@ func TestM8Verify(t *testing.T) {
 	data[pos+10] ^= 0xFF                 // inside payload
 	os.WriteFile(base+".rpk", data, 0o644)
 
-	db2, err := Open(base, DefaultOptions())
+	db2, err := Open(base, Options{})
 	if err != nil {
 		t.Fatalf("reopen with payload corruption: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestM8Verify(t *testing.T) {
 // TestM8RebuildIndex rebuilds a deleted index through the explicit API.
 func TestM8RebuildIndex(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "rebuild")
-	db, _ := buildConcurrentStore(t, base, DefaultOptions())
+	db, _ := buildConcurrentStore(t, base, Options{})
 	db.Close()
 	if err := os.Remove(base + ".rpi"); err != nil {
 		t.Fatal(err)
@@ -308,12 +308,12 @@ func TestM8RebuildIndex(t *testing.T) {
 	if err := RebuildIndex(context.Background(), base, RebuildOptions{Durability: SyncCommit}); err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
-	db2, err := Open(base, DefaultOptions())
+	db2, err := Open(base, Options{})
 	if err != nil {
 		t.Fatalf("reopen after rebuild: %v", err)
 	}
 	defer db2.Close()
-	if r, err := db2.Get(context.Background(), 1, 1, 42); err != nil {
+	if r, err := db2.Get(context.Background(), 1, 1, 42, nil); err != nil {
 		t.Fatalf("row 42: %v", err)
 	} else if v, _ := r[1].String(); v != "n-42" {
 		t.Fatalf("row 42 = %q", v)
@@ -324,7 +324,7 @@ func TestM8RebuildIndex(t *testing.T) {
 // last committed one; read-write open truncates it, read-only ignores it.
 func TestM8DataTailTruncated(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "tail")
-	db, _ := buildConcurrentStore(t, base, DefaultOptions())
+	db, _ := buildConcurrentStore(t, base, Options{})
 	db.Close()
 
 	// Append a partial snapshot (header + one block, no footer).
@@ -347,7 +347,7 @@ func TestM8DataTailTruncated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read-only open: %v", err)
 	}
-	if _, err := ro.Get(context.Background(), 1, 1, 1); err != nil {
+	if _, err := ro.Get(context.Background(), 1, 1, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	ro.Close()
@@ -357,7 +357,7 @@ func TestM8DataTailTruncated(t *testing.T) {
 	}
 
 	// Read-write: truncates the tail; recovery reported.
-	db2, err := Open(base, DefaultOptions())
+	db2, err := Open(base, Options{})
 	if err != nil {
 		t.Fatalf("read-write open: %v", err)
 	}

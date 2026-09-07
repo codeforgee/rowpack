@@ -32,8 +32,11 @@ type Iterator struct {
 	heap   rowHeap
 
 	curRowID RowID
-	curRow   Row
 	curLoc   *index.RowLoc
+
+	// buf is the iterator-managed reusable row used when Next is called with
+	// a nil dst. It grows on demand and is overwritten by every Next call.
+	buf Row
 
 	// Block cursor: reuses the parsed rows directory while consecutive rows
 	// fall in the same block, avoiding a per-row full-block parse.
@@ -105,34 +108,58 @@ func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table TableID, op
 	return it, nil
 }
 
-// Next advances to the next visible row. It returns false at the end; call
-// Err to distinguish completion from failure. It is not safe for concurrent
-// use.
-func (it *Iterator) Next() bool {
+// Next advances to the next visible row. The returned Row is valid only
+// until the next call to Next on this iterator:
+//
+//   - dst == nil: the row is decoded into an iterator-managed buffer that is
+//     reused across calls (allocated once, grown as needed). This is the
+//     idiomatic loop form:
+//
+//     for {
+//     row, ok := it.Next(nil)
+//     if !ok {
+//     break
+//     }
+//     // row is valid here
+//     }
+//
+//   - dst != nil: the row is decoded into dst, reusing dst's backing array
+//     and any Decimal big.Int already held there; the returned Row aliases
+//     dst. Use this form to keep an explicitly caller-managed buffer.
+//
+// In both modes values that must outlive the next Next call must be copied
+// (getters of String/Bytes/Decimal return copies, so reading through them is
+// always safe; retained Value structs may observe overwritten Decimals). It
+// returns (nil, false) at the end; call Err to distinguish completion from
+// failure. It is not safe for concurrent use.
+func (it *Iterator) Next(dst Row) (Row, bool) {
 	if it.closed || it.err != nil {
-		return false
+		return nil, false
 	}
 	if it.ctx != nil {
 		select {
 		case <-it.ctx.Done():
 			it.err = it.ctx.Err()
-			return false
+			return nil, false
 		default:
 		}
 	}
 	rowID, loc, ok := it.nextLoc()
 	if !ok {
-		return false
+		return nil, false
 	}
-	row, err := it.rowAt(loc)
+	if dst == nil {
+		dst = it.buf
+	}
+	row, err := it.rowAt(loc, dst)
 	if err != nil {
 		it.err = err
-		return false
+		return nil, false
 	}
 	it.curRowID = rowID
-	it.curRow = row
 	it.curLoc = loc
-	return true
+	it.buf = row
+	return row, true
 }
 
 // nextLoc advances the k-way merge and returns the next visible row location
@@ -167,42 +194,6 @@ func (it *Iterator) nextLoc() (RowID, *index.RowLoc, bool) {
 	return 0, nil, false
 }
 
-// NextInto is Next with row reuse: the next visible row is decoded into dst,
-// reusing dst's backing array and any Decimal big.Int already held there. The
-// returned Row aliases dst and is overwritten by the next NextInto call on
-// the same dst; values that must outlive it must be copied (getters of
-// String/Bytes/Decimal return copies, so reading through them is always
-// safe). A nil dst grows on first use; keep the returned Row as the next
-// dst to preserve the reuse. Iterator.Row is not updated by NextInto; mixing
-// Next and NextInto on one iterator is allowed but each call still allocates
-// or borrows according to its own mode. It returns (nil, false) at the end;
-// call Err to distinguish completion from failure. It is not safe for
-// concurrent use.
-func (it *Iterator) NextInto(dst Row) (Row, bool) {
-	if it.closed || it.err != nil {
-		return nil, false
-	}
-	if it.ctx != nil {
-		select {
-		case <-it.ctx.Done():
-			it.err = it.ctx.Err()
-			return nil, false
-		default:
-		}
-	}
-	rowID, loc, ok := it.nextLoc()
-	if !ok {
-		return nil, false
-	}
-	row, err := it.rowAtInto(loc, dst)
-	if err != nil {
-		it.err = err
-		return nil, false
-	}
-	it.curRowID = rowID
-	it.curLoc = loc
-	return row, true
-}
 func (l *layerIter) advance(h *rowHeap) {
 	l.pos++
 	if l.pos < len(l.keys) {
@@ -210,17 +201,9 @@ func (l *layerIter) advance(h *rowHeap) {
 	}
 }
 
-// rowAt resolves one row, reusing the parsed payload of the current block
-// when the location is inside it.
-func (it *Iterator) rowAt(loc *index.RowLoc) (Row, error) {
-	if err := it.locateBlock(loc); err != nil {
-		return nil, err
-	}
-	return it.store.rowFromPayload(it.curPayload, it.curBlk, loc, it.state.schemas)
-}
-
-// rowAtInto is rowAt with a caller-owned destination row.
-func (it *Iterator) rowAtInto(loc *index.RowLoc, dst Row) (Row, error) {
+// rowAt resolves one row into dst, reusing the parsed payload of the current
+// block when the location is inside it.
+func (it *Iterator) rowAt(loc *index.RowLoc, dst Row) (Row, error) {
 	if err := it.locateBlock(loc); err != nil {
 		return nil, err
 	}
@@ -253,10 +236,6 @@ func (it *Iterator) locateBlock(loc *index.RowLoc) error {
 
 // RowID returns the current row's RowID.
 func (it *Iterator) RowID() RowID { return it.curRowID }
-
-// Row returns the current row. The Row remains valid after subsequent Next
-// calls; it is owned by the caller.
-func (it *Iterator) Row() Row { return it.curRow }
 
 // Err returns the first error encountered, or nil on clean completion.
 func (it *Iterator) Err() error { return it.err }

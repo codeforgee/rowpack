@@ -10,7 +10,7 @@ import (
 // updates/deletes, returning the open store plus the head snapshot.
 func buildReuseStore(t *testing.T, base string, nRows uint64, depth int) (*Store, SnapshotID) {
 	t.Helper()
-	db, err := Create(base, DefaultOptions())
+	db, err := Create(base, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,18 +56,18 @@ func buildReuseStore(t *testing.T, base string, nRows uint64, depth int) (*Store
 	return db, parent
 }
 
-// TestGetIntoReuse verifies GetInto matches Get value-for-value, including
-// along a DELTA chain with updates and deletes, and that a reused dst keeps
-// working (row growth between calls).
-func TestGetIntoReuse(t *testing.T) {
+// TestGetReuse verifies Get with a reused dst matches Get with a nil dst
+// value-for-value, including along a DELTA chain with updates and deletes,
+// and that a reused dst keeps working (row growth between calls).
+func TestGetReuse(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "reuse")
 	db, head := buildReuseStore(t, base, 1000, 2)
 	defer db.Close()
 
 	var dst Row
 	for i := uint64(0); i < 1000; i++ {
-		want, werr := db.Get(context.Background(), head, 1, i+1)
-		got, gerr := db.GetInto(context.Background(), head, 1, i+1, dst)
+		want, werr := db.Get(context.Background(), head, 1, i+1, nil)
+		got, gerr := db.Get(context.Background(), head, 1, i+1, dst)
 		if (werr != nil) != (gerr != nil) {
 			t.Fatalf("row %d: err mismatch: %v vs %v", i+1, werr, gerr)
 		}
@@ -86,9 +86,10 @@ func TestGetIntoReuse(t *testing.T) {
 	}
 }
 
-// TestNextIntoReuse verifies NextInto matches Next/Row value-for-value over a
-// DELTA chain, including growth from a nil dst and strict RowID order.
-func TestNextIntoReuse(t *testing.T) {
+// TestNextReuse verifies the two Next modes agree value-for-value over a
+// DELTA chain: nil dst (iterator-managed buffer) vs an explicit caller dst,
+// including row growth and strict RowID order.
+func TestNextReuse(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "scanreuse")
 	db, head := buildReuseStore(t, base, 1000, 2)
 	defer db.Close()
@@ -104,16 +105,14 @@ func TestNextIntoReuse(t *testing.T) {
 	var dst Row
 	var lastRowID RowID
 	for {
-		ok2 := it2.Next()
-		var want Row
+		want, ok2 := it2.Next(nil)
 		var wantID RowID
 		if ok2 {
 			wantID = it2.RowID()
-			want = it2.Row()
 		}
-		got, ok := it.NextInto(dst)
+		got, ok := it.Next(dst)
 		if ok != ok2 {
-			t.Fatalf("visibility mismatch: NextInto=%v Next=%v", ok, ok2)
+			t.Fatalf("visibility mismatch: nil-dst=%v dst=%v", ok, ok2)
 		}
 		if !ok {
 			break
@@ -149,9 +148,9 @@ func TestNextIntoReuse(t *testing.T) {
 	}
 }
 
-// TestNextIntoEndRowID verifies range-bounded scans terminate correctly in
+// TestNextEndRowID verifies range-bounded scans terminate correctly in
 // reuse mode.
-func TestNextIntoEndRowID(t *testing.T) {
+func TestNextEndRowID(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "range")
 	db, full := buildReuseStore(t, base, 100, 0)
 	defer db.Close()
@@ -163,7 +162,7 @@ func TestNextIntoEndRowID(t *testing.T) {
 	n := 0
 	var dst Row
 	for {
-		row, ok := it.NextInto(dst)
+		row, ok := it.Next(dst)
 		if !ok {
 			break
 		}

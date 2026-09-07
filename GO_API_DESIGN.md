@@ -13,10 +13,10 @@
 - 默认使用 Zstd、256 KiB Block、SyncCommit。
 - 错误支持 `errors.Is/As`，提交结果未知必须显式表达。
 - 使用强类型 `Value`，避免 `[]any` 的平台类型歧义。
-- 返回的 Row 归调用者所有，不引用可被缓存淘汰或复用的缓冲区。v1.1 新增
-  显式借用/复用入口（`GetInto`/`Iterator.NextInto`）：调用者提供目标 Row，
-  引擎复用其存储；返回的 Row 别名调用者自己的 dst，不引用引擎内部缓冲，
-  生命周期由调用者掌控。
+- 读入口统一为借用/复用模式，不引用可被缓存淘汰或复用的缓冲区：`Get`/
+  `Iterator.Next` 解码进调用者提供的 dst（返回值别名 dst，由调用者掌控生命
+  周期）；`Iterator.Next(nil)` 使用迭代器内部缓冲，跨调用复用，返回的 Row
+  到下一次 Next 前有效。
 
 ## 2. 包结构
 
@@ -137,7 +137,7 @@ type Schema struct {
 	Columns []Column
 }
 
-type TableInfo struct {
+type Table struct {
 	ID            TableID
 	Name          string
 	LatestVersion SchemaVersion
@@ -148,7 +148,7 @@ type TableInfo struct {
 func (w *SnapshotWriter) DefineSchema(schema Schema) error
 func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table TableID, version SchemaVersion) (Schema, error)
 func (s *Store) LatestSchema(ctx context.Context, snapshot SnapshotID, table TableID) (Schema, error)
-func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]TableInfo, error)
+func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error)
 ```
 
 规则：
@@ -218,9 +218,9 @@ type Options struct {
 	Validation       ValidationMode
 	Limits           Limits
 }
-
-func DefaultOptions() Options
 ```
+
+`Options` 零值即默认值（Zstd、256 KiB Block、64 MiB Cache、SyncCommit、Strict），无独立的 `DefaultOptions` 构造器。
 
 API 的 Compression 枚举不直接等于磁盘枚举：`CompressionDefault=0` 在创建时解析为 Zstd，磁盘仍写 `0=None, 1=Zstd`。这样既保持 Options 零值安全，也允许调用者明确选择 None。
 
@@ -343,8 +343,7 @@ ValidationNone 仅关闭最后的父视图存在性检查，不关闭格式、Sc
 ## 8. 随机读取
 
 ```go
-func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table TableID, rowID RowID) (Row, error)
-func (s *Store) GetInto(ctx context.Context, snapshot SnapshotID, table TableID, rowID RowID, dst Row) (Row, error)
+func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table TableID, rowID RowID, dst Row) (Row, error)
 func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table TableID, rowID RowID) (bool, error)
 
 func (s *Store) Snapshot(ctx context.Context, id SnapshotID) (SnapshotInfo, error)
@@ -354,12 +353,12 @@ func (s *Store) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error)
 
 Get 捕获调用开始时的不可变索引视图，沿父链解析；并发 Commit 不改变该次读取。Block 必须验证解压长度和 CRC。Exists 仅解析索引/Tombstone，不读取 Block；不存在返回 `(false,nil)`，Get 返回 `ErrNotFound`。
 
-`GetInto` 是 v1.1 新增的行复用入口（借用/复用模式）：行解码进调用者提供的
-dst，复用其底层数组与已有的 Decimal `*big.Int`，消除每次调用的 Row 分配。
-返回的 Row 别名 dst；下一次对同一 dst 的 GetInto 会覆盖其内容。String/Bytes
-访问器仍返回副本，Decimal 访问器也返回副本，因此通过访问器读值始终安全；
-保留原始 Value 结构体跨多次调用则可能观察到 Decimal 被覆盖。nil dst 等价
-于 Get。出错时 dst 内容未定义。
+Get 是唯一的读入口（借用/复用模式）：行解码进调用者提供的 dst，复用其底层
+数组与已有的 Decimal `*big.Int`，消除每次调用的 Row 分配。返回的 Row 别名
+dst；下一次对同一 dst 的 Get 会覆盖其内容。String/Bytes 访问器仍返回副本，
+Decimal 访问器也返回副本，因此通过访问器读值始终安全；保留原始 Value 结构
+体跨多次调用则可能观察到 Decimal 被覆盖。nil dst 由引擎分配。出错时 dst
+内容未定义。
 
 空 Store 的 LatestSnapshot 返回 `ErrNotFound`。ListSnapshots 按 ID 升序并返回新切片。
 
@@ -374,10 +373,8 @@ type ScanOptions struct {
 type Iterator struct { /* unexported */ }
 
 func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table TableID, opts ScanOptions) (*Iterator, error)
-func (it *Iterator) Next() bool
-func (it *Iterator) NextInto(dst Row) (Row, bool)
+func (it *Iterator) Next(dst Row) (Row, bool)
 func (it *Iterator) RowID() RowID
-func (it *Iterator) Row() Row
 func (it *Iterator) Err() error
 func (it *Iterator) Close() error
 ```
@@ -386,13 +383,13 @@ func (it *Iterator) Close() error
 
 - 输出 RowID 严格升序，已覆盖版本与 Tombstone 不输出。
 - Iterator 捕获创建时的不可变索引视图。
-- Row 在下一次 Next 后仍归调用者所有。
-- `NextInto` 是 v1.1 新增的行复用入口（借用/复用模式）：推进并解码进 dst，
-  复用其底层数组与 Decimal `*big.Int`；返回的 Row 别名 dst，下一次对同一
-  dst 的 NextInto 覆盖其内容。保留行需拷贝（通过访问器读值始终安全）。
-  nil dst 首次使用时自动增长，调用者应把返回的 Row 回写为下一次的 dst。
-  NextInto 不更新 `Row()`；同一迭代器可混用 Next 与 NextInto，但每次调用
-  按自身模式分配或借用。RowID 在两种模式下均可用。
+- Next 是唯一的推进入口（借用/复用模式）：
+  - `Next(nil)`：解码进迭代器内部缓冲，缓冲跨调用复用（只分配一次、按需增
+    长），常规循环无需任何回写；返回的 Row 到下一次 Next 前有效。
+  - `Next(dst)`：解码进调用者提供的 dst，复用其底层数组与 Decimal
+    `*big.Int`；返回的 Row 别名 dst。适合显式管理缓冲的热点路径。
+  两种模式下需要跨调用保留的值都需拷贝（通过访问器读值始终安全）。RowID
+  任意模式下均可用。
 - Next=false 后检查 Err；Close 幂等。
 - ctx 取消后尽快停止并返回标准 context 错误。
 - 内部应对父链排序索引做 k-way merge，不构建与整表行数同规模的 map。
@@ -529,7 +526,7 @@ Block Cache：
 ## 14. 使用示例
 
 ```go
-opts := rowpack.DefaultOptions()
+opts := rowpack.Options{} // 零值即默认：Zstd、256 KiB、64 MiB Cache、SyncCommit、Strict
 db, err := rowpack.Create("/data/users-backup", opts)
 if err != nil { return err }
 defer db.Close()
@@ -560,7 +557,7 @@ if err != nil { return err }
 full, err := w.Commit(ctx)
 if err != nil { return err }
 
-row, err := db.Get(ctx, full.ID, 1, 1001)
+row, err := db.Get(ctx, full.ID, 1, 1001, nil)
 ```
 
 DELTA：

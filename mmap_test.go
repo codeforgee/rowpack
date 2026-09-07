@@ -58,7 +58,7 @@ func TestMmapReaderEquivalence(t *testing.T) {
 
 	// Data reads through the public API must agree with the committed rows.
 	for i := uint64(0); i < 100; i++ {
-		if _, err := db.Get(context.Background(), fullID, 1, i+1); err != nil {
+		if _, err := db.Get(context.Background(), fullID, 1, i+1, nil); err != nil {
 			t.Fatalf("get %d: %v", i+1, err)
 		}
 	}
@@ -67,7 +67,7 @@ func TestMmapReaderEquivalence(t *testing.T) {
 // buildMmapStore writes nRows into a FULL snapshot and returns the open store.
 func buildMmapStore(t *testing.T, base string, nRows uint64) (*Store, SnapshotID) {
 	t.Helper()
-	db, err := Create(base, DefaultOptions())
+	db, err := Create(base, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

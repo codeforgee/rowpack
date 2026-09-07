@@ -16,7 +16,7 @@ import (
 func TestPerfEndToEnd(t *testing.T) {
 	const rows = 200_000
 	base := filepath.Join(t.TempDir(), "perf")
-	opts := DefaultOptions()
+	opts := Options{}
 	db, err := Create(base, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestPerfEndToEnd(t *testing.T) {
 	// Random reads: verify every 97th row, value-for-value.
 	t1 := time.Now()
 	for i := uint64(0); i < rows; i += 97 {
-		row, err := db.Get(context.Background(), full.ID, 1, i+1)
+		row, err := db.Get(context.Background(), full.ID, 1, i+1, nil)
 		if err != nil {
 			t.Fatalf("get %d: %v", i+1, err)
 		}
@@ -84,8 +84,11 @@ func TestPerfEndToEnd(t *testing.T) {
 	}
 	n := 0
 	var first, last uint64
-	for it.Next() {
-		row := it.Row()
+	for {
+		row, ok := it.Next(nil)
+		if !ok {
+			break
+		}
 		v, _ := row[0].Uint64()
 		if n == 0 {
 			first = v
@@ -113,7 +116,7 @@ func TestPerfEndToEnd(t *testing.T) {
 	}
 	openDur := time.Since(t3)
 	for i := uint64(0); i < rows; i += 1000 {
-		if _, err := db2.Get(context.Background(), full.ID, 1, i+1); err != nil {
+		if _, err := db2.Get(context.Background(), full.ID, 1, i+1, nil); err != nil {
 			t.Fatalf("reopen get %d: %v", i+1, err)
 		}
 	}

@@ -42,7 +42,7 @@ func buildConcurrentStore(t *testing.T, base string, opts Options) (*Store, Snap
 // another goroutine commits snapshots, under the race detector.
 func TestM7ConcurrentReadersWriters(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "conc")
-	opts := DefaultOptions()
+	opts := Options{}
 	opts.BlockSize = 2048
 	db, fullID := buildConcurrentStore(t, base, opts)
 	defer db.Close()
@@ -65,7 +65,7 @@ func TestM7ConcurrentReadersWriters(t *testing.T) {
 				}
 				// Random Get against the FULL snapshot.
 				rowID := (rng % 2000) + 1
-				if _, err := db.Get(context.Background(), fullID, 1, rowID); err != nil {
+				if _, err := db.Get(context.Background(), fullID, 1, rowID, nil); err != nil {
 					t.Errorf("get %d: %v", rowID, err)
 					return
 				}
@@ -78,7 +78,10 @@ func TestM7ConcurrentReadersWriters(t *testing.T) {
 						return
 					}
 					n := 0
-					for it.Next() {
+					for {
+						if _, ok := it.Next(nil); !ok {
+							break
+						}
 						n++
 					}
 					it.Close()
@@ -137,12 +140,12 @@ func TestM7ConcurrentReadersWriters(t *testing.T) {
 // cache; disabling the cache yields identical results.
 func TestM7CacheHit(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "cache")
-	opts := DefaultOptions()
+	opts := Options{}
 	opts.BlockSize = 4096
 	db, fullID := buildConcurrentStore(t, base, opts)
 
 	// First read misses, subsequent reads hit.
-	if _, err := db.Get(context.Background(), fullID, 1, 1); err != nil {
+	if _, err := db.Get(context.Background(), fullID, 1, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	st1 := db.Stats()
@@ -150,7 +153,7 @@ func TestM7CacheHit(t *testing.T) {
 		t.Fatalf("first read should miss: hits=%d misses=%d", st1.Cache.Hits, st1.Cache.Misses)
 	}
 	for i := uint64(1); i <= 20; i++ {
-		if _, err := db.Get(context.Background(), fullID, 1, i); err != nil {
+		if _, err := db.Get(context.Background(), fullID, 1, i, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -167,7 +170,7 @@ func TestM7CacheHit(t *testing.T) {
 	}
 	defer db2.Close()
 	for i := uint64(1); i <= 100; i++ {
-		r, err := db2.Get(context.Background(), fullID, 1, i)
+		r, err := db2.Get(context.Background(), fullID, 1, i, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +184,7 @@ func TestM7CacheHit(t *testing.T) {
 // block trigger a single controlled load (miss merging).
 func TestM7ConcurrentCommitSameBlock(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "merge")
-	opts := DefaultOptions()
+	opts := Options{}
 	opts.BlockSize = 64 << 10 // one big block
 	db, fullID := buildConcurrentStore(t, base, opts)
 	defer db.Close()
@@ -192,7 +195,7 @@ func TestM7ConcurrentCommitSameBlock(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := uint64(0); j < 50; j++ {
-				if _, err := db.Get(context.Background(), fullID, 1, 1); err != nil {
+				if _, err := db.Get(context.Background(), fullID, 1, 1, nil); err != nil {
 					t.Errorf("get: %v", err)
 					return
 				}
@@ -214,13 +217,13 @@ func TestM7WriterLock(t *testing.T) {
 		t.Skip("short mode")
 	}
 	base := filepath.Join(t.TempDir(), "lock")
-	db, err := Create(base, DefaultOptions())
+	db, err := Create(base, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 	// A second read-write open must fail (locked).
-	if _, err := Open(base, DefaultOptions()); err == nil {
+	if _, err := Open(base, Options{}); err == nil {
 		t.Fatal("second writer open succeeded")
 	}
 	// A read-only open must succeed.
@@ -235,7 +238,7 @@ func TestM7WriterLock(t *testing.T) {
 // after the fact rejects new operations with ErrClosed.
 func TestM7ConcurrentClose(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "close")
-	db, _ := buildConcurrentStore(t, base, DefaultOptions())
+	db, _ := buildConcurrentStore(t, base, Options{})
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -246,7 +249,7 @@ func TestM7ConcurrentClose(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if _, err := db.Get(context.Background(), 1, 1, 1); err == nil {
+	if _, err := db.Get(context.Background(), 1, 1, 1, nil); err == nil {
 		t.Fatal("Get after Close succeeded")
 	}
 	if _, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{}); err == nil {
@@ -257,7 +260,7 @@ func TestM7ConcurrentClose(t *testing.T) {
 // TestM7CloseAbortsWriter verifies Close aborts an active uncommitted writer.
 func TestM7CloseAbortsWriter(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "abort")
-	db, _ := Create(base, DefaultOptions())
+	db, _ := Create(base, Options{})
 	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -268,7 +271,7 @@ func TestM7CloseAbortsWriter(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db2, err := Open(base, DefaultOptions())
+	db2, err := Open(base, Options{})
 	if err != nil {
 		t.Fatalf("reopen after abort-close: %v", err)
 	}

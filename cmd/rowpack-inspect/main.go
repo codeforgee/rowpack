@@ -185,9 +185,13 @@ func dump(ctx context.Context, base string, snap uint64, table uint32) {
 		os.Exit(1)
 	}
 	defer it.Close()
-	for it.Next() {
+	for {
+		row, ok := it.Next(nil)
+		if !ok {
+			break
+		}
 		fmt.Printf("%d", it.RowID())
-		for _, v := range it.Row() {
+		for _, v := range row {
 			fmt.Print("\t" + formatValue(v))
 		}
 		fmt.Println()

@@ -57,8 +57,8 @@ type Schema = codec.Schema
 // Column describes one column of a Schema.
 type Column = codec.Column
 
-// TableInfo is a lightweight table identity returned by Table listing APIs.
-type TableInfo struct {
+// Table is a lightweight table identity returned by Table listing APIs.
+type Table struct {
 	ID            TableID
 	Name          string
 	LatestVersion SchemaVersion

@@ -11,7 +11,7 @@ import (
 // affected by later commits.
 func TestM6DeltaHistory(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "m6")
-	opts := DefaultOptions()
+	opts := Options{}
 	opts.BlockSize = 4096
 	db, err := Create(base, opts)
 	if err != nil {
@@ -95,7 +95,7 @@ func TestM6DeltaHistory(t *testing.T) {
 
 	// Historical reads: snapshot FULL sees original state.
 	for i := uint64(1); i <= 10; i++ {
-		row, err := db.Get(ctx(t), full.ID, 1, i)
+		row, err := db.Get(ctx(t), full.ID, 1, i, nil)
 		if err != nil {
 			t.Fatalf("full get %d: %v", i, err)
 		}
@@ -104,48 +104,48 @@ func TestM6DeltaHistory(t *testing.T) {
 			t.Fatalf("full row %d name %q", i, name)
 		}
 	}
-	if _, err := db.Get(ctx(t), full.ID, 1, 11); err == nil {
+	if _, err := db.Get(ctx(t), full.ID, 1, 11, nil); err == nil {
 		t.Fatal("full snapshot sees row 11")
 	}
 
 	// D1: row 3 updated, row 11 inserted, row 5 still present.
-	r3, _ := db.Get(ctx(t), d1info.ID, 1, 3)
+	r3, _ := db.Get(ctx(t), d1info.ID, 1, 3, nil)
 	if n, _ := r3[1].String(); n != "v1-3" {
 		t.Fatalf("d1 row 3 = %q", n)
 	}
-	r11, _ := db.Get(ctx(t), d1info.ID, 1, 11)
+	r11, _ := db.Get(ctx(t), d1info.ID, 1, 11, nil)
 	if n, _ := r11[1].String(); n != "v1-11" {
 		t.Fatalf("d1 row 11 = %q", n)
 	}
-	if _, err := db.Get(ctx(t), d1info.ID, 1, 5); err != nil {
+	if _, err := db.Get(ctx(t), d1info.ID, 1, 5, nil); err != nil {
 		t.Fatalf("d1 row 5 missing: %v", err)
 	}
 
 	// D2: row 5 deleted, row 12 present.
-	if _, err := db.Get(ctx(t), d2info.ID, 1, 5); err == nil {
+	if _, err := db.Get(ctx(t), d2info.ID, 1, 5, nil); err == nil {
 		t.Fatal("d2 row 5 not deleted")
 	}
 	if ok, _ := db.Exists(ctx(t), d2info.ID, 1, 5); ok {
 		t.Fatal("d2 exists(5) true")
 	}
-	r12, _ := db.Get(ctx(t), d2info.ID, 1, 12)
+	r12, _ := db.Get(ctx(t), d2info.ID, 1, 12, nil)
 	if n, _ := r12[1].String(); n != "v2-12" {
 		t.Fatalf("d2 row 12 = %q", n)
 	}
 
 	// D3: row 7 updated, row 9 deleted; old snapshots unaffected.
-	r7, _ := db.Get(ctx(t), d3info.ID, 1, 7)
+	r7, _ := db.Get(ctx(t), d3info.ID, 1, 7, nil)
 	if n, _ := r7[1].String(); n != "v3-7" {
 		t.Fatalf("d3 row 7 = %q", n)
 	}
-	if _, err := db.Get(ctx(t), d3info.ID, 1, 9); err == nil {
+	if _, err := db.Get(ctx(t), d3info.ID, 1, 9, nil); err == nil {
 		t.Fatal("d3 row 9 not deleted")
 	}
 	// D2 must still see row 9 and v2 state of row 7.
-	if _, err := db.Get(ctx(t), d2info.ID, 1, 9); err != nil {
+	if _, err := db.Get(ctx(t), d2info.ID, 1, 9, nil); err != nil {
 		t.Fatalf("d2 row 9 affected by later delete: %v", err)
 	}
-	r7d2, _ := db.Get(ctx(t), d2info.ID, 1, 7)
+	r7d2, _ := db.Get(ctx(t), d2info.ID, 1, 7, nil)
 	if n, _ := r7d2[1].String(); n != "v0-7" {
 		t.Fatalf("d2 row 7 = %q (later update leaked)", n)
 	}
@@ -170,7 +170,7 @@ func TestM6DeltaHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	// ValidationNone skips the parent existence check.
-	vnone := DefaultOptions()
+	vnone := Options{}
 	vnone.Validation = ValidationNone
 	_ = vnone
 
@@ -196,14 +196,14 @@ func TestM6DeltaHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db2.Close()
-	r7r, err := db2.Get(ctx(t), d3info.ID, 1, 7)
+	r7r, err := db2.Get(ctx(t), d3info.ID, 1, 7, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := r7r[1].String(); n != "v3-7" {
 		t.Fatalf("reopened d3 row 7 = %q", n)
 	}
-	if _, err := db2.Get(ctx(t), d3info.ID, 1, 9); err == nil {
+	if _, err := db2.Get(ctx(t), d3info.ID, 1, 9, nil); err == nil {
 		t.Fatal("reopened d3 row 9 not deleted")
 	}
 	// Latest snapshot is the empty delta.
@@ -217,7 +217,7 @@ func TestM6DeltaHistory(t *testing.T) {
 // existence check, not format/schema/duplicate checks.
 func TestM6ValidationNone(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "vnone")
-	opts := DefaultOptions()
+	opts := Options{}
 	opts.Validation = ValidationNone
 	db, err := Create(base, opts)
 	if err != nil {
@@ -241,7 +241,7 @@ func TestM6ValidationNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, err := db.Get(ctx(t), dinfo.ID, 1, 1)
+	row, err := db.Get(ctx(t), dinfo.ID, 1, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,8 +270,11 @@ func collect(t *testing.T, db *Store, snapshot SnapshotID, table TableID, opts S
 	}
 	defer it.Close()
 	var out []string
-	for it.Next() {
-		row := it.Row()
+	for {
+		row, ok := it.Next(nil)
+		if !ok {
+			break
+		}
 		id, _ := row[0].Uint64()
 		name, _ := row[1].String()
 		out = append(out, fmt.Sprintf("%d:%s", id, name))
@@ -286,7 +289,7 @@ func collect(t *testing.T, db *Store, snapshot SnapshotID, table TableID, opts S
 // filtering, ranges, and that Scan memory does not depend on table size.
 func TestM6Scan(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "scan")
-	opts := DefaultOptions()
+	opts := Options{}
 	opts.BlockSize = 512
 	db, err := Create(base, opts)
 	if err != nil {
@@ -384,7 +387,7 @@ func TestM6Scan(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer it.Close()
-	if it.Next() {
+	if _, ok := it.Next(nil); ok {
 		t.Fatal("nonexistent table yielded rows")
 	}
 

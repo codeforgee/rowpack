@@ -31,7 +31,7 @@ func buildFullDeltaStore(t *testing.T, base string) {
 		testUUIDOverride = nil
 		testNowOverride = 0
 	})
-	opts := DefaultOptions()
+	opts := Options{}
 	opts.BlockSize = 1024
 	db, err := Create(base, opts)
 	if err != nil {
@@ -122,7 +122,7 @@ func TestGoldenStoreSamples(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	db, err := Open(base, DefaultOptions())
+	db, err := Open(base, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestGoldenStoreSamples(t *testing.T) {
 		t.Fatalf("snapshots: %v %v", snaps, err)
 	}
 	// FULL content.
-	r, err := db.Get(context.Background(), snaps[0].ID, 1, 1)
+	r, err := db.Get(context.Background(), snaps[0].ID, 1, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestGoldenStoreSamples(t *testing.T) {
 	}
 	// DELTA content.
 	if n, _ := func() (string, bool) {
-		rr, e := db.Get(context.Background(), snaps[1].ID, 1, 2)
+		rr, e := db.Get(context.Background(), snaps[1].ID, 1, 2, nil)
 		if e != nil {
 			return "", false
 		}
@@ -150,18 +150,18 @@ func TestGoldenStoreSamples(t *testing.T) {
 	}(); n != "updated-2" {
 		t.Fatalf("delta row2 name = %q", n)
 	}
-	if _, err := db.Get(context.Background(), snaps[1].ID, 1, 3); err == nil {
+	if _, err := db.Get(context.Background(), snaps[1].ID, 1, 3, nil); err == nil {
 		t.Fatal("delta row3 not deleted")
 	}
-	if _, err := db.Get(context.Background(), snaps[1].ID, 1, 31); err != nil {
+	if _, err := db.Get(context.Background(), snaps[1].ID, 1, 31, nil); err != nil {
 		t.Fatalf("delta row31: %v", err)
 	}
 	// Empty delta sees delta state.
-	if _, err := db.Get(context.Background(), snaps[2].ID, 1, 31); err != nil {
+	if _, err := db.Get(context.Background(), snaps[2].ID, 1, 31, nil); err != nil {
 		t.Fatalf("empty delta row31: %v", err)
 	}
 	// Oversize row round trip.
-	big, err := db.Get(context.Background(), snaps[0].ID, 3, 1)
+	big, err := db.Get(context.Background(), snaps[0].ID, 3, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

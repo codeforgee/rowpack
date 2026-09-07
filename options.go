@@ -56,19 +56,6 @@ type Options struct {
 	Limits           Limits
 }
 
-// DefaultOptions returns the documented defaults: Zstd, 256 KiB blocks, 64 MiB
-// cache, SyncCommit, strict validation.
-func DefaultOptions() Options {
-	return Options{
-		BlockSize:        fileformat.DefaultBlockSize,
-		Compression:      CompressionDefault,
-		CompressionLevel: 0, // zstd default level
-		CacheBytes:       fileformat.DefaultCacheBytes,
-		Durability:       SyncCommit,
-		Validation:       ValidationStrict,
-	}
-}
-
 // resolved returns an Options copy with defaults applied.
 func (o Options) resolved() (Options, error) {
 	o = o.applyDefaults()

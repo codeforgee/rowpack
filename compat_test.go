@@ -12,7 +12,7 @@ import (
 // from a healthy store; none of them may cause a panic.
 func TestM10CorruptSamples(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "src")
-	db, _ := buildConcurrentStore(t, base, DefaultOptions())
+	db, _ := buildConcurrentStore(t, base, Options{})
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: 1})
 	_ = w.Insert(context.Background(), 1, 7001, 1, Row{Uint64(7001), String("x")})
 	if _, err := w.Commit(context.Background()); err != nil {
@@ -29,7 +29,7 @@ func TestM10CorruptSamples(t *testing.T) {
 		d, i := mutate(append([]byte(nil), healthy...), append([]byte(nil), hidx...))
 		os.WriteFile(filepath.Join(dir, "c.rpk"), d, 0o644)
 		os.WriteFile(filepath.Join(dir, "c.rpi"), i, 0o644)
-		db, err := Open(filepath.Join(dir, "c"), DefaultOptions())
+		db, err := Open(filepath.Join(dir, "c"), Options{})
 		if err != nil {
 			return "", err
 		}
@@ -65,7 +65,7 @@ func TestM10CorruptSamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("payload corruption should open: %v", err)
 	}
-	db2, _ := Open(filepath.Join(dir, "c"), DefaultOptions())
+	db2, _ := Open(filepath.Join(dir, "c"), Options{})
 	if _, err := db2.Verify(context.Background(), VerifyFull); err == nil {
 		t.Fatal("payload corruption not caught by verify")
 	}
@@ -80,7 +80,7 @@ func TestM10CorruptSamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("index corruption should recover: %v", err)
 	}
-	db3, err := Open(filepath.Join(dir, "c"), DefaultOptions())
+	db3, err := Open(filepath.Join(dir, "c"), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -50,7 +50,7 @@ func benchSchema() Schema {
 // plus snapshot ID.
 func buildBenchStore(b *testing.B, base string, nRows uint64, blockSize int) (*Store, SnapshotID) {
 	b.Helper()
-	opts := DefaultOptions()
+	opts := Options{}
 	if blockSize > 0 {
 		opts.BlockSize = blockSize
 	}
@@ -83,7 +83,7 @@ func BenchmarkFullSequentialWrite(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		base := filepath.Join(b.TempDir(), "w")
-		db, err := Create(base, DefaultOptions())
+		db, err := Create(base, Options{})
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -117,7 +117,7 @@ func BenchmarkGetColdRead(b *testing.B) {
 	defer db2.Close()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := db2.Get(context.Background(), fullID, 1, uint64(i%100000)+1); err != nil {
+		if _, err := db2.Get(context.Background(), fullID, 1, uint64(i%100000)+1, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -128,13 +128,13 @@ func BenchmarkGetHotRead(b *testing.B) {
 	defer db.Close()
 	// Warm a few blocks.
 	for i := uint64(0); i < 100; i++ {
-		if _, err := db.Get(context.Background(), fullID, 1, i+1); err != nil {
+		if _, err := db.Get(context.Background(), fullID, 1, i+1, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := db.Get(context.Background(), fullID, 1, uint64(i%100)+1); err != nil {
+		if _, err := db.Get(context.Background(), fullID, 1, uint64(i%100)+1, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -150,7 +150,7 @@ func BenchmarkConcurrentGet(b *testing.B) {
 				i := uint64(0)
 				for pb.Next() {
 					i++
-					if _, err := db.Get(context.Background(), fullID, 1, i%100000+1); err != nil {
+					if _, err := db.Get(context.Background(), fullID, 1, i%100000+1, nil); err != nil {
 						b.Fatal(err)
 					}
 				}
@@ -168,7 +168,10 @@ func BenchmarkScan(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		for it.Next() {
+		for {
+			if _, ok := it.Next(nil); !ok {
+				break
+			}
 		}
 		if err := it.Err(); err != nil {
 			b.Fatal(err)
@@ -177,7 +180,7 @@ func BenchmarkScan(b *testing.B) {
 	}
 }
 
-// BenchmarkScanInto is BenchmarkScan with the v1.1 reuse mode: rows are
+// BenchmarkScanInto is BenchmarkScan with the reuse mode: rows are
 // decoded into one reused buffer, eliminating the per-row Row allocation and
 // per-row Decimal big.Int churn.
 func BenchmarkScanInto(b *testing.B) {
@@ -191,7 +194,7 @@ func BenchmarkScanInto(b *testing.B) {
 		}
 		var dst Row
 		for {
-			row, ok := it.NextInto(dst)
+			row, ok := it.Next(dst)
 			if !ok {
 				break
 			}
@@ -212,14 +215,14 @@ func BenchmarkGetHotReadInto(b *testing.B) {
 	defer db.Close()
 	// Warm a few blocks.
 	for i := uint64(0); i < 100; i++ {
-		if _, err := db.Get(context.Background(), fullID, 1, i+1); err != nil {
+		if _, err := db.Get(context.Background(), fullID, 1, i+1, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
 	var dst Row
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		row, err := db.GetInto(context.Background(), fullID, 1, uint64(i%100)+1, dst)
+		row, err := db.Get(context.Background(), fullID, 1, uint64(i%100)+1, dst)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -233,7 +236,7 @@ func BenchmarkOpenReplay(b *testing.B) {
 	db.Close()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		db2, err := Open(base, DefaultOptions())
+		db2, err := Open(base, Options{})
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -263,7 +266,7 @@ func removeFile(path string) error { return os.Remove(path) }
 // buildBenchStoreN writes nRows into a FULL snapshot.
 func buildBenchStoreN(b *testing.B, base string, nRows uint64) (*Store, SnapshotID) {
 	b.Helper()
-	db, err := Create(base, DefaultOptions())
+	db, err := Create(base, Options{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -310,7 +313,7 @@ func BenchmarkGetRandom1M(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		rng = rng*6364136223846793005 + 1442695040888963407
 		rowID := rng%rows + 1
-		if _, err := db.Get(context.Background(), fullID, 1, rowID); err != nil {
+		if _, err := db.Get(context.Background(), fullID, 1, rowID, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -329,7 +332,10 @@ func BenchmarkScan1M(b *testing.B) {
 			b.Fatal(err)
 		}
 		n := 0
-		for it.Next() {
+		for {
+			if _, ok := it.Next(nil); !ok {
+				break
+			}
 			n++
 		}
 		if err := it.Err(); err != nil {
@@ -379,7 +385,7 @@ func BenchmarkGetDeepChain(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		rng = rng*6364136223846793005 + 1
 		rowID := rng%100_000 + 1
-		if _, err := db.Get(context.Background(), head, 1, rowID); err != nil {
+		if _, err := db.Get(context.Background(), head, 1, rowID, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -396,7 +402,10 @@ func BenchmarkScanDeepChain(b *testing.B) {
 			b.Fatal(err)
 		}
 		n := 0
-		for it.Next() {
+		for {
+			if _, ok := it.Next(nil); !ok {
+				break
+			}
 			n++
 		}
 		if err := it.Err(); err != nil {

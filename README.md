@@ -28,7 +28,7 @@ import (
 
 func main() {
 	ctx := context.Background()
-	db, err := rowpack.Create("/data/users-backup", rowpack.DefaultOptions())
+	db, err := rowpack.Create("/data/users-backup", rowpack.Options{})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	row, err := db.Get(ctx, full.ID, 1, 1001)
+	row, err := db.Get(ctx, full.ID, 1, 1001, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -98,25 +98,27 @@ func main() {
 - **Block**：压缩与校验单位，属于一个快照和一个表。
 - **TypedTuple**：按 Schema 顺序编码的行负载，NULL 用位图表达。
 
-## 行复用（v1.1）
+## 行复用
 
-高吞吐批量读取可用 v1.1 新增的借用/复用入口：调用者提供目标 Row，引擎复用
-其存储，消除每行的 Row 切片与 Decimal big.Int 分配（Scan 场景每行分配降
-~86%）。`GetInto` / `Iterator.NextInto` 的返回值别名调用者自己的 dst，下
-一次调用覆盖其内容；通过 `String()`/`Bytes()`/`Decimal()` 访问器读值始终
-安全（返回副本）。默认的 `Get` / `Iterator.Row` 语义不变（每次返回独立、
-归调用者所有的行）。
+读取入口统一为借用/复用模式，消除每行的 Row 切片与 Decimal big.Int 分配
+（Scan 场景每行分配降 ~86%）：
+
+- `Iterator.Next(nil)`：解码进迭代器内部缓冲，缓冲跨调用复用；返回的 Row
+  到下一次 Next 前有效。常规循环零额外回写。
+- `Get` / `Next` 传 dst：解码进调用者提供的 Row，复用其底层数组（Get 为
+  并发安全，nil dst 每次分配新行；Next 的迭代器非并发安全，nil 即内部缓冲）。
+
+需要跨调用保留的值需拷贝；通过 `String()`/`Bytes()`/`Decimal()` 访问器读
+值始终安全（返回副本）。
 
 ```go
 it, _ := db.Scan(ctx, full.ID, 1, rowpack.ScanOptions{})
 defer it.Close()
-var dst rowpack.Row
 for {
-	row, ok := it.NextInto(dst)
+	row, ok := it.Next(nil)
 	if !ok {
 		break
 	}
-	dst = row
 	name, _ := row[1].String()
 	_ = name
 }
@@ -151,9 +153,9 @@ make golden      # 重新生成 golden files（格式变更时人工审查）
 | --- | --- |
 | FULL 顺序写 | ~360 krows/s, ~72 MB/s（allocs 较 v1.0 -16%） |
 | Get 冷读（缓存关闭，mmap） | ~273 µs/op |
-| Get 热读（缓存命中） | ~3 µs/op（GetInto 复用 ~3 µs / 2 allocs） |
+| Get 热读（缓存命中） | ~3 µs/op / 2 allocs（复用 dst） |
 | 并发 Get 1/8 goroutine | ~195 µs/op（读路径无锁） |
-| Scan 100k 行 | ~32 ms（ScanInto 复用 ~22 ms / 928 krows/s / -86% allocs） |
+| Scan 100k 行 | ~32 ms（复用 dst ~22 ms / 928 krows/s / -86% allocs） |
 | Open 索引重放（100k 行） | ~8 ms（1M 行索引常驻 22 MB，较 v1.0 -93%） |
 | RebuildIndex（100k 行） | ~92 ms |
 

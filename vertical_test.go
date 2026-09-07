@@ -15,17 +15,17 @@ func ctx(t *testing.T) context.Context { return context.Background() }
 
 func TestCreateOpenPaths(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "db")
-	if _, err := Create(base+".rpk", DefaultOptions()); err == nil {
+	if _, err := Create(base+".rpk", Options{}); err == nil {
 		t.Fatal("accepted .rpk extension")
 	}
-	if _, err := Create(base+".rpi", DefaultOptions()); err == nil {
+	if _, err := Create(base+".rpi", Options{}); err == nil {
 		t.Fatal("accepted .rpi extension")
 	}
-	_, err := Open(base, DefaultOptions())
+	_, err := Open(base, Options{})
 	if err == nil {
 		t.Fatal("opened nonexistent store")
 	}
-	db, err := Create(base, DefaultOptions())
+	db, err := Create(base, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,11 +33,11 @@ func TestCreateOpenPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Create must not overwrite.
-	if _, err := Create(base, DefaultOptions()); err == nil {
+	if _, err := Create(base, Options{}); err == nil {
 		t.Fatal("Create overwrote existing store")
 	}
 	// Reopen read-write and read-only.
-	db2, err := Open(base, DefaultOptions())
+	db2, err := Open(base, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestCreateOpenPaths(t *testing.T) {
 // value-by-value comparison.
 func TestM5VerticalSlice(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "v")
-	opts := DefaultOptions()
+	opts := Options{}
 	opts.BlockSize = 512 // small blocks force multiple Rows blocks
 	db, err := Create(base, opts)
 	if err != nil {
@@ -171,7 +171,7 @@ func TestM5VerticalSlice(t *testing.T) {
 
 	// Random row reads with value-by-value comparison.
 	for i := uint64(0); i < 2000; i += 37 {
-		row, err := db2.Get(ctx(t), full.ID, 1, i+1)
+		row, err := db2.Get(ctx(t), full.ID, 1, i+1, nil)
 		if err != nil {
 			t.Fatalf("get row %d: %v", i+1, err)
 		}
@@ -217,7 +217,7 @@ func TestM5VerticalSlice(t *testing.T) {
 	}
 
 	// Get of a nonexistent row returns ErrNotFound.
-	if _, err := db2.Get(ctx(t), full.ID, 1, 99999); err == nil {
+	if _, err := db2.Get(ctx(t), full.ID, 1, 99999, nil); err == nil {
 		t.Fatal("get nonexistent row succeeded")
 	}
 

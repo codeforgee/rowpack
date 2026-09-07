@@ -78,7 +78,11 @@ func RebuildIndex(ctx context.Context, basePath string, opts RebuildOptions) err
 	if err != nil {
 		return err
 	}
-	// Validate the parent chain ordering and depth.
+	// Build each snapshot's index txn once and reuse it for both chain
+	// validation and writing: the data file is immutable during the rebuild
+	// (cross-process lock held), so a second scan would only re-decompress
+	// every block and re-parse every payload.
+	txns := make([]*index.Txn, 0, len(committed))
 	view := index.EmptyView()
 	for _, c := range committed {
 		txn, err := s.buildIndexTxnFromData(&c)
@@ -88,6 +92,7 @@ func RebuildIndex(ctx context.Context, basePath string, opts RebuildOptions) err
 		if _, err := view.Apply(txn, fileformat.DefaultMaxSnapshotDepth); err != nil {
 			return fmt.Errorf("rowpack: snapshot %d chain invalid: %w", c.snapshotID, err)
 		}
+		txns = append(txns, txn)
 	}
 
 	// Write a fresh index to a temp file and atomically rename.
@@ -111,12 +116,7 @@ func RebuildIndex(ctx context.Context, basePath string, opts RebuildOptions) err
 	}
 	off := int64(fileformat.IndexFileHeaderSize)
 	seq := uint64(0)
-	for _, c := range committed {
-		txn, err := s.buildIndexTxnFromData(&c)
-		if err != nil {
-			cleanup()
-			return err
-		}
+	for _, txn := range txns {
 		seq++
 		b := marshalTxn(txn, seq, off)
 		if _, err := inf.Write(b); err != nil {

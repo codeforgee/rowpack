@@ -206,3 +206,29 @@ DecimalBytes）、golden files 全绿；`TestPerfEndToEnd` 端到端回归通过
 > （块负载累积 + 索引 body + 24 B/行分片，均属最终数据本体）；剩余 CPU
 > 大头是 zstd 编码（~16–24%）与 SyncCommit fsync（~12%），前者属压缩
 > 级别权衡，后者属持久性语义。
+
+## v1.1+ 增量基准（2026-09-07 第四批：RebuildIndex 单遍化、基准热身诚实化）
+
+> 环境同上。对比基线为第三批数值。
+
+| 基准 | 第三批 | 第四批 | 变化 |
+| --- | --- | --- | --- |
+| BenchmarkRebuildIndex（100k 行） | 60.6 ms / 184 MB / 4.6K allocs | **31.4 ms / 71.5 MB / 1.2K allocs** | -48% / -61% / -74% |
+| BenchmarkGetDeepChain（32 层，全缓存预热） | 203–241 µs（冷读伪影） | **4.2 µs / 856 B / 5 allocs** | 真实链解析成本 |
+| BenchmarkConcurrentGet g1/g8/g32/g64（热） | ~80 µs（冷读伪影） | **5.9/5.0/6.0/4.9 µs，6 allocs** | g64 ≈ g1，线性扩展证实 |
+
+本批优化内容：
+
+1. **RebuildIndex 单遍化**：原实现对每个快照调用两次
+   `buildIndexTxnFromData`（校验一遍、写盘一遍，各自重解压全部块），
+   `marshalTxn` 又把同一 txn 重灌进 builder 并 Build 两次（两 pass 求
+   TxnEndOffset）。改为：txn 构建一次、校验与写盘复用；TxnEndOffset 由
+   `Header.BodyBytes` 直接算出（序列化长度与偏移字段无关），单次 Build；
+   `ParseRowsPayload`（物化全部记录）换成轻量 `ParseRowsDirectory`
+   （RowID/ChangeType 已在目录里）；marshalTxn builder 预分配。
+2. **基准热身诚实化**：GetDeepChain / ConcurrentGet 原先在小 b.N 下没有
+   缓存预热，测得的是冷解压而非链解析/并发扩展本身。补全量预热后，
+   32 层链点查真实成本 ~4 µs，并发热读 1–64 goroutine 无锁线性扩展。
+
+正确性：`go test ./...`、`go test -race ./...`、codec fuzz 全绿。
+`verify.go` 保留 `ParseRowsPayload`——全记录校验本就是 Verify 的职责。

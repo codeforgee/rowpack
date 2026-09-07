@@ -329,7 +329,10 @@ func (s *Store) buildIndexTxnFromData(c *committedSnapshot) (*index.Txn, error) 
 		})
 		switch bh.BlockKind {
 		case fileformat.BlockKindRows:
-			rp, err := block.ParseRowsPayload(blk.Raw, bh.ItemCount)
+			// The lightweight directory view carries RowID/ChangeType per
+			// record, which is all the index needs; the full payload parse
+			// would materialize every record slice for nothing.
+			rp, err := block.ParseRowsDirectory(blk.Raw, bh.ItemCount, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -398,9 +401,12 @@ func (s *Store) buildIndexTxnFromData(c *committedSnapshot) (*index.Txn, error) 
 
 // marshalTxn serializes a rebuilt txn with the given sequence and offsets.
 // TxnStartOffset/TxnEndOffset are informational (replay derives positions by
-// walking), so a two-pass build fills them correctly.
+// walking). The end offset is computed from the header's BodyBytes (the
+// serialized length is independent of the offset fields), so a single Build
+// suffices.
 func marshalTxn(txn *index.Txn, seq uint64, start int64) []byte {
 	b := index.NewBuilder(seq)
+	b.Reserve(len(txn.Metadata), len(txn.Blocks), len(txn.Rows))
 	se := txn.Snapshot
 	_ = b.SetSnapshot(se)
 	for i := range txn.Blocks {
@@ -412,11 +418,7 @@ func marshalTxn(txn *index.Txn, seq uint64, start int64) []byte {
 	for i := range txn.Rows {
 		_ = b.AddRow(txn.Rows[i])
 	}
-	out1, _, err := b.Build(se.DataStart, se.DataEnd, se.DataFooterCRC32C, start, start)
-	if err != nil {
-		panic(err)
-	}
-	end := start + int64(len(out1))
+	end := start + int64(fileformat.IndexTxnHeaderSize+txn.Header.BodyBytes) + fileformat.IndexTxnFooterSize
 	out, _, err := b.Build(se.DataStart, se.DataEnd, se.DataFooterCRC32C, start, end)
 	if err != nil {
 		panic(err)

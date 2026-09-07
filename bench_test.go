@@ -145,6 +145,12 @@ func BenchmarkConcurrentGet(b *testing.B) {
 		b.Run(fmt.Sprintf("g%d", g), func(b *testing.B) {
 			db, fullID := buildBenchStore(b, filepath.Join(b.TempDir(), "conc"), 100000, 0)
 			defer db.Close()
+			// Warm the cache so the benchmark measures concurrent hot reads.
+			for i := uint64(0); i < 100000; i++ {
+				if _, err := db.Get(context.Background(), fullID, 1, i+1, nil); err != nil {
+					b.Fatal(err)
+				}
+			}
 			b.ResetTimer()
 			b.RunParallel(func(pb *testing.PB) {
 				i := uint64(0)
@@ -348,10 +354,16 @@ func buildDeltaChainStore(b *testing.B, base string, depth, deltaRows int) (*Sto
 }
 
 // BenchmarkGetDeepChain performs point reads at the head of a 32-deep DELTA
-// chain (parent-chain resolution cost).
+// chain (parent-chain resolution cost). The block cache is warmed first so
+// the benchmark measures resolution and decode, not cold decompression.
 func BenchmarkGetDeepChain(b *testing.B) {
 	db, head := buildDeltaChainStore(b, filepath.Join(b.TempDir(), "chain"), 32, 1000)
 	defer db.Close()
+	for i := uint64(1); i <= 100_000; i++ {
+		if _, err := db.Get(context.Background(), head, 1, i, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
 	var rng uint64 = 1442695040888963407
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

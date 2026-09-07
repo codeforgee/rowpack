@@ -104,6 +104,46 @@ const (
 	ChangeDelete ChangeType = 3
 )
 
+// EncryptionAlgorithm identifies the store-level block encryption algorithm
+// stored in FileHeader.EncryptionAlgorithm. The value is frozen per algorithm.
+type EncryptionAlgorithm uint8
+
+const (
+	EncNone      EncryptionAlgorithm = 0 // plain blocks
+	EncAES256GCM EncryptionAlgorithm = 1 // AES-256-GCM per block payload
+)
+
+// NonceScheme identifies the per-block nonce generation rule stored in
+// FileHeader.NonceScheme. NonceCounterV1 encodes a 96-bit nonce as
+// KeyEpoch(4B) ‖ BlockID(8B); uniqueness holds because BlockID is
+// monotonically increasing and .rpk payloads are never rewritten.
+type NonceScheme uint8
+
+const (
+	NonceNone      NonceScheme = 0
+	NonceCounterV1 NonceScheme = 1
+)
+
+// Encryption layout constants. The store-level fields live in the FileHeader
+// reserved region (offset 64..120); non-encrypted stores leave them zero.
+const (
+	FileHeaderEncAlgoOffset  = 64  // 1B EncryptionAlgorithm
+	FileHeaderNonceSchemeOff = 65  // 1B NonceScheme
+	FileHeaderKeyIDLenOffset = 66  // 1B key id length (0..KeyIDMaxLen)
+	FileHeaderKeyIDOffset    = 67  // KeyIDMaxLen bytes of key id
+	FileHeaderKeyIDMaxLen    = 31
+
+	// BlockHeaderKeyEpochOffset is the first 4 reserved bytes of BlockHeader,
+	// holding the block's KeyEpoch.
+	BlockHeaderKeyEpochOffset = 56
+
+	// AESGCMTagLen is the AES-256-GCM authentication tag length (16 bytes).
+	// Tag size is frozen by the algorithm and never stored per block.
+	AESGCMTagLen = 16
+	// EncNonceLen is the AES-GCM standard 96-bit nonce length.
+	EncNonceLen = 12
+)
+
 // RowEncoding identifies the row payload encoding. DELETE records carry 0.
 type RowEncoding uint8
 

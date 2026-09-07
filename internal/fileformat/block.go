@@ -6,9 +6,12 @@ import (
 )
 
 // BlockHeader is the fixed 64-byte header preceding a stored (possibly
-// compressed) block payload. RawCRC32C covers the uncompressed payload;
-// HeaderCRC32C covers the whole 64-byte header with the header CRC field
-// zeroed.
+// compressed, possibly encrypted) block payload. RawCRC32C covers the
+// uncompressed payload; HeaderCRC32C covers the whole 64-byte header with the
+// header CRC field zeroed. When Encrypted is set, the payload was compressed
+// first and then sealed with AES-256-GCM: StoredSize is the ciphertext
+// length (StoredSize = plaintext + AESGCMTagLen) and KeyEpoch selects the
+// key at read time.
 type BlockHeader struct {
 	BlockKind   BlockKind
 	Compression Compression
@@ -19,6 +22,8 @@ type BlockHeader struct {
 	RawSize     uint32
 	StoredSize  uint32
 	RawCRC32C   uint32
+	Encrypted   bool   // Flags bit 0
+	KeyEpoch    uint32 // first 4 reserved bytes
 }
 
 // Size returns the serialized size.
@@ -36,6 +41,9 @@ func (h *BlockHeader) MarshalTo(dst []byte) error {
 	putU32(dst[8:], BlockHeaderSize)
 	dst[12] = byte(h.BlockKind)
 	dst[13] = byte(h.Compression)
+	if h.Encrypted {
+		putU16(dst[14:], 1) // Flags bit 0
+	}
 	putU64(dst[16:], h.BlockID)
 	putU64(dst[24:], h.SnapshotID)
 	putU32(dst[32:], h.TableID)
@@ -43,9 +51,10 @@ func (h *BlockHeader) MarshalTo(dst []byte) error {
 	putU32(dst[40:], h.RawSize)
 	putU32(dst[44:], h.StoredSize)
 	putU32(dst[48:], h.RawCRC32C)
+	putU32(dst[BlockHeaderKeyEpochOffset:], h.KeyEpoch)
 	// offset 52..60 header CRC
 	finalizeCRC(dst[:BlockHeaderSize], 52)
-	// offset 56..64 reserved (zeroed above)
+	// offset 60..64 reserved (zeroed above)
 	return nil
 }
 
@@ -65,6 +74,7 @@ func (h *BlockHeader) Unmarshal(src []byte) error {
 	}
 	h.BlockKind = BlockKind(src[12])
 	h.Compression = Compression(src[13])
+	h.Encrypted = src[14]&1 != 0
 	h.BlockID = binary.LittleEndian.Uint64(src[16:])
 	h.SnapshotID = binary.LittleEndian.Uint64(src[24:])
 	h.TableID = binary.LittleEndian.Uint32(src[32:])
@@ -72,5 +82,6 @@ func (h *BlockHeader) Unmarshal(src []byte) error {
 	h.RawSize = binary.LittleEndian.Uint32(src[40:])
 	h.StoredSize = binary.LittleEndian.Uint32(src[44:])
 	h.RawCRC32C = binary.LittleEndian.Uint32(src[48:])
+	h.KeyEpoch = binary.LittleEndian.Uint32(src[BlockHeaderKeyEpochOffset:])
 	return nil
 }

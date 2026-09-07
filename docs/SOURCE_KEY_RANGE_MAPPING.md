@@ -1,6 +1,6 @@
 # 源库 Key Range 到 RowPack 批量读取的映射
 
-> 状态：设计建议
+> 状态：设计建议；§9 决策记录（v1.2）已固化实现边界（2026-09-09）
 > 适用场景：源数据库按 `[lo, hi)` 查询，RowPack 按快照批量分块读取
 
 ## 1. 问题定义
@@ -235,3 +235,53 @@ Block 读取内核应做到：
 ```
 
 后续 v1.2 若确认范围读取是主要访问模式，应优先实现按 RowID 集合聚合 Block 的内部能力，再决定是否提供通用 Key Index API。
+
+> 注：按 RowID 集合聚合 Block 的能力已随 `Store.ReadBatch` 于 v1.2 完成
+> （plan-v12.md §3.1）；是否提供通用 Key Index API 的最终决策见 §9。
+
+## 9. 决策记录（v1.2）
+
+> 日期：2026-09-09
+> 关联：ADR-002（引擎解耦方言语义）、plan-v12.md §3.1（批量分块读取已完成）、
+> GO_API_DESIGN.md §8（ReadBatch 公开契约）
+
+### 9.1 采用外层适配方案（§8 路线），不内建 Key Index
+
+选定实现路径：源库适配层负责 Key→RowID 解析，RowPack 只提供按 RowID 集合的批量读取。
+
+- 语义正确性由源库自身的 PK 索引和排序规则保证，引擎不冻结任何方言排序规则；
+- §5 所列冻结清单（ASC/DESC、NULL 位次、字符串排序、数值编码、时区、Decimal scale 等）
+  全部归适配层，引擎不承担；
+- 符合 ADR-002「引擎与『数据库是什么』解耦」的方向；
+- v1.2 已完成 `Store.ReadBatch`（按块聚合、去重、单次读/解压/校验），所需引擎能力已齐备，
+  本方案的引擎改动量为零。
+
+### 9.2 API 边界：公开 `ReadBatch`，不公开 `ReadRowsByKeyRange`
+
+- §7 的 `ReadRowsByIDs` 由**公开 API** `Store.ReadBatch(ctx, snapshot, table, ids []RowID)`
+  承担（输入 Snapshot/Table/RowID 等逻辑对象、输出逻辑行、不暴露磁盘细节；
+  外部适配器在模块外，`internal/` 对其不可见，因此批量读取必须是公开入口）；
+- §7 的 `ReadRowsByKeyRange` **不进入引擎公开 API**：它携带 Key 与排序语义，属于
+  适配器接口形态（对外暴露 `KeyRange → []Row`），内部用源库查询 + `ReadBatch` 实现；
+- 按块 Load/CRC/解压/目录复用的读取内核保持在 `internal/block`、`internal/cache`，
+  `Store.ReadBatch` 只是门面。
+
+### 9.3 RowID 保序只作为适配层的数据布局优化
+
+§4 的「RowID 保持源 Key 顺序」不作为引擎语义，但可作为适配层导入策略：
+
+- FULL 导入按源 Key 升序写入、RowID 顺序分配，使 Block 布局与 Key 序对齐；
+- 适配器在导入循环内记录每块的 min/max key，形成私有稀疏映射（可重建、可失效），
+  把 `[lo, hi)` 压成候选 RowID 区间后再交给 `ReadBatch`；
+- 该映射不进 `.rpk` 格式，也不进引擎。
+
+### 9.4 升级到通用 Key Index 的门槛
+
+以下两个条件**同时**满足才启动引擎内建 Key Index（方案 A），否则维持 9.1：
+
+1. 真实场景基准证明按 Key 范围过滤是主导访问模式，且收益大于全量 Decode 成本；
+2. 目标源库收敛到单一/少数方言，且能完整复制其排序规则（复合键、NULL、字符串排序）。
+
+在此之前，`ReadRowsByKeyRange` 定义为适配器接口；需要批量读取性能优化时，
+引擎侧优先补 `ReadBatchInto`（行缓冲复用，消除 plan-v12 §3.1 seq/hot 档回退），
+而不是引入 Key Index。

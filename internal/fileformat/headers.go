@@ -17,6 +17,13 @@ type FileHeader struct {
 	DefaultCompression Compression
 	DefaultRowEncoding RowEncoding
 	Flags              uint16
+
+	// Encryption (v1, optional at Create). Zero values mean a plain store.
+	// The fields live in the reserved region and leave non-encrypted stores
+	// byte-identical to the previous format.
+	EncryptionAlgorithm EncryptionAlgorithm
+	NonceScheme         NonceScheme
+	KeyID               []byte // <= FileHeaderKeyIDMaxLen bytes, ASCII
 }
 
 // Size returns the serialized size.
@@ -43,7 +50,15 @@ func (h *FileHeader) marshalTo(dst []byte, magic string) error {
 	dst[60] = byte(h.DefaultCompression)
 	dst[61] = byte(h.DefaultRowEncoding)
 	putU16(dst[62:], h.Flags)
-	// offset 64..120 reserved (zeroed above)
+	// Encryption fields in the reserved region (offset 64..).
+	dst[FileHeaderEncAlgoOffset] = byte(h.EncryptionAlgorithm)
+	dst[FileHeaderNonceSchemeOff] = byte(h.NonceScheme)
+	if len(h.KeyID) > FileHeaderKeyIDMaxLen {
+		return formatError("FileHeader", FileHeaderKeyIDLenOffset, "key id too long: %d > %d", len(h.KeyID), FileHeaderKeyIDMaxLen)
+	}
+	dst[FileHeaderKeyIDLenOffset] = byte(len(h.KeyID))
+	copy(dst[FileHeaderKeyIDOffset:], h.KeyID)
+	// offset 98..120 reserved (zeroed above)
 	finalizeCRC(dst[:DataFileHeaderSize], DataFileHeaderCRC32COffset)
 	// offset 124..128 ReservedCRC (zeroed above)
 	return nil
@@ -80,6 +95,15 @@ func (h *FileHeader) unmarshal(src []byte, magic string) (uint32, error) {
 	h.DefaultCompression = Compression(src[60])
 	h.DefaultRowEncoding = RowEncoding(src[61])
 	h.Flags = binary.LittleEndian.Uint16(src[62:])
+	h.EncryptionAlgorithm = EncryptionAlgorithm(src[FileHeaderEncAlgoOffset])
+	h.NonceScheme = NonceScheme(src[FileHeaderNonceSchemeOff])
+	kl := int(src[FileHeaderKeyIDLenOffset])
+	if kl > FileHeaderKeyIDMaxLen {
+		return 0, formatError("FileHeader", FileHeaderKeyIDLenOffset, "key id length %d exceeds %d", kl, FileHeaderKeyIDMaxLen)
+	}
+	if kl > 0 {
+		h.KeyID = append([]byte(nil), src[FileHeaderKeyIDOffset:FileHeaderKeyIDOffset+kl]...)
+	}
 	return crc, nil
 }
 

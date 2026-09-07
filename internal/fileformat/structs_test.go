@@ -2,6 +2,7 @@ package fileformat
 
 import (
 	"bytes"
+	"encoding/binary"
 	"strings"
 	"testing"
 )
@@ -107,6 +108,9 @@ func TestDataFileHeader(t *testing.T) {
 		DefaultCompression: CompressionZstd,
 		DefaultRowEncoding: RowEncodingTypedTuple,
 		Flags:              0,
+		EncryptionAlgorithm: EncAES256GCM,
+		NonceScheme:         NonceCounterV1,
+		KeyID:               []byte("store-key-01"),
 	}}
 	roundTrip(t, "DataFileHeader", h.MarshalTo, h.Unmarshal)
 
@@ -118,6 +122,10 @@ func TestDataFileHeader(t *testing.T) {
 		got.RequiredFeatures != h.RequiredFeatures || got.DefaultBlockSize != h.DefaultBlockSize ||
 		got.DefaultCompression != h.DefaultCompression || got.DefaultRowEncoding != h.DefaultRowEncoding {
 		t.Fatalf("field mismatch: %+v vs %+v", got, h)
+	}
+	if got.EncryptionAlgorithm != EncAES256GCM || got.NonceScheme != NonceCounterV1 ||
+		string(got.KeyID) != "store-key-01" {
+		t.Fatalf("encryption field mismatch: %+v vs %+v", got, h)
 	}
 
 	testFixedStructure(t, "DataFileHeader", h.MarshalTo, h.Unmarshal, true, DataFileHeaderSize)
@@ -137,6 +145,31 @@ func TestDataFileHeader(t *testing.T) {
 	got2.RequiredFeatures = 1 << 60
 	if err := got2.CheckVersion(); err == nil {
 		t.Fatal("unknown required feature bit accepted")
+	}
+}
+
+func TestFileHeaderKeyIDLimits(t *testing.T) {
+	// Over-long key id must fail marshal.
+	h := &DataFileHeader{}
+	h.EncryptionAlgorithm = EncAES256GCM
+	h.KeyID = bytes.Repeat([]byte("k"), FileHeaderKeyIDMaxLen+1)
+	buf := make([]byte, DataFileHeaderSize)
+	if err := h.MarshalTo(buf); err == nil {
+		t.Fatal("over-long key id accepted")
+	}
+
+	// Corrupted length byte (> max) must fail unmarshal.
+	h2 := &DataFileHeader{FileHeader: FileHeader{
+		EncryptionAlgorithm: EncAES256GCM,
+		NonceScheme:         NonceCounterV1,
+		KeyID:               []byte("abc"),
+	}}
+	if err := h2.MarshalTo(buf); err != nil {
+		t.Fatal(err)
+	}
+	buf[FileHeaderKeyIDLenOffset] = 50
+	if err := h2.Unmarshal(buf); err == nil {
+		t.Fatal("over-long key id length accepted")
 	}
 }
 
@@ -205,6 +238,8 @@ func TestBlockHeader(t *testing.T) {
 		RawSize:     260000,
 		StoredSize:  100000,
 		RawCRC32C:   0x12345678,
+		Encrypted:   true,
+		KeyEpoch:    7,
 	}
 	roundTrip(t, "BlockHeader", h.MarshalTo, h.Unmarshal)
 	testFixedStructure(t, "BlockHeader", h.MarshalTo, h.Unmarshal, true, BlockHeaderSize)
@@ -215,6 +250,37 @@ func TestBlockHeader(t *testing.T) {
 	}
 	if got.RawCRC32C != 0x12345678 || got.ItemCount != 512 || got.BlockKind != BlockKindRows {
 		t.Fatalf("field mismatch: %+v", got)
+	}
+	if !got.Encrypted || got.KeyEpoch != 7 {
+		t.Fatalf("encryption field mismatch: %+v", got)
+	}
+}
+
+// TestBlockHeaderPlainRoundTrip locks that a plain (unencrypted) block header
+// marshals identically to the pre-encryption format: Flags and KeyEpoch stay
+// zero.
+func TestBlockHeaderPlainRoundTrip(t *testing.T) {
+	h := &BlockHeader{
+		BlockKind:   BlockKindRows,
+		Compression: CompressionZstd,
+		BlockID:     7,
+		SnapshotID:  42,
+		TableID:     3,
+		ItemCount:   512,
+		RawSize:     260000,
+		StoredSize:  100000,
+		RawCRC32C:   0x12345678,
+	}
+	buf := mustMarshal(t, h)
+	if buf[14] != 0 || binary.LittleEndian.Uint32(buf[BlockHeaderKeyEpochOffset:]) != 0 {
+		t.Fatalf("plain header carries nonzero encryption bytes: %v", buf[14:16])
+	}
+	var got BlockHeader
+	if err := got.Unmarshal(buf); err != nil {
+		t.Fatal(err)
+	}
+	if got.Encrypted || got.KeyEpoch != 0 {
+		t.Fatalf("plain header parsed as encrypted: %+v", got)
 	}
 }
 

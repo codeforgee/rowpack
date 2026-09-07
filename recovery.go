@@ -74,6 +74,9 @@ func (s *Store) recover() error {
 	if err != nil {
 		return fmt.Errorf("rowpack: index replay: %w", err)
 	}
+	// Seed the txn sequence before any rebuild append, so rebuilt txns get
+	// strictly increasing sequences that replay accepts.
+	s.txnSeq.Store(res.LastSeq)
 	view := res.View
 	if res.TailIgnored > 0 {
 		report.performed = true
@@ -133,7 +136,6 @@ func (s *Store) recover() error {
 
 	s.lastSnapshotID.Store(lastSnapshot)
 	s.lastBlockID.Store(maxBlock)
-	s.txnSeq.Store(res.LastSeq)
 
 	schemas, err := s.buildSchemaIndex(view)
 	if err != nil {

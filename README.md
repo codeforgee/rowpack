@@ -9,9 +9,10 @@ RowPack 是一个使用 Go 实现的轻量级嵌入式二维表存储引擎，�
 - 按快照、表和行随机访问，历史快照不可变、不受后续提交影响。
 - 多读单写：读操作无锁并发，写操作单写者串行，提交原子可见。
 - 校验、崩溃恢复与索引重建，不依赖独立 WAL。
-- 元数据作为普通数据存储：`DefineSchema` 把 Schema 契约写成引擎自产自销的
-  Table/Column 记录（内部 TLV，保序、无损往返、未知字段透传），
-  引擎不内建数据库强类型语义。
+- Schema 与源数据库设计元信息分层：`DefineSchema` 把 RowPack 自身的 Canonical
+  Schema 写成引擎自产自销的 Table/Column 记录（内部 TLV）；它只服务于行编码/解码，
+  不会按源数据库方言建模。源数据库原始元信息属于上层 Source Metadata，当前不提供
+  通用公开读写 API，也不内建 CoreMetadata。
 
 ## 快速开始
 

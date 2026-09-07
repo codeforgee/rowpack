@@ -181,7 +181,7 @@ func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error
 - 返回的 Schema 和 Columns 是副本。
 - `version=0` 不隐式表示 latest；使用 `LatestSchema`。
 
-`DefineSchema` 是唯一的 Schema 契约入口，内部生成核心 Table 和 Column Metadata。
+`DefineSchema` 是唯一的 Canonical Schema 契约入口，内部生成引擎自用的 Table 和 Column 元数据记录；这里的“自用”仅指行解码契约，不是 CoreMetadata 模型。
 
 ### 4.1 元数据边界
 
@@ -193,7 +193,7 @@ func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error
   Table/Column 记录使用。
 - 未来如需元数据透传，以完整的读写 API 一次性设计，不做只写半成品。
 
-行解码所需的最小 Schema 契约由 `DefineSchema` 提供（见 §7），类型字符串为引擎自产自销的规范值；引擎不猜测任何数据库方言类型，也不为约束、索引、视图等数据库对象内建模型——它们只是经通用 TLV 保存/透传的普通数据。
+行解码所需的最小 Canonical Schema 契约由 `DefineSchema` 提供（见 §7），类型字符串为引擎自产自销的规范值；引擎不猜测任何数据库方言类型，也不为约束、索引、视图等数据库对象内建模型。源数据库元信息属于上层 Source Metadata，当前没有公开通用读写 API。
 
 ## 5. 创建与打开
 

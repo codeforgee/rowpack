@@ -14,7 +14,7 @@
 
 - `.rpk` 数据文件和 `.rpi` 索引文件。
 - FULL、DELTA 快照及 INSERT、UPDATE、DELETE。
-- 元数据作为普通数据无损读写：`DefineSchema` 写引擎自产自销的 Table/Column Schema 记录（TLV），引擎不解释其他记录的语义。
+- `DefineSchema` 写入引擎自产自销的 Canonical Schema（Table/Column TLV）；源数据库原始设计元信息与 RowPack Schema 分层，当前不公开通用元数据 API。
 - Zstd Block 压缩和 None 模式。
 - 并发随机读、单写者和一致的快照可见性。
 - TypedTuple 行编码及全部 v1 数据类型。
@@ -25,7 +25,7 @@
 
 1. 先锁定底层字节格式，再实现高层 API。
 2. 每个阶段必须通过对应质量门槛，不能把格式和恢复问题留到最后。
-3. 元数据作为引擎存储的普通数据（通用 TLV），引擎不内建强类型语义；行解码的最小 Schema 契约由 `DefineSchema` 提供。
+3. 引擎不内建 CoreMetadata 或数据库对象强类型语义；`DefineSchema` 只负责 Canonical Schema。Source Metadata 的采集、解释、Schema Diff 和迁移生成属于引擎外的适配层。
 4. 优先交付垂直闭环：先完成最小 FULL 写入和重开读取，再扩展 DELTA、缓存和恢复。
 5. 文件解析默认将输入视为不可信数据；任何长度都先校验再分配。
 6. 已发布的 v1 枚举值、字段编号和 golden files 不得无版本变更地修改。

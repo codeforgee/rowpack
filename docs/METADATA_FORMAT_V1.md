@@ -5,11 +5,14 @@
 
 ## 1. 目标
 
-RowPack 的元数据是引擎存储的普通数据。引擎只定义行解码所需的最小
-Schema 契约：`DefineSchema` 把列名、逻辑类型、可空性和 Decimal 精度写成
-自产自销的 Table / Column 元数据记录；除此之外引擎不内建任何数据库对象
-模型（约束、索引、视图、厂商扩展等都不是引擎概念），也从不解释这些记录
-的语义——它们只是通过通用 TLV 规则保存与透传的数据。
+元数据格式服务于两层信息：引擎用 `DefineSchema` 写入行解码所需的
+Canonical Schema；未来的上层适配器可用同一 TLV 机制保存源数据库的原始设计元信息。
+两者不能混同：Canonical Schema 决定 RowPack 行负载的编码/解码，Source Metadata
+用于恢复、审计和 Schema 对比。引擎不内建 CoreMetadata 或任何数据库对象模型，
+也不按源数据库方言建表或解释约束、索引、视图等语义。
+
+当前版本通用元数据读写 API 尚未公开，因此本文档描述的是持久化格式能力，不代表
+`PutMetadata`、`Metadata` 或 `ListMetadata` 已存在。
 
 TLV 机制位于 `../internal/metadata`：记录信封（Envelope）、字段 TLV、元数据块
 载荷（头部 + 目录）都按本文档布局。未知非 Critical 记录/字段无损保留，
@@ -22,7 +25,7 @@ Snapshot
 ├── Metadata Block
 │   ├── Header
 │   ├── Table / Column schema records（DefineSchema 产生）
-│   └── 其他记录（作为普通数据透传）
+│   └── 其他记录（为未来 Source Metadata 扩展保留）
 └── Rows Block...
 ```
 

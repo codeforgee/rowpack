@@ -31,6 +31,20 @@ internal/cache        并发 Block Cache
 internal/recovery     打开、校验、恢复
 ```
 
+codec 热路径 API（唯一编解码入口；API 未定型故不保留旧签名兼容层）：
+
+```go
+// schema 必须已由 Schema.Validate 验证（DefineSchema / 索引重放时调用），
+// 入口只做廉价的列数/行数检查，逐值类型/NULL/scale/UTF-8/时间/limit 校验保留。
+func EncodeInto(schema *Schema, row []Value, limits Limits, reuse []byte) ([]byte, error)
+// sink 为 nil 时逐值拷贝（默认语义）；非 nil 时 String 负载经 sink 物化
+// （如迭代器 arena 的零拷贝视图），sink 不得别名传入的 payload。dst 复用
+// 行切片与 Decimal *big.Int。
+func DecodeInto(dst []Value, data []byte, schema *Schema, limits Limits, sink StringSink) ([]Value, error)
+// Decode/Encode 为全新分配便捷包装（其内部调用 DecodeInto/EncodeInto）。
+```
+
+
 ## 3. 基础类型
 
 ```go
@@ -389,6 +403,18 @@ func (it *Iterator) Close() error
 - Next=false 后检查 Err；Close 幂等。
 - ctx 取消后尽快停止并返回标准 context 错误。
 - 内部应对父链排序索引做 k-way merge，不构建与整表行数同规模的 map。
+
+迭代器内部实现（v1.1 后）：
+
+- **字符串 arena**：String 值解码时通过 `Iterator.strSink` 追加进仅追加的
+  分块缓冲（32 KiB/块，满则换新块、绝不原地扩容），返回值为分块上的
+  零拷贝视图（`unsafe.String`）。视图不被覆盖、只随引用被 GC 回收，因此
+  跨 Next 保留的字符串结果与「访问器返回拷贝」的旧契约行为一致；整表
+  Scan 从每行 1 次字符串分配降为每块级少量次分配。Bytes 值仍按值拷贝。
+- **目录复用**：块游标跨块复用 `RowsIndex` 的目录条目切片
+  （`ParseRowsDirectory` 的 entries 参数），顺序 Scan 不再逐块分配目录。
+- **单层快路径**：无 DELTA 链时（常见 FULL 场景）直接线性遍历排序分片，
+  跳过 k-way heap 机制。
 
 ## 10. 校验、恢复和重建
 

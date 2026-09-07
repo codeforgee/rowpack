@@ -111,3 +111,63 @@ v1.1 首批优化内容：
 DecimalBytes）、golden files 全绿；`TestPerfEndToEnd` 端到端回归通过。
 新增 `TestDecodeIntoReuse`、`TestAppendDecimalEquivalence`、`TestGetIntoReuse`、
 `TestNextIntoReuse`、`TestNextIntoEndRowID`。
+## v1.1+ 增量基准（2026-09-07 第二批：写路径 Build 逃逸、Scan 零分配、CRC 变参）
+
+> 环境同 v1.1 节（Go 1.27 / M1 Pro / zstd v1.20）。运行方式：
+> `go test ./ -run '^$' -bench ... -benchtime=5x -benchmem`
+> 对比列为 v1.1 记录基线（同机重跑「上一批」数值见正文）。
+
+| 基准 | v1.1 基线 | v1.1+ | 变化 |
+| --- | --- | --- | --- |
+| BenchmarkScan（100k 行） | 32–47 ms / 401K allocs / 90 MB | **15.6 ms / 189 allocs / 5.3 MB** | 耗时 -50%+，allocs -99.9% |
+| BenchmarkScan1M | 混入旧基线 ~770ms | **238 ms / 4.2K allocs / 156 MB（841 krows/s）** | allocs -99.6% |
+| BenchmarkScanDeepChain（32 层） | 71 ms / 529K allocs | **30.8 ms / 319 allocs / 6.3 MB** | -57% |
+| BenchmarkGetColdRead | ~300 µs / 14 allocs | **269 µs / 10 allocs** | -11% |
+| BenchmarkConcurrentGet g1/g8 | ~140 µs / 17–26 allocs | **80 / 78 µs / 12 / 11 allocs** | -43% |
+| BenchmarkOpenReplay（100k 行） | 8.2–9.2 ms / 100K allocs | **6.4 ms / 512 allocs** | -90%+ allocs |
+| BenchmarkRebuildIndex（100k 行） | ~92 ms / 405K allocs | **62.1 ms / 4.6K allocs** | -99% allocs |
+| BenchmarkWrite1M | 1.49 s（旧）/ 2.0M allocs | **216 ms / 925 krows/s / 1.0M allocs** | 耗时 -47% |
+| BenchmarkIsolatedInsert（仅库写，无 benchRow 噪声） | — | **63 ms / 100k 行 / 1.6K allocs（~1.6M 行/s）** | 库写路径 ~0.016 alloc/行 |
+| BenchmarkGetHotRead / Into | 9.9 / 7.1 µs | 9.5 µs / 4 allocs；2 allocs | 持平 |
+
+> 注：FullSequentialWrite / Write1M 报告的 allocs/B 大部分来自基准自身的
+> benchRow 构造（fmt.Sprintf + big.NewInt），库写路径的真实分配见
+> BenchmarkIsolatedInsert。内核码 EncodeInto 0 allocs/调用（602 ns），
+> DecodeInto 复用路径 1 alloc/行（string 拷贝，见下）。
+
+本批优化内容：
+
+1. **index.Builder.Build 消除按项逃逸分配**：entries 直接 marshal 进预分配
+   body 的预留区（MarshalTo 因错误路径不可内联，原 `var e [Size]byte` 按行
+   逃逸到堆，占写路径 allocs 的 85%）。100k 行提交 allocs 100K → ~2K。
+2. **Scan 字符串 arena**（codec.DecodeInto + StringSink）：
+   Iterator 持 32 KiB 仅追加分块，String 解码为分块上的 `unsafe.String`
+   视图；分块满则换新、绝不原地扩容，旧分块仅随引用被 GC 回收——跨 Next
+   保留的字符串与「访问器返回拷贝」行为一致（同内存测试覆盖）。整表 Scan
+   从每行 1 次字符串拷贝分配降为每块级少量分块分配。
+3. **Scan 目录复用**：`block.ParseRowsDirectory(raw, n, entries)` 让迭代器
+   跨块复用 `RowsIndex.Entries` 切片，消除每块目录构建
+   （~78 块/scan 的切片增长）。
+4. **Scan 单层快路径**：FULL（无父链）场景线性遍历排序分片，跳过 k-way
+   heap 机制；多层 (DELTA 链) 路径不变。
+5. **读写热路径跳过逐行 schema 重校验**：EncodeInto/DecodeInto 改为
+   「schema 必须已验证」契约（DefineSchema/重放时验证），入口只保留廉价
+   列数检查；payload 字节级校验与 limit 不变。
+6. **codec.verifyCRC 分段 CRC**：`crc32cZeroGap` 消除 CRC32CConcat 变参
+   分配——每条索引/块条目 Unmarshal 不再分配（OpenReplay 100K→512 allocs
+   的主因）。
+
+正确性：`go test ./...`、`go test -race ./...`、codec/fileformat fuzz
+冒烟、golden 全绿；新增 `TestScanStringViewsSurviveArenaRotation`、
+`TestCodecSinkParity`、`TestParseRowsDirectoryReuse`。
+
+## 剩余热点与后续方向
+
+- 冷读受「点查需解压整块 256 KiB + 全块 CRC」固有限制：行粒度索引到块内
+  偏移（v2 格式）或列存分块可突破；当前 mmap 已消除一次用户态拷贝。
+- Scan 冷首轮需逐块解压（热迭代命中 64 MiB 块缓存），1M 行全扫的 156 MB
+  B/op 中大部分是首轮 78 块的解压缓冲（缓存持有，非逐行抖动）。
+- 写路径已 ~0.016 alloc/行（隔离基准），剩余是 zstd 编码吞吐
+  （fastEncoder，~590 ns/行）；调低压缩级别可换吞吐，属格式/空间权衡。
+- Open 后索引全量驻留（1M 行 ~22 MB，24 B/行，已紧凑化）；按快照分片的
+  磁盘映射/惰性加载为 v1.2 方向，收益有限。

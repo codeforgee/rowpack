@@ -390,7 +390,7 @@ func TestDecodeIntoReuse(t *testing.T) {
 	prevDecPtr := map[int]*big.Int{}
 	for round := 0; round < 3; round++ {
 		for i, enc := range encs {
-			out, err := DecodeInto(dst, enc, s, DefaultLimits())
+			out, err := DecodeInto(dst, enc, s, DefaultLimits(), nil)
 			if err != nil {
 				t.Fatalf("round %d row %d: %v", round, i, err)
 			}

@@ -4,8 +4,10 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"unsafe"
 
 	"github.com/rowpack/rowpack/internal/block"
+	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/rowpack/rowpack/internal/index"
 )
@@ -15,6 +17,11 @@ type ScanOptions struct {
 	StartRowID RowID // inclusive; 0 = from the beginning
 	EndRowID   RowID // exclusive; 0 = no upper bound
 }
+
+// IterArenaChunkSize bounds the per-iterator string arena chunks; chunks are
+// append-only and swapped (never grown in place) so previously handed-out
+// string views stay valid even when the iterator's current chunk rotates.
+const iterArenaChunkSize = 32 << 10
 
 // Iterator streams the logically visible rows of a table at a snapshot in
 // strictly ascending RowID order. Rows overridden by descendants and
@@ -38,14 +45,47 @@ type Iterator struct {
 	// a nil dst. It grows on demand and is overwritten by every Next call.
 	buf Row
 
+	// sink materializes decoded String payloads as append-only views into
+	// strChunk, eliminating the per-row string copy allocation. Views remain
+	// valid while a reference to them exists: chunks are never overwritten
+	// and only dropped (becoming garbage when no view references them).
+	sink     codec.StringSink
+	strChunk []byte
+
 	// Block cursor: reuses the parsed rows directory while consecutive rows
-	// fall in the same block, avoiding a per-row full-block parse.
+	// fall in the same block, avoiding a per-row full-block parse. The
+	// directory entry slice is reused across blocks (ParseRowsDirectory's
+	// entries argument) to keep a whole scan allocation-free apart from the
+	// string arena.
 	curBlockID uint64
 	curBlk     *index.BlockLoc
 	curPayload *block.RowsIndex
+	dirEntries []fileformat.RowDirectoryEntry
 
 	err    error
 	closed bool
+}
+
+// strSink copies payload into the iterator's append-only string arena and
+// returns a zero-copy view backed by the arena chunk. Views keep the chunk
+// alive via GC, so a string handed out by a previous Next stays valid even
+// after the arena rotates to a new chunk.
+func (it *Iterator) strSink(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	if len(it.strChunk)+len(payload) > cap(it.strChunk) {
+		// Rotate to a fresh chunk with at least enough room; never grow in
+		// place, because views into the old chunk may still be referenced.
+		c := iterArenaChunkSize
+		if len(payload) > c {
+			c = len(payload)
+		}
+		it.strChunk = make([]byte, 0, c)
+	}
+	off := len(it.strChunk)
+	it.strChunk = append(it.strChunk, payload...)
+	return unsafe.String(&it.strChunk[off], len(payload))
 }
 
 // layerIter walks one snapshot layer's sorted incremental row index.
@@ -99,10 +139,15 @@ func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table TableID, op
 		}
 		cur = sm.Parent
 	}
-	heap.Init(&it.heap)
-	for _, l := range it.layers {
-		if l.pos < len(l.keys) {
-			heap.Push(&it.heap, l)
+	// Pre-bind the string-arena sink once (a method value allocated per
+	// expression evaluation would otherwise cost one allocation per Next).
+	it.sink = it.strSink
+	if len(it.layers) > 1 {
+		heap.Init(&it.heap)
+		for _, l := range it.layers {
+			if l.pos < len(l.keys) {
+				heap.Push(&it.heap, l)
+			}
 		}
 	}
 	return it, nil
@@ -147,8 +192,28 @@ func (it *Iterator) Next() (Row, bool) {
 // nextLoc advances the k-way merge and returns the next visible row location
 // after applying range and tombstone filtering. It reports ok=false at the
 // end of the scan or when the EndRowID bound is reached. The returned pointer
-// aliases the immutable row shard.
+// aliases the immutable row shard. A single-layer scan (the common FULL case)
+// walks the sorted shard linearly and skips the heap machinery.
 func (it *Iterator) nextLoc() (RowID, *index.RowLoc, bool) {
+	if len(it.layers) == 1 {
+		l := it.layers[0]
+		keys := l.keys
+		for l.pos < len(keys) {
+			ent := &keys[l.pos]
+			l.pos++
+			if it.opts.StartRowID > 0 && ent.RowID < it.opts.StartRowID {
+				continue
+			}
+			if it.opts.EndRowID > 0 && ent.RowID >= it.opts.EndRowID {
+				return 0, nil, false
+			}
+			if ent.Loc.ChangeType == fileformat.ChangeDelete {
+				continue // tombstone: hide the row entirely
+			}
+			return ent.RowID, &ent.Loc, true
+		}
+		return 0, nil, false
+	}
 	for it.heap.Len() > 0 {
 		winner := heap.Pop(&it.heap).(*layerIter)
 		ent := &winner.keys[winner.pos]
@@ -189,7 +254,7 @@ func (it *Iterator) rowAt(loc *index.RowLoc, dst Row) (Row, error) {
 	if err := it.locateBlock(loc); err != nil {
 		return nil, err
 	}
-	return it.store.rowFromPayloadInto(it.curPayload, it.curBlk, loc, it.state.schemas, dst)
+	return it.store.rowFromPayloadInto(it.curPayload, it.curBlk, loc, it.state.schemas, dst, it.sink)
 }
 
 // locateBlock loads and parses the rows directory of loc's block, reusing the
@@ -206,10 +271,11 @@ func (it *Iterator) locateBlock(loc *index.RowLoc) error {
 	if err != nil {
 		return err
 	}
-	rp, err := block.ParseRowsDirectory(blk.Raw, bl.ItemCount)
+	rp, err := block.ParseRowsDirectory(blk.Raw, bl.ItemCount, it.dirEntries)
 	if err != nil {
 		return err
 	}
+	it.dirEntries = rp.Entries
 	it.curBlockID = loc.BlockID
 	it.curBlk = bl
 	it.curPayload = rp

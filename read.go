@@ -156,8 +156,9 @@ func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc *index.RowLoc
 
 // rowFromPayloadInto decodes the record at ordinal from an already-built rows
 // directory into dst (used by Scan's block cursor). Callers must already have
-// filtered tombstones.
-func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc *index.RowLoc, si *schemaIndex, dst Row) (Row, error) {
+// filtered tombstones. sink materializes String payloads (nil = fresh copy
+// per value).
+func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc *index.RowLoc, si *schemaIndex, dst Row, sink codec.StringSink) (Row, error) {
 	if int(loc.ItemOrdinal) >= len(rp.Entries) {
 		return nil, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", loc.ItemOrdinal, loc.BlockID)
 	}
@@ -166,7 +167,7 @@ func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc 
 	if schema == nil {
 		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ent.SchemaVersion)
 	}
-	return codec.DecodeInto(dst, rp.RowBytes(int(loc.ItemOrdinal)), schema, s.opts.codecLimits())
+	return codec.DecodeInto(dst, rp.RowBytes(int(loc.ItemOrdinal)), schema, s.opts.codecLimits(), sink)
 }
 
 // decodeRowInto decodes a located row into dst against its schema.
@@ -175,7 +176,7 @@ func (s *Store) decodeRowInto(ref *block.RowRef, bl *index.BlockLoc, si *schemaI
 	if schema == nil {
 		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ref.Entry.SchemaVersion)
 	}
-	return codec.DecodeInto(dst, ref.Row, schema, s.opts.codecLimits())
+	return codec.DecodeInto(dst, ref.Row, schema, s.opts.codecLimits(), nil)
 }
 
 // Schema returns the schema of a table version at a snapshot.

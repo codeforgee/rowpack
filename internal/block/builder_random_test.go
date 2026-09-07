@@ -2,6 +2,7 @@ package block
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -145,7 +146,7 @@ func TestParseRowsDirectoryAndIndexRowBytes(t *testing.T) {
 		return s.blocks[0].payload
 	}()
 
-	idx, err := ParseRowsDirectory(raw, 3)
+	idx, err := ParseRowsDirectory(raw, 3, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,24 +164,24 @@ func TestParseRowsDirectoryAndIndexRowBytes(t *testing.T) {
 	}
 
 	// Rejections.
-	if _, err := ParseRowsDirectory(raw, 4); err == nil {
+	if _, err := ParseRowsDirectory(raw, 4, nil); err == nil {
 		t.Fatal("item count mismatch accepted")
 	}
-	if _, err := ParseRowsDirectory(raw[:fileformat.RowsPayloadHeaderSize+2*fileformat.RowDirectoryEntrySize], 3); err == nil {
+	if _, err := ParseRowsDirectory(raw[:fileformat.RowsPayloadHeaderSize+2*fileformat.RowDirectoryEntrySize], 3, nil); err == nil {
 		t.Fatal("truncated directory accepted")
 	}
 	// Records region mismatch: header claims more record bytes than present
 	// (RecordsBytes is a uint64 at payload offset 24).
 	bad := append([]byte(nil), raw...)
 	bad[31] = 0xFF
-	if _, err := ParseRowsDirectory(bad, 3); err == nil {
+	if _, err := ParseRowsDirectory(bad, 3, nil); err == nil {
 		t.Fatal("records region mismatch accepted")
 	}
 	// Out-of-bounds record offset in the directory (entry[1].RecordOffset is
 	// at payload header 32 + 1*24 + 8).
 	bad = append([]byte(nil), raw...)
 	bad[32+24+8+3] = 0x7F
-	if _, err := ParseRowsDirectory(bad, 3); err == nil {
+	if _, err := ParseRowsDirectory(bad, 3, nil); err == nil {
 		t.Fatal("out-of-bounds record accepted")
 	}
 }
@@ -276,5 +277,55 @@ func TestParseRowsPayloadRejections(t *testing.T) {
 	bad[recOff+12] = byte(fileformat.ChangeDelete)
 	if _, err := ParseRowsPayload(bad, 2); err == nil {
 		t.Fatal("DELETE record with row bytes accepted")
+	}
+}
+
+// TestParseRowsDirectoryReuse verifies the directory entry slice argument is
+// reused across blocks: parsing a second payload with the same backing slice
+// overwrites entries correctly and validates each payload independently.
+func TestParseRowsDirectoryReuse(t *testing.T) {
+	mkRaw := func(ids []uint64, _ []string) []byte {
+		var s captureSink
+		b := NewRowsBlockBuilder(1, 7, 64<<10, fileformat.CompressionNone, 0, DefaultLimits(), s.flush)
+		for i, id := range ids {
+			_ = b.Add(id, 1, fileformat.ChangeInsert, []byte(fmt.Sprintf("row-%d", id)))
+			_ = i
+		}
+		if err := b.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		return s.blocks[0].payload
+	}
+	rawA := mkRaw([]uint64{1, 2}, nil)
+	rawB := mkRaw([]uint64{100, 200, 300}, nil)
+
+	var reuse []fileformat.RowDirectoryEntry
+	idxA, err := ParseRowsDirectory(rawA, 2, reuse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reuse = idxA.Entries
+	if len(idxA.Entries) != 2 {
+		t.Fatalf("A: entries = %d", len(idxA.Entries))
+	}
+	// Reuse the same backing slice for a payload with MORE entries.
+	idxB, err := ParseRowsDirectory(rawB, 3, reuse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idxB.Entries) != 3 {
+		t.Fatalf("B: entries = %d", len(idxB.Entries))
+	}
+	if got := idxB.RowBytes(2); string(got) != "row-300" {
+		t.Fatalf("B RowBytes(2) = %q", got)
+	}
+	// Backing slice grew past the original capacity: A's alias is stale but
+	// the next parse with the grown slice must still work.
+	idxA2, err := ParseRowsDirectory(rawA, 2, idxB.Entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idxA2.RowBytes(1); string(got) != "row-2" {
+		t.Fatalf("A2 RowBytes(1) = %q", got)
 	}
 }

@@ -278,8 +278,12 @@ type RowsIndex struct {
 // and returns the directory index. Unlike ParseRowsPayload it does not parse
 // record headers or materialize record slices. The block's RawCRC already
 // guards payload integrity, so the per-record header cross-check is deferred
-// to the single-record reader when needed.
-func ParseRowsDirectory(raw []byte, itemCount uint32) (*RowsIndex, error) {
+// to the single-record reader when needed. When cap(entries) covers
+// itemCount the slice is reused (each entry is overwritten), avoiding a
+// per-block allocation on sequential scans; the returned RowsIndex aliases
+// entries, so the caller must not reuse entries until it is done with the
+// index. Pass nil to allocate a fresh slice.
+func ParseRowsDirectory(raw []byte, itemCount uint32, entries []fileformat.RowDirectoryEntry) (*RowsIndex, error) {
 	var h fileformat.RowsPayloadHeader
 	if err := h.Unmarshal(raw); err != nil {
 		return nil, err
@@ -294,23 +298,24 @@ func ParseRowsDirectory(raw []byte, itemCount uint32) (*RowsIndex, error) {
 	if h.RecordsBytes > uint64(len(raw)-base) || base+int(h.RecordsBytes) != len(raw) {
 		return nil, errors.New("rowpack: rows payload records region mismatch")
 	}
-	idx := &RowsIndex{Header: h, raw: raw, recBase: base}
+	if cap(entries) < int(itemCount) {
+		entries = make([]fileformat.RowDirectoryEntry, itemCount)
+	}
+	entries = entries[:itemCount]
 	pos := fileformat.RowsPayloadHeaderSize
 	for i := uint32(0); i < h.ItemCount; i++ {
 		if pos+fileformat.RowDirectoryEntrySize > base {
 			return nil, errors.New("rowpack: rows directory truncated")
 		}
-		var e fileformat.RowDirectoryEntry
-		if err := e.Unmarshal(raw[pos : pos+fileformat.RowDirectoryEntrySize]); err != nil {
+		if err := entries[i].Unmarshal(raw[pos : pos+fileformat.RowDirectoryEntrySize]); err != nil {
 			return nil, err
 		}
 		pos += fileformat.RowDirectoryEntrySize
-		idx.Entries = append(idx.Entries, e)
 	}
 	// Validate every directory entry's record bounds once (still O(n), but
 	// cheap and allocation-free).
-	for i := range idx.Entries {
-		e := &idx.Entries[i]
+	for i := range entries {
+		e := &entries[i]
 		if e.RecordLength < fileformat.RowRecordHeaderSize {
 			return nil, fmt.Errorf("rowpack: row record %d too short", i)
 		}
@@ -318,7 +323,7 @@ func ParseRowsDirectory(raw []byte, itemCount uint32) (*RowsIndex, error) {
 			return nil, fmt.Errorf("rowpack: row record %d out of bounds", i)
 		}
 	}
-	return idx, nil
+	return &RowsIndex{Header: h, Entries: entries, raw: raw, recBase: base}, nil
 }
 
 // RowBytes returns the row payload bytes of the record at ordinal (nil for

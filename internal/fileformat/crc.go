@@ -35,6 +35,18 @@ func finalizeCRC(buf []byte, crcOff int) uint32 {
 	return c
 }
 
+// zero4 is a shared zero block for CRC span bridging; it is never mutated.
+var zero4 [4]byte
+
+// crc32cZeroGap computes CRC-32C over buf as if the 4 bytes at crcOff were
+// zero. It avoids the variadic allocation of CRC32CConcat on decode hot
+// paths (verifyCRC runs once per fixed structure and per block payload).
+func crc32cZeroGap(buf []byte, crcOff int) uint32 {
+	c := crc32.Update(0, castagnoli, buf[:crcOff])
+	c = crc32.Update(c, castagnoli, zero4[:])
+	return crc32.Update(c, castagnoli, buf[crcOff+4:])
+}
+
 // verifyCRC verifies the 4-byte CRC field at crcOff of buf, treating the field
 // as zero during computation. buf is not modified: the CRC is computed over
 // the spans before and after the field plus four zero bytes, so decoders can
@@ -45,9 +57,7 @@ func verifyCRC(buf []byte, crcOff int) (uint32, error) {
 		return 0, fmt.Errorf("buffer too short for CRC field at %d: have %d", crcOff, len(buf))
 	}
 	want := binary.LittleEndian.Uint32(buf[crcOff:])
-	var zero [4]byte
-	got := CRC32CConcat(buf[:crcOff], zero[:], buf[crcOff+4:])
-	if got != want {
+	if got := crc32cZeroGap(buf, crcOff); got != want {
 		return 0, fmt.Errorf("CRC mismatch: stored=0x%08x computed=0x%08x", want, got)
 	}
 	return want, nil

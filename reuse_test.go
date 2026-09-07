@@ -4,6 +4,8 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+
+	"github.com/rowpack/rowpack/internal/codec"
 )
 
 // buildReuseStore writes nRows into a FULL snapshot and depth DELTAs with
@@ -222,4 +224,140 @@ func rowValueEqual(a, b Value) bool {
 		y, _ := b.Int64()
 		return x == y
 	}
+}
+
+// TestScanStringViewsSurviveArenaRotation verifies the iterator's string
+// arena contract: string values handed out by an earlier Next remain valid
+// (and byte-identical) after the scan advances past arena chunk rotations and
+// block switches. The scan uses strings large enough to force multiple chunk
+// rotations per block plus enough rows to cross block boundaries.
+func TestScanStringViewsSurviveArenaRotation(t *testing.T) {
+	const rows = 8000
+	base := filepath.Join(t.TempDir(), "arenarot")
+	db, err := Create(base, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	if err := w.DefineSchema(benchSchema()); err != nil {
+		t.Fatal(err)
+	}
+	// Each string is ~6 KiB, so the 32 KiB arena rotates twice per row and
+	// the scan spans multiple blocks.
+	big := func(i uint64) string {
+		b := make([]byte, 6000)
+		for j := range b {
+			b[j] = byte('a' + i%26)
+		}
+		return string(b)
+	}
+	for i := uint64(0); i < rows; i++ {
+		r := Row{
+			Uint64(i),
+			String(big(i)),
+			Bool(i%2 == 0),
+			Int32(int32(i)),
+			Float64(float64(i) * 0.5),
+			DateTimeValueOf(1700000000000000000),
+			DecimalValue(Decimal{Unscaled: bigI(int64(i)), Scale: 2}),
+		}
+		if err := w.Insert(context.Background(), 1, i+1, 1, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	full, err := w.Commit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	it, err := db.Scan(context.Background(), full.ID, 1, ScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Retain one big string from every 100th row (covers chunk rotations and
+	// block boundaries), then walk the rest of the scan before checking.
+	type held struct {
+		rowID RowID
+		ok    bool
+		str   string
+	}
+	heldStr := make(map[RowID]held)
+	var cur Row
+	for {
+		row, ok := it.Next()
+		if !ok {
+			break
+		}
+		cur = row
+		id := it.RowID()
+		if id%100 == 1 {
+			s, ok := cur[1].String()
+			heldStr[id] = held{rowID: id, ok: ok, str: s}
+		}
+	}
+	if err := it.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := it.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(heldStr) == 0 {
+		t.Fatal("no strings retained")
+	}
+	for id, h := range heldStr {
+		want := big(id - 1)
+		if !h.ok || h.str != want {
+			t.Fatalf("retained string for row %d corrupted after scan: got len %d want len %d",
+				id, len(h.str), len(want))
+		}
+	}
+}
+
+// TestCodecSinkParity verifies the single decode entry codec.DecodeInto with
+// a copying sink is byte-identical to the nil-sink (default) path, and that
+// encode round-trips through the reusable buffers agree with the fresh
+// allocate path.
+func TestCodecSinkParity(t *testing.T) {
+	s := benchSchema()
+	cs := schemaToCodec(&s)
+	row := benchRow(42)
+	encFresh, err := codec.Encode(cs, []codec.Value(row), codec.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encReuse, err := codec.EncodeInto(cs, []codec.Value(row), codec.DefaultLimits(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encFresh) != string(encReuse) {
+		t.Fatal("fresh/reuse encode differ")
+	}
+
+	decDefault, err := codec.DecodeInto(nil, encFresh, cs, codec.DefaultLimits(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// With a copy sink the decoded values must be byte-identical to the
+	// default path.
+	decSink, err := codec.DecodeInto(nil, encFresh, cs, codec.DefaultLimits(), func(p []byte) string {
+		return string(p)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range decDefault {
+		if !rowValueEqual(decDefault[i], decSink[i]) {
+			t.Fatalf("col %d mismatch across sink paths", i)
+		}
+	}
+}
+
+// schemaToCodec converts a root Schema into the codec representation for
+// codec-level tests.
+func schemaToCodec(s *Schema) *codec.Schema {
+	cols := make([]codec.Column, len(s.Columns))
+	for i, c := range s.Columns {
+		cols[i] = codec.Column{Name: c.Name, Type: c.Type, Nullable: c.Nullable, Scale: c.Scale}
+	}
+	return &codec.Schema{TableID: s.TableID, Version: s.Version, Name: s.Name, Columns: cols}
 }

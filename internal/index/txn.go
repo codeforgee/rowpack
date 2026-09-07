@@ -123,36 +123,36 @@ func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC
 	if b.snapshot == nil {
 		return nil, nil, errors.New("rowpack: no snapshot entry to build")
 	}
-	var snapshotEntry [fileformat.SnapshotIndexEntrySize]byte
-	if err := b.snapshot.MarshalTo(snapshotEntry[:]); err != nil {
-		return nil, nil, err
-	}
 	// Pre-allocate the body: counts are known, so append never reallocates.
+	// Entries are marshaled directly into the pre-reserved body regions,
+	// avoiding a per-entry scratch array that escape analysis would allocate
+	// on the heap (MarshalTo is not inlinable due to its error path).
 	body := make([]byte, 0, fileformat.SnapshotIndexEntrySize+
 		len(b.metadata)*fileformat.MetadataIndexEntrySize+
 		len(b.blocks)*fileformat.BlockIndexEntrySize+
 		len(b.rows)*fileformat.RowIndexEntrySize)
-	body = append(body, snapshotEntry[:]...)
+	appendTo := func(n int, f func(dst []byte) error) error {
+		pos := len(body)
+		body = body[:pos+n]
+		return f(body[pos:])
+	}
+	if err := appendTo(fileformat.SnapshotIndexEntrySize, b.snapshot.MarshalTo); err != nil {
+		return nil, nil, err
+	}
 	for i := range b.metadata {
-		var e [fileformat.MetadataIndexEntrySize]byte
-		if err := b.metadata[i].MarshalTo(e[:]); err != nil {
+		if err := appendTo(fileformat.MetadataIndexEntrySize, b.metadata[i].MarshalTo); err != nil {
 			return nil, nil, err
 		}
-		body = append(body, e[:]...)
 	}
 	for i := range b.blocks {
-		var e [fileformat.BlockIndexEntrySize]byte
-		if err := b.blocks[i].MarshalTo(e[:]); err != nil {
+		if err := appendTo(fileformat.BlockIndexEntrySize, b.blocks[i].MarshalTo); err != nil {
 			return nil, nil, err
 		}
-		body = append(body, e[:]...)
 	}
 	for i := range b.rows {
-		var e [fileformat.RowIndexEntrySize]byte
-		if err := b.rows[i].MarshalTo(e[:]); err != nil {
+		if err := appendTo(fileformat.RowIndexEntrySize, b.rows[i].MarshalTo); err != nil {
 			return nil, nil, err
 		}
-		body = append(body, e[:]...)
 	}
 	bodyCRC := fileformat.CRC32C(body)
 

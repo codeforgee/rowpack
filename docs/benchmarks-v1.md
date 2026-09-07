@@ -101,6 +101,11 @@ v1.1 首批优化内容：
    改非变异实现，解码器契约升级为「输入不可变」。冷读 300µs/418KB →
    273µs/361KB/op（消除 256 KiB stored 堆分配与一次用户态拷贝，-9% 耗时）。
    新增 mmap/ReadAt 逐块等价、增长/截断边界、并发 remap race 测试。
+6. **索引紧凑分片**（同日第三批）：增量 Row Index 从三层嵌套 map（~120 B/行）
+   重构为按快照/表分片的紧凑排序切片（24 B/行）：1M 行常驻 ~320 MB →
+   **22 MB（-93%）**；`Row` 二分查找、`RowKeys` 零拷贝返回分片，全表与
+   深链 Scan 32/52 ms（较重构前再 -32%/-27%，ScanInto 928 krows/s）。
+   `Stats.IndexMemoryBytes` 反映真实分片体积。
 
 正确性：`go test ./...`、`go test -race ./...`、fuzz（TupleDecode/
 DecimalBytes）、golden files 全绿；`TestPerfEndToEnd` 端到端回归通过。

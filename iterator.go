@@ -58,7 +58,8 @@ type rowHeap []*layerIter
 
 func (h rowHeap) Len() int { return len(h) }
 func (h rowHeap) Less(i, j int) bool {
-	a, b := h[i].head(), h[j].head()
+	a := &h[i].keys[h[i].pos]
+	b := &h[j].keys[h[j].pos]
 	if a.RowID != b.RowID {
 		return a.RowID < b.RowID
 	}
@@ -67,8 +68,6 @@ func (h rowHeap) Less(i, j int) bool {
 func (h rowHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 func (h *rowHeap) Push(x any)   { *h = append(*h, x.(*layerIter)) }
 func (h *rowHeap) Pop() any     { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
-
-func (l *layerIter) head() index.RowKeyLoc { return l.keys[l.pos] }
 
 // Scan opens an iterator over the visible rows of table at snapshot.
 func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table TableID, opts ScanOptions) (*Iterator, error) {
@@ -138,15 +137,17 @@ func (it *Iterator) Next() bool {
 
 // nextLoc advances the k-way merge and returns the next visible row location
 // after applying range and tombstone filtering. It reports ok=false at the
-// end of the scan or when the EndRowID bound is reached.
+// end of the scan or when the EndRowID bound is reached. The returned pointer
+// aliases the immutable row shard.
 func (it *Iterator) nextLoc() (RowID, *index.RowLoc, bool) {
 	for it.heap.Len() > 0 {
 		winner := heap.Pop(&it.heap).(*layerIter)
-		rowID := winner.head().RowID
-		loc := winner.head().Loc
+		ent := &winner.keys[winner.pos]
+		rowID := ent.RowID
+		loc := &ent.Loc
 		// All layers currently at rowID lose; pop them and advance. The heap
 		// tiebreak ensures the winner is the shallowest layer.
-		for it.heap.Len() > 0 && it.heap[0].head().RowID == rowID {
+		for it.heap.Len() > 0 && it.heap[0].keys[it.heap[0].pos].RowID == rowID {
 			l := heap.Pop(&it.heap).(*layerIter)
 			l.advance(&it.heap)
 		}
@@ -158,7 +159,7 @@ func (it *Iterator) nextLoc() (RowID, *index.RowLoc, bool) {
 		if it.opts.EndRowID > 0 && rowID >= it.opts.EndRowID {
 			return 0, nil, false
 		}
-		if loc == nil || loc.ChangeType == fileformat.ChangeDelete {
+		if loc.ChangeType == fileformat.ChangeDelete {
 			continue // tombstone: hide the row entirely
 		}
 		return rowID, loc, true

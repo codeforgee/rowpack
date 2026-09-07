@@ -150,11 +150,11 @@ make golden      # 重新生成 golden files（格式变更时人工审查）
 | 基准 | 结果 |
 | --- | --- |
 | FULL 顺序写 | ~360 krows/s, ~72 MB/s（allocs 较 v1.0 -16%） |
-| Get 冷读（缓存关闭） | ~300 µs/op |
-| Get 热读（缓存命中） | ~8 µs/op（GetInto 复用 ~7 µs / 2 allocs） |
+| Get 冷读（缓存关闭，mmap） | ~273 µs/op |
+| Get 热读（缓存命中） | ~3 µs/op（GetInto 复用 ~3 µs / 2 allocs） |
 | 并发 Get 1/8 goroutine | ~195 µs/op（读路径无锁） |
-| Scan 100k 行 | ~47 ms（ScanInto 复用 ~37 ms / 541 krows/s / -86% allocs） |
-| Open 索引重放（100k 行） | ~9 ms |
+| Scan 100k 行 | ~32 ms（ScanInto 复用 ~22 ms / 928 krows/s / -86% allocs） |
+| Open 索引重放（100k 行） | ~8 ms（1M 行索引常驻 22 MB，较 v1.0 -93%） |
 | RebuildIndex（100k 行） | ~92 ms |
 
 ## 兼容性

@@ -171,8 +171,11 @@ func (r *Reader) maybeDecrypt(stored []byte, h *fileformat.BlockHeader) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	if len(pt) != int(h.RawSize) {
-		return nil, fmt.Errorf("rowpack: block %d decrypted %d bytes, want raw %d", h.BlockID, len(pt), h.RawSize)
+	// The plaintext is the compressed payload: its length is the ciphertext
+	// minus the tag. The decompressed length (== RawSize) is validated by
+	// decompress afterwards.
+	if len(pt) != int(h.StoredSize)-fileformat.AESGCMTagLen {
+		return nil, fmt.Errorf("rowpack: block %d decrypted %d bytes, want stored %d - tag", h.BlockID, len(pt), h.StoredSize)
 	}
 	return pt, nil
 }

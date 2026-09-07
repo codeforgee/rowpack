@@ -2,10 +2,13 @@ package rowpack
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/rowpack/rowpack/internal/fault"
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
@@ -142,8 +145,128 @@ func TestEncryptedRecoveryFromTruncatedIndex(t *testing.T) {
 	}
 }
 
-// tamperFirstRowsPayload flips one byte in the middle of the first Rows
-// block's payload in the .rpk file.
+// TestEncryptedCrashChildHelper is the crash child for encrypted stores: it
+// creates an encrypted store, writes a FULL snapshot of 100 rows and commits;
+// the requested fault exits the process mid-commit.
+func TestEncryptedCrashChildHelper(t *testing.T) {
+	base := os.Getenv("ROWCRASH_BASE")
+	if base == "" {
+		t.Skip("not a crash child")
+	}
+	fp := os.Getenv("ROWCRASH_FAULT")
+	fault.Inject(fp, func() { os.Exit(0) })
+	t.Cleanup(fault.Clear)
+
+	keyID := "cck"
+	db, err := Create(base, Options{Encryption: &EncryptionConfig{
+		KeyProvider: &staticKeyProvider{keyID: keyID, key: testKey(keyID)},
+		KeyID:       keyID,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.DefineSchema(Schema{TableID: 1, Version: 1, Name: "t", Columns: []Column{
+		{Name: "id", Type: TypeUint64}, {Name: "name", Type: TypeString},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	for i := uint64(1); i <= 100; i++ {
+		if err := w.Insert(context.Background(), 1, i, 1, Row{Uint64(i), String(fmt.Sprintf("c-%d", i))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _ = w.Commit(context.Background())
+	_ = db.Close()
+}
+
+// TestEncryptedCrashFaultPoints crashes an encrypted store at every injection
+// point and verifies the recovery outcome is deterministic, idempotent and
+// never modifies files on a read-only reopen.
+func TestEncryptedCrashFaultPoints(t *testing.T) {
+	cases := []struct {
+		point         string
+		wantSnapshots int
+	}{
+		{"commit.data-header.before", 0},
+		{"commit.block.before", 0},
+		{"commit.data-footer.after", 1},
+		{"commit.data-sync.after", 1},
+		{"commit.index.before", 1},
+		{"commit.index-sync.before", 1},
+		{"commit.publish.after", 1},
+	}
+	for _, c := range cases {
+		t.Run(c.point, func(t *testing.T) {
+			base := filepath.Join(t.TempDir(), "estore")
+			cmd := exec.Command(os.Args[0], "-test.run=TestEncryptedCrashChildHelper")
+			cmd.Env = append(os.Environ(), "ROWCRASH_BASE="+base, "ROWCRASH_FAULT="+c.point)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Logf("crash child output: %s", out)
+			}
+
+			keyID := "cck"
+			enc := func() Options {
+				return Options{Encryption: &EncryptionConfig{
+					KeyProvider: &staticKeyProvider{keyID: keyID, key: testKey(keyID)},
+					KeyID:       keyID,
+				}}
+			}
+			// First reopen: recovery happens.
+			db := verifyEncryptedCrashRecovery(t, base, c.wantSnapshots, enc())
+			db.Close()
+			// Second reopen: idempotent.
+			db2 := verifyEncryptedCrashRecovery(t, base, c.wantSnapshots, enc())
+			db2.Close()
+			// Read-only reopen with key: never modifies files.
+			before := fileSizes(t, base)
+			ro, err := Open(base, enc())
+			if err != nil {
+				t.Fatalf("read-only reopen: %v", err)
+			}
+			ro.Close()
+			after := fileSizes(t, base)
+			for _, ext := range []string{".rpk", ".rpi"} {
+				if before[ext] != after[ext] {
+					t.Fatalf("read-only open modified %s: %d -> %d", ext, before[ext], after[ext])
+				}
+			}
+		})
+	}
+}
+
+func verifyEncryptedCrashRecovery(t *testing.T, base string, wantSnapshots int, opts Options) *Store {
+	t.Helper()
+	db, err := Open(base, opts)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	snaps, err := db.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps) != wantSnapshots {
+		db.Close()
+		t.Fatalf("snapshots = %d, want %d", len(snaps), wantSnapshots)
+	}
+	for _, sn := range snaps {
+		for i := uint64(1); i <= 100; i++ {
+			r, err := db.Get(context.Background(), sn.ID, 1, i, nil)
+			if err != nil {
+				db.Close()
+				t.Fatalf("snapshot %d row %d: %v", sn.ID, i, err)
+			}
+			if v, _ := r[0].Uint64(); v != i {
+				db.Close()
+				t.Fatalf("snapshot %d row %d id = %d", sn.ID, i, v)
+			}
+		}
+	}
+	return db
+}
 func tamperFirstRowsPayload(t *testing.T, path string) {
 	t.Helper()
 	f, err := os.OpenFile(path, os.O_RDWR, 0)

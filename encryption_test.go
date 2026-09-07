@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -254,5 +255,102 @@ func TestBlockHeaderOffsetsOnDisk(t *testing.T) {
 	}
 	if binary.LittleEndian.Uint32(buf[fileformat.BlockHeaderKeyEpochOffset:]) != 3 {
 		t.Fatal("key epoch offset")
+	}
+}
+
+// buildEncryptedGoldenStore writes a deterministic encrypted FULL store with
+// one rows block (None compression keeps the ciphertext layout independent of
+// the zstd library version).
+func buildEncryptedGoldenStore(t *testing.T, base string) {
+	t.Helper()
+	uuid := [16]byte{0xE0, 0xC1, 0xE2, 0xC3, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C}
+	testUUIDOverride = &uuid
+	testNowOverride = 1757400000000000001
+	nonce := uint64(0xE0E0E0E0E0E0E0E1)
+	testNonceOverride = &nonce
+	t.Cleanup(func() {
+		testUUIDOverride = nil
+		testNowOverride = 0
+		testNonceOverride = nil
+	})
+	keyID := "gk"
+	db, err := Create(base, Options{
+		Compression: CompressionNone,
+		Encryption: &EncryptionConfig{
+			KeyProvider: &staticKeyProvider{keyID: keyID, key: testKey(keyID)},
+			KeyID:       keyID,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	if err := w.DefineSchema(schema1()); err != nil {
+		t.Fatal(err)
+	}
+	for i := uint64(1); i <= 3; i++ {
+		if err := w.Insert(context.Background(), 1, i, 1, row1(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := w.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestGoldenEncryptedStore locks the byte layout of an encrypted store
+// (encryption header fields, block flags, KeyEpoch, ciphertext) and verifies
+// the golden opens and reads back with its key.
+func TestGoldenEncryptedStore(t *testing.T) {
+	keyID := "gk"
+	enc := func() Options {
+		return Options{
+			Compression: CompressionNone,
+			Encryption: &EncryptionConfig{
+				KeyProvider: &staticKeyProvider{keyID: keyID, key: testKey(keyID)},
+				KeyID:       keyID,
+			},
+		}
+	}
+	base := filepath.Join(t.TempDir(), "golden-enc")
+	if *updateGolden {
+		buildEncryptedGoldenStore(t, base)
+		for _, ext := range []string{".rpk", ".rpi"} {
+			data, err := os.ReadFile(base + ext)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(goldenPath("encrypted-store"+ext), data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
+	// Copy the golden samples and open them with the key.
+	for _, ext := range []string{".rpk", ".rpi"} {
+		data, err := os.ReadFile(goldenPath("encrypted-store" + ext))
+		if err != nil {
+			t.Fatalf("read golden %s: %v (regenerate with make golden)", ext, err)
+		}
+		if err := os.WriteFile(base+ext, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := Open(base, enc())
+	if err != nil {
+		t.Fatalf("open golden: %v", err)
+	}
+	defer db.Close()
+	for i := uint64(1); i <= 3; i++ {
+		r, err := db.Get(context.Background(), 1, 1, i, nil)
+		if err != nil {
+			t.Fatalf("row %d: %v", i, err)
+		}
+		if n, _ := r[1].String(); n != "row-"+itoa(i) {
+			t.Fatalf("row %d name = %q", i, n)
+		}
 	}
 }

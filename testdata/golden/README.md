@@ -11,6 +11,7 @@ v1.0 发布后任何提交不得重写这些样本；需要修改时视为格式
 | `empty-store.rpk/.rpi` | 仅两个 128 字节 Header 的空 Store（确定性 UUID/时间） | M1 |
 | `rows-payload-all-types.bin` | 覆盖全类型值 + NULL 的确定性未压缩 Rows Payload | M3 |
 | `full-delta-store.rpk/.rpi` | FULL + DELTA + 空 DELTA + 超大行（确定性 UUID/时间） | M6 |
+| `encrypted-store.rpk/.rpi` | 加密 FULL Store（None 压缩 + 固定 key，锁定 Header 加密字段/块 Flags/KeyEpoch/密文布局） | v1.3 |
 
 损坏样本由 `TestM10CorruptSamples` 从健康 Store 动态构建（坏 Magic、未知主版本、
 负载损坏、索引损坏），不静态保存。

@@ -1,6 +1,6 @@
 # 数据分块加密：分步开发计划
 
-> 状态：S1–S7 已完成（提交 8c441c5..HEAD）；S8 性能基准进行中
+> 状态：S1–S8 已完成；决策 C 已定（随机冷点读记为已知基线，优化列为快速跟进）
 > 日期：2026-09-09
 > 前提：格式尚未发布，加密作为创建时可选能力直接进入 v1 格式，
 > 无老格式兼容约束（DATA_BLOCK_ENCRYPTION_FEASIBILITY.md §10，2026-09-09 修订）
@@ -28,7 +28,7 @@
 | S5 ✅ | Open/恢复/重建/校验接入：ErrKeyRequired、recovery、RebuildIndex、Verify | recovery.go / rebuild.go / verify.go |
 | S6 ✅ | 集成测试：加密 Store 全功能 + 错误路径 + 篡改 + 崩溃恢复 + 并发 | 测试 |
 | S7 ✅ | 格式文档同步：BINARY_FORMAT_V1.md、GO_API_DESIGN.md | docs |
-| S8 | 性能基准与对比（加密 vs 未加密），报告 | benchmark + docs/bench |
+| S8 ✅ | 性能基准与对比（加密 vs 未加密），报告 | benchmark + docs/perf-report-encryption.md |
 
 每一步独立提交；S1–S7 以 `go test ./...` + `-race` 全绿为门槛。
 
@@ -105,7 +105,7 @@
   场景（rand/seq × cold/hot）× BlockSize × encryption on/off；
 - 关键指标：随机 Get 吞吐、顺序 Scan 吞吐、ReadBatch 吞吐、p95 延迟、
   缓存命中路径（热读）回退；
-- 验收目标：加密 vs 未加密：冷路径吞吐回退 ≤ 10%；热路径（缓存命中）不回退；（AES-NI）
+- 验收目标：加密 vs 未加密：除随机冷点读外吞吐回退 ≤ 10%；热路径（缓存命中）不回退（决策 C，2026-09-09）；随机冷点读 -12.8% 记为结构性解密放大基线
 - 产出 docs/perf-report-encryption.md 对比表；
 - 后续性能调整（缓存策略、并行解密、GCM 复用、BlockSize 矩阵）由使用者参与决策，
   不在本计划自动执行。

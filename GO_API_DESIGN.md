@@ -44,6 +44,10 @@ func DecodeInto(dst []Value, data []byte, schema *Schema, limits Limits, sink St
 // Decode/Encode 为全新分配便捷包装（其内部调用 DecodeInto/EncodeInto）。
 ```
 
+block 包写路径压缩：store 持有常驻 `*block.ZstdEncoder`（单写者 + 顺序刷出
+使其无并发），经 `Builder.SetZstdEncoder` 注入块构建器；`block.Compress`
+的 sync.Pool 路径保留为回退。
+
 
 ## 3. 基础类型
 

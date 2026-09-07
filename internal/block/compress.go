@@ -108,18 +108,47 @@ func poolForLevel(level int) *sync.Pool {
 	return p
 }
 
-func compressZstd(level int, src []byte) ([]byte, error) {
-	pool := poolForLevel(level)
-	enc := pool.Get().(*zstd.Encoder)
+// ZstdEncoder is the reusable zstd encoder handle (alias of klauspost's
+// zstd.Encoder) for store-owned encoders passed to block builders.
+type ZstdEncoder = zstd.Encoder
+
+// NewZstdEncoder builds a reusable zstd encoder configured like the pooled
+// ones (single-goroutine, CRC-enabled deterministic output). Callers that own
+// a store-level encoder (one writer per store) pass it to block builders via
+// SetZstdEncoder, which keeps the ~1 MiB histogram alive across block flushes
+// even when GC cycles clear the sync.Pool. The encoder is safe for EncodeAll
+// from multiple goroutines but serializes internally; block flushing is
+// single-threaded per writer anyway. Returned to the caller; Close it when
+// the store closes.
+func NewZstdEncoder(level int) *ZstdEncoder {
+	e, err := zstd.NewWriter(nil,
+		zstd.WithEncoderConcurrency(1),
+		zstd.WithEncoderCRC(true),
+		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)))
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+
+// EncodeZstdWith compresses src with a caller-owned encoder, returning a
+// freshly allocated frame (like Compress). The pool scratch is used for the
+// output and returned before copying, so enc can be reused immediately.
+func EncodeZstdWith(enc *ZstdEncoder, src []byte) ([]byte, error) {
 	dst := encodeDstPool.Get().([]byte)
 	out := enc.EncodeAll(src, dst[:0])
-	// out may alias dst; copy the (usually small) compressed frame to an owned
-	// buffer before returning dst to the pool.
 	res := make([]byte, len(out))
 	copy(res, out)
 	encodeDstPool.Put(dst)
-	pool.Put(enc)
 	return res, nil
+}
+
+func compressZstd(level int, src []byte) ([]byte, error) {
+	pool := poolForLevel(level)
+	enc := pool.Get().(*zstd.Encoder)
+	res, err := EncodeZstdWith(enc, src)
+	pool.Put(enc)
+	return res, err
 }
 
 func decompressZstd(dst, src []byte, maxOut uint32) ([]byte, error) {

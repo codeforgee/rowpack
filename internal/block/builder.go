@@ -38,6 +38,10 @@ type RowsBlockBuilder struct {
 	count   uint32
 	rawBuf  []byte // reused uncompressed payload scratch
 
+	// enc is the caller-owned zstd encoder (store-level, outliving GC pool
+	// churn); nil selects the pooled encoder.
+	enc *ZstdEncoder
+
 	// Flush returns each finished block; the consumer supplies the BlockID.
 	onFlush func(*FlushedBlock) error
 }
@@ -54,6 +58,11 @@ func NewRowsBlockBuilder(snapshotID uint64, tableID uint32, blockSize int, compr
 		onFlush:    onFlush,
 	}
 }
+
+// SetZstdEncoder attaches a caller-owned zstd encoder used at Flush time
+// instead of the pooled one. The caller owns the encoder's lifecycle and
+// must keep it valid until the last Flush.
+func (b *RowsBlockBuilder) SetZstdEncoder(e *ZstdEncoder) { b.enc = e }
 
 // Add appends one row record. The directory and record header are written in
 // call order, and the record bytes are copied. A record whose encoded size
@@ -133,11 +142,16 @@ func (b *RowsBlockBuilder) Flush() error {
 		return nil
 	}
 	raw := b.buildRawPayload()
-	compressed, err := Compress(b.compress, b.level, raw)
+	var compressed []byte
+	var err error
+	if b.enc != nil && b.compress == fileformat.CompressionZstd {
+		compressed, err = EncodeZstdWith(b.enc, raw)
+	} else {
+		compressed, err = Compress(b.compress, b.level, raw)
+	}
 	if err != nil {
 		return err
 	}
-	_ = err
 	h := fileformat.BlockHeader{
 		BlockKind:   fileformat.BlockKindRows,
 		Compression: b.compress,

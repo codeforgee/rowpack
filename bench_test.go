@@ -394,3 +394,47 @@ func DateTimeValueOf(ns int64) Value {
 	t := time.Unix(0, ns).UTC()
 	return DateTime(t)
 }
+
+// isoRow is a prebuilt row: isolates the library write path from benchmark
+// row-construction noise (fmt.Sprintf / big.NewInt in benchRow dominate the
+// reported allocs of the FullSequentialWrite benchmarks).
+func isoRow() Row {
+	return Row{
+		Uint64(1), String("user-1-abcdefghijklmnop"), Bool(true), Int32(1),
+		Float64(0.5), DateTimeValueOf(1700000000000000000),
+		DecimalValue(Decimal{Unscaled: bigI(100), Scale: 2}),
+	}
+}
+
+// BenchmarkIsolatedWrite writes rows with a prebuilt Row so the reported
+// allocs/bytes measure the library write path alone (Insert + Commit).
+func BenchmarkIsolatedWrite(b *testing.B) {
+	const rows = 100000
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		base := filepath.Join(b.TempDir(), "wisolated")
+		db, err := Create(base, Options{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+		if err := w.DefineSchema(benchSchema()); err != nil {
+			b.Fatal(err)
+		}
+		r := isoRow()
+		b.StartTimer()
+		for j := uint64(0); j < rows; j++ {
+			if err := w.Insert(context.Background(), 1, j+1, 1, r); err != nil {
+				b.Fatal(err)
+			}
+		}
+		if _, err := w.Commit(context.Background()); err != nil {
+			b.Fatal(err)
+		}
+		b.StopTimer()
+		db.Close()
+	}
+	b.SetBytes(rows * 100)
+	b.ReportMetric(float64(rows)/b.Elapsed().Seconds()/1000, "krows/s")
+}

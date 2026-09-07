@@ -171,3 +171,38 @@ DecimalBytes）、golden files 全绿；`TestPerfEndToEnd` 端到端回归通过
   （fastEncoder，~590 ns/行）；调低压缩级别可换吞吐，属格式/空间权衡。
 - Open 后索引全量驻留（1M 行 ~22 MB，24 B/行，已紧凑化）；按快照分片的
   磁盘映射/惰性加载为 v1.2 方向，收益有限。
+
+## v1.1+ 增量基准（2026-09-07 第三批：View.Apply 分片预分配、store 常驻 zstd encoder）
+
+> 环境同上。对比基线为第二批提交后数值。
+
+| 基准 | 第二批 | 第三批 | 变化 |
+| --- | --- | --- | --- |
+| BenchmarkIsolatedWrite（仅库写，原 IsolatedInsert） | 63 ms / 60–72 MB / 1.6K allocs | **49.8–51.3 ms / 42 MB / 1.5K allocs（~2M 行/s）** | 耗时 -21%，B/op -33% |
+| BenchmarkViewApply1M（新，10 万行 txn Apply） | 2.44 ms / 14.1 MB / 46 allocs | **0.60 ms / 2.4 MB / 18 allocs** | -75% / -83% |
+| BenchmarkWrite1M | 231 ms / 312 MB | **210 ms / 237 MB（954 krows/s）** | -9% / -24% |
+| BenchmarkFullSequentialWrite | 100–109 ms / 197–230 MB | **95 ms / 127 MB** | B/op -36% |
+| BenchmarkOpenReplay | 6.4 ms / 40 MB | **5.1 ms / 28.7 MB** | -20% |
+| 其余读路径（Scan/Get 系列） | — | 持平（在噪声内） | — |
+
+本批优化内容：
+
+1. **View.Apply 行分片预分配**：原实现经 `map[uint32][]RowKeyLoc` 逐行
+   append（容量翻倍 + map 桶增长），10 万行瞬时分配 ~126 B/行（12.65 MB）；
+   改为单表直通「计数 + 精准预分配填表」（`buildRowShards`），多表走
+   count+prealloc 回退。快照/表归属校验与去重语义不变（prepare）。
+2. **store 常驻 zstd encoder**：sync.Pool 里的 encoder 会被 GC 周期清空，
+   高分配压力的写路径每几个块就要重建一次完整 encoder（直方图 + 熵表 +
+   blockEnc ~18 MB 首编码开销）。store 保证单写者（CompareAndSwap 槽位）
+   且块刷出顺序执行，故将 encoder 挂在 store 上（`NewZstdEncoder` /
+   `Builder.SetZstdEncoder` / `EncodeZstdWith`），跨 writer 复用、Close 时
+   释放。实测稳态每编码 0 分配；池化路径保留为回退。
+
+正确性：`go test ./...`、`go test -race ./...`、`TestPerfEndToEnd` 全绿。
+新增 `BenchmarkViewApply1M`（index 包）与 `BenchmarkIsolatedWrite`（根包，
+预构建 Row 隔离基准自身噪声）。
+
+> 写路径库内核现状：~500 ns/行（2M 行/s），0.015 alloc/行、~420 B/行
+> （块负载累积 + 索引 body + 24 B/行分片，均属最终数据本体）；剩余 CPU
+> 大头是 zstd 编码（~16–24%）与 SyncCommit fsync（~12%），前者属压缩
+> 级别权衡，后者属持久性语义。

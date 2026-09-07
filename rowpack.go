@@ -78,6 +78,15 @@ type Store struct {
 	lastBlockID    atomic.Uint64
 	txnSeq         atomic.Uint64
 
+	// zstdEnc is the store-level persistent zstd encoder for the write path.
+	// A store has at most one active writer and block flushing is sequential,
+	// so the encoder is never used concurrently; owning it (instead of going
+	// through the sync.Pool) keeps the ~1 MiB encoder histogram allocated
+	// across GC cycles, which would otherwise clear the pool and force a
+	// re-allocation every few blocks. Guarded by zstdEncMu; released on Close.
+	zstdEncMu sync.Mutex
+	zstdEnc   *block.ZstdEncoder
+
 	recoveryStats atomic.Value // holds recoveryReport
 }
 
@@ -199,6 +208,28 @@ func (s *Store) UUID() [16]byte { return s.uuid }
 // Close aborts any active writer, flushes, and closes the files. It is
 // idempotent and safe to call concurrently; in-flight reads are allowed to
 // finish.
+// zstdEncoder lazily creates and returns the store's persistent zstd
+// encoder. Callers must hold the writer slot (single writer) or otherwise
+// serialize writes; concurrent EncodeAll is safe but internally serialized.
+func (s *Store) zstdEncoder() *block.ZstdEncoder {
+	s.zstdEncMu.Lock()
+	defer s.zstdEncMu.Unlock()
+	if s.zstdEnc == nil {
+		s.zstdEnc = block.NewZstdEncoder(s.opts.CompressionLevel)
+	}
+	return s.zstdEnc
+}
+
+// releaseZstdEncoder closes the store's persistent encoder, if any.
+func (s *Store) releaseZstdEncoder() {
+	s.zstdEncMu.Lock()
+	defer s.zstdEncMu.Unlock()
+	if s.zstdEnc != nil {
+		s.zstdEnc.Close()
+		s.zstdEnc = nil
+	}
+}
+
 func (s *Store) Close() error {
 	if s.closed.Swap(true) {
 		return nil
@@ -221,6 +252,7 @@ func (s *Store) Close() error {
 	if err := s.index.Close(); err != nil {
 		errs = append(errs, err)
 	}
+	s.releaseZstdEncoder()
 	s.state.Store(nil)
 	if s.lock != nil {
 		if err := s.lock.Release(); err != nil {

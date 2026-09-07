@@ -334,6 +334,7 @@ func (w *SnapshotWriter) ensureMetaBuilder() *block.MetadataBlockBuilder {
 				MaxRawBytes:    w.store.opts.Limits.MaxRawBlockBytes,
 				MaxStoredBytes: w.store.opts.Limits.MaxStoredBlockBytes,
 			}, w.metaFlush)
+		w.attachZstdEncoder(w.metaBuilder)
 	}
 	return w.metaBuilder
 }
@@ -397,8 +398,20 @@ func (w *SnapshotWriter) rowBuilder(table TableID) *block.RowsBlockBuilder {
 		MaxRawBytes:    w.store.opts.Limits.MaxRawBlockBytes,
 		MaxStoredBytes: w.store.opts.Limits.MaxStoredBlockBytes,
 	}, w.rowsFlush(table))
+	w.attachZstdEncoder(b)
 	w.rowBuilders[table] = b
 	return b
+}
+
+// attachZstdEncoder hands the store's persistent zstd encoder to a block
+// builder when the disk compression is zstd. The store owns the encoder (one
+// writer at a time, sequential flushes), so its ~1 MiB histogram is allocated
+// once per store instead of once per pool-recreating GC cycle.
+func (w *SnapshotWriter) attachZstdEncoder(setter interface{ SetZstdEncoder(*block.ZstdEncoder) }) {
+	if w.store.opts.diskCompression() != fileformat.CompressionZstd {
+		return
+	}
+	setter.SetZstdEncoder(w.store.zstdEncoder())
 }
 
 // Insert appends an INSERT change.

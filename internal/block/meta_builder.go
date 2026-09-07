@@ -23,6 +23,10 @@ type MetadataBlockBuilder struct {
 	records [][]byte
 	count   uint32
 
+	// enc is the caller-owned zstd encoder (store-level, outliving GC pool
+	// churn); nil selects the pooled encoder.
+	enc *ZstdEncoder
+
 	onFlush func(*FlushedBlock) error
 }
 
@@ -38,6 +42,10 @@ func NewMetadataBlockBuilder(snapshotID uint64, tableID uint32, blockSize int, c
 		onFlush:    onFlush,
 	}
 }
+
+// SetZstdEncoder attaches a caller-owned zstd encoder used at Flush time
+// instead of the pooled one.
+func (b *MetadataBlockBuilder) SetZstdEncoder(e *ZstdEncoder) { b.enc = e }
 
 // Add appends one metadata record body with its directory entry, flushing
 // when the pending payload reaches the target size.
@@ -72,7 +80,12 @@ func (b *MetadataBlockBuilder) Flush() error {
 	if err != nil {
 		return err
 	}
-	compressed, err := Compress(b.compress, b.level, raw)
+	var compressed []byte
+	if b.enc != nil && b.compress == fileformat.CompressionZstd {
+		compressed, err = EncodeZstdWith(b.enc, raw)
+	} else {
+		compressed, err = Compress(b.compress, b.level, raw)
+	}
 	if err != nil {
 		return err
 	}

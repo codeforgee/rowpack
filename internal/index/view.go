@@ -411,37 +411,13 @@ func (v *View) Apply(t *Txn, maxDepth uint32) (*View, error) {
 
 	// Rows: build one compact sorted shard per table. Tombstones are kept
 	// (readers filter them), duplicates within (snapshot, table) are rejected.
-	rowSets := make(map[uint32][]RowKeyLoc)
-	for i := range t.Rows {
-		re := &t.Rows[i]
-		if re.SnapshotID != se.SnapshotID {
-			return nil, fmt.Errorf("rowpack: row entry wrong snapshot")
-		}
-		rowSets[re.TableID] = append(rowSets[re.TableID], RowKeyLoc{
-			RowID: re.RowID,
-			Loc:   RowLoc{BlockID: re.BlockID, ItemOrdinal: re.ItemOrdinal, ChangeType: re.ChangeType},
-		})
-	}
-	rowMap := make(map[uint32]*rowShard, len(rowSets))
-	for tid, entries := range rowSets {
-		// Fast path: the writer's insertion order is already sorted in the
-		// common sequential case; verify before sorting.
-		sorted := true
-		for i := 1; i < len(entries); i++ {
-			if entries[i].RowID < entries[i-1].RowID {
-				sorted = false
-				break
-			}
-		}
-		if !sorted {
-			sortRowKeyLocs(entries)
-		}
-		for i := 1; i < len(entries); i++ {
-			if entries[i].RowID == entries[i-1].RowID {
-				return nil, fmt.Errorf("rowpack: duplicate (table %d, row %d) in snapshot %d", tid, entries[i].RowID, se.SnapshotID)
-			}
-		}
-		rowMap[tid] = &rowShard{entries: entries}
+	// The overwhelmingly common case is a single table; fill a preallocated
+	// shard directly. Appending through a map (capacity doubling) would
+	// transiently allocate ~5x the shard bytes and per-row map lookups would
+	// dominate the fill for large snapshots.
+	rowMap, err := buildRowShards(t, se.SnapshotID)
+	if err != nil {
+		return nil, err
 	}
 	nv.rows[se.SnapshotID] = rowMap
 
@@ -449,10 +425,108 @@ func (v *View) Apply(t *Txn, maxDepth uint32) (*View, error) {
 	// row-shard entries (24 B per row).
 	nv.memoryBytes = v.memoryBytes
 	nv.memoryBytes += 64 + uint64(len(t.Metadata))*56 + uint64(len(t.Blocks))*72
-	for _, entries := range rowSets {
-		nv.memoryBytes += 48 + uint64(len(entries))*24
+	for _, sh := range rowMap {
+		nv.memoryBytes += 48 + uint64(len(sh.entries))*24
 	}
 	return nv, nil
+}
+
+// buildRowShards converts t.Rows into one sorted rowShard per table. It
+// returns (nil, nil) when t has no row entries. Duplicates within a
+// (snapshot, table) and entries owned by another snapshot are rejected.
+func buildRowShards(t *Txn, snapshot uint64) (map[uint32]*rowShard, error) {
+	n := len(t.Rows)
+	if n == 0 {
+		return nil, nil
+	}
+	checkOwned := func(re *fileformat.RowIndexEntry) error {
+		if re.SnapshotID != snapshot {
+			return fmt.Errorf("rowpack: row entry wrong snapshot")
+		}
+		return nil
+	}
+	first := t.Rows[0].TableID
+	singleTable := true
+	for i := 1; i < n; i++ {
+		if t.Rows[i].TableID != first {
+			singleTable = false
+			break
+		}
+	}
+	if singleTable {
+		entries := make([]RowKeyLoc, n)
+		for i := range t.Rows {
+			re := &t.Rows[i]
+			if err := checkOwned(re); err != nil {
+				return nil, err
+			}
+			entries[i] = RowKeyLoc{
+				RowID: re.RowID,
+				Loc:   RowLoc{BlockID: re.BlockID, ItemOrdinal: re.ItemOrdinal, ChangeType: re.ChangeType},
+			}
+		}
+		sh := &rowShard{entries: entries}
+		if err := sh.prepare(); err != nil {
+			return nil, err
+		}
+		return map[uint32]*rowShard{first: sh}, nil
+	}
+	// Multi-table fallback: count rows per table, preallocate each shard
+	// exactly, then fill by index (no capacity doubling).
+	rowSets := make(map[uint32][]RowKeyLoc)
+	counts := make(map[uint32]int)
+	for i := range t.Rows {
+		counts[t.Rows[i].TableID]++
+	}
+	for tid, c := range counts {
+		rowSets[tid] = make([]RowKeyLoc, c)
+	}
+	pos := make(map[uint32]int, len(counts))
+	for i := range t.Rows {
+		re := &t.Rows[i]
+		if err := checkOwned(re); err != nil {
+			return nil, err
+		}
+		tid := re.TableID
+		p := pos[tid]
+		rowSets[tid][p] = RowKeyLoc{
+			RowID: re.RowID,
+			Loc:   RowLoc{BlockID: re.BlockID, ItemOrdinal: re.ItemOrdinal, ChangeType: re.ChangeType},
+		}
+		pos[tid] = p + 1
+	}
+	out := make(map[uint32]*rowShard, len(rowSets))
+	for tid, entries := range rowSets {
+		sh := &rowShard{entries: entries}
+		if err := sh.prepare(); err != nil {
+			return nil, err
+		}
+		out[tid] = sh
+	}
+	return out, nil
+}
+
+// prepare sorts (when needed) and validates shard entries: strict ascending
+// order, which also rejects duplicates (v1 forbids duplicate RowKeys in one
+// snapshot).
+func (sh *rowShard) prepare() error {
+	entries := sh.entries
+	sorted := true
+	for i := 1; i < len(entries); i++ {
+		if entries[i].RowID < entries[i-1].RowID {
+			sorted = false
+			break
+		}
+	}
+	if !sorted {
+		sortRowKeyLocs(entries)
+	}
+	for i := 1; i < len(entries); i++ {
+		if entries[i].RowID == entries[i-1].RowID {
+			return fmt.Errorf("rowpack: duplicate row %d in snapshot", entries[i].RowID)
+		}
+	}
+	return nil
 }
 
 // shallowCopy copies the top-level maps so the new view can add the new

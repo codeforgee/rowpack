@@ -8,6 +8,13 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
+// Decrypter authenticates and decrypts one sealed block payload before
+// decompression. It is optional: a nil decrypter keeps the reader on the
+// plain path and fails closed on encrypted blocks.
+type Decrypter interface {
+	Decrypt(header fileformat.BlockHeader, ciphertext []byte) ([]byte, error)
+}
+
 // Reader reads blocks from a file via ReadAt (no shared seek cursor), so
 // concurrent readers never interfere. When the underlying handle supports
 // zero-copy views (mmap-backed Appender), ReadAtBlock slices the stored
@@ -18,11 +25,21 @@ import (
 type Reader struct {
 	ra     io.ReaderAt
 	limits Limits
+
+	// decrypter restores plaintext before decompression for encrypted
+	// blocks. Set via SetDecrypter before any reads; read-only after.
+	decrypter Decrypter
 }
 
 // NewReader creates a block reader over ra.
 func NewReader(ra io.ReaderAt, limits Limits) *Reader {
 	return &Reader{ra: ra, limits: limits}
+}
+
+// SetDecrypter installs the block decrypter (nil clears it). It must be
+// called before any block is read; concurrent reads must not race it.
+func (r *Reader) SetDecrypter(d Decrypter) {
+	r.decrypter = d
 }
 
 // viewer is an optional interface for handles that can expose direct views
@@ -64,7 +81,11 @@ func (r *Reader) readAtBlockView(offset int64, v viewer) (*Block, error) {
 		return nil, fmt.Errorf("rowpack: read block payload at %d: %w", offset+fileformat.BlockHeaderSize, err)
 	}
 	defer sdone()
-	raw, err := r.decompress(&h, sb)
+	stored, err := r.maybeDecrypt(sb, &h)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := r.decompress(&h, stored)
 	if err != nil {
 		return nil, err
 	}
@@ -74,9 +95,10 @@ func (r *Reader) readAtBlockView(offset int64, v viewer) (*Block, error) {
 	if fileformat.CRC32C(raw) != h.RawCRC32C {
 		return nil, fmt.Errorf("rowpack: block %d raw CRC mismatch", h.BlockID)
 	}
-	if h.Compression == fileformat.CompressionNone {
-		// Decompress returned the view itself; copy so the returned (and
-		// potentially cached) Block never aliases the file mapping.
+	if h.Compression == fileformat.CompressionNone && !h.Encrypted {
+		// Plain, uncompressed: Decompress returned the view itself; copy so
+		// the returned (and potentially cached) Block never aliases the file
+		// mapping. Encrypted blocks were decrypted into a fresh buffer.
 		cp := make([]byte, len(raw))
 		copy(cp, raw)
 		raw = cp
@@ -84,7 +106,9 @@ func (r *Reader) readAtBlockView(offset int64, v viewer) (*Block, error) {
 	return &Block{Header: h, Raw: raw}, nil
 }
 
-// checkHeader validates the stored/raw limits and None-size agreement.
+// checkHeader validates the stored/raw limits and None-size agreement. An
+// encrypted block's StoredSize is the ciphertext length (plain + tag), so the
+// None equality only applies to plain blocks.
 func (r *Reader) checkHeader(h *fileformat.BlockHeader) error {
 	if h.StoredSize > r.limits.MaxStoredBytes {
 		return fmt.Errorf("rowpack: stored size %d exceeds limit %d", h.StoredSize, r.limits.MaxStoredBytes)
@@ -92,7 +116,7 @@ func (r *Reader) checkHeader(h *fileformat.BlockHeader) error {
 	if h.RawSize > r.limits.MaxRawBytes {
 		return fmt.Errorf("rowpack: raw size %d exceeds limit %d", h.RawSize, r.limits.MaxRawBytes)
 	}
-	if h.Compression == fileformat.CompressionNone && h.StoredSize != h.RawSize {
+	if !h.Encrypted && h.Compression == fileformat.CompressionNone && h.StoredSize != h.RawSize {
 		return fmt.Errorf("rowpack: none-compressed block stored %d != raw %d", h.StoredSize, h.RawSize)
 	}
 	return nil
@@ -115,7 +139,11 @@ func (r *Reader) readAtBlockCopy(offset int64) (*Block, error) {
 	if _, err := r.ra.ReadAt(stored, offset+fileformat.BlockHeaderSize); err != nil {
 		return nil, fmt.Errorf("rowpack: read block payload at %d: %w", offset+fileformat.BlockHeaderSize, err)
 	}
-	raw, err := r.decompress(&h, stored)
+	plain, err := r.maybeDecrypt(stored, &h)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := r.decompress(&h, plain)
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +154,27 @@ func (r *Reader) readAtBlockCopy(offset int64) (*Block, error) {
 		return nil, fmt.Errorf("rowpack: block %d raw CRC mismatch", h.BlockID)
 	}
 	return &Block{Header: h, Raw: raw}, nil
+}
+
+// maybeDecrypt returns the plaintext for a stored payload: the input slice
+// itself for plain blocks, or a fresh buffer for encrypted blocks (which are
+// authenticated against the header). It never outlives its view: callers
+// must keep the mapping view alive until this returns.
+func (r *Reader) maybeDecrypt(stored []byte, h *fileformat.BlockHeader) ([]byte, error) {
+	if !h.Encrypted {
+		return stored, nil
+	}
+	if r.decrypter == nil {
+		return nil, fmt.Errorf("rowpack: block %d is encrypted but no decrypter is installed", h.BlockID)
+	}
+	pt, err := r.decrypter.Decrypt(*h, stored)
+	if err != nil {
+		return nil, err
+	}
+	if len(pt) != int(h.RawSize) {
+		return nil, fmt.Errorf("rowpack: block %d decrypted %d bytes, want raw %d", h.BlockID, len(pt), h.RawSize)
+	}
+	return pt, nil
 }
 
 func (r *Reader) decompress(h *fileformat.BlockHeader, stored []byte) ([]byte, error) {

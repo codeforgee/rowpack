@@ -25,6 +25,12 @@ var (
 	ErrVersionUnsupported = errors.New("rowpack: unsupported version")
 	ErrStoreMismatch      = errors.New("rowpack: store files do not match")
 	ErrClosed             = errors.New("rowpack: closed")
+
+	// Encryption errors.
+	ErrKeyRequired    = errors.New("rowpack: encryption key required")
+	ErrKeyUnavailable = errors.New("rowpack: encryption key unavailable")
+	ErrKeyIDNotFound  = errors.New("rowpack: encryption key id not found")
+	ErrAuthFailed     = errors.New("rowpack: block authentication failed")
 )
 
 // CorruptionError describes a structured integrity failure with the file type,

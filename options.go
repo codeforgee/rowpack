@@ -54,6 +54,7 @@ type Options struct {
 	Durability       Durability
 	Validation       ValidationMode
 	Limits           Limits
+	Encryption       *EncryptionConfig // nil = plain store; set only at Create
 }
 
 // resolved returns an Options copy with defaults applied.
@@ -112,6 +113,11 @@ func (o Options) validate() error {
 	}
 	if o.Validation != ValidationStrict && o.Validation != ValidationNone {
 		return fmt.Errorf("%w: validation %d", ErrInvalidArgument, o.Validation)
+	}
+	if o.Encryption != nil {
+		if err := o.Encryption.validate(); err != nil {
+			return err
+		}
 	}
 	if o.Limits.MaxRowBytes > o.Limits.MaxRawBlockBytes {
 		return fmt.Errorf("%w: max row %d exceeds max raw block %d", ErrInvalidArgument, o.Limits.MaxRowBytes, o.Limits.MaxRawBlockBytes)

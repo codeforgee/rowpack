@@ -28,6 +28,7 @@ import (
 	"github.com/rowpack/rowpack/internal/index"
 	"github.com/rowpack/rowpack/internal/iofile"
 	"github.com/rowpack/rowpack/internal/lockfile"
+	"github.com/rowpack/rowpack/internal/seal"
 )
 
 // Test-only hooks, set only by tests in this package so golden files are
@@ -81,6 +82,13 @@ type Store struct {
 	uuid     [16]byte
 	header   fileformat.DataFileHeader
 	readOnly bool
+
+	// encCipher seals block payloads on the write path (single writer, so no
+	// concurrency). decrypter authenticates and decrypts on the read path
+	// (cached per epoch, concurrent-safe). Both are non-nil only for
+	// encrypted stores and are built during initOpen from the on-disk header.
+	encCipher *seal.Cipher
+	decrypter *storeDecrypter
 
 	data   *iofile.Appender
 	index  *iofile.Appender
@@ -143,6 +151,17 @@ func Create(basePath string, opts Options) (*Store, error) {
 		DefaultBlockSize:   uint32(resolved.BlockSize),
 		DefaultCompression: resolved.diskCompression(),
 		DefaultRowEncoding: fileformat.RowEncodingTypedTuple,
+	}
+	// Encryption is fixed at Create: resolve the initial key and stamp the
+	// headers. A plain store keeps all encryption bytes zero.
+	encCipher, err := buildEncryptor(resolved.Encryption)
+	if err != nil {
+		return nil, err
+	}
+	if encCipher != nil {
+		dataHdr.EncryptionAlgorithm = fileformat.EncAES256GCM
+		dataHdr.NonceScheme = fileformat.NonceCounterV1
+		dataHdr.KeyID = []byte(resolved.Encryption.KeyID)
 	}
 	idxHdr := fileformat.IndexFileHeader{}
 	idxHdr.FileHeader = dataHdr.FileHeader
@@ -348,7 +367,41 @@ func (s *Store) initOpen() error {
 	}
 	s.uuid = dataHdr.StoreUUID
 	s.header = dataHdr
+	if err := s.initEncryption(dataHdr); err != nil {
+		return err
+	}
 	return s.recover()
+}
+
+// initEncryption wires the read (and write) crypto for an encrypted store and
+// enforces the key contract: an encrypted store opened without a KeyProvider
+// fails with ErrKeyRequired instead of entering a half-usable state.
+func (s *Store) initEncryption(dataHdr fileformat.DataFileHeader) error {
+	if dataHdr.EncryptionAlgorithm == fileformat.EncNone {
+		return nil
+	}
+	if dataHdr.EncryptionAlgorithm != fileformat.EncAES256GCM {
+		return fmt.Errorf("%w: encryption algorithm %d", ErrVersionUnsupported, dataHdr.EncryptionAlgorithm)
+	}
+	if dataHdr.NonceScheme != fileformat.NonceCounterV1 {
+		return fmt.Errorf("%w: nonce scheme %d", ErrVersionUnsupported, dataHdr.NonceScheme)
+	}
+	if s.opts.Encryption == nil || s.opts.Encryption.KeyProvider == nil {
+		return fmt.Errorf("%w: store %q is encrypted (key id %q)", ErrKeyRequired, s.basePath, dataHdr.KeyID)
+	}
+	keyID := string(dataHdr.KeyID)
+	s.decrypter = newStoreDecrypter(s.opts.Encryption.KeyProvider, keyID, dataHdr.StoreUUID)
+	s.reader.SetDecrypter(s.decrypter)
+	// Write path (read-write opens only): resolve the initial key up front so
+	// provider failures surface at Open, not at the first commit.
+	if !s.readOnly {
+		c, err := s.decrypter.Cipher(0)
+		if err != nil {
+			return err
+		}
+		s.encCipher = c
+	}
+	return nil
 }
 
 // dataFooterVerifier supplies the data footer CRC during index replay.

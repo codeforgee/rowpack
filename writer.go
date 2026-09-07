@@ -612,6 +612,22 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	var rawBytes uint64
 	var blockCRCs []byte
 	for _, blk := range w.pending {
+		// Encrypt the stored payload after BlockID assignment and before the
+		// header is marshalled: the AAD binds the final header fields. The
+		// ciphertext length is known up front (plaintext + tag), and the AAD's
+		// StoredSize is set to that exact value so read-time verification is
+		// self-consistent. Only the payload and header change; RawSize and
+		// RawCRC32C keep describing the uncompressed plaintext.
+		if c := w.store.encCipher; c != nil {
+			blk.header.Encrypted = true
+			blk.header.KeyEpoch = 0
+			blk.header.StoredSize = uint32(len(blk.payload)) + fileformat.AESGCMTagLen
+			sealed, err := c.Seal(0, blk.header.BlockID, &w.store.uuid, &blk.header, blk.payload)
+			if err != nil {
+				return SnapshotInfo{}, err
+			}
+			blk.payload = sealed
+		}
 		var hb [fileformat.BlockHeaderSize]byte
 		if err := blk.header.MarshalTo(hb[:]); err != nil {
 			return SnapshotInfo{}, err

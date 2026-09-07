@@ -271,7 +271,7 @@ func collect(t *testing.T, db *Store, snapshot SnapshotID, table TableID, opts S
 	defer it.Close()
 	var out []string
 	for {
-		row, ok := it.Next(nil)
+		row, ok := it.Next()
 		if !ok {
 			break
 		}
@@ -387,7 +387,7 @@ func TestM6Scan(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer it.Close()
-	if _, ok := it.Next(nil); ok {
+	if _, ok := it.Next(); ok {
 		t.Fatal("nonexistent table yielded rows")
 	}
 

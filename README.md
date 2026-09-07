@@ -100,13 +100,13 @@ func main() {
 
 ## 行复用
 
-读取入口统一为借用/复用模式，消除每行的 Row 切片与 Decimal big.Int 分配
+读入口统一为借用/复用模式，消除每行的 Row 切片与 Decimal big.Int 分配
 （Scan 场景每行分配降 ~86%）：
 
-- `Iterator.Next(nil)`：解码进迭代器内部缓冲，缓冲跨调用复用；返回的 Row
-  到下一次 Next 前有效。常规循环零额外回写。
-- `Get` / `Next` 传 dst：解码进调用者提供的 Row，复用其底层数组（Get 为
-  并发安全，nil dst 每次分配新行；Next 的迭代器非并发安全，nil 即内部缓冲）。
+- `Iterator.Next()`：无参数，行解码进迭代器内部缓冲，缓冲跨调用复用；返回
+  的 Row 到下一次 Next 前有效，整表 Scan 无逐行分配。
+- `Get(ctx, snap, table, id, dst)`：解码进调用者提供的 Row 复用其底层数组；
+  Get 是并发入口，nil dst 每次分配新行，dst 是唯一跨调用复用的方式。
 
 需要跨调用保留的值需拷贝；通过 `String()`/`Bytes()`/`Decimal()` 访问器读
 值始终安全（返回副本）。
@@ -115,7 +115,7 @@ func main() {
 it, _ := db.Scan(ctx, full.ID, 1, rowpack.ScanOptions{})
 defer it.Close()
 for {
-	row, ok := it.Next(nil)
+	row, ok := it.Next()
 	if !ok {
 		break
 	}

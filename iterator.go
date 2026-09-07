@@ -108,31 +108,16 @@ func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table TableID, op
 	return it, nil
 }
 
-// Next advances to the next visible row. The returned Row is valid only
-// until the next call to Next on this iterator:
-//
-//   - dst == nil: the row is decoded into an iterator-managed buffer that is
-//     reused across calls (allocated once, grown as needed). This is the
-//     idiomatic loop form:
-//
-//     for {
-//     row, ok := it.Next(nil)
-//     if !ok {
-//     break
-//     }
-//     // row is valid here
-//     }
-//
-//   - dst != nil: the row is decoded into dst, reusing dst's backing array
-//     and any Decimal big.Int already held there; the returned Row aliases
-//     dst. Use this form to keep an explicitly caller-managed buffer.
-//
-// In both modes values that must outlive the next Next call must be copied
-// (getters of String/Bytes/Decimal return copies, so reading through them is
-// always safe; retained Value structs may observe overwritten Decimals). It
-// returns (nil, false) at the end; call Err to distinguish completion from
-// failure. It is not safe for concurrent use.
-func (it *Iterator) Next(dst Row) (Row, bool) {
+// Next advances to the next visible row. The returned Row is decoded into an
+// iterator-managed buffer that is reused across calls (allocated once, grown
+// as needed), so a full scan allocates no per-row Row slices. The returned
+// Row is valid only until the next call to Next on this iterator; values that
+// must outlive it must be copied (getters of String/Bytes/Decimal return
+// copies, so reading through them is always safe; retained Value structs may
+// observe overwritten Decimals). It returns (nil, false) at the end; call
+// Err to distinguish completion from failure. It is not safe for concurrent
+// use.
+func (it *Iterator) Next() (Row, bool) {
 	if it.closed || it.err != nil {
 		return nil, false
 	}
@@ -148,10 +133,7 @@ func (it *Iterator) Next(dst Row) (Row, bool) {
 	if !ok {
 		return nil, false
 	}
-	if dst == nil {
-		dst = it.buf
-	}
-	row, err := it.rowAt(loc, dst)
+	row, err := it.rowAt(loc, it.buf)
 	if err != nil {
 		it.err = err
 		return nil, false

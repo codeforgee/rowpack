@@ -186,7 +186,7 @@ func dump(ctx context.Context, base string, snap uint64, table uint32) {
 	}
 	defer it.Close()
 	for {
-		row, ok := it.Next(nil)
+		row, ok := it.Next()
 		if !ok {
 			break
 		}

@@ -1,6 +1,6 @@
 # v1.0 基准记录
 
-> 记录时间：2026-09-06（性能迭代完成，最终基线；v1.1 见文末）
+> 记录时间：2026-09-06（性能迭代完成，最终基线；v1.1 见文末）。注：文中 GetInto/NextInto/ScanInto 等 API 名已在 1.2 前 API 定型中分别更名为 Get/Next（借用/复用语义并入主入口），历史记录不另改写。
 > 环境：Go 1.27.0 / darwin arm64 (Apple Silicon) / klauspost/compress v1.20.0 (zstd)
 > 数据：100,000 行 × 7 列（uint64 + string + bool + int32 + float64 + datetime + decimal(scale=2)）
 > 格式：BlockSize 256 KiB / Zstd / SyncCommit / Cache 64 MiB

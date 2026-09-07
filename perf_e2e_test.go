@@ -85,7 +85,7 @@ func TestPerfEndToEnd(t *testing.T) {
 	n := 0
 	var first, last uint64
 	for {
-		row, ok := it.Next(nil)
+		row, ok := it.Next()
 		if !ok {
 			break
 		}

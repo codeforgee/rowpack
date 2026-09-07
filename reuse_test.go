@@ -86,9 +86,9 @@ func TestGetReuse(t *testing.T) {
 	}
 }
 
-// TestNextReuse verifies the two Next modes agree value-for-value over a
-// DELTA chain: nil dst (iterator-managed buffer) vs an explicit caller dst,
-// including row growth and strict RowID order.
+// TestNextReuse verifies Scan over a DELTA chain returns rows consistent
+// across independent iterators, including buffer reuse growth and strict
+// RowID order.
 func TestNextReuse(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "scanreuse")
 	db, head := buildReuseStore(t, base, 1000, 2)
@@ -102,17 +102,16 @@ func TestNextReuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var dst Row
 	var lastRowID RowID
 	for {
-		want, ok2 := it2.Next(nil)
+		want, ok2 := it2.Next()
 		var wantID RowID
 		if ok2 {
 			wantID = it2.RowID()
 		}
-		got, ok := it.Next(dst)
+		got, ok := it.Next()
 		if ok != ok2 {
-			t.Fatalf("visibility mismatch: nil-dst=%v dst=%v", ok, ok2)
+			t.Fatalf("visibility mismatch: %v vs %v", ok, ok2)
 		}
 		if !ok {
 			break
@@ -132,7 +131,6 @@ func TestNextReuse(t *testing.T) {
 				t.Fatalf("row %d col %d mismatch", wantID, c)
 			}
 		}
-		dst = got
 	}
 	if err := it2.Err(); err != nil {
 		t.Fatal(err)
@@ -160,13 +158,10 @@ func TestNextEndRowID(t *testing.T) {
 	}
 	defer it.Close()
 	n := 0
-	var dst Row
 	for {
-		row, ok := it.Next(dst)
-		if !ok {
+		if _, ok := it.Next(); !ok {
 			break
 		}
-		dst = row
 		id := it.RowID()
 		if id < 10 || id >= 20 {
 			t.Fatalf("row %d outside range", id)

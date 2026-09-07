@@ -13,10 +13,10 @@
 - 默认使用 Zstd、256 KiB Block、SyncCommit。
 - 错误支持 `errors.Is/As`，提交结果未知必须显式表达。
 - 使用强类型 `Value`，避免 `[]any` 的平台类型歧义。
-- 读入口统一为借用/复用模式，不引用可被缓存淘汰或复用的缓冲区：`Get`/
-  `Iterator.Next` 解码进调用者提供的 dst（返回值别名 dst，由调用者掌控生命
-  周期）；`Iterator.Next(nil)` 使用迭代器内部缓冲，跨调用复用，返回的 Row
-  到下一次 Next 前有效。
+- 读入口统一为借用/复用模式，不引用可被缓存淘汰或复用的缓冲区：`Get` 解码
+  进调用者提供的 dst（返回值别名 dst，由调用者掌控生命周期，nil 分配新行；
+  并发安全下这是唯一能跨调用复用的方式）；`Iterator.Next()` 使用迭代器内部
+  缓冲跨调用复用，返回的 Row 到下一次 Next 前有效，无需传参。
 
 ## 2. 包结构
 
@@ -373,7 +373,7 @@ type ScanOptions struct {
 type Iterator struct { /* unexported */ }
 
 func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table TableID, opts ScanOptions) (*Iterator, error)
-func (it *Iterator) Next(dst Row) (Row, bool)
+func (it *Iterator) Next() (Row, bool)
 func (it *Iterator) RowID() RowID
 func (it *Iterator) Err() error
 func (it *Iterator) Close() error
@@ -383,13 +383,9 @@ func (it *Iterator) Close() error
 
 - 输出 RowID 严格升序，已覆盖版本与 Tombstone 不输出。
 - Iterator 捕获创建时的不可变索引视图。
-- Next 是唯一的推进入口（借用/复用模式）：
-  - `Next(nil)`：解码进迭代器内部缓冲，缓冲跨调用复用（只分配一次、按需增
-    长），常规循环无需任何回写；返回的 Row 到下一次 Next 前有效。
-  - `Next(dst)`：解码进调用者提供的 dst，复用其底层数组与 Decimal
-    `*big.Int`；返回的 Row 别名 dst。适合显式管理缓冲的热点路径。
-  两种模式下需要跨调用保留的值都需拷贝（通过访问器读值始终安全）。RowID
-  任意模式下均可用。
+- Next 无参数：行解码进迭代器内部缓冲，缓冲跨调用复用（只分配一次、按需
+  增长），整表 Scan 无逐行 Row 分配；返回的 Row 到下一次 Next 前有效，需
+  跨调用保留的值需拷贝（通过访问器读值始终安全）。
 - Next=false 后检查 Err；Close 幂等。
 - ctx 取消后尽快停止并返回标准 context 错误。
 - 内部应对父链排序索引做 k-way merge，不构建与整表行数同规模的 map。

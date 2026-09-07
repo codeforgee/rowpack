@@ -1,6 +1,6 @@
 # RowPack v1.1 优化计划
 
-> 文档状态：执行基线
+> 文档状态：执行基线（v1.1 已完成；文中 GetInto/NextInto API 名在 1.2 前 API 定型中更名为 Get/Next，历史记录不另改写）
 > 目标版本：v1.1（性能与资源优化，不改 v1 磁盘格式、不破坏公开 API 契约）
 > 基线：docs/benchmarks-v1.md「剩余热点（v1.1 方向）」
 > 约束：不得修改已冻结的 v1 枚举、字段编号与 golden files；仅新增 API/内部实现优化。

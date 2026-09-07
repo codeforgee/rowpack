@@ -79,7 +79,7 @@ func TestM7ConcurrentReadersWriters(t *testing.T) {
 					}
 					n := 0
 					for {
-						if _, ok := it.Next(nil); !ok {
+						if _, ok := it.Next(); !ok {
 							break
 						}
 						n++

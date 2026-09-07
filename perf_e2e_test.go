@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestPerfEndToEnd is a performance regression test: it writes 200k rows,
@@ -15,12 +17,10 @@ import (
 // zstd, ParseRowAt) against correctness regressions at moderate scale.
 func TestPerfEndToEnd(t *testing.T) {
 	const rows = 200_000
-	base := filepath.Join(t.TempDir(), "perf")
+	base := filepath.Join(tmpdb(t), "perf")
 	opts := Options{}
 	db, err := Create(base, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	t0 := time.Now()
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
@@ -33,9 +33,7 @@ func TestPerfEndToEnd(t *testing.T) {
 		{Name: "created", Type: TypeDateTime},
 		{Name: "balance", Type: TypeDecimal, Scale: 2},
 	}}
-	if err := w.DefineSchema(schema); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, w.DefineSchema(schema))
 	created := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 	for i := uint64(0); i < rows; i++ {
 		if err := w.Insert(context.Background(), 1, i+1, 1, Row{
@@ -47,41 +45,32 @@ func TestPerfEndToEnd(t *testing.T) {
 			DateTime(created.Add(time.Duration(i) * time.Second)),
 			DecimalValue(Decimal{Unscaled: big.NewInt(int64(i*3 + 1)), Scale: 2}),
 		}); err != nil {
-			t.Fatal(err)
+			require.NoError(t, err)
 		}
 	}
 	full, err := w.Commit(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	writeDur := time.Since(t0)
 
 	// Random reads: verify every 97th row, value-for-value.
 	t1 := time.Now()
 	for i := uint64(0); i < rows; i += 97 {
 		row, err := db.Get(context.Background(), full.ID, 1, i+1, nil)
-		if err != nil {
-			t.Fatalf("get %d: %v", i+1, err)
-		}
-		if v, _ := row[0].Uint64(); v != i+1 {
-			t.Fatalf("id mismatch at %d", i+1)
-		}
-		if v, _ := row[1].String(); v != fmt.Sprintf("perf-user-%d", i) {
-			t.Fatalf("name mismatch at %d", i+1)
-		}
+		require.NoError(t, err, "get %d", i+1)
+		v, _ := row[0].Uint64()
+		require.Equal(t, i+1, v, "id mismatch at %d", i+1)
+		s, _ := row[1].String()
+		require.Equal(t, fmt.Sprintf("perf-user-%d", i), s, "name mismatch at %d", i+1)
 		d, _ := row[6].Decimal()
-		if d.Unscaled.Int64() != int64(i*3+1) || d.Scale != 2 {
-			t.Fatalf("decimal mismatch at %d", i+1)
-		}
+		require.Equal(t, int64(i*3+1), d.Unscaled.Int64(), "decimal mismatch at %d", i+1)
+		require.Equal(t, int32(2), d.Scale, "decimal mismatch at %d", i+1)
 	}
 	readDur := time.Since(t1)
 
 	// Full scan: count and verify first/last.
 	t2 := time.Now()
 	it, err := db.Scan(context.Background(), full.ID, 1, ScanOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	n := 0
 	var first, last uint64
 	for {
@@ -97,28 +86,21 @@ func TestPerfEndToEnd(t *testing.T) {
 		n++
 	}
 	it.Close()
-	if err := it.Err(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, it.Err())
 	scanDur := time.Since(t2)
-	if n != rows || first != 1 || last != rows {
-		t.Fatalf("scan: n=%d first=%d last=%d", n, first, last)
-	}
+	require.Equal(t, uint64(rows), last, "scan: n=%d first=%d last=%d", n, first, last)
+	require.Equal(t, uint64(1), first, "scan: n=%d first=%d last=%d", n, first, last)
+	require.Equal(t, int(rows), n, "scan: n=%d first=%d last=%d", n, first, last)
 
 	// Close and reopen, re-verify a sample.
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, db.Close())
 	t3 := time.Now()
 	db2, err := Open(base, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	openDur := time.Since(t3)
 	for i := uint64(0); i < rows; i += 1000 {
-		if _, err := db2.Get(context.Background(), full.ID, 1, i+1, nil); err != nil {
-			t.Fatalf("reopen get %d: %v", i+1, err)
-		}
+		_, err := db2.Get(context.Background(), full.ID, 1, i+1, nil)
+		require.NoError(t, err, "reopen get %d", i+1)
 	}
 	db2.Close()
 
@@ -126,10 +108,6 @@ func TestPerfEndToEnd(t *testing.T) {
 		writeDur, float64(rows)/writeDur.Seconds()/1000, readDur, scanDur, openDur)
 
 	// Sanity bounds to catch pathological regressions (not strict perf gates).
-	if writeDur > 10*time.Second {
-		t.Fatalf("write too slow: %v", writeDur)
-	}
-	if scanDur > 5*time.Second {
-		t.Fatalf("scan too slow: %v", scanDur)
-	}
+	require.Less(t, writeDur, 10*time.Second, "write too slow: %v", writeDur)
+	require.Less(t, scanDur, 5*time.Second, "scan too slow: %v", scanDur)
 }

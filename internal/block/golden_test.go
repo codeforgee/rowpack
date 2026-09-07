@@ -11,6 +11,7 @@ import (
 
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/stretchr/testify/require"
 )
 
 // updateGolden regenerates golden files. Enable with `-args -update-golden`.
@@ -51,48 +52,30 @@ func TestGoldenRowsPayloadAllTypes(t *testing.T) {
 		codec.DecimalValue(codec.Decimal{Unscaled: big.NewInt(-1234567890123), Scale: 4}),
 		codec.Null(),
 	}, codec.DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	var sink captureSink
 	b := NewRowsBlockBuilder(1, 1, 1<<20, fileformat.CompressionNone, 0, DefaultLimits(), sink.flush)
 	for i := 0; i < 3; i++ {
-		if err := b.Add(uint64(100+i), 1, fileformat.ChangeInsert, row); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, b.Add(uint64(100+i), 1, fileformat.ChangeInsert, row))
 	}
-	if err := b.Flush(); err != nil {
-		t.Fatal(err)
-	}
-	if len(sink.blocks) != 1 {
-		t.Fatalf("got %d blocks, want 1", len(sink.blocks))
-	}
+	require.NoError(t, b.Flush())
+	require.Len(t, sink.blocks, 1, "got %d blocks, want 1", len(sink.blocks))
 	payload := sink.blocks[0].payload // None compression: stored == raw
 
 	path := goldenPath("rows-payload-all-types.bin")
 	if *updateGolden {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, payload, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, payload, 0o644))
 		return
 	}
 	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read golden %s: %v (regenerate with make golden)", path, err)
-	}
+	require.NoError(t, err, "read golden %s: %v (regenerate with make golden)", path, err)
 	if !bytes.Equal(got, payload) {
-		t.Errorf("golden %s differs from implementation (regenerate with make golden)", path)
+		require.Fail(t, "golden %s differs from implementation (regenerate with make golden)", path)
 	}
 	// The golden must parse back.
 	p, err := ParseRowsPayload(payload, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(p.Entries) != 3 {
-		t.Fatalf("golden payload has %d entries, want 3", len(p.Entries))
-	}
+	require.NoError(t, err)
+	require.Len(t, p.Entries, 3, "golden payload has %d entries, want 3", len(p.Entries))
 }

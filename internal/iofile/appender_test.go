@@ -5,100 +5,63 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestAppender(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "a.bin")
+	path := filepath.Join(tmpdb(t), "a.bin")
 	a, err := OpenAppender(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer a.Close()
 
-	if a.Offset() != 0 {
-		t.Fatalf("initial offset = %d", a.Offset())
-	}
+	require.Equal(t, int64(0), a.Offset(), "initial offset = %d", a.Offset())
 	off, err := a.Append([]byte("hello"))
-	if err != nil || off != 0 {
-		t.Fatalf("append 1: %v %d", err, off)
-	}
+	require.NoError(t, err, "append 1: %v %d", err, off)
+	require.Equal(t, int64(0), off, "append 1: %v %d", err, off)
 	off, err = a.Append([]byte("world"))
-	if err != nil || off != 5 {
-		t.Fatalf("append 2: %v %d", err, off)
-	}
-	if a.Offset() != 10 {
-		t.Fatalf("offset = %d", a.Offset())
-	}
-	if _, err := a.Append(make([]byte, 6)); err != nil {
-		t.Fatal(err)
-	}
-	if a.Offset() != 16 {
-		t.Fatalf("offset after zeroes = %d", a.Offset())
-	}
-	if err := a.Sync(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "append 2: %v %d", err, off)
+	require.Equal(t, int64(5), off, "append 2: %v %d", err, off)
+	require.Equal(t, int64(10), a.Offset(), "offset = %d", a.Offset())
+	_, err = a.Append(make([]byte, 6))
+	require.NoError(t, err)
+	require.Equal(t, int64(16), a.Offset(), "offset after zeroes = %d", a.Offset())
+	require.NoError(t, a.Sync())
 	buf := make([]byte, 16)
-	if _, err := a.ReadAt(buf, 0); err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(buf, []byte("helloworld\x00\x00\x00\x00\x00\x00")) {
-		t.Fatalf("read back %q", buf)
-	}
+	_, err = a.ReadAt(buf, 0)
+	require.NoError(t, err)
+	require.Equal(t, "helloworld\x00\x00\x00\x00\x00\x00", string(buf), "read back %q", buf)
 
 	// Reopen without create: offset resumes from file size.
 	b, err := OpenAppender(path, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer b.Close()
-	if b.Offset() != 16 {
-		t.Fatalf("reopen offset = %d", b.Offset())
-	}
+	require.Equal(t, int64(16), b.Offset(), "reopen offset = %d", b.Offset())
 	off, err = b.Append([]byte("!"))
-	if err != nil || off != 16 {
-		t.Fatalf("reopen append: %v %d", err, off)
-	}
+	require.NoError(t, err, "reopen append: %v %d", err, off)
+	require.Equal(t, int64(16), off, "reopen append: %v %d", err, off)
 
 	// Truncate rewinds the offset.
-	if err := a.Truncate(10); err != nil {
-		t.Fatal(err)
-	}
-	if a.Offset() != 10 {
-		t.Fatalf("offset after truncate = %d", a.Offset())
-	}
+	require.NoError(t, a.Truncate(10))
+	require.Equal(t, int64(10), a.Offset(), "offset after truncate = %d", a.Offset())
 }
 
 func TestCreatePairRollback(t *testing.T) {
-	dir := t.TempDir()
+	dir := tmpdb(t)
 	data := filepath.Join(dir, "s.rpk")
 	idx := filepath.Join(dir, "s.rpi")
 
 	// Index path already exists -> exclusive create fails and data is removed.
-	if err := os.WriteFile(idx, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := CreatePair(data, idx, []byte("h1"), []byte("h2")); err == nil {
-		t.Fatal("CreatePair succeeded with existing index file")
-	}
-	if Exists(data) {
-		t.Fatal("data file not rolled back after failed create")
-	}
+	require.NoError(t, os.WriteFile(idx, []byte("x"), 0o644))
+	require.Error(t, CreatePair(data, idx, []byte("h1"), []byte("h2")), "CreatePair succeeded with existing index file")
+	require.False(t, Exists(data), "data file not rolled back after failed create")
 	// Cleanup and create both fresh.
-	if err := os.Remove(idx); err != nil {
-		t.Fatal(err)
-	}
-	if err := CreatePair(data, idx, []byte("h1"), []byte("h2")); err != nil {
-		t.Fatalf("CreatePair: %v", err)
-	}
+	require.NoError(t, os.Remove(idx))
+	require.NoError(t, CreatePair(data, idx, []byte("h1"), []byte("h2")), "CreatePair should succeed")
 	d, _ := os.ReadFile(data)
 	i, _ := os.ReadFile(idx)
-	if !bytes.Equal(d, []byte("h1")) || !bytes.Equal(i, []byte("h2")) {
-		t.Fatal("headers not written")
-	}
+	require.True(t, bytes.Equal(d, []byte("h1")), "headers not written")
+	require.True(t, bytes.Equal(i, []byte("h2")), "headers not written")
 	// Second create must fail with exclusive create (no overwrite).
-	if err := CreatePair(data, idx, []byte("x"), []byte("y")); err == nil {
-		t.Fatal("CreatePair overwrote existing files")
-	}
+	require.Error(t, CreatePair(data, idx, []byte("x"), []byte("y")), "CreatePair overwrote existing files")
 }

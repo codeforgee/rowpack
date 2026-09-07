@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/codec"
+	"github.com/stretchr/testify/require"
 )
 
 // buildReuseStore writes nRows into a FULL snapshot and depth DELTAs with
@@ -13,46 +14,30 @@ import (
 func buildReuseStore(t *testing.T, base string, nRows uint64, depth int) (*Store, SnapshotID) {
 	t.Helper()
 	db, err := Create(base, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	if err := w.DefineSchema(benchSchema()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, w.DefineSchema(benchSchema()))
 	for i := uint64(0); i < nRows; i++ {
-		if err := w.Insert(context.Background(), 1, i+1, 1, benchRow(i)); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, w.Insert(context.Background(), 1, i+1, 1, benchRow(i)))
 	}
 	full, err := w.Commit(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	parent := full.ID
 	for d := 0; d < depth; d++ {
 		w, err := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: parent})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		// Update every 10th row, delete every 50th.
 		for i := uint64(0); i < nRows; i++ {
 			switch {
 			case i%50 == 49:
-				if err := w.Delete(context.Background(), 1, i+1); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, w.Delete(context.Background(), 1, i+1))
 			case i%10 == 9:
 				row := benchRow(i + 1_000_000)
-				if err := w.Update(context.Background(), 1, i+1, 1, row); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, w.Update(context.Background(), 1, i+1, 1, row))
 			}
 		}
 		info, err := w.Commit(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		parent = info.ID
 	}
 	return db, parent
@@ -62,7 +47,7 @@ func buildReuseStore(t *testing.T, base string, nRows uint64, depth int) (*Store
 // value-for-value, including along a DELTA chain with updates and deletes,
 // and that a reused dst keeps working (row growth between calls).
 func TestGetReuse(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "reuse")
+	base := filepath.Join(tmpdb(t), "reuse")
 	db, head := buildReuseStore(t, base, 1000, 2)
 	defer db.Close()
 
@@ -70,19 +55,13 @@ func TestGetReuse(t *testing.T) {
 	for i := uint64(0); i < 1000; i++ {
 		want, werr := db.Get(context.Background(), head, 1, i+1, nil)
 		got, gerr := db.Get(context.Background(), head, 1, i+1, dst)
-		if (werr != nil) != (gerr != nil) {
-			t.Fatalf("row %d: err mismatch: %v vs %v", i+1, werr, gerr)
-		}
+		require.True(t, (werr != nil) == (gerr != nil), "row %d: err mismatch: %v vs %v", i+1, werr, gerr)
 		if werr != nil {
 			continue // deleted row
 		}
-		if len(got) != len(want) {
-			t.Fatalf("row %d: len mismatch", i+1)
-		}
+		require.Len(t, got, len(want), "row %d: len mismatch", i+1)
 		for c := range want {
-			if !rowValueEqual(want[c], got[c]) {
-				t.Fatalf("row %d col %d mismatch: %v vs %v", i+1, c, want[c], got[c])
-			}
+			require.True(t, rowValueEqual(want[c], got[c]), "row %d col %d mismatch: %v vs %v", i+1, c, want[c], got[c])
 		}
 		dst = got
 	}
@@ -92,18 +71,14 @@ func TestGetReuse(t *testing.T) {
 // across independent iterators, including buffer reuse growth and strict
 // RowID order.
 func TestNextReuse(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "scanreuse")
+	base := filepath.Join(tmpdb(t), "scanreuse")
 	db, head := buildReuseStore(t, base, 1000, 2)
 	defer db.Close()
 
 	it, err := db.Scan(context.Background(), head, 1, ScanOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	it2, err := db.Scan(context.Background(), head, 1, ScanOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var lastRowID RowID
 	for {
 		want, ok2 := it2.Next()
@@ -112,52 +87,32 @@ func TestNextReuse(t *testing.T) {
 			wantID = it2.RowID()
 		}
 		got, ok := it.Next()
-		if ok != ok2 {
-			t.Fatalf("visibility mismatch: %v vs %v", ok, ok2)
-		}
+		require.Equal(t, ok2, ok, "visibility mismatch: %v vs %v", ok, ok2)
 		if !ok {
 			break
 		}
-		if it.RowID() != wantID {
-			t.Fatalf("row id mismatch: %d vs %d", it.RowID(), wantID)
-		}
-		if lastRowID > 0 && it.RowID() <= lastRowID {
-			t.Fatalf("row ids not strictly ascending: %d after %d", it.RowID(), lastRowID)
-		}
+		require.Equal(t, wantID, it.RowID(), "row id mismatch: %d vs %d", it.RowID(), wantID)
+		require.True(t, lastRowID == 0 || it.RowID() > lastRowID, "row ids not strictly ascending: %d after %d", it.RowID(), lastRowID)
 		lastRowID = it.RowID()
-		if len(got) != len(want) {
-			t.Fatalf("row %d: len mismatch", wantID)
-		}
+		require.Len(t, got, len(want), "row %d: len mismatch", wantID)
 		for c := range want {
-			if !rowValueEqual(want[c], got[c]) {
-				t.Fatalf("row %d col %d mismatch", wantID, c)
-			}
+			require.True(t, rowValueEqual(want[c], got[c]), "row %d col %d mismatch", wantID, c)
 		}
 	}
-	if err := it2.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if err := it.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if err := it2.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := it.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, it2.Err())
+	require.NoError(t, it.Err())
+	require.NoError(t, it2.Close())
+	require.NoError(t, it.Close())
 }
 
 // TestNextEndRowID verifies range-bounded scans terminate correctly in
 // reuse mode.
 func TestNextEndRowID(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "range")
+	base := filepath.Join(tmpdb(t), "range")
 	db, full := buildReuseStore(t, base, 100, 0)
 	defer db.Close()
 	it, err := db.Scan(context.Background(), full, 1, ScanOptions{StartRowID: 10, EndRowID: 20})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer it.Close()
 	n := 0
 	for {
@@ -165,17 +120,11 @@ func TestNextEndRowID(t *testing.T) {
 			break
 		}
 		id := it.RowID()
-		if id < 10 || id >= 20 {
-			t.Fatalf("row %d outside range", id)
-		}
+		require.True(t, id >= 10 && id < 20, "row %d outside range", id)
 		n++
 	}
-	if err := it.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if n != 10 {
-		t.Fatalf("got %d rows, want 10", n)
-	}
+	require.NoError(t, it.Err())
+	require.Equal(t, 10, n, "got %d rows, want 10", n)
 }
 
 // rowValueEqual compares two Values across the public getters.
@@ -233,15 +182,11 @@ func rowValueEqual(a, b Value) bool {
 // rotations per block plus enough rows to cross block boundaries.
 func TestScanStringViewsSurviveArenaRotation(t *testing.T) {
 	const rows = 8000
-	base := filepath.Join(t.TempDir(), "arenarot")
+	base := filepath.Join(tmpdb(t), "arenarot")
 	db, err := Create(base, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	if err := w.DefineSchema(benchSchema()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, w.DefineSchema(benchSchema()))
 	// Each string is ~6 KiB, so the 32 KiB arena rotates twice per row and
 	// the scan spans multiple blocks.
 	big := func(i uint64) string {
@@ -261,19 +206,13 @@ func TestScanStringViewsSurviveArenaRotation(t *testing.T) {
 			DateTimeValueOf(1700000000000000000),
 			DecimalValue(Decimal{Unscaled: bigI(int64(i)), Scale: 2}),
 		}
-		if err := w.Insert(context.Background(), 1, i+1, 1, r); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, w.Insert(context.Background(), 1, i+1, 1, r))
 	}
 	full, err := w.Commit(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	it, err := db.Scan(context.Background(), full.ID, 1, ScanOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	// Retain one big string from every 100th row (covers chunk rotations and
 	// block boundaries), then walk the rest of the scan before checking.
 	type held struct {
@@ -295,21 +234,13 @@ func TestScanStringViewsSurviveArenaRotation(t *testing.T) {
 			heldStr[id] = held{rowID: id, ok: ok, str: s}
 		}
 	}
-	if err := it.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if err := it.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if len(heldStr) == 0 {
-		t.Fatal("no strings retained")
-	}
+	require.NoError(t, it.Err())
+	require.NoError(t, it.Close())
+	require.NotEmpty(t, heldStr, "no strings retained")
 	for id, h := range heldStr {
 		want := big(id - 1)
-		if !h.ok || h.str != want {
-			t.Fatalf("retained string for row %d corrupted after scan: got len %d want len %d",
-				id, len(h.str), len(want))
-		}
+		require.True(t, h.ok && h.str == want, "retained string for row %d corrupted after scan: got len %d want len %d",
+			id, len(h.str), len(want))
 	}
 }
 
@@ -322,33 +253,21 @@ func TestCodecSinkParity(t *testing.T) {
 	cs := schemaToCodec(&s)
 	row := benchRow(42)
 	encFresh, err := codec.Encode(cs, []codec.Value(row), codec.DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	encReuse, err := codec.EncodeInto(cs, []codec.Value(row), codec.DefaultLimits(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(encFresh) != string(encReuse) {
-		t.Fatal("fresh/reuse encode differ")
-	}
+	require.NoError(t, err)
+	require.Equal(t, string(encFresh), string(encReuse), "fresh/reuse encode differ")
 
 	decDefault, err := codec.DecodeInto(nil, encFresh, cs, codec.DefaultLimits(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	// With a copy sink the decoded values must be byte-identical to the
 	// default path.
 	decSink, err := codec.DecodeInto(nil, encFresh, cs, codec.DefaultLimits(), func(p []byte) string {
 		return string(p)
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for i := range decDefault {
-		if !rowValueEqual(decDefault[i], decSink[i]) {
-			t.Fatalf("col %d mismatch across sink paths", i)
-		}
+		require.True(t, rowValueEqual(decDefault[i], decSink[i]), "col %d mismatch across sink paths", i)
 	}
 }
 

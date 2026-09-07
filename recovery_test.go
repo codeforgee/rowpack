@@ -10,6 +10,7 @@ import (
 
 	"github.com/rowpack/rowpack/internal/fault"
 	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/stretchr/testify/require"
 )
 
 // runCrashChild re-invokes the test binary to create a store and commit a
@@ -41,22 +42,16 @@ func TestCrashChildHelper(t *testing.T) {
 	t.Cleanup(fault.Clear)
 
 	db, err := Create(base, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if err := w.DefineSchema(Schema{TableID: 1, Version: 1, Name: "t", Columns: []Column{
 		{Name: "id", Type: TypeUint64}, {Name: "name", Type: TypeString},
 	}}); err != nil {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 	for i := uint64(1); i <= 100; i++ {
-		if err := w.Insert(context.Background(), 1, i, 1, Row{Uint64(i), String(fmt.Sprintf("c-%d", i))}); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, w.Insert(context.Background(), 1, i, 1, Row{Uint64(i), String(fmt.Sprintf("c-%d", i))}))
 	}
 	_, _ = w.Commit(context.Background())
 	_ = db.Close()
@@ -68,15 +63,13 @@ func verifyCrashRecovery(t *testing.T, base string, wantSnapshots int) *Store {
 	t.Helper()
 	db, err := Open(base, Options{})
 	if err != nil {
-		t.Fatalf("reopen: %v", err)
+		require.Fail(t, "reopen: %v", err)
 	}
 	snaps, err := db.ListSnapshots(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if len(snaps) != wantSnapshots {
 		db.Close()
-		t.Fatalf("snapshots = %d, want %d", len(snaps), wantSnapshots)
+		require.Fail(t, "snapshots = %d, want %d", len(snaps), wantSnapshots)
 	}
 	// The committed snapshot's rows must be readable.
 	for _, sn := range snaps {
@@ -84,11 +77,11 @@ func verifyCrashRecovery(t *testing.T, base string, wantSnapshots int) *Store {
 			r, err := db.Get(context.Background(), sn.ID, 1, i, nil)
 			if err != nil {
 				db.Close()
-				t.Fatalf("snapshot %d row %d: %v", sn.ID, i, err)
+				require.Fail(t, "snapshot %d row %d: %v", sn.ID, i, err)
 			}
 			if v, _ := r[0].Uint64(); v != i {
 				db.Close()
-				t.Fatalf("snapshot %d row %d id = %d", sn.ID, i, v)
+				require.Fail(t, "snapshot %d row %d id = %d", sn.ID, i, v)
 			}
 		}
 	}
@@ -112,7 +105,7 @@ func TestM8CrashFaultPoints(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.point, func(t *testing.T) {
-			base := filepath.Join(t.TempDir(), "store")
+			base := filepath.Join(tmpdb(t), "store")
 			runCrashChild(t, base, c.point)
 			// First reopen: recovery happens.
 			db := verifyCrashRecovery(t, base, c.wantSnapshots)
@@ -123,15 +116,11 @@ func TestM8CrashFaultPoints(t *testing.T) {
 			// Third reopen read-only: never modifies files.
 			before := fileSizes(t, base)
 			ro, err := Open(base, Options{ReadOnly: true})
-			if err != nil {
-				t.Fatalf("read-only reopen: %v", err)
-			}
+			require.NoError(t, err, "read-only reopen: %v", err)
 			ro.Close()
 			after := fileSizes(t, base)
 			for _, ext := range []string{".rpk", ".rpi"} {
-				if before[ext] != after[ext] {
-					t.Fatalf("read-only open modified %s: %d -> %d", ext, before[ext], after[ext])
-				}
+				require.Equal(t, before[ext], after[ext], "read-only open modified %s: %d -> %d", ext, before[ext], after[ext])
 			}
 		})
 	}
@@ -151,16 +140,13 @@ func fileSizes(t *testing.T, base string) map[string]int64 {
 // TestM8IndexTruncated simulates a crash mid-index-write by truncating the
 // index file to a partial transaction.
 func TestM8IndexTruncated(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "it")
+	base := filepath.Join(tmpdb(t), "it")
 	db, fullID := buildConcurrentStore(t, base, Options{})
 	// Commit a second snapshot so the index has two txns.
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: fullID})
-	if err := w.Insert(context.Background(), 1, 9999, 1, Row{Uint64(9999), String("x")}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Commit(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, w.Insert(context.Background(), 1, 9999, 1, Row{Uint64(9999), String("x")}))
+	_, err := w.Commit(context.Background())
+	require.NoError(t, err)
 	db.Close()
 
 	// Truncate the index file mid-second-txn.
@@ -172,109 +158,78 @@ func TestM8IndexTruncated(t *testing.T) {
 	f.Close()
 
 	db2, err := Open(base, Options{})
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
+	require.NoError(t, err, "reopen: %v", err)
 	defer db2.Close()
 	snaps, _ := db2.ListSnapshots(context.Background())
-	if len(snaps) != 2 {
-		t.Fatalf("snapshots = %d, want 2 (index tail rebuilt from data)", len(snaps))
-	}
-	if r, err := db2.Get(context.Background(), snaps[1].ID, 1, 9999, nil); err != nil {
-		t.Fatalf("row 9999: %v", err)
-	} else if v, _ := r[1].String(); v != "x" {
-		t.Fatalf("row 9999 = %q", v)
-	}
+	require.Len(t, snaps, 2, "snapshots = %d, want 2 (index tail rebuilt from data)", len(snaps))
+	r, err := db2.Get(context.Background(), snaps[1].ID, 1, 9999, nil)
+	require.NoError(t, err, "row 9999: %v", err)
+	v, _ := r[1].String()
+	require.Equal(t, "x", v, "row 9999 = %q", v)
 }
 
 // TestM8IndexDeleted verifies that a completely missing index requires
 // explicit RebuildIndex (Open never opens without both files), and that the
 // rebuilt store is fully readable.
 func TestM8IndexDeleted(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "noidx")
+	base := filepath.Join(tmpdb(t), "noidx")
 	db, _ := buildConcurrentStore(t, base, Options{})
 	db.Close()
-	if err := os.Remove(base + ".rpi"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Open(base, Options{}); err == nil {
-		t.Fatal("Open succeeded with a missing index file")
-	}
-	if err := RebuildIndex(context.Background(), base, RebuildOptions{Durability: SyncCommit}); err != nil {
-		t.Fatalf("rebuild: %v", err)
-	}
+	require.NoError(t, os.Remove(base+".rpi"))
+	_, err := Open(base, Options{})
+	require.Error(t, err, "Open succeeded with a missing index file")
+	require.NoError(t, RebuildIndex(context.Background(), base, RebuildOptions{Durability: SyncCommit}), "rebuild: %v", err)
 	db2, err := Open(base, Options{})
-	if err != nil {
-		t.Fatalf("reopen after rebuild: %v", err)
-	}
+	require.NoError(t, err, "reopen after rebuild: %v", err)
 	defer db2.Close()
 	snaps, _ := db2.ListSnapshots(context.Background())
-	if len(snaps) != 1 {
-		t.Fatalf("snapshots = %d, want 1", len(snaps))
-	}
-	if _, err := db2.Get(context.Background(), 1, 1, 42, nil); err != nil {
-		t.Fatalf("row 42: %v", err)
-	}
+	require.Len(t, snaps, 1, "snapshots = %d, want 1", len(snaps))
+	_, err = db2.Get(context.Background(), 1, 1, 42, nil)
+	require.NoError(t, err, "row 42: %v", err)
 }
 
 // TestM8MidFileCorruption verifies structural corruption between two valid
 // snapshots is a hard error, never silently skipped.
 func TestM8MidFileCorruption(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "mid")
+	base := filepath.Join(tmpdb(t), "mid")
 	opts := Options{}
 	opts.BlockSize = 2048
 	db, fullID := buildConcurrentStore(t, base, opts)
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: fullID})
-	if err := w.Insert(context.Background(), 1, 3001, 1, Row{Uint64(3001), String("d1")}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Commit(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, w.Insert(context.Background(), 1, 3001, 1, Row{Uint64(3001), String("d1")}))
+	_, err := w.Commit(context.Background())
+	require.NoError(t, err)
 	db.Close()
 
 	// Corrupt a block header CRC in the FIRST snapshot (in the middle).
 	data, err := os.ReadFile(base + ".rpk")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	// Find the second block header in snapshot 1: walk from offset 128.
 	pos := 128 + 96
 	pos += 64 + int(le32(data[pos+44:])) // skip block 1
 	// block 2 header CRC at pos+52
 	data[pos+52] ^= 0xFF
-	if err := os.WriteFile(base+".rpk", data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Open(base, Options{}); err == nil {
-		t.Fatal("mid-file corruption opened successfully")
-	}
+	require.NoError(t, os.WriteFile(base+".rpk", data, 0o644))
+	_, err = Open(base, Options{})
+	require.Error(t, err, "mid-file corruption opened successfully")
 }
 
 // TestM8Verify covers VerifyQuick and VerifyFull on a healthy store and on a
 // store with payload corruption (AC-009).
 func TestM8Verify(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "verify")
+	base := filepath.Join(tmpdb(t), "verify")
 	db, fullID := buildConcurrentStore(t, base, Options{})
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: fullID})
 	_ = w.Insert(context.Background(), 1, 5001, 1, Row{Uint64(5001), String("v")})
-	if _, err := w.Commit(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	_, err := w.Commit(context.Background())
+	require.NoError(t, err)
 	rep, err := db.Verify(context.Background(), VerifyQuick)
-	if err != nil {
-		t.Fatalf("quick verify: %v", err)
-	}
-	if rep.SnapshotsChecked != 2 || rep.BlocksChecked == 0 {
-		t.Fatalf("quick verify report: %+v", rep)
-	}
+	require.NoError(t, err, "quick verify: %v", err)
+	require.Equal(t, uint64(2), rep.SnapshotsChecked, "quick verify report: %+v", rep)
+	require.NotZero(t, rep.BlocksChecked, "quick verify report: %+v", rep)
 	rep, err = db.Verify(context.Background(), VerifyFull)
-	if err != nil {
-		t.Fatalf("full verify: %v", err)
-	}
-	if rep.RowsChecked == 0 {
-		t.Fatalf("full verify checked no rows: %+v", rep)
-	}
+	require.NoError(t, err, "full verify: %v", err)
+	require.NotZero(t, rep.RowsChecked, "full verify checked no rows: %+v", rep)
 	db.Close()
 
 	// Payload corruption must be caught by full verify.
@@ -288,42 +243,32 @@ func TestM8Verify(t *testing.T) {
 	os.WriteFile(base+".rpk", data, 0o644)
 
 	db2, err := Open(base, Options{})
-	if err != nil {
-		t.Fatalf("reopen with payload corruption: %v", err)
-	}
+	require.NoError(t, err, "reopen with payload corruption: %v", err)
 	defer db2.Close()
-	if _, err := db2.Verify(context.Background(), VerifyFull); err == nil {
-		t.Fatal("full verify missed payload corruption")
-	}
+	_, err = db2.Verify(context.Background(), VerifyFull)
+	require.Error(t, err, "full verify missed payload corruption")
 }
 
 // TestM8RebuildIndex rebuilds a deleted index through the explicit API.
 func TestM8RebuildIndex(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "rebuild")
+	base := filepath.Join(tmpdb(t), "rebuild")
 	db, _ := buildConcurrentStore(t, base, Options{})
 	db.Close()
-	if err := os.Remove(base + ".rpi"); err != nil {
-		t.Fatal(err)
-	}
-	if err := RebuildIndex(context.Background(), base, RebuildOptions{Durability: SyncCommit}); err != nil {
-		t.Fatalf("rebuild: %v", err)
-	}
+	require.NoError(t, os.Remove(base+".rpi"))
+	require.NoError(t, RebuildIndex(context.Background(), base, RebuildOptions{Durability: SyncCommit}))
 	db2, err := Open(base, Options{})
-	if err != nil {
-		t.Fatalf("reopen after rebuild: %v", err)
-	}
+	require.NoError(t, err, "reopen after rebuild: %v", err)
 	defer db2.Close()
-	if r, err := db2.Get(context.Background(), 1, 1, 42, nil); err != nil {
-		t.Fatalf("row 42: %v", err)
-	} else if v, _ := r[1].String(); v != "n-42" {
-		t.Fatalf("row 42 = %q", v)
-	}
+	r, err := db2.Get(context.Background(), 1, 1, 42, nil)
+	require.NoError(t, err, "row 42: %v", err)
+	v, _ := r[1].String()
+	require.Equal(t, "n-42", v, "row 42 = %q", v)
 }
 
 // TestM8DataTailTruncated simulates a partial snapshot appended after the
 // last committed one; read-write open truncates it, read-only ignores it.
 func TestM8DataTailTruncated(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "tail")
+	base := filepath.Join(tmpdb(t), "tail")
 	db, _ := buildConcurrentStore(t, base, Options{})
 	db.Close()
 
@@ -344,30 +289,20 @@ func TestM8DataTailTruncated(t *testing.T) {
 
 	// Read-only: ignores the tail, doesn't modify.
 	ro, err := Open(base, Options{ReadOnly: true})
-	if err != nil {
-		t.Fatalf("read-only open: %v", err)
-	}
-	if _, err := ro.Get(context.Background(), 1, 1, 1, nil); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "read-only open: %v", err)
+	_, err = ro.Get(context.Background(), 1, 1, 1, nil)
+	require.NoError(t, err)
 	ro.Close()
 	sz, _ := os.Stat(base + ".rpk")
-	if sz.Size() != int64(len(partial)) {
-		t.Fatal("read-only open modified the data file")
-	}
+	require.Equal(t, int64(len(partial)), sz.Size(), "read-only open modified the data file")
 
 	// Read-write: truncates the tail; recovery reported.
 	db2, err := Open(base, Options{})
-	if err != nil {
-		t.Fatalf("read-write open: %v", err)
-	}
+	require.NoError(t, err, "read-write open: %v", err)
 	st := db2.Stats()
-	if !st.Recovery.Performed || st.Recovery.DataTailIgnored == 0 {
-		t.Fatalf("recovery not reported: %+v", st.Recovery)
-	}
+	require.True(t, st.Recovery.Performed, "recovery not reported: %+v", st.Recovery)
+	require.NotZero(t, st.Recovery.DataTailIgnored, "recovery not reported: %+v", st.Recovery)
 	db2.Close()
 	sz2, _ := os.Stat(base + ".rpk")
-	if sz2.Size() != int64(len(data)) {
-		t.Fatalf("tail not truncated: %d -> %d", len(partial), sz2.Size())
-	}
+	require.Equal(t, int64(len(data)), sz2.Size(), "tail not truncated: %d -> %d", len(partial), sz2.Size())
 }

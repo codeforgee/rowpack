@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func schemaOf(cols ...Column) *Schema {
@@ -41,19 +43,11 @@ func TestDecimalCanonicalEncoding(t *testing.T) {
 	for _, c := range cases {
 		u := big.NewInt(c.val)
 		b, err := encodeDecimalBytes(u)
-		if err != nil {
-			t.Fatalf("%d: %v", c.val, err)
-		}
-		if got := toHex(b); got != c.want {
-			t.Errorf("encode %d = %s, want %s", c.val, got, c.want)
-		}
+		require.NoError(t, err, "%d", c.val)
+		require.Equal(t, c.want, toHex(b), "encode %d = %s, want %s", c.val, toHex(b), c.want)
 		back, err := decodeDecimalBytes(b)
-		if err != nil {
-			t.Fatalf("decode %s: %v", c.want, err)
-		}
-		if back.Int64() != c.val {
-			t.Errorf("decode %s = %d, want %d", c.want, back.Int64(), c.val)
-		}
+		require.NoError(t, err, "decode %s", c.want)
+		require.Equal(t, c.val, back.Int64(), "decode %s = %d, want %d", c.want, back.Int64(), c.val)
 	}
 }
 
@@ -75,9 +69,8 @@ func TestDecimalRejectsNonCanonical(t *testing.T) {
 		{0x00, 0x01}, // redundant leading 00
 	}
 	for _, b := range bad {
-		if _, err := decodeDecimalBytes(b); err == nil {
-			t.Errorf("accepted non-canonical decimal %x", b)
-		}
+		_, err := decodeDecimalBytes(b)
+		require.Error(t, err, "accepted non-canonical decimal %x", b)
 	}
 }
 
@@ -95,34 +88,26 @@ func TestDateConversions(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := NewDate(c.t)
-		if int64(got) != c.want {
-			t.Errorf("NewDate(%v) = %d, want %d", c.t, got, c.want)
-		}
+		require.Equal(t, c.want, int64(got), "NewDate(%v) = %d, want %d", c.t, got, c.want)
 		back := got.Time(time.UTC)
 		wantDay := time.Date(c.t.Year(), c.t.Month(), c.t.Day(), 0, 0, 0, 0, time.UTC)
-		if !back.Equal(wantDay) {
-			t.Errorf("Date(%d).Time() = %v, want %v", got, back, wantDay)
-		}
+		require.True(t, back.Equal(wantDay), "Date(%d).Time() = %v, want %v", got, back, wantDay)
 	}
 }
 
 func TestTimeOfDay(t *testing.T) {
 	v, err := NewTimeOfDay(23, 59, 59, 999_999_999)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if v.Hour() != 23 || v.Minute() != 59 || v.Second() != 59 || v.Nanosecond() != 999_999_999 {
-		t.Fatalf("components = %d:%d:%d.%d", v.Hour(), v.Minute(), v.Second(), v.Nanosecond())
-	}
-	if _, err := NewTimeOfDay(24, 0, 0, 0); err == nil {
-		t.Fatal("accepted hour 24")
-	}
-	if _, err := NewTimeOfDay(0, 60, 0, 0); err == nil {
-		t.Fatal("accepted minute 60")
-	}
-	if _, err := NewTimeOfDay(0, 0, -1, 0); err == nil {
-		t.Fatal("accepted negative second")
-	}
+	require.NoError(t, err)
+	require.Equal(t, 23, v.Hour(), "components = %d:%d:%d.%d", v.Hour(), v.Minute(), v.Second(), v.Nanosecond())
+	require.Equal(t, 59, v.Minute(), "components = %d:%d:%d.%d", v.Hour(), v.Minute(), v.Second(), v.Nanosecond())
+	require.Equal(t, 59, v.Second(), "components = %d:%d:%d.%d", v.Hour(), v.Minute(), v.Second(), v.Nanosecond())
+	require.Equal(t, 999_999_999, v.Nanosecond(), "components = %d:%d:%d.%d", v.Hour(), v.Minute(), v.Second(), v.Nanosecond())
+	_, err = NewTimeOfDay(24, 0, 0, 0)
+	require.Error(t, err, "accepted hour 24")
+	_, err = NewTimeOfDay(0, 60, 0, 0)
+	require.Error(t, err, "accepted minute 60")
+	_, err = NewTimeOfDay(0, 0, -1, 0)
+	require.Error(t, err, "accepted negative second")
 }
 
 func TestValueConstructors(t *testing.T) {
@@ -138,27 +123,20 @@ func TestValueConstructors(t *testing.T) {
 			// Null carries no type; skip.
 		}
 	}
-	if b, ok := vals[1].Bool(); !ok || !b {
-		t.Fatal("Bool getter failed")
-	}
-	if i, ok := vals[2].Int8(); !ok || i != -128 {
-		t.Fatal("Int8 getter failed")
-	}
-	if u, ok := vals[6].Uint8(); !ok || u != 255 {
-		t.Fatal("Uint8 getter failed")
-	}
-	if s, ok := vals[12].String(); !ok || s != "张三" {
-		t.Fatal("String getter failed")
-	}
-	if b, ok := vals[13].Bytes(); !ok || !reflect.DeepEqual(b, []byte{1, 2, 3}) {
-		t.Fatal("Bytes getter failed")
-	}
-	if tm, ok := vals[16].DateTimeValue(); !ok || tm.UnixNano() != time.Date(2024, 3, 1, 1, 2, 3, 456, time.UTC).UnixNano() {
-		t.Fatal("DateTime getter failed")
-	}
-	if d, ok := vals[17].Decimal(); !ok || d.Scale != 3 || d.Unscaled.Int64() != -123456 {
-		t.Fatal("Decimal getter failed")
-	}
+	b, ok := vals[1].Bool()
+	require.True(t, ok && b, "Bool getter failed")
+	i, ok := vals[2].Int8()
+	require.True(t, ok && i == -128, "Int8 getter failed")
+	u, ok := vals[6].Uint8()
+	require.True(t, ok && u == 255, "Uint8 getter failed")
+	s, ok := vals[12].String()
+	require.True(t, ok && s == "张三", "String getter failed")
+	bb, ok := vals[13].Bytes()
+	require.True(t, ok && reflect.DeepEqual(bb, []byte{1, 2, 3}), "Bytes getter failed")
+	tm, ok := vals[16].DateTimeValue()
+	require.True(t, ok && tm.UnixNano() == time.Date(2024, 3, 1, 1, 2, 3, 456, time.UTC).UnixNano(), "DateTime getter failed")
+	d, ok := vals[17].Decimal()
+	require.True(t, ok && d.Scale == 3 && d.Unscaled.Int64() == -123456, "Decimal getter failed")
 }
 
 func TestBytesImmutability(t *testing.T) {
@@ -166,14 +144,10 @@ func TestBytesImmutability(t *testing.T) {
 	v := Bytes(src)
 	src[0] = 99
 	got, _ := v.Bytes()
-	if got[0] != 1 {
-		t.Fatal("Bytes constructor did not copy input")
-	}
+	require.Equal(t, byte(1), got[0], "Bytes constructor did not copy input")
 	got[0] = 42
 	got2, _ := v.Bytes()
-	if got2[0] != 1 {
-		t.Fatal("Bytes getter returned aliased buffer")
-	}
+	require.Equal(t, byte(1), got2[0], "Bytes getter returned aliased buffer")
 }
 
 func TestDateTimeNormalization(t *testing.T) {
@@ -182,12 +156,8 @@ func TestDateTimeNormalization(t *testing.T) {
 	v := DateTime(tm)
 	out, _ := v.DateTimeValue()
 	want := time.Date(2024, 1, 1, 1, 30, 0, 123, time.UTC)
-	if !out.Equal(want) {
-		t.Fatalf("DateTime = %v, want %v", out, want)
-	}
-	if out.Location() != time.UTC {
-		t.Fatalf("DateTime not normalized to UTC: %v", out.Location())
-	}
+	require.True(t, out.Equal(want), "DateTime = %v, want %v", out, want)
+	require.Equal(t, time.UTC, out.Location(), "DateTime not normalized to UTC: %v", out.Location())
 }
 
 func TestFloat32NaNBitPreservation(t *testing.T) {
@@ -195,9 +165,7 @@ func TestFloat32NaNBitPreservation(t *testing.T) {
 	f := math.Float32frombits(payload)
 	v := Float32(f)
 	back, _ := v.Float32()
-	if math.Float32bits(back) != payload {
-		t.Fatalf("NaN payload not preserved: %08x vs %08x", math.Float32bits(back), payload)
-	}
+	require.Equal(t, payload, math.Float32bits(back), "NaN payload not preserved: %08x vs %08x", math.Float32bits(back), payload)
 }
 
 // TestAppendDecimalEquivalence asserts the zero-allocation write path
@@ -218,26 +186,14 @@ func TestAppendDecimalEquivalence(t *testing.T) {
 	for _, v := range boundaries {
 		u := big.NewInt(v)
 		want, err := encodeDecimalBytes(u)
-		if err != nil {
-			t.Fatalf("%d: %v", v, err)
-		}
+		require.NoError(t, err, "%d", v)
 		got, err := appendDecimalBytes(nil, u, 1<<20)
-		if err != nil {
-			t.Fatalf("%d: %v", v, err)
-		}
-		if toHex(got[4:]) != toHex(want) {
-			t.Errorf("%d: inline %s != reference %s", v, toHex(got[4:]), toHex(want))
-		}
-		if binary.LittleEndian.Uint32(got[:4]) != uint32(len(want)) {
-			t.Errorf("%d: length prefix %d != %d", v, binary.LittleEndian.Uint32(got[:4]), len(want))
-		}
+		require.NoError(t, err, "%d", v)
+		require.Equal(t, toHex(want), toHex(got[4:]), "%d: inline %s != reference %s", v, toHex(got[4:]), toHex(want))
+		require.Equal(t, uint32(len(want)), binary.LittleEndian.Uint32(got[:4]), "%d: length prefix %d != %d", v, binary.LittleEndian.Uint32(got[:4]), len(want))
 		// Round-trip through the decoder.
 		back, err := decodeDecimalBytes(want)
-		if err != nil {
-			t.Fatalf("%d: decode: %v", v, err)
-		}
-		if back.Int64() != v {
-			t.Errorf("%d: round trip got %d", v, back.Int64())
-		}
+		require.NoError(t, err, "%d: decode", v)
+		require.Equal(t, v, back.Int64(), "%d: round trip got %d", v, back.Int64())
 	}
 }

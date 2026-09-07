@@ -3,8 +3,9 @@ package fileformat
 import (
 	"bytes"
 	"encoding/binary"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // decodeFunc unmarshals src; encodeFunc marshals v into a fresh buffer.
@@ -19,20 +20,12 @@ type roundTripCase struct {
 func roundTrip(t *testing.T, name string, m func(dst []byte) error, u func(src []byte) error) {
 	t.Helper()
 	buf := make([]byte, 1024)
-	if err := m(buf); err != nil {
-		t.Fatalf("%s: marshal: %v", name, err)
-	}
-	if err := u(buf); err != nil {
-		t.Fatalf("%s: unmarshal: %v", name, err)
-	}
+	require.NoError(t, m(buf), "%s: marshal", name)
+	require.NoError(t, u(buf), "%s: unmarshal", name)
 	// Marshaling to a longer buffer must leave the bytes identical.
 	buf2 := make([]byte, 1024)
-	if err := m(buf2); err != nil {
-		t.Fatalf("%s: re-marshal: %v", name, err)
-	}
-	if !bytes.Equal(buf, buf2) {
-		t.Fatalf("%s: non-deterministic marshal", name)
-	}
+	require.NoError(t, m(buf2), "%s: re-marshal", name)
+	require.True(t, bytes.Equal(buf, buf2), "%s: non-deterministic marshal", name)
 }
 
 // corruptBytes flips one byte in buf at offset off (or at len/2 when off<0).
@@ -48,12 +41,8 @@ func corruptBytes(buf []byte, off int) []byte {
 func testRejects(t *testing.T, name string, u func(src []byte) error, src []byte, wantErr string) {
 	t.Helper()
 	err := u(src)
-	if err == nil {
-		t.Fatalf("%s: expected error containing %q, got nil", name, wantErr)
-	}
-	if !strings.Contains(err.Error(), wantErr) {
-		t.Fatalf("%s: error %q does not contain %q", name, err, wantErr)
-	}
+	require.Error(t, err, "%s: expected error containing %q, got nil", name, wantErr)
+	require.Contains(t, err.Error(), wantErr, "%s: error %q does not contain %q", name, err, wantErr)
 }
 
 // testFixedStructure drives the shared rejection cases for every fixed
@@ -61,53 +50,41 @@ func testRejects(t *testing.T, name string, u func(src []byte) error, src []byte
 func testFixedStructure(t *testing.T, name string, marshal func(dst []byte) error, unmarshal func(src []byte) error, hasMagic bool, size int) {
 	t.Helper()
 	buf := make([]byte, size)
-	if err := marshal(buf); err != nil {
-		t.Fatalf("%s: marshal: %v", name, err)
-	}
+	require.NoError(t, marshal(buf), "%s: marshal", name)
 
 	// Round trip on the exact size.
-	if err := unmarshal(buf); err != nil {
-		t.Fatalf("%s: unmarshal exact size: %v", name, err)
-	}
+	require.NoError(t, unmarshal(buf), "%s: unmarshal exact size", name)
 
 	// Short inputs of every length below the fixed size must fail cleanly.
 	for n := 0; n < size; n++ {
-		if err := unmarshal(buf[:n]); err == nil {
-			t.Fatalf("%s: unmarshal of %d bytes succeeded, want error", name, n)
-		}
+		require.Error(t, unmarshal(buf[:n]), "%s: unmarshal of %d bytes succeeded, want error", name, n)
 	}
 
 	// Long input (extra trailing bytes) is tolerated at this layer; higher
 	// layers bound their slices.
-	if err := unmarshal(append(buf, 1, 2, 3)); err != nil {
-		t.Fatalf("%s: unmarshal with trailing bytes: %v", name, err)
-	}
+	require.NoError(t, unmarshal(append(buf, 1, 2, 3)), "%s: unmarshal with trailing bytes", name)
 
 	// Bad CRC must be rejected.
-	if err := unmarshal(corruptBytes(buf, size-8)); err == nil {
-		t.Fatalf("%s: corrupt CRC accepted", name)
-	}
+	require.Error(t, unmarshal(corruptBytes(buf, size-8)), "%s: corrupt CRC accepted", name)
 
 	if hasMagic {
 		// Bad magic must be rejected.
 		bad := append([]byte(nil), buf...)
 		bad[0] ^= 0xFF
-		if err := unmarshal(bad); err == nil {
-			t.Fatalf("%s: bad magic accepted", name)
-		}
+		require.Error(t, unmarshal(bad), "%s: bad magic accepted", name)
 	}
 }
 
 func TestDataFileHeader(t *testing.T) {
 	h := &DataFileHeader{FileHeader: FileHeader{
-		StoreUUID:          [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
-		CreatedUnixNano:    1700000000123456789,
-		RequiredFeatures:   RequiredFeaturesV1,
-		OptionalFeatures:   0,
-		DefaultBlockSize:   256 << 10,
-		DefaultCompression: CompressionZstd,
-		DefaultRowEncoding: RowEncodingTypedTuple,
-		Flags:              0,
+		StoreUUID:           [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		CreatedUnixNano:     1700000000123456789,
+		RequiredFeatures:    RequiredFeaturesV1,
+		OptionalFeatures:    0,
+		DefaultBlockSize:    256 << 10,
+		DefaultCompression:  CompressionZstd,
+		DefaultRowEncoding:  RowEncodingTypedTuple,
+		Flags:               0,
 		EncryptionAlgorithm: EncAES256GCM,
 		NonceScheme:         NonceCounterV1,
 		KeyID:               []byte("store-key-01"),
@@ -115,18 +92,16 @@ func TestDataFileHeader(t *testing.T) {
 	roundTrip(t, "DataFileHeader", h.MarshalTo, h.Unmarshal)
 
 	var got DataFileHeader
-	if err := got.Unmarshal(mustMarshal(t, h)); err != nil {
-		t.Fatal(err)
-	}
-	if got.StoreUUID != h.StoreUUID || got.CreatedUnixNano != h.CreatedUnixNano ||
-		got.RequiredFeatures != h.RequiredFeatures || got.DefaultBlockSize != h.DefaultBlockSize ||
-		got.DefaultCompression != h.DefaultCompression || got.DefaultRowEncoding != h.DefaultRowEncoding {
-		t.Fatalf("field mismatch: %+v vs %+v", got, h)
-	}
-	if got.EncryptionAlgorithm != EncAES256GCM || got.NonceScheme != NonceCounterV1 ||
-		string(got.KeyID) != "store-key-01" {
-		t.Fatalf("encryption field mismatch: %+v vs %+v", got, h)
-	}
+	require.NoError(t, got.Unmarshal(mustMarshal(t, h)))
+	require.Equal(t, h.StoreUUID, got.StoreUUID, "field mismatch: %+v vs %+v", got, h)
+	require.Equal(t, h.CreatedUnixNano, got.CreatedUnixNano, "field mismatch: %+v vs %+v", got, h)
+	require.Equal(t, h.RequiredFeatures, got.RequiredFeatures, "field mismatch: %+v vs %+v", got, h)
+	require.Equal(t, h.DefaultBlockSize, got.DefaultBlockSize, "field mismatch: %+v vs %+v", got, h)
+	require.Equal(t, h.DefaultCompression, got.DefaultCompression, "field mismatch: %+v vs %+v", got, h)
+	require.Equal(t, h.DefaultRowEncoding, got.DefaultRowEncoding, "field mismatch: %+v vs %+v", got, h)
+	require.Equal(t, EncAES256GCM, got.EncryptionAlgorithm, "encryption field mismatch: %+v vs %+v", got, h)
+	require.Equal(t, NonceCounterV1, got.NonceScheme, "encryption field mismatch: %+v vs %+v", got, h)
+	require.Equal(t, "store-key-01", string(got.KeyID), "encryption field mismatch: %+v vs %+v", got, h)
 
 	testFixedStructure(t, "DataFileHeader", h.MarshalTo, h.Unmarshal, true, DataFileHeaderSize)
 
@@ -143,9 +118,7 @@ func TestDataFileHeader(t *testing.T) {
 	// Feature bit check.
 	got2 := h
 	got2.RequiredFeatures = 1 << 60
-	if err := got2.CheckVersion(); err == nil {
-		t.Fatal("unknown required feature bit accepted")
-	}
+	require.Error(t, got2.CheckVersion(), "unknown required feature bit accepted")
 }
 
 func TestFileHeaderKeyIDLimits(t *testing.T) {
@@ -154,9 +127,7 @@ func TestFileHeaderKeyIDLimits(t *testing.T) {
 	h.EncryptionAlgorithm = EncAES256GCM
 	h.KeyID = bytes.Repeat([]byte("k"), FileHeaderKeyIDMaxLen+1)
 	buf := make([]byte, DataFileHeaderSize)
-	if err := h.MarshalTo(buf); err == nil {
-		t.Fatal("over-long key id accepted")
-	}
+	require.Error(t, h.MarshalTo(buf), "over-long key id accepted")
 
 	// Corrupted length byte (> max) must fail unmarshal.
 	h2 := &DataFileHeader{FileHeader: FileHeader{
@@ -164,13 +135,9 @@ func TestFileHeaderKeyIDLimits(t *testing.T) {
 		NonceScheme:         NonceCounterV1,
 		KeyID:               []byte("abc"),
 	}}
-	if err := h2.MarshalTo(buf); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, h2.MarshalTo(buf))
 	buf[FileHeaderKeyIDLenOffset] = 50
-	if err := h2.Unmarshal(buf); err == nil {
-		t.Fatal("over-long key id length accepted")
-	}
+	require.Error(t, h2.Unmarshal(buf), "over-long key id length accepted")
 }
 
 func TestIndexFileHeader(t *testing.T) {
@@ -200,13 +167,13 @@ func TestSnapshotHeader(t *testing.T) {
 	testFixedStructure(t, "SnapshotHeader", h.MarshalTo, h.Unmarshal, true, SnapshotHeaderSize)
 
 	var got SnapshotHeader
-	if err := got.Unmarshal(mustMarshal(t, h)); err != nil {
-		t.Fatal(err)
-	}
-	if got.SnapshotType != h.SnapshotType || !got.AllowEmpty || got.SnapshotID != 42 ||
-		got.ParentSnapshotID != 41 || got.FirstBlockID != 100 || got.WriterNonce != 0xDEADBEEF {
-		t.Fatalf("field mismatch: %+v vs %+v", got, h)
-	}
+	require.NoError(t, got.Unmarshal(mustMarshal(t, h)))
+	require.Equal(t, SnapshotDelta, got.SnapshotType, "field mismatch: %+v vs %+v", got, h)
+	require.True(t, got.AllowEmpty, "field mismatch: %+v vs %+v", got, h)
+	require.Equal(t, uint64(42), got.SnapshotID, "field mismatch: %+v vs %+v", got, h)
+	require.Equal(t, uint64(41), got.ParentSnapshotID, "field mismatch: %+v vs %+v", got, h)
+	require.Equal(t, uint64(100), got.FirstBlockID, "field mismatch: %+v vs %+v", got, h)
+	require.Equal(t, uint64(0xDEADBEEF), got.WriterNonce, "field mismatch: %+v vs %+v", got, h)
 }
 
 func TestSnapshotFooter(t *testing.T) {
@@ -245,15 +212,12 @@ func TestBlockHeader(t *testing.T) {
 	testFixedStructure(t, "BlockHeader", h.MarshalTo, h.Unmarshal, true, BlockHeaderSize)
 
 	var got BlockHeader
-	if err := got.Unmarshal(mustMarshal(t, h)); err != nil {
-		t.Fatal(err)
-	}
-	if got.RawCRC32C != 0x12345678 || got.ItemCount != 512 || got.BlockKind != BlockKindRows {
-		t.Fatalf("field mismatch: %+v", got)
-	}
-	if !got.Encrypted || got.KeyEpoch != 7 {
-		t.Fatalf("encryption field mismatch: %+v", got)
-	}
+	require.NoError(t, got.Unmarshal(mustMarshal(t, h)))
+	require.Equal(t, uint32(0x12345678), got.RawCRC32C, "field mismatch: %+v", got)
+	require.Equal(t, uint32(512), got.ItemCount, "field mismatch: %+v", got)
+	require.Equal(t, BlockKindRows, got.BlockKind, "field mismatch: %+v", got)
+	require.True(t, got.Encrypted, "encryption field mismatch: %+v", got)
+	require.Equal(t, uint32(7), got.KeyEpoch, "encryption field mismatch: %+v", got)
 }
 
 // TestBlockHeaderPlainRoundTrip locks that a plain (unencrypted) block header
@@ -272,16 +236,12 @@ func TestBlockHeaderPlainRoundTrip(t *testing.T) {
 		RawCRC32C:   0x12345678,
 	}
 	buf := mustMarshal(t, h)
-	if buf[14] != 0 || binary.LittleEndian.Uint32(buf[BlockHeaderKeyEpochOffset:]) != 0 {
-		t.Fatalf("plain header carries nonzero encryption bytes: %v", buf[14:16])
-	}
+	require.Equal(t, byte(0), buf[14], "plain header carries nonzero encryption bytes: %v", buf[14:16])
+	require.Equal(t, uint32(0), binary.LittleEndian.Uint32(buf[BlockHeaderKeyEpochOffset:]), "plain header carries nonzero encryption bytes: %v", buf[14:16])
 	var got BlockHeader
-	if err := got.Unmarshal(buf); err != nil {
-		t.Fatal(err)
-	}
-	if got.Encrypted || got.KeyEpoch != 0 {
-		t.Fatalf("plain header parsed as encrypted: %+v", got)
-	}
+	require.NoError(t, got.Unmarshal(buf))
+	require.False(t, got.Encrypted, "plain header parsed as encrypted: %+v", got)
+	require.Equal(t, uint32(0), got.KeyEpoch, "plain header parsed as encrypted: %+v", got)
 }
 
 func TestIndexTxnHeader(t *testing.T) {
@@ -353,7 +313,7 @@ func mustMarshal(t *testing.T, m interface{ MarshalTo([]byte) error }) []byte {
 	t.Helper()
 	buf := make([]byte, 1024)
 	if err := m.MarshalTo(buf); err != nil {
-		t.Fatalf("marshal: %v", err)
+		require.Fail(t, "marshal: %v", err)
 	}
 	return buf
 }

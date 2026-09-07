@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // visibleIDs filters ids to those visible at the snapshot (per Get), so
@@ -25,21 +27,13 @@ func visibleIDs(t *testing.T, db *Store, snap SnapshotID, ids []RowID) []RowID {
 // that positions correspond to the input ids order.
 func assertRowsMatch(t *testing.T, db *Store, snap SnapshotID, ids []RowID, got []Row) {
 	t.Helper()
-	if len(got) != len(ids) {
-		t.Fatalf("batch returned %d rows for %d ids", len(got), len(ids))
-	}
+	require.Len(t, got, len(ids), "batch returned %d rows for %d ids", len(got), len(ids))
 	for i, id := range ids {
 		want, werr := db.Get(context.Background(), snap, 1, id, nil)
-		if werr != nil {
-			t.Fatalf("id %d: Get failed: %v", id, werr)
-		}
-		if len(got[i]) != len(want) {
-			t.Fatalf("id %d: len %d != %d", id, len(got[i]), len(want))
-		}
+		require.NoError(t, werr, "id %d: Get failed", id)
+		require.Len(t, got[i], len(want), "id %d: len %d != %d", id, len(got[i]), len(want))
 		for c := range want {
-			if !rowValueEqual(want[c], got[i][c]) {
-				t.Fatalf("id %d col %d mismatch: %v vs %v", id, c, want[c], got[i][c])
-			}
+			require.True(t, rowValueEqual(want[c], got[i][c]), "id %d col %d mismatch: %v vs %v", id, c, want[c], got[i][c])
 		}
 	}
 }
@@ -56,7 +50,7 @@ func TestReadBatchMatchesGet(t *testing.T) {
 		{"delta-chain", 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			base := filepath.Join(t.TempDir(), "batch-"+tc.name)
+			base := filepath.Join(tmpdb(t), "batch-"+tc.name)
 			db, head := buildReuseStore(t, base, 1000, tc.depth)
 			defer db.Close()
 
@@ -87,9 +81,7 @@ func TestReadBatchMatchesGet(t *testing.T) {
 func mustReadBatch(t *testing.T, db *Store, snap SnapshotID, ids []RowID) []Row {
 	t.Helper()
 	rows, err := db.ReadBatch(context.Background(), snap, 1, ids)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return rows
 }
 
@@ -97,51 +89,41 @@ func mustReadBatch(t *testing.T, db *Store, snap SnapshotID, ids []RowID) []Row 
 // batch containing a missing or deleted id fails with the same ErrNotFound
 // error Get would return.
 func TestReadBatchMissingAndDeleted(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "batch-err")
+	base := filepath.Join(tmpdb(t), "batch-err")
 	db, head := buildReuseStore(t, base, 200, 2)
 	defer db.Close()
 
 	missing := []RowID{1, 2, 999_999} // 999999 absent
-	if _, err := db.ReadBatch(context.Background(), head, 1, missing); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("missing id: got %v, want ErrNotFound", err)
-	}
+	_, err := db.ReadBatch(context.Background(), head, 1, missing)
+	require.ErrorIs(t, err, ErrNotFound, "missing id: got %v, want ErrNotFound", err)
 	// RowID known deleted by the chain builder (i%50==49 -> row 50).
 	deleted := []RowID{50}
-	if _, err := db.ReadBatch(context.Background(), head, 1, deleted); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("deleted id: got %v, want ErrNotFound", err)
-	}
+	_, err = db.ReadBatch(context.Background(), head, 1, deleted)
+	require.ErrorIs(t, err, ErrNotFound, "deleted id: got %v, want ErrNotFound", err)
 	// Get reports the identical error kind and message for the same id.
 	_, gerr := db.Get(context.Background(), head, 1, 50, nil)
-	if gerr == nil || gerr.Error() == "" {
-		t.Fatal("Get on deleted id did not error")
-	}
+	require.Error(t, gerr, "Get on deleted id did not error")
+	require.NotEmpty(t, gerr.Error())
 }
 
 // TestReadBatchEmptyAndDuplicates covers the degenerate id sets.
 func TestReadBatchEmptyAndDuplicates(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "batch-edge")
+	base := filepath.Join(tmpdb(t), "batch-edge")
 	db, head := buildReuseStore(t, base, 100, 0)
 	defer db.Close()
 
 	rows, err := db.ReadBatch(context.Background(), head, 1, nil)
-	if err != nil || len(rows) != 0 {
-		t.Fatalf("empty batch: %v, %d rows", err, len(rows))
-	}
+	require.NoError(t, err, "empty batch: %v", err)
+	require.Len(t, rows, 0, "empty batch: %d rows", len(rows))
 	// Duplicate ids read the row twice, positionally aligned like repeated Gets.
 	dup := []RowID{7, 7, 8, 7}
 	got := mustReadBatch(t, db, head, dup)
-	if len(got) != 4 {
-		t.Fatalf("dup batch: %d rows", len(got))
-	}
+	require.Len(t, got, 4, "dup batch: %d rows", len(got))
 	for i := range dup {
 		want, err := db.Get(context.Background(), head, 1, dup[i], nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		for c := range want {
-			if !rowValueEqual(want[c], got[i][c]) {
-				t.Fatalf("dup idx %d col %d mismatch", i, c)
-			}
+			require.True(t, rowValueEqual(want[c], got[i][c]), "dup idx %d col %d mismatch", i, c)
 		}
 	}
 }
@@ -149,7 +131,7 @@ func TestReadBatchEmptyAndDuplicates(t *testing.T) {
 // TestReadBatchStats verifies the cumulative counters and, in the fully
 // clustered case, that one block serves the whole batch (Blocks == 1).
 func TestReadBatchStats(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "batch-stats")
+	base := filepath.Join(tmpdb(t), "batch-stats")
 	db, fullID := buildReuseStore(t, base, 1000, 0)
 	defer db.Close()
 
@@ -159,50 +141,31 @@ func TestReadBatchStats(t *testing.T) {
 	}
 	before := db.Stats().Batch
 	rows, err := db.ReadBatch(context.Background(), fullID, 1, ids)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1000 {
-		t.Fatalf("got %d rows", len(rows))
-	}
+	require.NoError(t, err)
+	require.Len(t, rows, 1000, "got %d rows", len(rows))
 	after := db.Stats().Batch
-	if after.Calls-before.Calls != 1 || after.Rows-before.Rows != 1000 {
-		t.Fatalf("calls/rows delta: %d/%d", after.Calls-before.Calls, after.Rows-before.Rows)
-	}
-	if blocks := after.Blocks - before.Blocks; blocks != 1 {
-		t.Fatalf("1000 clustered rows served by %d blocks, want 1", blocks)
-	}
-	if raw := after.RawBytes - before.RawBytes; raw == 0 {
-		t.Fatal("raw bytes delta is zero")
-	}
+	require.Equal(t, uint64(1), after.Calls-before.Calls, "calls/rows delta: %d/%d", after.Calls-before.Calls, after.Rows-before.Rows)
+	require.Equal(t, uint64(1000), after.Rows-before.Rows, "calls/rows delta: %d/%d", after.Calls-before.Calls, after.Rows-before.Rows)
+	require.Equal(t, uint64(1), after.Blocks-before.Blocks, "1000 clustered rows served by %d blocks, want 1", after.Blocks-before.Blocks)
+	require.NotZero(t, after.RawBytes-before.RawBytes, "raw bytes delta is zero")
 }
 
 // TestReadBatchAfterReopen verifies ReadBatch works after Close/Reopen
 // (recovery path) and agrees with Get.
 func TestReadBatchAfterReopen(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "batch-reopen")
+	base := filepath.Join(tmpdb(t), "batch-reopen")
 	db, fullID := buildReuseStore(t, base, 500, 0)
 	want, err := db.ReadBatch(context.Background(), fullID, 1, []RowID{1, 250, 500})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
 	db2, err := Open(base, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer db2.Close()
 	got, err := db2.ReadBatch(context.Background(), fullID, 1, []RowID{1, 250, 500})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for i := range want {
 		for c := range want[i] {
-			if !rowValueEqual(want[i][c], got[i][c]) {
-				t.Fatalf("row %d col %d mismatch after reopen", i, c)
-			}
+			require.True(t, rowValueEqual(want[i][c], got[i][c]), "row %d col %d mismatch after reopen", i, c)
 		}
 	}
 }
@@ -210,7 +173,7 @@ func TestReadBatchAfterReopen(t *testing.T) {
 // TestReadBatchConcurrent exercises ReadBatch from many goroutines while
 // mixing Get calls; run under -race.
 func TestReadBatchConcurrent(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "batch-conc")
+	base := filepath.Join(tmpdb(t), "batch-conc")
 	db, head := buildReuseStore(t, base, 1000, 2)
 	defer db.Close()
 
@@ -249,6 +212,6 @@ func TestReadBatchConcurrent(t *testing.T) {
 	wg.Wait()
 	close(errs)
 	for err := range errs {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 }

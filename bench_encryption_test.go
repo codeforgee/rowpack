@@ -15,6 +15,8 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // encBenchProvider returns a fixed key for benchmarks.
@@ -35,7 +37,7 @@ func encBenchOpts(on bool, cold bool) Options {
 
 func benchEncGet(b *testing.B, enc, cold bool) {
 	const rows = 100000
-	db, fullID := buildBenchStoreOpts(b, filepath.Join(b.TempDir(), "eg"), rows, encBenchOpts(enc, cold))
+	db, fullID := buildBenchStoreOpts(b, filepath.Join(tmpdb(b), "eg"), rows, encBenchOpts(enc, cold))
 	defer db.Close()
 	var dst Row
 	warm := 100
@@ -44,7 +46,7 @@ func benchEncGet(b *testing.B, enc, cold bool) {
 	}
 	for i := uint64(1); i <= uint64(warm); i++ {
 		if _, err := db.Get(context.Background(), fullID, 1, i, dst); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 	}
 	b.ResetTimer()
@@ -56,9 +58,7 @@ func benchEncGet(b *testing.B, enc, cold bool) {
 			rowID = uint64(i%100) + 1
 		}
 		row, err := db.Get(context.Background(), fullID, 1, rowID, dst)
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, err)
 		dst = row
 	}
 	b.StopTimer()
@@ -67,29 +67,25 @@ func benchEncGet(b *testing.B, enc, cold bool) {
 
 func benchEncScan(b *testing.B, enc bool) {
 	const rows = 100000
-	db, fullID := buildBenchStoreOpts(b, filepath.Join(b.TempDir(), "es"), rows, encBenchOpts(enc, false))
+	db, fullID := buildBenchStoreOpts(b, filepath.Join(tmpdb(b), "es"), rows, encBenchOpts(enc, false))
 	defer db.Close()
 	for i := 0; i < 2; i++ { // burn-in
 		it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, err)
 		for {
 			if _, ok := it.Next(); !ok {
 				break
 			}
 		}
 		if err := it.Err(); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		it.Close()
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, err)
 		n := 0
 		for {
 			if _, ok := it.Next(); !ok {
@@ -98,12 +94,10 @@ func benchEncScan(b *testing.B, enc bool) {
 			n++
 		}
 		if err := it.Err(); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		it.Close()
-		if n != rows {
-			b.Fatalf("scan returned %d rows, want %d", n, rows)
-		}
+		require.Equal(b, int(rows), n, "scan returned %d rows, want %d", n, rows)
 	}
 	b.StopTimer()
 	b.ReportMetric(float64(rows)*float64(b.N)/b.Elapsed().Seconds()/1000, "krows/s")
@@ -112,7 +106,7 @@ func benchEncScan(b *testing.B, enc bool) {
 func benchEncBatch(b *testing.B, enc bool) {
 	const rows = 100000
 	const batch = 4096
-	db, fullID := buildBenchStoreOpts(b, filepath.Join(b.TempDir(), "eb"), rows, encBenchOpts(enc, false))
+	db, fullID := buildBenchStoreOpts(b, filepath.Join(tmpdb(b), "eb"), rows, encBenchOpts(enc, false))
 	defer db.Close()
 	// Sequential ids (3 blocks) and random ids (many blocks).
 	seq := make([]RowID, batch)
@@ -126,10 +120,10 @@ func benchEncBatch(b *testing.B, enc bool) {
 	ctx := context.Background()
 	// Warm once.
 	if _, err := db.ReadBatch(ctx, fullID, 1, seq); err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
 	if _, err := db.ReadBatch(ctx, fullID, 1, rnd); err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -138,7 +132,7 @@ func benchEncBatch(b *testing.B, enc bool) {
 			ids = rnd
 		}
 		if _, err := db.ReadBatch(ctx, fullID, 1, ids); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 	}
 	b.StopTimer()
@@ -152,23 +146,19 @@ func benchEncWrite(b *testing.B, enc bool) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		base := filepath.Join(b.TempDir(), "ew")
+		base := filepath.Join(tmpdb(b), "ew")
 		db, err := Create(base, encBenchOpts(enc, false))
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, err)
 		w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-		if err := w.DefineSchema(benchSchema()); err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, w.DefineSchema(benchSchema()))
 		b.StartTimer()
 		for j := uint64(0); j < rows; j++ {
 			if err := w.Insert(context.Background(), 1, j+1, 1, benchRow(j)); err != nil {
-				b.Fatal(err)
+				require.NoError(b, err)
 			}
 		}
 		if _, err := w.Commit(context.Background()); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		b.StopTimer()
 		lastStats = db.Stats()

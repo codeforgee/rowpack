@@ -7,134 +7,99 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestViewBasicAndGrow exercises views before and after the file grows past
 // the current mapping (remap on demand).
 func TestViewBasicAndGrow(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "v.bin")
+	path := filepath.Join(tmpdb(t), "v.bin")
 	a, err := OpenAppender(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer a.Close()
 
-	if _, err := a.Append([]byte("hello world")); err != nil {
-		t.Fatal(err)
-	}
+	_, err = a.Append([]byte("hello world"))
+	require.NoError(t, err)
 	b, done, err := a.View(0, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(b) != "hello" {
-		t.Fatalf("view = %q", b)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "hello", string(b), "view = %q", b)
 	done()
 
 	// Grow beyond the mapping created by the first view and read the tail.
-	if _, err := a.Append([]byte(" rowpack")); err != nil {
-		t.Fatal(err)
-	}
+	_, err = a.Append([]byte(" rowpack"))
+	require.NoError(t, err)
 	b, done, err = a.View(12, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(b) != "rowp" {
-		t.Fatalf("view after grow = %q", b)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "rowp", string(b), "view after grow = %q", b)
 	done()
 
 	// The earlier range must still read correctly through the new mapping.
 	b, done, err = a.View(6, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(b) != "world" {
-		t.Fatalf("old range after remap = %q", b)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "world", string(b), "old range after remap = %q", b)
 	done()
 }
 
 // TestViewBounds verifies out-of-range views fail.
 func TestViewBounds(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "b.bin")
+	path := filepath.Join(tmpdb(t), "b.bin")
 	a, err := OpenAppender(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer a.Close()
-	if _, err := a.Append([]byte("0123456789")); err != nil {
-		t.Fatal(err)
-	}
+	_, err = a.Append([]byte("0123456789"))
+	require.NoError(t, err)
 	_, done, err := a.View(0, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	done()
-	if _, _, err := a.View(8, 4); err == nil {
-		t.Fatal("view beyond EOF succeeded")
-	}
-	if _, _, err := a.View(-1, 4); err == nil {
-		t.Fatal("negative offset succeeded")
-	}
-	if _, _, err := a.View(0, -1); err == nil {
-		t.Fatal("negative length succeeded")
-	}
+	_, _, err = a.View(8, 4)
+	require.Error(t, err, "view beyond EOF succeeded")
+	_, _, err = a.View(-1, 4)
+	require.Error(t, err, "negative offset succeeded")
+	_, _, err = a.View(0, -1)
+	require.Error(t, err, "negative length succeeded")
 }
 
 // TestViewAfterTruncate verifies recovery-style truncation invalidates the
 // mapping: views inside the new EOF work, beyond it fail.
 func TestViewAfterTruncate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "t.bin")
+	path := filepath.Join(tmpdb(t), "t.bin")
 	a, err := OpenAppender(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer a.Close()
 
-	if _, err := a.Append([]byte("0123456789abcdef")); err != nil {
-		t.Fatal(err)
-	}
+	_, err = a.Append([]byte("0123456789abcdef"))
+	require.NoError(t, err)
 	_, done, err := a.View(0, 16)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	done()
-	if err := a.Truncate(8); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, a.Truncate(8))
 	b, done, err := a.View(0, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(b) != "01234567" {
-		t.Fatalf("view after truncate = %q", b)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "01234567", string(b), "view after truncate = %q", b)
 	done()
-	if _, _, err := a.View(8, 4); err == nil {
-		t.Fatal("view beyond truncated EOF succeeded")
-	}
+	_, _, err = a.View(8, 4)
+	require.Error(t, err, "view beyond truncated EOF succeeded")
 }
 
 // TestViewConcurrentRemap stresses concurrent views while the file grows;
 // run under -race it must not report data races and every view must observe
 // bytes written before the view was issued.
 func TestViewConcurrentRemap(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "c.bin")
+	path := filepath.Join(tmpdb(t), "c.bin")
 	a, err := OpenAppender(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer a.Close()
 
 	var chunk [4096]byte
 	const chunks = 64
 	for i := 0; i < chunks; i++ {
 		if _, err := rand.Read(chunk[:]); err != nil {
-			t.Fatal(err)
+			require.NoError(t, err)
 		}
 		if _, err := a.Append(chunk[:]); err != nil {
-			t.Fatal(err)
+			require.NoError(t, err)
 		}
 	}
 	// Fixed address space readers may use; appends after this point only
@@ -156,11 +121,11 @@ func TestViewConcurrentRemap(t *testing.T) {
 			default:
 			}
 			if _, err := rand.Read(more[:]); err != nil {
-				t.Error(err)
+				assert.NoError(t, err)
 				return
 			}
 			if _, err := a.Append(more[:]); err != nil {
-				t.Error(err)
+				assert.NoError(t, err)
 				return
 			}
 		}
@@ -175,17 +140,17 @@ func TestViewConcurrentRemap(t *testing.T) {
 				n := int64(1 + i%256)
 				b, done, err := a.View(off, n)
 				if err != nil {
-					t.Error(err)
+					assert.NoError(t, err)
 					return
 				}
 				want := make([]byte, n)
 				if _, err := a.f.ReadAt(want, off); err != nil {
-					t.Error(err)
+					assert.NoError(t, err)
 					done()
 					return
 				}
 				if !bytes.Equal(b, want) {
-					t.Errorf("view at %d mismatched ReadAt", off)
+					assert.Fail(t, "view at %d mismatched ReadAt", off)
 					done()
 					return
 				}

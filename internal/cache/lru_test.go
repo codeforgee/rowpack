@@ -5,27 +5,23 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLRUBasic(t *testing.T) {
 	l := NewLRU(100)
 	l.Put(1, 30, bytesN(30))
 	l.Put(2, 30, bytesN(30))
-	if l.UsedBytes() != 60 {
-		t.Fatalf("used = %d", l.UsedBytes())
-	}
-	if _, ok := l.Get(1); !ok {
-		t.Fatal("miss on cached")
-	}
-	if l.Hits() != 1 || l.Misses() != 0 {
-		t.Fatalf("hits/misses = %d/%d", l.Hits(), l.Misses())
-	}
-	if _, ok := l.Get(99); ok {
-		t.Fatal("hit on uncached")
-	}
-	if l.Misses() != 1 {
-		t.Fatalf("misses = %d", l.Misses())
-	}
+	require.Equal(t, uint64(60), l.UsedBytes(), "used = %d", l.UsedBytes())
+	_, ok := l.Get(1)
+	require.True(t, ok, "miss on cached")
+	require.Equal(t, uint64(1), l.Hits(), "hits/misses = %d/%d", l.Hits(), l.Misses())
+	require.Equal(t, uint64(0), l.Misses(), "hits/misses = %d/%d", l.Hits(), l.Misses())
+	_, ok = l.Get(99)
+	require.False(t, ok, "hit on uncached")
+	require.Equal(t, uint64(1), l.Misses(), "misses = %d", l.Misses())
 }
 
 func TestLRUEviction(t *testing.T) {
@@ -33,24 +29,17 @@ func TestLRUEviction(t *testing.T) {
 	l.Put(1, 40, bytesN(40))
 	l.Put(2, 40, bytesN(40))
 	l.Put(3, 40, bytesN(40)) // 120 > 100 -> evict 1
-	if l.UsedBytes() != 80 {
-		t.Fatalf("used = %d", l.UsedBytes())
-	}
-	if _, ok := l.Get(1); ok {
-		t.Fatal("evicted entry still cached")
-	}
-	if l.Evictions() != 1 {
-		t.Fatalf("evictions = %d", l.Evictions())
-	}
+	require.Equal(t, uint64(80), l.UsedBytes(), "used = %d", l.UsedBytes())
+	_, ok := l.Get(1)
+	require.False(t, ok, "evicted entry still cached")
+	require.Equal(t, uint64(1), l.Evictions(), "evictions = %d", l.Evictions())
 	// Accessing 2 makes it most-recent; inserting 4 evicts 3.
 	l.Get(2)
 	l.Put(4, 40, bytesN(40))
-	if _, ok := l.Get(3); ok {
-		t.Fatal("LRU did not evict least-recently-used")
-	}
-	if _, ok := l.Get(2); !ok {
-		t.Fatal("recently used entry evicted")
-	}
+	_, ok = l.Get(3)
+	require.False(t, ok, "LRU did not evict least-recently-used")
+	_, ok = l.Get(2)
+	require.True(t, ok, "recently used entry evicted")
 }
 
 func TestLRUUsesLRUOrder(t *testing.T) {
@@ -59,41 +48,33 @@ func TestLRUUsesLRUOrder(t *testing.T) {
 	l.Put(2, 30, bytesN(30))
 	l.Get(1)                 // 1 becomes most recent
 	l.Put(3, 30, bytesN(30)) // 90 > 80 -> evict 2 (least recent)
-	if _, ok := l.Get(1); !ok {
-		t.Fatal("1 evicted")
-	}
-	if _, ok := l.Get(2); ok {
-		t.Fatal("2 should be evicted")
-	}
-	if _, ok := l.Get(3); !ok {
-		t.Fatal("3 evicted")
-	}
+	_, ok := l.Get(1)
+	require.True(t, ok, "1 evicted")
+	_, ok = l.Get(2)
+	require.False(t, ok, "2 should be evicted")
+	_, ok = l.Get(3)
+	require.True(t, ok, "3 evicted")
 }
 
 func TestLRUOversizeBlockNotCached(t *testing.T) {
 	l := NewLRU(50)
 	l.Put(1, 60, bytesN(60)) // > capacity
-	if l.Len() != 0 {
-		t.Fatal("oversize block cached")
-	}
-	if _, ok := l.Get(1); ok {
-		t.Fatal("oversize block readable from cache")
-	}
+	require.Equal(t, 0, l.Len(), "oversize block cached")
+	_, ok := l.Get(1)
+	require.False(t, ok, "oversize block readable from cache")
 	// Disabled cache.
 	l2 := NewLRU(-1)
 	l2.Put(1, 10, bytesN(10))
-	if _, ok := l2.Get(1); ok {
-		t.Fatal("disabled cache returned entry")
-	}
+	_, ok = l2.Get(1)
+	require.False(t, ok, "disabled cache returned entry")
 }
 
 func TestLRUUpdateExisting(t *testing.T) {
 	l := NewLRU(100)
 	l.Put(1, 30, bytesN(30))
 	l.Put(1, 50, bytesN(50))
-	if l.Len() != 1 || l.UsedBytes() != 50 {
-		t.Fatalf("update failed: len=%d used=%d", l.Len(), l.UsedBytes())
-	}
+	require.Equal(t, 1, l.Len(), "update failed: len=%d used=%d", l.Len(), l.UsedBytes())
+	require.Equal(t, uint64(50), l.UsedBytes(), "update failed: len=%d used=%d", l.Len(), l.UsedBytes())
 }
 
 func TestLRUConcurrent(t *testing.T) {
@@ -111,9 +92,7 @@ func TestLRUConcurrent(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
-	if l.Len() > 64 {
-		t.Fatalf("too many entries: %d", l.Len())
-	}
+	require.LessOrEqual(t, l.Len(), 64, "too many entries: %d", l.Len())
 }
 
 func TestSingleflight(t *testing.T) {
@@ -134,14 +113,12 @@ func TestSingleflight(t *testing.T) {
 			defer wg.Done()
 			v, err := run()
 			if err != nil || v != 42 {
-				t.Errorf("bad result: %v %v", v, err)
+				assert.Fail(t, "bad result: %v %v", v, err)
 			}
 		}()
 	}
 	wg.Wait()
-	if count.get() != 1 {
-		t.Fatalf("fn ran %d times, want 1", count.get())
-	}
+	require.Equal(t, int64(1), count.get(), "fn ran %d times, want 1", count.get())
 }
 
 type syncAtomic struct{ v int64 }

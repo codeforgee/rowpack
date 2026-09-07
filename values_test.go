@@ -5,6 +5,8 @@ import (
 	"math/big"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestValueConstructorGetters(t *testing.T) {
@@ -32,64 +34,59 @@ func TestValueConstructorGetters(t *testing.T) {
 		{"decimal", DecimalValue(Decimal{Unscaled: big.NewInt(-12345), Scale: 3})},
 	}
 	for _, tc := range cases {
-		if tc.v.IsNull() != (tc.name == "null") {
-			t.Fatalf("%s: IsNull = %v", tc.name, tc.v.IsNull())
-		}
-		if tc.name != "null" && tc.v.Type() == 0 && tc.name != "bool" {
-			// Type 0 is TypeBool; only the bool value may carry it.
-			if tc.name != "bool" {
-				t.Fatalf("%s: unexpected zero type", tc.name)
-			}
+		require.Equal(t, tc.name == "null", tc.v.IsNull(), "%s: IsNull = %v", tc.name, tc.v.IsNull())
+		if tc.name != "null" && tc.name != "bool" {
+			require.NotZero(t, tc.v.Type(), "%s: unexpected zero type", tc.name)
 		}
 	}
 }
 
 func TestValueGettersRoundTrip(t *testing.T) {
-	if v, ok := Bool(true).Bool(); !v || !ok {
-		t.Fatal("Bool roundtrip")
-	}
-	if v, ok := Int8(-128).Int8(); v != -128 || !ok {
-		t.Fatal("Int8 roundtrip")
-	}
-	if v, ok := Int16(-32768).Int16(); v != -32768 || !ok {
-		t.Fatal("Int16 roundtrip")
-	}
-	if v, ok := Int32(math.MinInt32).Int32(); v != math.MinInt32 || !ok {
-		t.Fatal("Int32 roundtrip")
-	}
-	if v, ok := Int64(math.MinInt64).Int64(); v != math.MinInt64 || !ok {
-		t.Fatal("Int64 roundtrip")
-	}
-	if v, ok := Uint8(255).Uint8(); v != 255 || !ok {
-		t.Fatal("Uint8 roundtrip")
-	}
-	if v, ok := Uint16(65535).Uint16(); v != 65535 || !ok {
-		t.Fatal("Uint16 roundtrip")
-	}
-	if v, ok := Uint32(math.MaxUint32).Uint32(); v != math.MaxUint32 || !ok {
-		t.Fatal("Uint32 roundtrip")
-	}
-	if v, ok := Uint64(math.MaxUint64).Uint64(); v != math.MaxUint64 || !ok {
-		t.Fatal("Uint64 roundtrip")
-	}
-	if v, ok := Float32(float32(math.Pi)).Float32(); v != float32(math.Pi) || !ok {
-		t.Fatal("Float32 roundtrip")
-	}
-	if v, ok := Float64(math.Pi).Float64(); v != math.Pi || !ok {
-		t.Fatal("Float64 roundtrip")
-	}
-	if v, ok := String("hello").String(); v != "hello" || !ok {
-		t.Fatal("String roundtrip")
-	}
-	if v, ok := DateValue(19000).Date(); v != 19000 || !ok {
-		t.Fatal("Date roundtrip")
-	}
-	if v, ok := TimeValue(86399999999999).Time(); v != 86399999999999 || !ok {
-		t.Fatal("Time roundtrip")
-	}
-	if v, ok := DecimalValue(Decimal{Unscaled: big.NewInt(-12345), Scale: 3}).Decimal(); !ok || v.Unscaled.Int64() != -12345 || v.Scale != 3 {
-		t.Fatal("Decimal roundtrip")
-	}
+	v, ok := Bool(true).Bool()
+	require.True(t, v && ok, "Bool roundtrip")
+	v2, ok := Int8(-128).Int8()
+	require.Equal(t, int8(-128), v2)
+	require.True(t, ok, "Int8 roundtrip")
+	v3, ok := Int16(-32768).Int16()
+	require.Equal(t, int16(-32768), v3)
+	require.True(t, ok, "Int16 roundtrip")
+	v4, ok := Int32(math.MinInt32).Int32()
+	require.Equal(t, int32(math.MinInt32), v4)
+	require.True(t, ok, "Int32 roundtrip")
+	v5, ok := Int64(math.MinInt64).Int64()
+	require.Equal(t, int64(math.MinInt64), v5)
+	require.True(t, ok, "Int64 roundtrip")
+	v6, ok := Uint8(255).Uint8()
+	require.Equal(t, uint8(255), v6)
+	require.True(t, ok, "Uint8 roundtrip")
+	v7, ok := Uint16(65535).Uint16()
+	require.Equal(t, uint16(65535), v7)
+	require.True(t, ok, "Uint16 roundtrip")
+	v8, ok := Uint32(math.MaxUint32).Uint32()
+	require.Equal(t, uint32(math.MaxUint32), v8)
+	require.True(t, ok, "Uint32 roundtrip")
+	v9, ok := Uint64(math.MaxUint64).Uint64()
+	require.Equal(t, uint64(math.MaxUint64), v9)
+	require.True(t, ok, "Uint64 roundtrip")
+	v10, ok := Float32(float32(math.Pi)).Float32()
+	require.Equal(t, float32(math.Pi), v10)
+	require.True(t, ok, "Float32 roundtrip")
+	v11, ok := Float64(math.Pi).Float64()
+	require.Equal(t, math.Pi, v11)
+	require.True(t, ok, "Float64 roundtrip")
+	v12, ok := String("hello").String()
+	require.Equal(t, "hello", v12)
+	require.True(t, ok, "String roundtrip")
+	v13, ok := DateValue(19000).Date()
+	require.Equal(t, Date(19000), v13)
+	require.True(t, ok, "Date roundtrip")
+	v14, ok := TimeValue(86399999999999).Time()
+	require.Equal(t, TimeOfDay(86399999999999), v14)
+	require.True(t, ok, "Time roundtrip")
+	d, ok := DecimalValue(Decimal{Unscaled: big.NewInt(-12345), Scale: 3}).Decimal()
+	require.True(t, ok, "Decimal roundtrip")
+	require.Equal(t, int64(-12345), d.Unscaled.Int64())
+	require.Equal(t, int32(3), d.Scale)
 }
 
 func TestValueBytesCopySemantics(t *testing.T) {
@@ -97,45 +94,35 @@ func TestValueBytesCopySemantics(t *testing.T) {
 	v := Bytes(src)
 	src[0] = 0xFF // constructor must have copied
 	got, ok := v.Bytes()
-	if !ok || got[0] != 1 {
-		t.Fatalf("Bytes not copied at construction: %v", got)
-	}
+	require.True(t, ok)
+	require.Equal(t, byte(1), got[0], "Bytes not copied at construction: %v", got)
 	got[0] = 0x77 // getter must return a copy too
 	got2, _ := v.Bytes()
-	if got2[0] != 1 {
-		t.Fatal("Bytes getter aliases internal state")
-	}
+	require.Equal(t, byte(1), got2[0], "Bytes getter aliases internal state")
 }
 
 func TestValueDateTimePrecision(t *testing.T) {
 	tm := time.Date(2024, 3, 15, 10, 30, 15, 123456789, time.UTC)
 	v := DateTime(tm)
 	got, ok := v.DateTimeValue()
-	if !ok || got.Nanosecond() != 123456789 {
-		t.Fatalf("DateTime precision lost: %v", got)
-	}
+	require.True(t, ok)
+	require.Equal(t, 123456789, got.Nanosecond(), "DateTime precision lost: %v", got)
 	// Non-UTC input is converted to UTC.
 	loc := time.FixedZone("x", 3600)
 	v2 := DateTime(time.Date(2024, 3, 15, 10, 30, 15, 0, loc))
 	got2, _ := v2.DateTimeValue()
-	if got2.UTC().Hour() != 9 {
-		t.Fatalf("DateTime not normalized to UTC: %v", got2)
-	}
+	require.Equal(t, 9, got2.UTC().Hour(), "DateTime not normalized to UTC: %v", got2)
 }
 
 func TestNewDateAndTimeOfDay(t *testing.T) {
 	// 2024-03-15 UTC is 19797 days after the epoch.
 	got := NewDate(time.Date(2024, 3, 15, 23, 59, 0, 0, time.UTC))
-	if got != 19797 {
-		t.Fatalf("NewDate = %d, want 19797", got)
-	}
+	require.Equal(t, Date(19797), got)
 	tod, err := NewTimeOfDay(23, 59, 59, 999999999)
-	if err != nil || tod != 23*3600e9+59*60e9+59e9+999999999 {
-		t.Fatalf("NewTimeOfDay = %d, %v", tod, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, TimeOfDay(23*3600e9+59*60e9+59e9+999999999), tod)
 	for _, bad := range [][4]int{{24, 0, 0, 0}, {-1, 0, 0, 0}, {0, 60, 0, 0}, {0, 0, 60, 0}, {0, 0, 0, 1000000000}, {0, 0, 0, -1}} {
-		if _, err := NewTimeOfDay(bad[0], bad[1], bad[2], bad[3]); err == nil {
-			t.Fatalf("NewTimeOfDay%v accepted", bad)
-		}
+		_, err := NewTimeOfDay(bad[0], bad[1], bad[2], bad[3])
+		require.Error(t, err, "NewTimeOfDay%v accepted", bad)
 	}
 }

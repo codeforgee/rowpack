@@ -4,6 +4,8 @@ import (
 	"math"
 	"math/big"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func allTypesSchema() *Schema {
@@ -57,24 +59,16 @@ func TestRoundTripAllTypes(t *testing.T) {
 	s := allTypesSchema()
 	row := fullRow()
 	enc, err := Encode(s, row, DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got, err := Decode(enc, s, DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	// Compare value-by-value.
 	for i, want := range row {
-		if !valuesEqual(want, got[i]) {
-			t.Errorf("column %d: got %#v, want %#v", i, got[i], want)
-		}
+		require.True(t, valuesEqual(want, got[i]), "column %d: got %#v, want %#v", i, got[i], want)
 	}
 	// Encoded form is deterministic.
 	enc2, _ := Encode(s, row, DefaultLimits())
-	if string(enc) != string(enc2) {
-		t.Fatal("non-deterministic encoding")
-	}
+	require.Equal(t, string(enc), string(enc2), "non-deterministic encoding")
 }
 
 func TestRoundTripNumericBoundaries(t *testing.T) {
@@ -97,16 +91,10 @@ func TestRoundTripNumericBoundaries(t *testing.T) {
 			s := schemaOf(tc.col)
 			for _, want := range tc.vals {
 				enc, err := Encode(s, []Value{want}, DefaultLimits())
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				got, err := Decode(enc, s, DefaultLimits())
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !valuesEqual(want, got[0]) {
-					t.Fatalf("got %#v want %#v", got[0], want)
-				}
+				require.NoError(t, err)
+				require.True(t, valuesEqual(want, got[0]), "got %#v want %#v", got[0], want)
 			}
 		})
 	}
@@ -116,30 +104,18 @@ func TestRoundTripFloatSpecialValues(t *testing.T) {
 	for _, want := range []Value{Float32(float32(math.Copysign(0, -1))), Float32(float32(math.Inf(1))), Float32(float32(math.Inf(-1))), Float32(float32(math.NaN()))} {
 		s := schemaOf(Column{Name: "v", Type: TypeFloat32})
 		enc, err := Encode(s, []Value{want}, DefaultLimits())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		got, err := Decode(enc, s, DefaultLimits())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !valuesEqual(want, got[0]) {
-			t.Fatalf("float32 bits changed: got %#v want %#v", got[0], want)
-		}
+		require.NoError(t, err)
+		require.True(t, valuesEqual(want, got[0]), "float32 bits changed: got %#v want %#v", got[0], want)
 	}
 	for _, want := range []Value{Float64(math.Copysign(0, -1)), Float64(math.Inf(1)), Float64(math.Inf(-1)), Float64(math.NaN())} {
 		s := schemaOf(Column{Name: "v", Type: TypeFloat64})
 		enc, err := Encode(s, []Value{want}, DefaultLimits())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		got, err := Decode(enc, s, DefaultLimits())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !valuesEqual(want, got[0]) {
-			t.Fatalf("float64 bits changed: got %#v want %#v", got[0], want)
-		}
+		require.NoError(t, err)
+		require.True(t, valuesEqual(want, got[0]), "float64 bits changed: got %#v want %#v", got[0], want)
 	}
 }
 
@@ -166,23 +142,16 @@ func TestRoundTripTemporalAndVariableBoundaries(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			enc, err := Encode(schemaOf(tc.col), []Value{tc.want}, DefaultLimits())
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			got, err := Decode(enc, schemaOf(tc.col), DefaultLimits())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !valuesEqual(tc.want, got[0]) {
-				t.Fatalf("got %#v want %#v", got[0], tc.want)
-			}
+			require.NoError(t, err)
+			require.True(t, valuesEqual(tc.want, got[0]), "got %#v want %#v", got[0], tc.want)
 		})
 	}
 	// The upper bound is rejected by the semantic Time range check.
 	s := schemaOf(Column{Name: "v", Type: TypeTime})
-	if _, err := Encode(s, []Value{TimeValue(TimeOfDay(MaxTimeOfDay))}, DefaultLimits()); err == nil {
-		t.Fatal("accepted out-of-range maximum Time value")
-	}
+	_, err := Encode(s, []Value{TimeValue(TimeOfDay(MaxTimeOfDay))}, DefaultLimits())
+	require.Error(t, err, "accepted out-of-range maximum Time value")
 }
 
 func valuesEqual(a, b Value) bool {
@@ -256,17 +225,11 @@ func TestNullBitmap(t *testing.T) {
 	row[2] = Null()  // i16
 	row[16] = Null() // dec
 	enc, err := Encode(s, row, DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got, err := Decode(enc, s, DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for i, want := range row {
-		if want.IsNull() != got[i].IsNull() {
-			t.Errorf("column %d null mismatch: want %v got %v", i, want.IsNull(), got[i].IsNull())
-		}
+		require.Equal(t, want.IsNull(), got[i].IsNull(), "column %d null mismatch: want %v got %v", i, want.IsNull(), got[i].IsNull())
 	}
 }
 
@@ -278,39 +241,33 @@ func TestDecodeRejects(t *testing.T) {
 
 	// Truncated at every prefix.
 	for n := 0; n < len(enc); n++ {
-		if _, err := Decode(enc[:n], s, lim); err == nil {
-			t.Fatalf("accepted truncated tuple of %d/%d bytes", n, len(enc))
-		}
+		_, err := Decode(enc[:n], s, lim)
+		require.Error(t, err, "accepted truncated tuple of %d/%d bytes", n, len(enc))
 	}
 	// Trailing bytes.
-	if _, err := Decode(append(enc, 0), s, lim); err == nil {
-		t.Fatal("accepted trailing byte")
-	}
+	_, err := Decode(append(enc, 0), s, lim)
+	require.Error(t, err, "accepted trailing byte")
 	// Wrong column count.
 	bad := append([]byte(nil), enc...)
 	bad[0] = 3
-	if _, err := Decode(bad, s, lim); err == nil {
-		t.Fatal("accepted wrong column count")
-	}
+	_, err = Decode(bad, s, lim)
+	require.Error(t, err, "accepted wrong column count")
 	// Wrong bitmap size field.
 	bad = append([]byte(nil), enc...)
 	bad[4] = 9
-	if _, err := Decode(bad, s, lim); err == nil {
-		t.Fatal("accepted wrong bitmap size")
-	}
+	_, err = Decode(bad, s, lim)
+	require.Error(t, err, "accepted wrong bitmap size")
 	// Non-zero unused bitmap high bits: 2 columns => 1 bitmap byte, high 6 bits must be zero.
 	bad = append([]byte(nil), enc...)
 	bad[8] |= 0x80
-	if _, err := Decode(bad, s, lim); err == nil {
-		t.Fatal("accepted non-zero unused bitmap bits")
-	}
+	_, err = Decode(bad, s, lim)
+	require.Error(t, err, "accepted non-zero unused bitmap bits")
 	// Invalid bool byte.
 	bs := schemaOf(Column{Name: "b", Type: TypeBool})
 	be, _ := Encode(bs, []Value{Bool(true)}, lim)
 	be[8] = 2
-	if _, err := Decode(be, bs, lim); err == nil {
-		t.Fatal("accepted invalid bool byte")
-	}
+	_, err = Decode(be, bs, lim)
+	require.Error(t, err, "accepted invalid bool byte")
 	// Non-UTF8 string.
 	ss := schemaOf(Column{Name: "s", Type: TypeString})
 	se, _ := Encode(ss, []Value{String("ok")}, lim)
@@ -319,16 +276,14 @@ func TestDecodeRejects(t *testing.T) {
 	se[8] = 1
 	se[9] = 0xFF
 	// rebuild u32 lengths: header 8 + bitmap 1 + len4 + 1 byte = 14; fix nothing else needed
-	if _, err := Decode(se, ss, lim); err == nil {
-		t.Fatal("accepted non-UTF8 string")
-	}
+	_, err = Decode(se, ss, lim)
+	require.Error(t, err, "accepted non-UTF8 string")
 	// Out-of-range time of day.
 	ts := schemaOf(Column{Name: "t", Type: TypeTime})
 	te, _ := Encode(ts, []Value{TimeValue(1)}, lim)
 	copy(te[9:], u64bytes(uint64(MaxTimeOfDay))) // 86400e9 out of range
-	if _, err := Decode(te, ts, lim); err == nil {
-		t.Fatal("accepted out-of-range time of day")
-	}
+	_, err = Decode(te, ts, lim)
+	require.Error(t, err, "accepted out-of-range time of day")
 }
 
 func u64bytes(v uint64) []byte {
@@ -340,67 +295,55 @@ func TestEncodeRejects(t *testing.T) {
 
 	// []Value length mismatch.
 	s := schemaOf(Column{Name: "i", Type: TypeInt64})
-	if _, err := Encode(s, []Value{}, lim); err == nil {
-		t.Fatal("accepted empty row for 1-column schema")
-	}
+	_, err := Encode(s, []Value{}, lim)
+	require.Error(t, err, "accepted empty row for 1-column schema")
 	// Wrong value type.
-	if _, err := Encode(s, []Value{String("x")}, lim); err == nil {
-		t.Fatal("accepted string as int64")
-	}
+	_, err = Encode(s, []Value{String("x")}, lim)
+	require.Error(t, err, "accepted string as int64")
 	// NULL in non-nullable column.
 	s2 := schemaOf(Column{Name: "i", Type: TypeInt64, Nullable: false})
-	if _, err := Encode(s2, []Value{Null()}, lim); err == nil {
-		t.Fatal("accepted NULL in non-nullable column")
-	}
+	_, err = Encode(s2, []Value{Null()}, lim)
+	require.Error(t, err, "accepted NULL in non-nullable column")
 	// Decimal scale mismatch with schema column.
 	s3 := schemaOf(Column{Name: "d", Type: TypeDecimal, Scale: 2})
-	if _, err := Encode(s3, []Value{DecimalValue(Decimal{Unscaled: big.NewInt(1), Scale: 3})}, lim); err == nil {
-		t.Fatal("accepted decimal scale mismatch")
-	}
+	_, err = Encode(s3, []Value{DecimalValue(Decimal{Unscaled: big.NewInt(1), Scale: 3})}, lim)
+	require.Error(t, err, "accepted decimal scale mismatch")
 	// Unknown type.
 	s4 := schemaOf(Column{Name: "x", Type: Type(99)})
-	if _, err := Encode(s4, []Value{Int64(1)}, lim); err == nil {
-		t.Fatal("accepted unknown type")
-	}
+	_, err = Encode(s4, []Value{Int64(1)}, lim)
+	require.Error(t, err, "accepted unknown type")
 	// Invalid UTF-8 string.
 	s5 := schemaOf(Column{Name: "s", Type: TypeString})
-	if _, err := Encode(s5, []Value{Value{typ: TypeString, s: string([]byte{0xFF, 0xFE})}}, lim); err == nil {
-		t.Fatal("accepted invalid UTF-8 string")
-	}
+	_, err = Encode(s5, []Value{Value{typ: TypeString, s: string([]byte{0xFF, 0xFE})}}, lim)
+	require.Error(t, err, "accepted invalid UTF-8 string")
 	// Out-of-range time of day.
 	s6 := schemaOf(Column{Name: "t", Type: TypeTime})
-	if _, err := Encode(s6, []Value{Value{typ: TypeTime, i: MaxTimeOfDay}}, lim); err == nil {
-		t.Fatal("accepted out-of-range time")
-	}
+	_, err = Encode(s6, []Value{Value{typ: TypeTime, i: MaxTimeOfDay}}, lim)
+	require.Error(t, err, "accepted out-of-range time")
 	// Too many columns.
 	cols := make([]Column, 0, lim.MaxColumns+1)
 	for i := uint32(0); i <= lim.MaxColumns; i++ {
 		cols = append(cols, Column{Name: "c", Type: TypeInt64})
 	}
 	s7 := schemaOf(cols...)
-	if _, err := Encode(s7, make([]Value, len(cols)), lim); err == nil {
-		t.Fatal("accepted schema over column limit")
-	}
+	_, err = Encode(s7, make([]Value, len(cols)), lim)
+	require.Error(t, err, "accepted schema over column limit")
 }
 
 func TestOversizeValueLimit(t *testing.T) {
 	lim := DefaultLimits()
 	lim.MaxValueBytes = 8
 	s := schemaOf(Column{Name: "s", Type: TypeString})
-	if _, err := Encode(s, []Value{String("123456789")}, lim); err == nil {
-		t.Fatal("accepted string over value limit")
-	}
+	_, err := Encode(s, []Value{String("123456789")}, lim)
+	require.Error(t, err, "accepted string over value limit")
 	big := make([]byte, 9)
 	be, err := Encode(schemaOf(Column{Name: "by", Type: TypeBytes}), []Value{Bytes(big)}, lim)
-	if err == nil {
-		t.Fatal("accepted bytes over value limit")
-	}
+	require.Error(t, err, "accepted bytes over value limit")
 	_ = be
 	// Decode side with malicious length prefix must fail before allocation.
 	payload := []byte{1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	if _, err := Decode(payload, schemaOf(Column{Name: "s", Type: TypeString}), lim); err == nil {
-		t.Fatal("accepted huge string length")
-	}
+	_, err = Decode(payload, schemaOf(Column{Name: "s", Type: TypeString}), lim)
+	require.Error(t, err, "accepted huge string length")
 }
 
 func TestBoundaryValues(t *testing.T) {
@@ -425,24 +368,16 @@ func TestBoundaryValues(t *testing.T) {
 	row[15] = DateTimeValueOf(math.MinInt64)
 	row[16] = DecimalValue(Decimal{Unscaled: big.NewInt(0), Scale: 4})
 	enc, err := Encode(s, row, DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got, err := Decode(enc, s, DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for i := range row {
-		if !valuesEqual(row[i], got[i]) {
-			t.Errorf("boundary column %d mismatch", i)
-		}
+		require.True(t, valuesEqual(row[i], got[i]), "boundary column %d mismatch", i)
 	}
-	if v, _ := got[11].String(); v != "" {
-		t.Fatal("empty string not preserved")
-	}
-	if v, _ := got[12].Bytes(); len(v) != 0 {
-		t.Fatal("empty bytes not preserved")
-	}
+	v, _ := got[11].String()
+	require.Equal(t, "", v, "empty string not preserved")
+	b, _ := got[12].Bytes()
+	require.Len(t, b, 0, "empty bytes not preserved")
 }
 
 func TestDecimalRoundTrip(t *testing.T) {
@@ -451,17 +386,12 @@ func TestDecimalRoundTrip(t *testing.T) {
 	for _, v := range vals {
 		row := []Value{DecimalValue(Decimal{Unscaled: big.NewInt(v), Scale: 9})}
 		enc, err := Encode(s, row, DefaultLimits())
-		if err != nil {
-			t.Fatalf("%d: encode: %v", v, err)
-		}
+		require.NoError(t, err, "%d: encode", v)
 		got, err := Decode(enc, s, DefaultLimits())
-		if err != nil {
-			t.Fatalf("%d: decode: %v", v, err)
-		}
+		require.NoError(t, err, "%d: decode", v)
 		d, _ := got[0].Decimal()
-		if d.Scale != 9 || d.Unscaled.Int64() != v {
-			t.Fatalf("%d: got %v", v, d)
-		}
+		require.Equal(t, int32(9), d.Scale, "%d: got %v", v, d)
+		require.Equal(t, v, d.Unscaled.Int64(), "%d: got %v", v, d)
 	}
 }
 
@@ -488,9 +418,7 @@ func TestDecodeIntoReuse(t *testing.T) {
 	var encs [][]byte
 	for _, r := range rows {
 		enc, err := Encode(s, r, DefaultLimits())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		encs = append(encs, enc)
 	}
 
@@ -499,31 +427,22 @@ func TestDecodeIntoReuse(t *testing.T) {
 	for round := 0; round < 3; round++ {
 		for i, enc := range encs {
 			out, err := DecodeInto(dst, enc, s, DefaultLimits(), nil)
-			if err != nil {
-				t.Fatalf("round %d row %d: %v", round, i, err)
-			}
+			require.NoError(t, err, "round %d row %d", round, i)
 			want, err := Decode(enc, s, DefaultLimits())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(out) != len(want) {
-				t.Fatalf("round %d row %d: len %d", round, i, len(out))
-			}
+			require.NoError(t, err)
+			require.Len(t, out, len(want), "round %d row %d: len %d", round, i, len(out))
 			for c := range want {
-				if !valuesEqual(want[c], out[c]) {
-					t.Fatalf("round %d row %d col %d: got %#v want %#v", round, i, c, out[c], want[c])
-				}
+				require.True(t, valuesEqual(want[c], out[c]), "round %d row %d col %d: got %#v want %#v", round, i, c, out[c], want[c])
 			}
 			// Decimal columns must reuse the same big.Int after the first round.
 			// (Decimal() returns a copy, so compare the internal pointer.)
 			cell := out[len(s.Columns)-1]
-			if cell.typ != TypeDecimal || cell.d.Unscaled == nil {
-				t.Fatalf("round %d row %d: last col is not decimal", round, i)
-			}
+			require.Equal(t, TypeDecimal, cell.typ, "round %d row %d: last col is not decimal", round, i)
+			require.NotNil(t, cell.d.Unscaled, "round %d row %d: last col is not decimal", round, i)
 			if round == 0 {
 				prevDecPtr[i] = cell.d.Unscaled
-			} else if cell.d.Unscaled != prevDecPtr[i] {
-				t.Fatalf("round %d row %d: decimal big.Int not reused", round, i)
+			} else {
+				require.Same(t, prevDecPtr[i], cell.d.Unscaled, "round %d row %d: decimal big.Int not reused", round, i)
 			}
 			dst = out[:0]
 		}

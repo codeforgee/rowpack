@@ -1,6 +1,11 @@
 package fileformat
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 // TestFrozenEnums protects the published v1 enum values. These numbers are
 // written to disk or exported by the public API and must not change without a
@@ -60,9 +65,7 @@ func TestFrozenEnums(t *testing.T) {
 		{"FieldFlagRepeated", FieldFlagRepeated, 2},
 	}
 	for _, tt := range tests {
-		if tt.got != tt.want {
-			t.Errorf("%s = %v, want %v", tt.name, tt.got, tt.want)
-		}
+		assert.Equal(t, tt.want, tt.got, "%s = %v, want %v", tt.name, tt.got, tt.want)
 	}
 }
 
@@ -75,9 +78,7 @@ func TestFrozenMagicsAndSizes(t *testing.T) {
 		MagicBlockHdr, MagicRowsPayload, MagicMetaPayload,
 		MagicIndexTxnHdr, MagicIndexTxnFtr,
 	} {
-		if len(m) != 8 {
-			t.Errorf("magic %q has length %d, want 8", m, len(m))
-		}
+		assert.Equal(t, 8, len(m), "magic %q has length %d, want 8", m, len(m))
 	}
 
 	sizes := []struct {
@@ -103,35 +104,25 @@ func TestFrozenMagicsAndSizes(t *testing.T) {
 		{"RowIndexEntrySize", RowIndexEntrySize, 40},
 	}
 	for _, s := range sizes {
-		if s.got != s.want {
-			t.Errorf("%s = %d, want %d", s.name, s.got, s.want)
-		}
-		if s.got%8 != 0 {
-			t.Errorf("%s = %d is not 8-byte aligned", s.name, s.got)
-		}
+		assert.Equal(t, s.want, s.got, "%s = %d, want %d", s.name, s.got, s.want)
+		assert.Zero(t, s.got%8, "%s = %d is not 8-byte aligned", s.name, s.got)
 	}
 
-	if DataFileHeaderCRC32COffset+8 > DataFileHeaderSize {
-		t.Errorf("DataFileHeader CRC field at %d plus trailing reserved does not fit in %d", DataFileHeaderCRC32COffset, DataFileHeaderSize)
-	}
-	if IndexFileHeaderCRC32COffset+8 > IndexFileHeaderSize {
-		t.Errorf("IndexFileHeader CRC field at %d plus trailing reserved does not fit in %d", IndexFileHeaderCRC32COffset, IndexFileHeaderSize)
-	}
+	assert.Less(t, DataFileHeaderCRC32COffset+8, DataFileHeaderSize+1, "DataFileHeader CRC field at %d plus trailing reserved does not fit in %d", DataFileHeaderCRC32COffset, DataFileHeaderSize)
+	assert.Less(t, IndexFileHeaderCRC32COffset+8, IndexFileHeaderSize+1, "IndexFileHeader CRC field at %d plus trailing reserved does not fit in %d", IndexFileHeaderCRC32COffset, IndexFileHeaderSize)
 }
 
 // TestFeatureBits protects the feature bit numbering.
 func TestFeatureBits(t *testing.T) {
-	if FeatureTypedTupleV1 != 1 || FeatureZstd != 2 || FeatureMetadataBlock != 4 || FeatureDeltaSnapshot != 8 {
-		t.Fatal("feature bit numbering changed")
-	}
-	if RequiredFeaturesV1&^uint64(0xF) != 0 {
-		t.Fatalf("RequiredFeaturesV1 contains unknown bits: %b", RequiredFeaturesV1)
-	}
+	require.Equal(t, 1, int(FeatureTypedTupleV1))
+	require.Equal(t, 2, int(FeatureZstd))
+	require.Equal(t, 4, int(FeatureMetadataBlock))
+	require.Equal(t, 8, int(FeatureDeltaSnapshot))
+	require.Zero(t, RequiredFeaturesV1&^uint64(0xF), "RequiredFeaturesV1 contains unknown bits: %b", RequiredFeaturesV1)
 }
 
 // TestRecordTypeValues protects the engine's schema record type numbers.
 func TestRecordTypeValues(t *testing.T) {
-	if RecordTable != 2 || RecordColumn != 3 {
-		t.Errorf("schema record types changed: Table=%d Column=%d", RecordTable, RecordColumn)
-	}
+	assert.Equal(t, RecordType(2), RecordTable, "schema record types changed: Table=%d Column=%d", RecordTable, RecordColumn)
+	assert.Equal(t, RecordType(3), RecordColumn, "schema record types changed: Table=%d Column=%d", RecordTable, RecordColumn)
 }

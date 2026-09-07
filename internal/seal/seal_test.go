@@ -5,14 +5,13 @@ import (
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/stretchr/testify/require"
 )
 
 func testCipher(t *testing.T) *Cipher {
 	t.Helper()
 	c, err := NewCipher(bytes.Repeat([]byte{0x42}, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return c
 }
 
@@ -46,19 +45,11 @@ func TestRoundTrip(t *testing.T) {
 	for _, n := range sizes {
 		pt := bytes.Repeat([]byte{0xAB}, n)
 		ct, err := c.Seal(0, h.BlockID, u, h, pt)
-		if err != nil {
-			t.Fatalf("seal %d: %v", n, err)
-		}
-		if len(ct) != n+fileformat.AESGCMTagLen {
-			t.Fatalf("seal %d: ciphertext %d, want %d", n, len(ct), n+fileformat.AESGCMTagLen)
-		}
+		require.NoError(t, err, "seal %d", n)
+		require.Equal(t, n+fileformat.AESGCMTagLen, len(ct), "seal %d: ciphertext %d, want %d", n, len(ct), n+fileformat.AESGCMTagLen)
 		got, err := c.Open(0, h.BlockID, u, h, ct)
-		if err != nil {
-			t.Fatalf("open %d: %v", n, err)
-		}
-		if !bytes.Equal(got, pt) {
-			t.Fatalf("open %d: payload mismatch", n)
-		}
+		require.NoError(t, err, "open %d", n)
+		require.True(t, bytes.Equal(got, pt), "open %d: payload mismatch", n)
 	}
 }
 
@@ -66,18 +57,13 @@ func TestRoundTrip(t *testing.T) {
 func TestWrongKey(t *testing.T) {
 	c := testCipher(t)
 	other, err := NewCipher(bytes.Repeat([]byte{0x24}, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	h := testHeader()
 	u := testUUID()
 	ct, err := c.Seal(0, h.BlockID, u, h, []byte("payload"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := other.Open(0, h.BlockID, u, h, ct); err == nil {
-		t.Fatal("wrong key accepted")
-	}
+	require.NoError(t, err)
+	_, err = other.Open(0, h.BlockID, u, h, ct)
+	require.Error(t, err, "wrong key accepted")
 }
 
 // TestCiphertextTamper flips every byte of a ciphertext and requires
@@ -88,15 +74,12 @@ func TestCiphertextTamper(t *testing.T) {
 	u := testUUID()
 	pt := bytes.Repeat([]byte{0x77}, 300)
 	ct, err := c.Seal(0, h.BlockID, u, h, pt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for i := range ct {
 		mut := append([]byte(nil), ct...)
 		mut[i] ^= 0x01
-		if _, err := c.Open(0, h.BlockID, u, h, mut); err == nil {
-			t.Fatalf("tampered byte %d accepted", i)
-		}
+		_, err := c.Open(0, h.BlockID, u, h, mut)
+		require.Error(t, err, "tampered byte %d accepted", i)
 	}
 }
 
@@ -108,9 +91,7 @@ func TestAADTamper(t *testing.T) {
 	u := testUUID()
 	base := testHeader()
 	ct, err := c.Seal(0, base.BlockID, u, base, []byte("payload"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cases := []struct {
 		name   string
 		mutate func(h *fileformat.BlockHeader)
@@ -127,25 +108,22 @@ func TestAADTamper(t *testing.T) {
 		hh := *base
 		tc.mutate(&hh)
 		// Same nonce arguments, mutated AAD: must fail.
-		if got, err := c.Open(0, base.BlockID, u, &hh, ct); err == nil {
-			t.Fatalf("tampered %s accepted (got %x)", tc.name, got)
-		}
+		got, err := c.Open(0, base.BlockID, u, &hh, ct)
+		require.Error(t, err, "tampered %s accepted (got %x)", tc.name, got)
 	}
 
 	// Store UUID change also breaks authentication (AAD includes it).
 	u2 := [16]byte{0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	if _, err := c.Open(0, base.BlockID, &u2, base, ct); err == nil {
-		t.Fatal("changed store uuid accepted")
-	}
+	_, err = c.Open(0, base.BlockID, &u2, base, ct)
+	require.Error(t, err, "changed store uuid accepted")
 
 	// The Encrypted flag and KeyEpoch are NOT part of the AAD: with the same
 	// nonce arguments (epoch, blockID) they must not affect authentication.
 	hh := *base
 	hh.Encrypted = false
 	hh.KeyEpoch = 9
-	if _, err := c.Open(0, base.BlockID, u, &hh, ct); err != nil {
-		t.Fatalf("flag/epoch must not be AAD-bound: %v", err)
-	}
+	_, err = c.Open(0, base.BlockID, u, &hh, ct)
+	require.NoError(t, err, "flag/epoch must not be AAD-bound: %v", err)
 }
 
 // TestNonceUnique ensures distinct (epoch, blockID) pairs produce distinct
@@ -155,9 +133,7 @@ func TestNonceUnique(t *testing.T) {
 	for _, epoch := range []uint32{0, 1, 0xFFFFFFFF} {
 		for _, id := range []uint64{0, 1, 2, 1000, 0xFFFFFFFFFFFFFFFF} {
 			n := Nonce(epoch, id)
-			if seen[n] {
-				t.Fatalf("duplicate nonce for epoch %d block %d", epoch, id)
-			}
+			require.False(t, seen[n], "duplicate nonce for epoch %d block %d", epoch, id)
 			seen[n] = true
 		}
 	}
@@ -170,17 +146,13 @@ func TestEpochBlockIDBothAuthenticate(t *testing.T) {
 	h := testHeader()
 	u := testUUID()
 	ct, err := c.Seal(0, h.BlockID, u, h, []byte("payload"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Open(1, h.BlockID, u, h, ct); err == nil {
-		t.Fatal("changed epoch accepted")
-	}
+	require.NoError(t, err)
+	_, err = c.Open(1, h.BlockID, u, h, ct)
+	require.Error(t, err, "changed epoch accepted")
 	hh := testHeader()
 	hh.BlockID++
-	if _, err := c.Open(0, hh.BlockID, u, hh, ct); err == nil {
-		t.Fatal("changed block id accepted")
-	}
+	_, err = c.Open(0, hh.BlockID, u, hh, ct)
+	require.Error(t, err, "changed block id accepted")
 }
 
 // TestNonceLayout locks the exact nonce byte layout.
@@ -190,7 +162,5 @@ func TestNonceLayout(t *testing.T) {
 		0x04, 0x03, 0x02, 0x01, // epoch LE
 		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // blockID LE
 	}
-	if n != want {
-		t.Fatalf("nonce = %x, want %x", n, want)
-	}
+	require.Equal(t, want, n, "nonce = %x, want %x", n, want)
 }

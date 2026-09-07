@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/stretchr/testify/require"
 )
 
 // Benchmarks record environment-dependent numbers; run with `go test -bench .`.
@@ -31,7 +32,7 @@ func BenchmarkEnv(b *testing.B) {
 			}
 		}
 	}
-	base := filepath.Join(b.TempDir(), "env")
+	base := filepath.Join(tmpdb(b), "env")
 	db, _ := buildBenchStoreOpts(b, base, 100000, Options{})
 	st := db.Stats()
 	db.Close()
@@ -90,25 +91,15 @@ func buildBenchStore(b *testing.B, base string, nRows uint64, blockSize int) (*S
 func buildBenchStoreOpts(b *testing.B, base string, nRows uint64, opts Options) (*Store, SnapshotID) {
 	b.Helper()
 	db, err := Create(base, opts)
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, err)
 	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	if err != nil {
-		b.Fatal(err)
-	}
-	if err := w.DefineSchema(benchSchema()); err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, err)
+	require.NoError(b, w.DefineSchema(benchSchema()))
 	for i := uint64(0); i < nRows; i++ {
-		if err := w.Insert(context.Background(), 1, i+1, 1, benchRow(i)); err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, w.Insert(context.Background(), 1, i+1, 1, benchRow(i)))
 	}
 	full, err := w.Commit(context.Background())
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, err)
 	return db, full.ID
 }
 
@@ -117,21 +108,17 @@ func BenchmarkFullSequentialWrite(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		base := filepath.Join(b.TempDir(), "w")
+		base := filepath.Join(tmpdb(b), "w")
 		db, err := Create(base, Options{})
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, err)
 		w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-		w.DefineSchema(benchSchema())
+		require.NoError(b, w.DefineSchema(benchSchema()))
 		b.StartTimer()
 		for j := uint64(0); j < rows; j++ {
-			if err := w.Insert(context.Background(), 1, j+1, 1, benchRow(j)); err != nil {
-				b.Fatal(err)
-			}
+			require.NoError(b, w.Insert(context.Background(), 1, j+1, 1, benchRow(j)))
 		}
 		if _, err := w.Commit(context.Background()); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		b.StopTimer()
 		db.Close()
@@ -141,36 +128,34 @@ func BenchmarkFullSequentialWrite(b *testing.B) {
 }
 
 func BenchmarkGetColdRead(b *testing.B) {
-	base := filepath.Join(b.TempDir(), "cold")
+	base := filepath.Join(tmpdb(b), "cold")
 	db, fullID := buildBenchStore(b, base, 100000, 0)
 	db.Close() // release the writer lock before reopening
 	// Disable cache to force cold reads.
 	db2, err := Open(base, Options{CacheBytes: -1})
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, err)
 	defer db2.Close()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := db2.Get(context.Background(), fullID, 1, uint64(i%100000)+1, nil); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 	}
 }
 
 func BenchmarkGetHotRead(b *testing.B) {
-	db, fullID := buildBenchStore(b, filepath.Join(b.TempDir(), "hot"), 100000, 0)
+	db, fullID := buildBenchStore(b, filepath.Join(tmpdb(b), "hot"), 100000, 0)
 	defer db.Close()
 	// Warm a few blocks.
 	for i := uint64(0); i < 100; i++ {
 		if _, err := db.Get(context.Background(), fullID, 1, i+1, nil); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := db.Get(context.Background(), fullID, 1, uint64(i%100)+1, nil); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 	}
 }
@@ -178,12 +163,12 @@ func BenchmarkGetHotRead(b *testing.B) {
 func BenchmarkConcurrentGet(b *testing.B) {
 	for _, g := range []int{1, 8, 32, 64} {
 		b.Run(fmt.Sprintf("g%d", g), func(b *testing.B) {
-			db, fullID := buildBenchStore(b, filepath.Join(b.TempDir(), "conc"), 100000, 0)
+			db, fullID := buildBenchStore(b, filepath.Join(tmpdb(b), "conc"), 100000, 0)
 			defer db.Close()
 			// Warm the cache so the benchmark measures concurrent hot reads.
 			for i := uint64(0); i < 100000; i++ {
 				if _, err := db.Get(context.Background(), fullID, 1, i+1, nil); err != nil {
-					b.Fatal(err)
+					require.NoError(b, err)
 				}
 			}
 			b.ResetTimer()
@@ -192,7 +177,7 @@ func BenchmarkConcurrentGet(b *testing.B) {
 				for pb.Next() {
 					i++
 					if _, err := db.Get(context.Background(), fullID, 1, i%100000+1, nil); err != nil {
-						b.Fatal(err)
+						require.NoError(b, err)
 					}
 				}
 			})
@@ -201,13 +186,13 @@ func BenchmarkConcurrentGet(b *testing.B) {
 }
 
 func BenchmarkScan(b *testing.B) {
-	db, fullID := buildBenchStore(b, filepath.Join(b.TempDir(), "scan"), 100000, 0)
+	db, fullID := buildBenchStore(b, filepath.Join(tmpdb(b), "scan"), 100000, 0)
 	defer db.Close()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
 		if err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		for {
 			if _, ok := it.Next(); !ok {
@@ -215,7 +200,7 @@ func BenchmarkScan(b *testing.B) {
 			}
 		}
 		if err := it.Err(); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		it.Close()
 	}
@@ -224,12 +209,12 @@ func BenchmarkScan(b *testing.B) {
 // BenchmarkGetHotReadInto is BenchmarkGetHotRead with a reused dst Row
 // across all Gets.
 func BenchmarkGetHotReadInto(b *testing.B) {
-	db, fullID := buildBenchStore(b, filepath.Join(b.TempDir(), "hotinto"), 100000, 0)
+	db, fullID := buildBenchStore(b, filepath.Join(tmpdb(b), "hotinto"), 100000, 0)
 	defer db.Close()
 	// Warm a few blocks.
 	for i := uint64(0); i < 100; i++ {
 		if _, err := db.Get(context.Background(), fullID, 1, i+1, nil); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 	}
 	var dst Row
@@ -237,28 +222,28 @@ func BenchmarkGetHotReadInto(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		row, err := db.Get(context.Background(), fullID, 1, uint64(i%100)+1, dst)
 		if err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		dst = row
 	}
 }
 
 func BenchmarkOpenReplay(b *testing.B) {
-	base := filepath.Join(b.TempDir(), "open")
+	base := filepath.Join(tmpdb(b), "open")
 	db, _ := buildBenchStore(b, base, 100000, 0)
 	db.Close()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		db2, err := Open(base, Options{})
 		if err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		db2.Close()
 	}
 }
 
 func BenchmarkRebuildIndex(b *testing.B) {
-	base := filepath.Join(b.TempDir(), "reb")
+	base := filepath.Join(tmpdb(b), "reb")
 	db, _ := buildBenchStore(b, base, 100000, 0)
 	db.Close()
 	b.ResetTimer()
@@ -267,7 +252,7 @@ func BenchmarkRebuildIndex(b *testing.B) {
 		idx := db.Path() + ".rpi"
 		_ = removeFile(idx)
 		if err := RebuildIndex(context.Background(), db.Path(), RebuildOptions{Durability: AsyncCommit}); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 	}
 }
@@ -280,20 +265,14 @@ func removeFile(path string) error { return os.Remove(path) }
 func buildBenchStoreN(b *testing.B, base string, nRows uint64) (*Store, SnapshotID) {
 	b.Helper()
 	db, err := Create(base, Options{})
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, err)
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	w.DefineSchema(benchSchema())
+	require.NoError(b, w.DefineSchema(benchSchema()))
 	for i := uint64(0); i < nRows; i++ {
-		if err := w.Insert(context.Background(), 1, i+1, 1, benchRow(i)); err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, w.Insert(context.Background(), 1, i+1, 1, benchRow(i)))
 	}
 	full, err := w.Commit(context.Background())
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, err)
 	return db, full.ID
 }
 
@@ -304,7 +283,7 @@ func BenchmarkWrite1M(b *testing.B) {
 	var fullID SnapshotID
 	b.ResetTimer()
 	build := func() {
-		base := filepath.Join(b.TempDir(), "w1m")
+		base := filepath.Join(tmpdb(b), "w1m")
 		db, fullID = buildBenchStoreN(b, base, rows)
 	}
 	build()
@@ -319,7 +298,7 @@ func BenchmarkWrite1M(b *testing.B) {
 // (AC-003 scenario: random access must not scan the data file).
 func BenchmarkGetRandom1M(b *testing.B) {
 	const rows = 1_000_000
-	db, fullID := buildBenchStoreN(b, filepath.Join(b.TempDir(), "r1m"), rows)
+	db, fullID := buildBenchStoreN(b, filepath.Join(tmpdb(b), "r1m"), rows)
 	defer db.Close()
 	var rng uint64 = 88172645463325252
 	b.ResetTimer()
@@ -327,7 +306,7 @@ func BenchmarkGetRandom1M(b *testing.B) {
 		rng = rng*6364136223846793005 + 1442695040888963407
 		rowID := rng%rows + 1
 		if _, err := db.Get(context.Background(), fullID, 1, rowID, nil); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 	}
 	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds()/1000, "kget/s")
@@ -336,13 +315,13 @@ func BenchmarkGetRandom1M(b *testing.B) {
 // BenchmarkScan1M scans a million-row table.
 func BenchmarkScan1M(b *testing.B) {
 	const rows = 1_000_000
-	db, fullID := buildBenchStoreN(b, filepath.Join(b.TempDir(), "s1m"), rows)
+	db, fullID := buildBenchStoreN(b, filepath.Join(tmpdb(b), "s1m"), rows)
 	defer db.Close()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
 		if err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		n := 0
 		for {
@@ -352,12 +331,10 @@ func BenchmarkScan1M(b *testing.B) {
 			n++
 		}
 		if err := it.Err(); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		it.Close()
-		if n != int(rows) {
-			b.Fatalf("scan returned %d rows", n)
-		}
+		require.Equal(b, int(rows), n, "scan returned %d rows", n)
 	}
 	b.ReportMetric(float64(rows)/b.Elapsed().Seconds()/1000, "krows/s")
 }
@@ -370,19 +347,13 @@ func buildDeltaChainStore(b *testing.B, base string, depth, deltaRows int) (*Sto
 	nextID := uint64(100_001)
 	for d := 0; d < depth; d++ {
 		w, err := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: parent})
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, err)
 		for i := 0; i < deltaRows; i++ {
-			if err := w.Insert(context.Background(), 1, nextID, 1, Row{Uint64(nextID), String("delta-row"), Bool(false), Int32(int32(i)), Float64(0), DateTimeValueOf(1700000000000000000), DecimalValue(Decimal{Unscaled: bigI(1), Scale: 2})}); err != nil {
-				b.Fatal(err)
-			}
+			require.NoError(b, w.Insert(context.Background(), 1, nextID, 1, Row{Uint64(nextID), String("delta-row"), Bool(false), Int32(int32(i)), Float64(0), DateTimeValueOf(1700000000000000000), DecimalValue(Decimal{Unscaled: bigI(1), Scale: 2})}))
 			nextID++
 		}
 		info, err := w.Commit(context.Background())
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, err)
 		parent = info.ID
 	}
 	return db, parent
@@ -392,11 +363,11 @@ func buildDeltaChainStore(b *testing.B, base string, depth, deltaRows int) (*Sto
 // chain (parent-chain resolution cost). The block cache is warmed first so
 // the benchmark measures resolution and decode, not cold decompression.
 func BenchmarkGetDeepChain(b *testing.B) {
-	db, head := buildDeltaChainStore(b, filepath.Join(b.TempDir(), "chain"), 32, 1000)
+	db, head := buildDeltaChainStore(b, filepath.Join(tmpdb(b), "chain"), 32, 1000)
 	defer db.Close()
 	for i := uint64(1); i <= 100_000; i++ {
 		if _, err := db.Get(context.Background(), head, 1, i, nil); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 	}
 	var rng uint64 = 1442695040888963407
@@ -405,20 +376,20 @@ func BenchmarkGetDeepChain(b *testing.B) {
 		rng = rng*6364136223846793005 + 1
 		rowID := rng%100_000 + 1
 		if _, err := db.Get(context.Background(), head, 1, rowID, nil); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 	}
 }
 
 // BenchmarkScanDeepChain scans the head of a 32-deep DELTA chain.
 func BenchmarkScanDeepChain(b *testing.B) {
-	db, head := buildDeltaChainStore(b, filepath.Join(b.TempDir(), "scanchain"), 32, 1000)
+	db, head := buildDeltaChainStore(b, filepath.Join(tmpdb(b), "scanchain"), 32, 1000)
 	defer db.Close()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		it, err := db.Scan(context.Background(), head, 1, ScanOptions{})
 		if err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		n := 0
 		for {
@@ -428,12 +399,10 @@ func BenchmarkScanDeepChain(b *testing.B) {
 			n++
 		}
 		if err := it.Err(); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		it.Close()
-		if n != 132_000 {
-			b.Fatalf("scan returned %d rows, want 132000", n)
-		}
+		require.Equal(b, 132_000, n, "scan returned %d rows, want 132000", n)
 	}
 }
 
@@ -460,24 +429,20 @@ func BenchmarkIsolatedWrite(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		base := filepath.Join(b.TempDir(), "wisolated")
+		base := filepath.Join(tmpdb(b), "wisolated")
 		db, err := Create(base, Options{})
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, err)
 		w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-		if err := w.DefineSchema(benchSchema()); err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, w.DefineSchema(benchSchema()))
 		r := isoRow()
 		b.StartTimer()
 		for j := uint64(0); j < rows; j++ {
 			if err := w.Insert(context.Background(), 1, j+1, 1, r); err != nil {
-				b.Fatal(err)
+				require.NoError(b, err)
 			}
 		}
 		if _, err := w.Commit(context.Background()); err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
 		b.StopTimer()
 		db.Close()

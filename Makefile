@@ -25,12 +25,16 @@ staticcheck:
 fmt:
 	gofmt -l -w .
 
-# Smoke fuzz runs (5s each) for every fuzz target; use FUZZ_TIME for longer runs.
+# Smoke fuzz runs (FUZZ_TIME each) for every fuzz target; override FUZZ_TIME
+# for longer runs. `go list` has no .FuzzTargets field, so enumerate targets
+# per package via `go test -list '^Fuzz'` and filter out the `ok` summary line.
+FUZZ_TIME ?= 5s
 fuzz-short:
-	@for t in $$($(GO) list -f '{{range .FuzzTargets}}{{.}} {{end}}' ./...); do \
-		base=$${t##*/}; pkg=$${t%/*}; \
-		echo "fuzzing $$pkg :: $$base"; \
-		$(GO) test $$pkg -run '^$$' -fuzz '^'$$base'$$' -fuzztime=5s || exit 1; \
+	@for pkg in $$($(GO) list ./...); do \
+		for base in $$($(GO) test $$pkg -list '^Fuzz' | grep '^Fuzz'); do \
+			echo "fuzzing $$pkg :: $$base"; \
+			$(GO) test $$pkg -run '^$$' -fuzz '^'$$base'$$' -fuzztime=$(FUZZ_TIME) || exit 1; \
+		done; \
 	done
 
 # Unified v1.2 benchmark matrix: one command reproduces the whole baseline
@@ -58,3 +62,5 @@ golden:
 
 clean:
 	rm -rf *.test coverage.out
+	rm -rf testdata/tmpdb
+	find . -type d -path '*/testdata/tmpdb' -exec rm -rf {} + 2>/dev/null || true

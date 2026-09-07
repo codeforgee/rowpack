@@ -6,6 +6,8 @@ import (
 	"math/big"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestStoreRoundTripAllTypes covers the complete persistence path for every
@@ -13,7 +15,7 @@ import (
 // the row through both Get and Scan.
 func TestStoreRoundTripAllTypes(t *testing.T) {
 	ctx := context.Background()
-	base := t.TempDir() + "/all-types"
+	base := tmpdb(t) + "/all-types"
 
 	schema := Schema{TableID: 1, Version: 1, Name: "all_types", Columns: []Column{
 		{Name: "bool", Type: TypeBool},
@@ -55,175 +57,118 @@ func TestStoreRoundTripAllTypes(t *testing.T) {
 	}
 
 	db, err := Create(base, Options{Compression: CompressionNone})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	w, err := db.BeginSnapshot(ctx, SnapshotFull, SnapshotOptions{})
 	if err != nil {
 		db.Close()
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
-	if err := w.DefineSchema(schema); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if err := w.Insert(ctx, schema.TableID, 1, schema.Version, want); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
+	require.NoError(t, w.DefineSchema(schema))
+	require.NoError(t, w.Insert(ctx, schema.TableID, 1, schema.Version, want))
 	full, err := w.Commit(ctx)
 	if err != nil {
 		db.Close()
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, db.Close())
 
 	db, err = Open(base, Options{Compression: CompressionNone})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer db.Close()
 
 	got, err := db.Get(ctx, full.ID, schema.TableID, 1, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	assertRowsEqual(t, want, got)
 
 	it, err := db.Scan(ctx, full.ID, schema.TableID, ScanOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer it.Close()
 	row, ok := it.Next()
-	if !ok {
-		t.Fatalf("Scan returned no row: %v", it.Err())
-	}
+	require.True(t, ok, "Scan returned no row: %v", it.Err())
 	assertRowsEqual(t, want, row)
-	if _, ok := it.Next(); ok {
-		t.Fatal("Scan returned more than one row")
-	}
-	if err := it.Err(); err != nil {
-		t.Fatal(err)
-	}
+	_, ok = it.Next()
+	require.False(t, ok, "Scan returned more than one row")
+	require.NoError(t, it.Err())
 }
 
 func assertRowsEqual(t *testing.T, want, got Row) {
 	t.Helper()
-	if len(want) != len(got) {
-		t.Fatalf("row length: got %d want %d", len(got), len(want))
-	}
+	require.Len(t, got, len(want), "row length: got %d want %d", len(got), len(want))
 	for i := range want {
-		if want[i].Type() != got[i].Type() || want[i].IsNull() != got[i].IsNull() {
-			t.Fatalf("column %d type/null mismatch: got %v/%v want %v/%v", i, got[i].Type(), got[i].IsNull(), want[i].Type(), want[i].IsNull())
-		}
+		require.Equal(t, want[i].Type(), got[i].Type(), "column %d type/null mismatch: got %v/%v want %v/%v", i, got[i].Type(), got[i].IsNull(), want[i].Type(), want[i].IsNull())
+		require.Equal(t, want[i].IsNull(), got[i].IsNull(), "column %d type/null mismatch: got %v/%v want %v/%v", i, got[i].Type(), got[i].IsNull(), want[i].Type(), want[i].IsNull())
 		switch want[i].Type() {
 		case TypeBool:
 			a, _ := want[i].Bool()
 			b, _ := got[i].Bool()
-			if a != b {
-				t.Fatalf("column %d: bool mismatch", i)
-			}
+			require.Equal(t, a, b, "column %d: bool mismatch", i)
 		case TypeInt8:
 			a, _ := want[i].Int8()
 			b, _ := got[i].Int8()
-			if a != b {
-				t.Fatalf("column %d: int8 mismatch", i)
-			}
+			require.Equal(t, a, b, "column %d: int8 mismatch", i)
 		case TypeInt16:
 			a, _ := want[i].Int16()
 			b, _ := got[i].Int16()
-			if a != b {
-				t.Fatalf("column %d: int16 mismatch", i)
-			}
+			require.Equal(t, a, b, "column %d: int16 mismatch", i)
 		case TypeInt32:
 			a, _ := want[i].Int32()
 			b, _ := got[i].Int32()
-			if a != b {
-				t.Fatalf("column %d: int32 mismatch", i)
-			}
+			require.Equal(t, a, b, "column %d: int32 mismatch", i)
 		case TypeInt64:
 			a, _ := want[i].Int64()
 			b, _ := got[i].Int64()
-			if a != b {
-				t.Fatalf("column %d: int64 mismatch", i)
-			}
+			require.Equal(t, a, b, "column %d: int64 mismatch", i)
 		case TypeUint8:
 			a, _ := want[i].Uint8()
 			b, _ := got[i].Uint8()
-			if a != b {
-				t.Fatalf("column %d: uint8 mismatch", i)
-			}
+			require.Equal(t, a, b, "column %d: uint8 mismatch", i)
 		case TypeUint16:
 			a, _ := want[i].Uint16()
 			b, _ := got[i].Uint16()
-			if a != b {
-				t.Fatalf("column %d: uint16 mismatch", i)
-			}
+			require.Equal(t, a, b, "column %d: uint16 mismatch", i)
 		case TypeUint32:
 			a, _ := want[i].Uint32()
 			b, _ := got[i].Uint32()
-			if a != b {
-				t.Fatalf("column %d: uint32 mismatch", i)
-			}
+			require.Equal(t, a, b, "column %d: uint32 mismatch", i)
 		case TypeUint64:
 			a, _ := want[i].Uint64()
 			b, _ := got[i].Uint64()
-			if a != b {
-				t.Fatalf("column %d: uint64 mismatch", i)
-			}
+			require.Equal(t, a, b, "column %d: uint64 mismatch", i)
 		case TypeFloat32:
 			a, _ := want[i].Float32()
 			b, _ := got[i].Float32()
-			if math.Float32bits(a) != math.Float32bits(b) {
-				t.Fatalf("column %d: float32 mismatch", i)
-			}
+			require.Equal(t, math.Float32bits(a), math.Float32bits(b), "column %d: float32 mismatch", i)
 		case TypeFloat64:
 			a, _ := want[i].Float64()
 			b, _ := got[i].Float64()
-			if math.Float64bits(a) != math.Float64bits(b) {
-				t.Fatalf("column %d: float64 mismatch", i)
-			}
+			require.Equal(t, math.Float64bits(a), math.Float64bits(b), "column %d: float64 mismatch", i)
 		case TypeString:
 			a, _ := want[i].String()
 			b, _ := got[i].String()
-			if a != b {
-				t.Fatalf("column %d: string mismatch", i)
-			}
+			require.Equal(t, a, b, "column %d: string mismatch", i)
 		case TypeBytes:
 			a, _ := want[i].Bytes()
 			b, _ := got[i].Bytes()
-			if string(a) != string(b) {
-				t.Fatalf("column %d: bytes mismatch", i)
-			}
+			require.True(t, string(a) == string(b), "column %d: bytes mismatch", i)
 		case TypeDate:
 			a, _ := want[i].Date()
 			b, _ := got[i].Date()
-			if a != b {
-				t.Fatalf("column %d: date mismatch", i)
-			}
+			require.Equal(t, a, b, "column %d: date mismatch", i)
 		case TypeTime:
 			a, _ := want[i].Time()
 			b, _ := got[i].Time()
-			if a != b {
-				t.Fatalf("column %d: time mismatch", i)
-			}
+			require.Equal(t, a, b, "column %d: time mismatch", i)
 		case TypeDateTime:
 			a, _ := want[i].DateTimeValue()
 			b, _ := got[i].DateTimeValue()
-			if !a.Equal(b) {
-				t.Fatalf("column %d: datetime mismatch", i)
-			}
+			require.True(t, a.Equal(b), "column %d: datetime mismatch", i)
 		case TypeDecimal:
 			a, _ := want[i].Decimal()
 			b, _ := got[i].Decimal()
-			if a.Scale != b.Scale || a.Unscaled.Cmp(b.Unscaled) != 0 {
-				t.Fatalf("column %d: decimal mismatch", i)
-			}
+			require.Equal(t, a.Scale, b.Scale, "column %d: decimal mismatch", i)
+			require.Equal(t, 0, a.Unscaled.Cmp(b.Unscaled), "column %d: decimal mismatch", i)
 		default:
-			t.Fatalf("column %d: unsupported type %v", i, want[i].Type())
+			require.Fail(t, "column %d: unsupported type %v", i, want[i].Type())
 		}
 	}
 }

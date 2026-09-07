@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/stretchr/testify/require"
 )
 
 // captureBuilder builds rows into a capture sink and returns the last flushed
@@ -14,77 +15,41 @@ func captureBuilder(t *testing.T, compress fileformat.Compression, add func(b *R
 	t.Helper()
 	var s captureSink
 	b := NewRowsBlockBuilder(1, 7, 64<<10, compress, 0, DefaultLimits(), s.flush)
-	if err := add(b); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, add(b))
 	return s.blocks, b
 }
 
 func TestRowsBuilderDeletePendingRawPayload(t *testing.T) {
 	var s captureSink
 	b := NewRowsBlockBuilder(1, 7, 64<<10, fileformat.CompressionNone, 0, DefaultLimits(), s.flush)
-	if b.Pending() != 0 {
-		t.Fatalf("initial Pending = %d", b.Pending())
-	}
-	if err := b.Add(10, 1, fileformat.ChangeInsert, []byte("row-ten")); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.Delete(11, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.Add(12, 1, fileformat.ChangeInsert, []byte("row-twelve")); err != nil {
-		t.Fatal(err)
-	}
-	if b.Pending() != 3 {
-		t.Fatalf("Pending = %d, want 3", b.Pending())
-	}
+	require.Equal(t, 0, b.Pending(), "initial Pending = %d", b.Pending())
+	require.NoError(t, b.Add(10, 1, fileformat.ChangeInsert, []byte("row-ten")))
+	require.NoError(t, b.Delete(11, 1))
+	require.NoError(t, b.Add(12, 1, fileformat.ChangeInsert, []byte("row-twelve")))
+	require.Equal(t, 3, b.Pending(), "Pending = %d, want 3", b.Pending())
 	// RawPayload builds without flushing; Pending must be unchanged and the
 	// next Flush must produce identical bytes.
 	raw1 := append([]byte(nil), b.RawPayload()...)
-	if b.Pending() != 3 {
-		t.Fatal("RawPayload flushed pending records")
-	}
-	if err := b.Flush(); err != nil {
-		t.Fatal(err)
-	}
-	if b.Pending() != 0 {
-		t.Fatalf("Pending after Flush = %d", b.Pending())
-	}
-	if len(s.blocks) != 1 {
-		t.Fatalf("flushed %d blocks", len(s.blocks))
-	}
-	if !bytes.Equal(raw1, s.blocks[0].payload) {
-		t.Fatal("RawPayload differs from flushed payload")
-	}
+	require.Equal(t, 3, b.Pending(), "RawPayload flushed pending records")
+	require.NoError(t, b.Flush())
+	require.Equal(t, 0, b.Pending(), "Pending after Flush = %d", b.Pending())
+	require.Len(t, s.blocks, 1, "flushed %d blocks", len(s.blocks))
+	require.True(t, bytes.Equal(raw1, s.blocks[0].payload), "RawPayload differs from flushed payload")
 	// Flush with nothing pending is a no-op.
-	if err := b.Flush(); err != nil {
-		t.Fatal(err)
-	}
-	if len(s.blocks) != 1 {
-		t.Fatal("empty Flush emitted a block")
-	}
+	require.NoError(t, b.Flush())
+	require.Len(t, s.blocks, 1, "empty Flush emitted a block")
 
 	// Payload semantics: tombstones carry no row bytes and zero CRC.
 	p, err := ParseRowsPayload(s.blocks[0].payload, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := p.RowBytes(1); got != nil {
-		t.Fatalf("DELETE RowBytes = %q", got)
-	}
-	if got := p.RowBytes(0); string(got) != "row-ten" {
-		t.Fatalf("RowBytes(0) = %q", got)
-	}
-	if crc := p.RowCRC(0); crc != fileformat.CRC32C([]byte("row-ten")) {
-		t.Fatalf("RowCRC(0) = %d", crc)
-	}
-	if crc := p.RowCRC(1); crc != 0 {
-		t.Fatalf("DELETE RowCRC = %d", crc)
-	}
+	require.NoError(t, err)
+	require.Nil(t, p.RowBytes(1), "DELETE RowBytes = %q", p.RowBytes(1))
+	require.Equal(t, "row-ten", string(p.RowBytes(0)), "RowBytes(0) = %q", p.RowBytes(0))
+	require.Equal(t, fileformat.CRC32C([]byte("row-ten")), p.RowCRC(0), "RowCRC(0) = %d", p.RowCRC(0))
+	require.Zero(t, p.RowCRC(1), "DELETE RowCRC = %d", p.RowCRC(1))
 	// Entry fields agree with the directory.
-	if e := p.Entries[1]; e.RowID != 11 || e.ChangeType != fileformat.ChangeDelete {
-		t.Fatalf("DELETE entry = %+v", e)
-	}
+	e := p.Entries[1]
+	require.Equal(t, uint64(11), e.RowID)
+	require.Equal(t, fileformat.ChangeDelete, e.ChangeType, "DELETE entry = %+v", e)
 }
 
 func TestOversizedRowOwnBlock(t *testing.T) {
@@ -95,21 +60,11 @@ func TestOversizedRowOwnBlock(t *testing.T) {
 	// blockSize of 80 fits one 8-byte row but forces a 64-byte row into the
 	// oversized path.
 	b := NewRowsBlockBuilder(1, 7, 80, fileformat.CompressionNone, 0, DefaultLimits(), s.flush)
-	if err := b.Add(1, 1, fileformat.ChangeInsert, make([]byte, 8)); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.Add(2, 1, fileformat.ChangeInsert, make([]byte, 64)); err != nil { // oversized
-		t.Fatal(err)
-	}
-	if err := b.Flush(); err != nil {
-		t.Fatal(err)
-	}
-	if len(s.blocks) != 2 {
-		t.Fatalf("blocks = %d, want 2 (one small, one oversized)", len(s.blocks))
-	}
-	if s.blocks[1].header.ItemCount != 1 {
-		t.Fatalf("oversized block ItemCount = %d", s.blocks[1].header.ItemCount)
-	}
+	require.NoError(t, b.Add(1, 1, fileformat.ChangeInsert, make([]byte, 8)))
+	require.NoError(t, b.Add(2, 1, fileformat.ChangeInsert, make([]byte, 64))) // oversized
+	require.NoError(t, b.Flush())
+	require.Len(t, s.blocks, 2, "blocks = %d, want 2 (one small, one oversized)", len(s.blocks))
+	require.Equal(t, uint32(1), s.blocks[1].header.ItemCount, "oversized block ItemCount = %d", s.blocks[1].header.ItemCount)
 }
 
 func TestRowsBuilderLimitErrors(t *testing.T) {
@@ -117,20 +72,14 @@ func TestRowsBuilderLimitErrors(t *testing.T) {
 	// Row exceeds MaxRawBytes.
 	var s1 captureSink
 	b1 := NewRowsBlockBuilder(1, 7, 64<<10, fileformat.CompressionNone, 0, limits, s1.flush)
-	if err := b1.Add(1, 1, fileformat.ChangeInsert, make([]byte, limits.MaxRawBytes+1)); err == nil {
-		t.Fatal("row over MaxRawBytes accepted")
-	}
+	require.Error(t, b1.Add(1, 1, fileformat.ChangeInsert, make([]byte, limits.MaxRawBytes+1)), "row over MaxRawBytes accepted")
 	// Block payload exceeds MaxRawBytes (offset+length check in append): the
 	// row itself fits the limit but the accumulated records do not.
 	var s2 captureSink
 	small := Limits{MaxRawBytes: 200, MaxStoredBytes: 1 << 20}
 	b2 := NewRowsBlockBuilder(1, 7, 1<<20, fileformat.CompressionNone, 0, small, s2.flush)
-	if err := b2.Add(1, 1, fileformat.ChangeInsert, make([]byte, 100)); err != nil {
-		t.Fatal(err)
-	}
-	if err := b2.Add(2, 1, fileformat.ChangeInsert, make([]byte, 100)); err == nil {
-		t.Fatal("payload over MaxRawBytes accepted")
-	}
+	require.NoError(t, b2.Add(1, 1, fileformat.ChangeInsert, make([]byte, 100)))
+	require.Error(t, b2.Add(2, 1, fileformat.ChangeInsert, make([]byte, 100)), "payload over MaxRawBytes accepted")
 }
 
 func TestParseRowsDirectoryAndIndexRowBytes(t *testing.T) {
@@ -140,50 +89,35 @@ func TestParseRowsDirectoryAndIndexRowBytes(t *testing.T) {
 		_ = b.Add(5, 1, fileformat.ChangeInsert, []byte("five"))
 		_ = b.Delete(6, 1)
 		_ = b.Add(7, 1, fileformat.ChangeInsert, []byte("seven"))
-		if err := b.Flush(); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, b.Flush())
 		return s.blocks[0].payload
 	}()
 
 	idx, err := ParseRowsDirectory(raw, 3, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(idx.Entries) != 3 || idx.Header.ItemCount != 3 {
-		t.Fatalf("index = %+v", idx.Header)
-	}
-	if got := idx.RowBytes(0); string(got) != "five" {
-		t.Fatalf("RowBytes(0) = %q", got)
-	}
-	if got := idx.RowBytes(1); got != nil {
-		t.Fatalf("DELETE RowBytes = %q", got)
-	}
-	if got := idx.RowBytes(2); string(got) != "seven" {
-		t.Fatalf("RowBytes(2) = %q", got)
-	}
+	require.NoError(t, err)
+	require.Len(t, idx.Entries, 3, "index = %+v", idx.Header)
+	require.Equal(t, uint32(3), idx.Header.ItemCount, "index = %+v", idx.Header)
+	require.Equal(t, "five", string(idx.RowBytes(0)), "RowBytes(0) = %q", idx.RowBytes(0))
+	require.Nil(t, idx.RowBytes(1), "DELETE RowBytes = %q", idx.RowBytes(1))
+	require.Equal(t, "seven", string(idx.RowBytes(2)), "RowBytes(2) = %q", idx.RowBytes(2))
 
 	// Rejections.
-	if _, err := ParseRowsDirectory(raw, 4, nil); err == nil {
-		t.Fatal("item count mismatch accepted")
-	}
-	if _, err := ParseRowsDirectory(raw[:fileformat.RowsPayloadHeaderSize+2*fileformat.RowDirectoryEntrySize], 3, nil); err == nil {
-		t.Fatal("truncated directory accepted")
-	}
+	_, err = ParseRowsDirectory(raw, 4, nil)
+	require.Error(t, err, "item count mismatch accepted")
+	_, err = ParseRowsDirectory(raw[:fileformat.RowsPayloadHeaderSize+2*fileformat.RowDirectoryEntrySize], 3, nil)
+	require.Error(t, err, "truncated directory accepted")
 	// Records region mismatch: header claims more record bytes than present
 	// (RecordsBytes is a uint64 at payload offset 24).
 	bad := append([]byte(nil), raw...)
 	bad[31] = 0xFF
-	if _, err := ParseRowsDirectory(bad, 3, nil); err == nil {
-		t.Fatal("records region mismatch accepted")
-	}
+	_, err = ParseRowsDirectory(bad, 3, nil)
+	require.Error(t, err, "records region mismatch accepted")
 	// Out-of-bounds record offset in the directory (entry[1].RecordOffset is
 	// at payload header 32 + 1*24 + 8).
 	bad = append([]byte(nil), raw...)
 	bad[32+24+8+3] = 0x7F
-	if _, err := ParseRowsDirectory(bad, 3, nil); err == nil {
-		t.Fatal("out-of-bounds record accepted")
-	}
+	_, err = ParseRowsDirectory(bad, 3, nil)
+	require.Error(t, err, "out-of-bounds record accepted")
 }
 
 func TestParseRowAt(t *testing.T) {
@@ -192,50 +126,36 @@ func TestParseRowAt(t *testing.T) {
 	_ = b.Add(5, 1, fileformat.ChangeInsert, []byte("five"))
 	_ = b.Delete(6, 1)
 	_ = b.Add(7, 1, fileformat.ChangeInsert, []byte("seven"))
-	if err := b.Flush(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, b.Flush())
 	raw := s.blocks[0].payload
 
 	ref, err := ParseRowAt(raw, 3, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ref.Entry.RowID != 7 || string(ref.Row) != "seven" {
-		t.Fatalf("ParseRowAt(2) = %+v %q", ref.Entry, ref.Row)
-	}
-	if ref.Header.RowCRC32C != fileformat.CRC32C([]byte("seven")) {
-		t.Fatalf("record CRC = %d", ref.Header.RowCRC32C)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint64(7), ref.Entry.RowID, "ParseRowAt(2) = %+v %q", ref.Entry, ref.Row)
+	require.Equal(t, "seven", string(ref.Row), "ParseRowAt(2) = %+v %q", ref.Entry, ref.Row)
+	require.Equal(t, fileformat.CRC32C([]byte("seven")), ref.Header.RowCRC32C, "record CRC = %d", ref.Header.RowCRC32C)
 	// DELETE: row bytes nil, tombstone invariants hold.
 	ref, err = ParseRowAt(raw, 3, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ref.Row != nil || ref.Header.RowEncoding != fileformat.RowEncodingNone {
-		t.Fatalf("DELETE ref = %+v", ref)
-	}
+	require.NoError(t, err)
+	require.Nil(t, ref.Row, "DELETE ref = %+v", ref)
+	require.Equal(t, fileformat.RowEncodingNone, ref.Header.RowEncoding, "DELETE ref = %+v", ref)
 
 	// Rejections.
-	if _, err := ParseRowAt(raw, 4, 0); err == nil {
-		t.Fatal("item count mismatch accepted")
-	}
-	if _, err := ParseRowAt(raw, 3, 3); err == nil {
-		t.Fatal("ordinal out of range accepted")
-	}
+	_, err = ParseRowAt(raw, 4, 0)
+	require.Error(t, err, "item count mismatch accepted")
+	_, err = ParseRowAt(raw, 3, 3)
+	require.Error(t, err, "ordinal out of range accepted")
 	// Corrupted directory entry: record header no longer agrees (entry[0]
 	// starts at payload offset 32; RowID low byte is entry offset 0).
 	bad := append([]byte(nil), raw...)
 	bad[32] ^= 0xFF
-	if _, err := ParseRowAt(bad, 3, 0); err == nil {
-		t.Fatal("header/directory mismatch accepted")
-	}
+	_, err = ParseRowAt(bad, 3, 0)
+	require.Error(t, err, "header/directory mismatch accepted")
 	// Records region mismatch (RecordsBytes at payload offset 24).
 	bad = append([]byte(nil), raw...)
 	bad[31] = 0xFF
-	if _, err := ParseRowAt(bad, 3, 0); err == nil {
-		t.Fatal("records region mismatch accepted")
-	}
+	_, err = ParseRowAt(bad, 3, 0)
+	require.Error(t, err, "records region mismatch accepted")
 }
 
 func TestParseRowsPayloadRejections(t *testing.T) {
@@ -243,31 +163,25 @@ func TestParseRowsPayloadRejections(t *testing.T) {
 	b := NewRowsBlockBuilder(1, 7, 64<<10, fileformat.CompressionNone, 0, DefaultLimits(), s.flush)
 	_ = b.Add(5, 1, fileformat.ChangeInsert, []byte("five"))
 	_ = b.Delete(6, 1)
-	if err := b.Flush(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, b.Flush())
 	raw := s.blocks[0].payload
 
-	if _, err := ParseRowsPayload(raw, 5); err == nil {
-		t.Fatal("item count mismatch accepted")
-	}
+	_, err := ParseRowsPayload(raw, 5)
+	require.Error(t, err, "item count mismatch accepted")
 	// Directory exceeds payload.
-	if _, err := ParseRowsPayload(raw[:fileformat.RowsPayloadHeaderSize], 2); err == nil {
-		t.Fatal("truncated payload accepted")
-	}
+	_, err = ParseRowsPayload(raw[:fileformat.RowsPayloadHeaderSize], 2)
+	require.Error(t, err, "truncated payload accepted")
 	// Records bytes overhang (RecordsBytes is a uint64 at payload offset 24).
 	bad := append([]byte(nil), raw...)
 	bad[31] = 0xFF
-	if _, err := ParseRowsPayload(bad, 2); err == nil {
-		t.Fatal("records overhang accepted")
-	}
+	_, err = ParseRowsPayload(bad, 2)
+	require.Error(t, err, "records overhang accepted")
 	// Directory entry claims a record beyond the records region
 	// (entry[0].RecordOffset at payload offset 32+8).
 	bad = append([]byte(nil), raw...)
 	bad[32+8+3] = 0x7F
-	if _, err := ParseRowsPayload(bad, 2); err == nil {
-		t.Fatal("out-of-bounds record accepted")
-	}
+	_, err = ParseRowsPayload(bad, 2)
+	require.Error(t, err, "out-of-bounds record accepted")
 	// Record claiming DELETE while carrying row bytes: both the directory
 	// entry (ChangeType at entry offset 16) and the record header (record
 	// byte 12) must agree on DELETE while RowLength stays nonzero.
@@ -275,9 +189,8 @@ func TestParseRowsPayloadRejections(t *testing.T) {
 	recOff := fileformat.RowsPayloadHeaderSize + 2*fileformat.RowDirectoryEntrySize
 	bad[32+16] = byte(fileformat.ChangeDelete)
 	bad[recOff+12] = byte(fileformat.ChangeDelete)
-	if _, err := ParseRowsPayload(bad, 2); err == nil {
-		t.Fatal("DELETE record with row bytes accepted")
-	}
+	_, err = ParseRowsPayload(bad, 2)
+	require.Error(t, err, "DELETE record with row bytes accepted")
 }
 
 // TestParseRowsDirectoryReuse verifies the directory entry slice argument is
@@ -291,9 +204,7 @@ func TestParseRowsDirectoryReuse(t *testing.T) {
 			_ = b.Add(id, 1, fileformat.ChangeInsert, []byte(fmt.Sprintf("row-%d", id)))
 			_ = i
 		}
-		if err := b.Flush(); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, b.Flush())
 		return s.blocks[0].payload
 	}
 	rawA := mkRaw([]uint64{1, 2}, nil)
@@ -301,31 +212,17 @@ func TestParseRowsDirectoryReuse(t *testing.T) {
 
 	var reuse []fileformat.RowDirectoryEntry
 	idxA, err := ParseRowsDirectory(rawA, 2, reuse)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	reuse = idxA.Entries
-	if len(idxA.Entries) != 2 {
-		t.Fatalf("A: entries = %d", len(idxA.Entries))
-	}
+	require.Len(t, idxA.Entries, 2, "A: entries = %d", len(idxA.Entries))
 	// Reuse the same backing slice for a payload with MORE entries.
 	idxB, err := ParseRowsDirectory(rawB, 3, reuse)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(idxB.Entries) != 3 {
-		t.Fatalf("B: entries = %d", len(idxB.Entries))
-	}
-	if got := idxB.RowBytes(2); string(got) != "row-300" {
-		t.Fatalf("B RowBytes(2) = %q", got)
-	}
+	require.NoError(t, err)
+	require.Len(t, idxB.Entries, 3, "B: entries = %d", len(idxB.Entries))
+	require.Equal(t, "row-300", string(idxB.RowBytes(2)), "B RowBytes(2) = %q", idxB.RowBytes(2))
 	// Backing slice grew past the original capacity: A's alias is stale but
 	// the next parse with the grown slice must still work.
 	idxA2, err := ParseRowsDirectory(rawA, 2, idxB.Entries)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := idxA2.RowBytes(1); string(got) != "row-2" {
-		t.Fatalf("A2 RowBytes(1) = %q", got)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "row-2", string(idxA2.RowBytes(1)), "A2 RowBytes(1) = %q", idxA2.RowBytes(1))
 }

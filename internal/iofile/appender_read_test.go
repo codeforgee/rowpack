@@ -4,137 +4,93 @@ import (
 	"bytes"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestAppenderReadAllSizeFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "a.bin")
+	path := filepath.Join(tmpdb(t), "a.bin")
 	a, err := OpenAppender(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer a.Close()
 
-	if _, err := a.Append([]byte("hello")); err != nil {
-		t.Fatal(err)
-	}
+	_, err = a.Append([]byte("hello"))
+	require.NoError(t, err)
 	// Multi-chunk write path (previously AppendZeroes' 8 KiB chunking).
-	if _, err := a.Append(make([]byte, 20000)); err != nil {
-		t.Fatal(err)
-	}
+	_, err = a.Append(make([]byte, 20000))
+	require.NoError(t, err)
 	size, err := a.Size()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if size != 20005 {
-		t.Fatalf("Size = %d, want 20005", size)
-	}
-	if a.Offset() != size {
-		t.Fatalf("Offset %d != Size %d", a.Offset(), size)
-	}
+	require.NoError(t, err)
+	require.Equal(t, int64(20005), size, "Size = %d, want 20005", size)
+	require.Equal(t, size, a.Offset(), "Offset %d != Size %d", a.Offset(), size)
 	all, err := a.ReadAll()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(all) != int(size) || !bytes.Equal(all[:5], []byte("hello")) {
-		t.Fatalf("ReadAll len=%d head=%q", len(all), all[:5])
-	}
+	require.NoError(t, err)
+	require.Equal(t, int(size), len(all), "ReadAll len=%d head=%q", len(all), all[:5])
+	require.True(t, bytes.Equal(all[:5], []byte("hello")), "ReadAll len=%d head=%q", len(all), all[:5])
 	for i, b := range all[5:] {
-		if b != 0 {
-			t.Fatalf("padding byte %d = %d", i, b)
-		}
+		require.Zero(t, b, "padding byte %d = %d", i, b)
 	}
-	if a.File() == nil {
-		t.Fatal("File() returned nil")
-	}
+	require.NotNil(t, a.File(), "File() returned nil")
 }
 
 func TestViewCopyInvalid(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "a.bin")
+	path := filepath.Join(tmpdb(t), "a.bin")
 	a, err := OpenAppender(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer a.Close()
-	if _, err := a.Append([]byte("hello")); err != nil {
-		t.Fatal(err)
-	}
+	_, err = a.Append([]byte("hello"))
+	require.NoError(t, err)
 	// Negative ranges.
 	for _, r := range [][2]int64{{-1, 2}, {0, -2}, {2, -4}} {
-		if _, _, err := a.viewCopy(r[0], r[1]); err == nil {
-			t.Fatalf("viewCopy(%d,%d) accepted", r[0], r[1])
-		}
+		_, _, err := a.viewCopy(r[0], r[1])
+		require.Error(t, err, "viewCopy(%d,%d) accepted", r[0], r[1])
 	}
 	// Out of range.
-	if _, _, err := a.viewCopy(0, 6); err == nil {
-		t.Fatal("viewCopy past EOF accepted")
-	}
+	_, _, err = a.viewCopy(0, 6)
+	require.Error(t, err, "viewCopy past EOF accepted")
 	// Valid copy is caller-owned (not aliased to the mapping).
 	b, done, err := a.viewCopy(0, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	done()
-	if string(b) != "hello" {
-		t.Fatalf("viewCopy = %q", b)
-	}
+	require.Equal(t, "hello", string(b), "viewCopy = %q", b)
 }
 
 func TestViewBeyondEOFAndRemap(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "a.bin")
+	path := filepath.Join(tmpdb(t), "a.bin")
 	a, err := OpenAppender(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer a.Close()
 
-	if _, err := a.Append([]byte("hello")); err != nil {
-		t.Fatal(err)
-	}
+	_, err = a.Append([]byte("hello"))
+	require.NoError(t, err)
 	// View past EOF must fail (before any mapping exists).
-	if _, _, err := a.View(0, 6); err == nil {
-		t.Fatal("View past EOF accepted")
-	}
+	_, _, err = a.View(0, 6)
+	require.Error(t, err, "View past EOF accepted")
 	// Append forces a remap covering the new bytes.
-	if _, err := a.Append([]byte(" world")); err != nil {
-		t.Fatal(err)
-	}
+	_, err = a.Append([]byte(" world"))
+	require.NoError(t, err)
 	b, done, err := a.View(0, 11)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(b) != "hello world" {
-		t.Fatalf("View after remap = %q", b)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "hello world", string(b), "View after remap = %q", b)
 	done()
 	// Truncate drops the mapping: a view past the new EOF must fail, never
 	// SIGBUS.
-	if err := a.Truncate(5); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := a.View(0, 6); err == nil {
-		t.Fatal("View past truncated EOF accepted")
-	}
+	require.NoError(t, a.Truncate(5))
+	_, _, err = a.View(0, 6)
+	require.Error(t, err, "View past truncated EOF accepted")
 	b, done, err = a.View(0, 5)
-	if err != nil || string(b) != "hello" {
-		t.Fatalf("View after truncate = %q, %v", b, err)
-	}
+	require.NoError(t, err, "View after truncate = %q, %v", b, err)
+	require.Equal(t, "hello", string(b), "View after truncate = %q, %v", b, err)
 	done()
 }
 
 func TestFallbackViewWhenMmapDisabled(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "a.bin")
+	path := filepath.Join(tmpdb(t), "a.bin")
 	a, err := OpenAppender(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer a.Close()
-	if _, err := a.Append([]byte("hello world")); err != nil {
-		t.Fatal(err)
-	}
+	_, err = a.Append([]byte("hello world"))
+	require.NoError(t, err)
 	// Force the ReadAt-copy fallback (sandboxed/32-bit degradation path).
 	a.mapper.mu.Lock()
 	a.mapper.disabled = true
@@ -142,15 +98,10 @@ func TestFallbackViewWhenMmapDisabled(t *testing.T) {
 	a.mapper.unmap()
 
 	b, done, err := a.View(6, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(b) != "world" {
-		t.Fatalf("fallback view = %q", b)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "world", string(b), "fallback view = %q", b)
 	done() // fallback done is a no-op; safe to call
 	// fallbackView out of range surfaces the ReadAt error.
-	if _, _, err := a.mapper.fallbackView(0, 100); err == nil {
-		t.Fatal("fallbackView past EOF accepted")
-	}
+	_, _, err = a.mapper.fallbackView(0, 100)
+	require.Error(t, err, "fallbackView past EOF accepted")
 }

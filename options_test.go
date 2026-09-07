@@ -1,34 +1,24 @@
 package rowpack
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOptionsResolvedDefaults(t *testing.T) {
 	o, err := Options{}.resolved()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if o.BlockSize != fileformat.DefaultBlockSize {
-		t.Fatalf("BlockSize default = %d", o.BlockSize)
-	}
-	if o.Compression != CompressionZstd {
-		t.Fatalf("Compression default = %d", o.Compression)
-	}
-	if o.CacheBytes != fileformat.DefaultCacheBytes {
-		t.Fatalf("CacheBytes default = %d", o.CacheBytes)
-	}
-	if o.Limits.MaxRowBytes != fileformat.DefaultMaxRowBytes ||
-		o.Limits.MaxRawBlockBytes != fileformat.DefaultMaxRawBlockBytes ||
-		o.Limits.MaxStoredBlockBytes != fileformat.DefaultMaxStoredBlockBytes ||
-		o.Limits.MaxColumns != fileformat.DefaultMaxColumns ||
-		o.Limits.MaxValueBytes != fileformat.DefaultMaxValueBytes ||
-		o.Limits.MaxSnapshotDepth != fileformat.DefaultMaxSnapshotDepth {
-		t.Fatalf("Limits defaults wrong: %+v", o.Limits)
-	}
+	require.NoError(t, err)
+	require.Equal(t, fileformat.DefaultBlockSize, o.BlockSize)
+	require.Equal(t, CompressionZstd, o.Compression)
+	require.Equal(t, int64(fileformat.DefaultCacheBytes), o.CacheBytes)
+	require.Equal(t, fileformat.DefaultMaxRowBytes, o.Limits.MaxRowBytes)
+	require.Equal(t, fileformat.DefaultMaxRawBlockBytes, o.Limits.MaxRawBlockBytes)
+	require.Equal(t, fileformat.DefaultMaxStoredBlockBytes, o.Limits.MaxStoredBlockBytes)
+	require.Equal(t, fileformat.DefaultMaxColumns, o.Limits.MaxColumns)
+	require.Equal(t, fileformat.DefaultMaxValueBytes, o.Limits.MaxValueBytes)
+	require.Equal(t, fileformat.DefaultMaxSnapshotDepth, o.Limits.MaxSnapshotDepth)
 }
 
 func TestOptionsValidateRejects(t *testing.T) {
@@ -48,9 +38,7 @@ func TestOptionsValidateRejects(t *testing.T) {
 		o := base
 		tc.mut(&o)
 		_, err := o.resolved()
-		if !errors.Is(err, ErrInvalidArgument) {
-			t.Fatalf("%s: err = %v, want ErrInvalidArgument", tc.name, err)
-		}
+		require.ErrorIs(t, err, ErrInvalidArgument, "%s: err = %v", tc.name, err)
 	}
 }
 
@@ -59,21 +47,14 @@ func TestOptionsValidConfigs(t *testing.T) {
 		{Compression: CompressionNone},
 		{Compression: CompressionZstd, Durability: AsyncCommit, Validation: ValidationNone},
 	} {
-		if _, err := o.resolved(); err != nil {
-			t.Fatalf("%+v: %v", o, err)
-		}
+		_, err := o.resolved()
+		require.NoError(t, err, "%+v", o)
 	}
 }
 
 func TestOptionsDiskCompression(t *testing.T) {
-	if got := (Options{Compression: CompressionNone}).diskCompression(); got != fileformat.CompressionNone {
-		t.Fatalf("None -> %d", got)
-	}
-	if got := (Options{Compression: CompressionZstd}).diskCompression(); got != fileformat.CompressionZstd {
-		t.Fatalf("Zstd -> %d", got)
-	}
+	require.Equal(t, fileformat.CompressionNone, (Options{Compression: CompressionNone}).diskCompression(), "None")
+	require.Equal(t, fileformat.CompressionZstd, (Options{Compression: CompressionZstd}).diskCompression(), "Zstd")
 	// Anything else (unreachable via resolved) maps to None.
-	if got := (Options{Compression: CompressionDefault}).diskCompression(); got != fileformat.CompressionNone {
-		t.Fatalf("Default -> %d", got)
-	}
+	require.Equal(t, fileformat.CompressionNone, (Options{Compression: CompressionDefault}).diskCompression(), "Default")
 }

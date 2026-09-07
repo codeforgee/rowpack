@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // updateGolden regenerates golden files instead of comparing. Enable with
@@ -65,24 +67,16 @@ func TestGoldenEmptyStore(t *testing.T) {
 	for name, data := range want {
 		path := goldenPath(name)
 		if *updateGolden {
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, data, 0o644); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+			require.NoError(t, os.WriteFile(path, data, 0o644))
 			continue
 		}
 		got, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read golden %s: %v (regenerate with make golden)", name, err)
-		}
+		require.NoError(t, err, "read golden %s: %v (regenerate with make golden)", name, err)
 		if string(got) != string(data) {
-			t.Errorf("golden %s differs from implementation (regenerate with make golden)", name)
+			require.Fail(t, "golden %s differs from implementation (regenerate with make golden)", name)
 		}
 		// Golden must be exactly the two-header size.
-		if len(got) != DataFileHeaderSize {
-			t.Errorf("golden %s size = %d, want %d", name, len(got), DataFileHeaderSize)
-		}
+		require.Equal(t, DataFileHeaderSize, len(got), "golden %s size = %d, want %d", name, len(got), DataFileHeaderSize)
 	}
 }

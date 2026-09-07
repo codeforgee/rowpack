@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/stretchr/testify/require"
 )
 
 // writeFullSnapshot writes n rows of a two-column table into a FULL snapshot
@@ -16,22 +17,14 @@ import (
 func writeFullSnapshot(t *testing.T, db *Store, n uint64) SnapshotInfo {
 	t.Helper()
 	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	schema := schema1()
-	if err := w.DefineSchema(schema); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, w.DefineSchema(schema))
 	for i := uint64(1); i <= n; i++ {
-		if err := w.Insert(context.Background(), 1, i, 1, row1(i)); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, w.Insert(context.Background(), 1, i, 1, row1(i)))
 	}
 	info, err := w.Commit(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return info
 }
 
@@ -96,34 +89,20 @@ func encOptions(keyID string) Options {
 // TestCreateEncryptedHeader verifies the store headers carry the encryption
 // fields and the key id.
 func TestCreateEncryptedHeader(t *testing.T) {
-	dir := t.TempDir()
+	dir := tmpdb(t)
 	db, err := Create(dir+"/db", encOptions("key-a"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if db.encCipher == nil {
-		t.Fatal("expected write-path cipher")
-	}
+	require.NoError(t, err)
+	require.NotNil(t, db.encCipher, "expected write-path cipher")
 	db.Close()
 
 	// Read the .rpk header back from disk.
 	raw, err := os.ReadFile(dir + "/db.rpk")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var h fileformat.DataFileHeader
-	if err := h.Unmarshal(raw[:fileformat.DataFileHeaderSize]); err != nil {
-		t.Fatal(err)
-	}
-	if h.EncryptionAlgorithm != fileformat.EncAES256GCM {
-		t.Fatalf("algorithm = %d, want %d", h.EncryptionAlgorithm, fileformat.EncAES256GCM)
-	}
-	if h.NonceScheme != fileformat.NonceCounterV1 {
-		t.Fatalf("nonce scheme = %d, want %d", h.NonceScheme, fileformat.NonceCounterV1)
-	}
-	if string(h.KeyID) != "key-a" {
-		t.Fatalf("key id = %q, want %q", h.KeyID, "key-a")
-	}
+	require.NoError(t, h.Unmarshal(raw[:fileformat.DataFileHeaderSize]))
+	require.Equal(t, fileformat.EncAES256GCM, h.EncryptionAlgorithm, "algorithm = %d, want %d", h.EncryptionAlgorithm, fileformat.EncAES256GCM)
+	require.Equal(t, fileformat.NonceCounterV1, h.NonceScheme, "nonce scheme = %d, want %d", h.NonceScheme, fileformat.NonceCounterV1)
+	require.Equal(t, "key-a", string(h.KeyID), "key id = %q, want %q", h.KeyID, "key-a")
 }
 
 // TestEncryptedWriteSealsBlocks verifies committed blocks are sealed: the
@@ -131,109 +110,78 @@ func TestCreateEncryptedHeader(t *testing.T) {
 // exactly the tag length (CompressionNone makes the plaintext length equal
 // RawSize).
 func TestEncryptedWriteSealsBlocks(t *testing.T) {
-	dir := t.TempDir()
+	dir := tmpdb(t)
 	db, err := Create(dir+"/db", encOptions("key-b"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	writeFullSnapshot(t, db, 100)
 	db.Close()
 
 	// Walk the .rpk payload: SnapshotHeader then per-block header+payload.
 	raw, err := os.ReadFile(dir + "/db.rpk")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	off := int64(fileformat.DataFileHeaderSize + fileformat.SnapshotHeaderSize)
 	sawEncrypted := 0
 	for off < int64(len(raw)) && string(raw[off:off+8]) != "RPKSNAPF" {
 		var bh fileformat.BlockHeader
-		if err := bh.Unmarshal(raw[off : off+fileformat.BlockHeaderSize]); err != nil {
-			t.Fatalf("block header at %d: %v", off, err)
-		}
-		if !bh.Encrypted {
-			t.Fatalf("block %d at %d not encrypted", bh.BlockID, off)
-		}
-		if bh.KeyEpoch != 0 {
-			t.Fatalf("block %d epoch = %d, want 0", bh.BlockID, bh.KeyEpoch)
-		}
-		if bh.StoredSize != bh.RawSize+fileformat.AESGCMTagLen {
-			t.Fatalf("block %d stored %d != raw %d + tag %d", bh.BlockID, bh.StoredSize, bh.RawSize, fileformat.AESGCMTagLen)
-		}
+		require.NoError(t, bh.Unmarshal(raw[off:off+fileformat.BlockHeaderSize]), "block header at %d", off)
+		require.True(t, bh.Encrypted, "block %d at %d not encrypted", bh.BlockID, off)
+		require.Equal(t, uint32(0), bh.KeyEpoch, "block %d epoch = %d, want 0", bh.BlockID, bh.KeyEpoch)
+		require.Equal(t, uint32(bh.RawSize+fileformat.AESGCMTagLen), bh.StoredSize, "block %d stored %d != raw %d + tag %d", bh.BlockID, bh.StoredSize, bh.RawSize, fileformat.AESGCMTagLen)
 		sawEncrypted++
 		off += fileformat.BlockHeaderSize + int64(bh.StoredSize)
 	}
-	if sawEncrypted == 0 {
-		t.Fatal("no block scanned")
-	}
+	require.NotZero(t, sawEncrypted, "no block scanned")
 }
 
 // TestPlainStoreBlocksUnencrypted guards the plain path: no encryption bytes.
 func TestPlainStoreBlocksUnencrypted(t *testing.T) {
-	dir := t.TempDir()
+	dir := tmpdb(t)
 	db, err := Create(dir+"/db", Options{Compression: CompressionNone})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	writeFullSnapshot(t, db, 10)
 	db.Close()
 
 	raw, err := os.ReadFile(dir + "/db.rpk")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	off := int64(fileformat.DataFileHeaderSize + fileformat.SnapshotHeaderSize)
 	for off < int64(len(raw)) && string(raw[off:off+8]) != "RPKSNAPF" {
 		var bh fileformat.BlockHeader
-		if err := bh.Unmarshal(raw[off : off+fileformat.BlockHeaderSize]); err != nil {
-			t.Fatalf("block header at %d: %v", off, err)
-		}
-		if bh.Encrypted || bh.KeyEpoch != 0 {
-			t.Fatalf("plain block %d carries encryption bytes", bh.BlockID)
-		}
-		if bh.StoredSize != bh.RawSize {
-			t.Fatalf("plain block %d stored %d != raw %d", bh.BlockID, bh.StoredSize, bh.RawSize)
-		}
+		require.NoError(t, bh.Unmarshal(raw[off:off+fileformat.BlockHeaderSize]), "block header at %d", off)
+		require.False(t, bh.Encrypted || bh.KeyEpoch != 0, "plain block %d carries encryption bytes", bh.BlockID)
+		require.Equal(t, bh.RawSize, bh.StoredSize, "plain block %d stored %d != raw %d", bh.BlockID, bh.StoredSize, bh.RawSize)
 		off += fileformat.BlockHeaderSize + int64(bh.StoredSize)
 	}
 }
 
 // TestEncryptionInvalidConfig covers configuration rejection.
 func TestEncryptionInvalidConfig(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := Create(dir+"/a", Options{Encryption: &EncryptionConfig{KeyID: "k"}}); !isErr(err, ErrInvalidArgument) {
-		t.Fatalf("nil provider = %v, want ErrInvalidArgument", err)
-	}
-	if _, err := Create(dir+"/b", Options{Encryption: &EncryptionConfig{
+	dir := tmpdb(t)
+	_, err := Create(dir+"/a", Options{Encryption: &EncryptionConfig{KeyID: "k"}})
+	require.ErrorIs(t, err, ErrInvalidArgument, "nil provider = %v, want ErrInvalidArgument", err)
+	_, err = Create(dir+"/b", Options{Encryption: &EncryptionConfig{
 		KeyProvider: &staticKeyProvider{keyID: "k", key: testKey("k")},
-	}}); !isErr(err, ErrInvalidArgument) {
-		t.Fatalf("empty key id = %v, want ErrInvalidArgument", err)
-	}
+	}})
+	require.ErrorIs(t, err, ErrInvalidArgument, "empty key id = %v, want ErrInvalidArgument", err)
 	longID := make([]byte, fileformat.FileHeaderKeyIDMaxLen+1)
 	for i := range longID {
 		longID[i] = 'x'
 	}
-	if _, err := Create(dir+"/c", Options{Encryption: &EncryptionConfig{
+	_, err = Create(dir+"/c", Options{Encryption: &EncryptionConfig{
 		KeyProvider: &staticKeyProvider{keyID: string(longID), key: testKey("k")},
 		KeyID:       string(longID),
-	}}); !isErr(err, ErrInvalidArgument) {
-		t.Fatalf("over-long key id = %v, want ErrInvalidArgument", err)
-	}
+	}})
+	require.ErrorIs(t, err, ErrInvalidArgument, "over-long key id = %v, want ErrInvalidArgument", err)
 }
 
 // TestEncryptionProviderError propagates provider failure at Create.
 func TestEncryptionProviderError(t *testing.T) {
-	dir := t.TempDir()
+	dir := tmpdb(t)
 	_, err := Create(dir+"/db", Options{Encryption: &EncryptionConfig{
 		KeyProvider: &staticKeyProvider{keyID: "k", key: testKey("k"), fail: context.Canceled},
 		KeyID:       "k",
 	}})
-	if err == nil {
-		t.Fatal("provider error swallowed at Create")
-	}
-	if !isErr(err, ErrKeyUnavailable) {
-		t.Fatalf("err = %v, want ErrKeyUnavailable wrapper", err)
-	}
+	require.Error(t, err, "provider error swallowed at Create")
+	require.ErrorIs(t, err, ErrKeyUnavailable, "err = %v, want ErrKeyUnavailable wrapper", err)
 }
 
 // TestBlockHeaderOffsetsOnDisk guards the on-disk offsets read by the walk in
@@ -244,18 +192,10 @@ func TestBlockHeaderOffsetsOnDisk(t *testing.T) {
 	h.KeyEpoch = 3
 	h.StoredSize = 0xAABBCCDD
 	var buf [fileformat.BlockHeaderSize]byte
-	if err := h.MarshalTo(buf[:]); err != nil {
-		t.Fatal(err)
-	}
-	if string(buf[0:8]) != "RPKBLOCK" {
-		t.Fatal("magic")
-	}
-	if binary.LittleEndian.Uint32(buf[44:]) != h.StoredSize {
-		t.Fatal("stored size offset")
-	}
-	if binary.LittleEndian.Uint32(buf[fileformat.BlockHeaderKeyEpochOffset:]) != 3 {
-		t.Fatal("key epoch offset")
-	}
+	require.NoError(t, h.MarshalTo(buf[:]))
+	require.Equal(t, "RPKBLOCK", string(buf[0:8]), "magic")
+	require.Equal(t, h.StoredSize, binary.LittleEndian.Uint32(buf[44:]), "stored size offset")
+	require.Equal(t, uint32(3), binary.LittleEndian.Uint32(buf[fileformat.BlockHeaderKeyEpochOffset:]), "key epoch offset")
 }
 
 // buildEncryptedGoldenStore writes a deterministic encrypted FULL store with
@@ -281,24 +221,15 @@ func buildEncryptedGoldenStore(t *testing.T, base string) {
 			KeyID:       keyID,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	if err := w.DefineSchema(schema1()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, w.DefineSchema(schema1()))
 	for i := uint64(1); i <= 3; i++ {
-		if err := w.Insert(context.Background(), 1, i, 1, row1(i)); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, w.Insert(context.Background(), 1, i, 1, row1(i)))
 	}
-	if _, err := w.Commit(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
+	_, err = w.Commit(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
 }
 
 // TestGoldenEncryptedStore locks the byte layout of an encrypted store
@@ -315,42 +246,29 @@ func TestGoldenEncryptedStore(t *testing.T) {
 			},
 		}
 	}
-	base := filepath.Join(t.TempDir(), "golden-enc")
+	base := filepath.Join(tmpdb(t), "golden-enc")
 	if *updateGolden {
 		buildEncryptedGoldenStore(t, base)
 		for _, ext := range []string{".rpk", ".rpi"} {
 			data, err := os.ReadFile(base + ext)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(goldenPath("encrypted-store"+ext), data, 0o644); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(goldenPath("encrypted-store"+ext), data, 0o644))
 		}
 		return
 	}
 	// Copy the golden samples and open them with the key.
 	for _, ext := range []string{".rpk", ".rpi"} {
 		data, err := os.ReadFile(goldenPath("encrypted-store" + ext))
-		if err != nil {
-			t.Fatalf("read golden %s: %v (regenerate with make golden)", ext, err)
-		}
-		if err := os.WriteFile(base+ext, data, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err, "read golden %s: %v (regenerate with make golden)", ext, err)
+		require.NoError(t, os.WriteFile(base+ext, data, 0o644))
 	}
 	db, err := Open(base, enc())
-	if err != nil {
-		t.Fatalf("open golden: %v", err)
-	}
+	require.NoError(t, err, "open golden: %v", err)
 	defer db.Close()
 	for i := uint64(1); i <= 3; i++ {
 		r, err := db.Get(context.Background(), 1, 1, i, nil)
-		if err != nil {
-			t.Fatalf("row %d: %v", i, err)
-		}
-		if n, _ := r[1].String(); n != "row-"+itoa(i) {
-			t.Fatalf("row %d name = %q", i, n)
-		}
+		require.NoError(t, err, "row %d: %v", i, err)
+		n, _ := r[1].String()
+		require.Equal(t, "row-"+itoa(i), n, "row %d name = %q", i, n)
 	}
 }

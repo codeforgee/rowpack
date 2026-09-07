@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/stretchr/testify/require"
 )
 
 func BenchmarkViewApply1M(b *testing.B) {
@@ -20,9 +21,7 @@ func BenchmarkViewApply1M(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		v, err := EmptyView().Apply(txn, 100)
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, err)
 		_ = v
 	}
 }

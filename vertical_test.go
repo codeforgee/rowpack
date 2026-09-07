@@ -3,55 +3,37 @@ package rowpack
 import (
 	"context"
 	"math/big"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/stretchr/testify/require"
 )
 
 func ctx(t *testing.T) context.Context { return context.Background() }
 
 func TestCreateOpenPaths(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "db")
-	if _, err := Create(base+".rpk", Options{}); err == nil {
-		t.Fatal("accepted .rpk extension")
-	}
-	if _, err := Create(base+".rpi", Options{}); err == nil {
-		t.Fatal("accepted .rpi extension")
-	}
-	_, err := Open(base, Options{})
-	if err == nil {
-		t.Fatal("opened nonexistent store")
-	}
+	base := filepath.Join(tmpdb(t), "db")
+	_, err := Create(base+".rpk", Options{})
+	require.Error(t, err, "accepted .rpk extension")
+	_, err = Create(base+".rpi", Options{})
+	require.Error(t, err, "accepted .rpi extension")
+	_, err = Open(base, Options{})
+	require.Error(t, err, "opened nonexistent store")
 	db, err := Create(base, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
 	// Create must not overwrite.
-	if _, err := Create(base, Options{}); err == nil {
-		t.Fatal("Create overwrote existing store")
-	}
+	_, err = Create(base, Options{})
+	require.Error(t, err, "Create overwrote existing store")
 	// Reopen read-write and read-only.
 	db2, err := Open(base, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if db2.ReadOnly() {
-		t.Fatal("opened read-only unexpectedly")
-	}
+	require.NoError(t, err)
+	require.False(t, db2.ReadOnly(), "opened read-only unexpectedly")
 	db2.Close()
 	ro, err := Open(base, Options{ReadOnly: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ro.ReadOnly() {
-		t.Fatal("read-only flag lost")
-	}
+	require.NoError(t, err)
+	require.True(t, ro.ReadOnly(), "read-only flag lost")
 	ro.Close()
 }
 
@@ -60,18 +42,14 @@ func TestCreateOpenPaths(t *testing.T) {
 // a FULL snapshot, close/reopen, then read metadata and random rows with
 // value-by-value comparison.
 func TestM5VerticalSlice(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "v")
+	base := filepath.Join(tmpdb(t), "v")
 	opts := Options{}
 	opts.BlockSize = 512 // small blocks force multiple Rows blocks
 	db, err := Create(base, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	w, err := db.BeginSnapshot(ctx(t), SnapshotFull, SnapshotOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// Schema with 10 base types.
 	schema := Schema{
@@ -89,16 +67,12 @@ func TestM5VerticalSlice(t *testing.T) {
 			{Name: "balance", Type: TypeDecimal, Scale: 2},
 		},
 	}
-	if err := w.DefineSchema(schema); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, w.DefineSchema(schema))
 	// Define a second table.
-	if err := w.DefineSchema(Schema{TableID: 2, Version: 1, Name: "orders", Columns: []Column{
+	require.NoError(t, w.DefineSchema(Schema{TableID: 2, Version: 1, Name: "orders", Columns: []Column{
 		{Name: "order_id", Type: TypeUint64},
 		{Name: "user_id", Type: TypeUint64},
-	}}); err != nil {
-		t.Fatal(err)
-	}
+	}}))
 
 	// Write 2000 rows across two tables; block size 512 forces multiple blocks.
 	created := time.Date(2024, 1, 2, 3, 4, 5, 678, time.UTC)
@@ -113,119 +87,87 @@ func TestM5VerticalSlice(t *testing.T) {
 			DateTime(created.Add(time.Duration(i) * time.Second)),
 			DecimalValue(Decimal{Unscaled: big.NewInt(int64(i*100 + 99)), Scale: 2}),
 		}
-		if err := w.Insert(ctx(t), 1, i+1, 1, row); err != nil {
-			t.Fatal(err)
-		}
-		if err := w.Insert(ctx(t), 2, i+1, 1, Row{Uint64(i + 1), Uint64(i + 1)}); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, w.Insert(ctx(t), 1, i+1, 1, row))
+		require.NoError(t, w.Insert(ctx(t), 2, i+1, 1, Row{Uint64(i + 1), Uint64(i + 1)}))
 	}
 
 	full, err := w.Commit(ctx(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if full.Type != SnapshotFull || full.ID != 1 || full.ChangeCount != 4000 {
-		t.Fatalf("bad commit info: %+v", full)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, SnapshotFull, full.Type, "bad commit info: %+v", full)
+	require.Equal(t, uint64(1), full.ID, "bad commit info: %+v", full)
+	require.Equal(t, uint64(4000), full.ChangeCount, "bad commit info: %+v", full)
+	require.NoError(t, db.Close())
 
 	// Reopen and verify.
 	db2, err := Open(base, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer db2.Close()
 
 	snapshots, err := db2.ListSnapshots(ctx(t))
-	if err != nil || len(snapshots) != 1 {
-		t.Fatalf("snapshots: %v %v", snapshots, err)
-	}
+	require.NoError(t, err, "snapshots: %v %v", snapshots, err)
+	require.Len(t, snapshots, 1, "snapshots: %v %v", snapshots, err)
 
 	// Schema round trip.
 	gotSchema, err := db2.Schema(ctx(t), full.ID, 1, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(gotSchema.Columns) != len(schema.Columns) {
-		t.Fatalf("schema columns %d != %d", len(gotSchema.Columns), len(schema.Columns))
-	}
+	require.NoError(t, err)
+	require.Len(t, gotSchema.Columns, len(schema.Columns), "schema columns %d != %d", len(gotSchema.Columns), len(schema.Columns))
 	for i := range schema.Columns {
 		g, e := gotSchema.Columns[i], schema.Columns[i]
-		if g.Name != e.Name || g.Type != e.Type || g.Nullable != e.Nullable || g.Scale != e.Scale {
-			t.Fatalf("column %d mismatch: %+v vs %+v", i, g, e)
-		}
+		require.Equal(t, e.Name, g.Name, "column %d mismatch: %+v vs %+v", i, g, e)
+		require.Equal(t, e.Type, g.Type, "column %d mismatch: %+v vs %+v", i, g, e)
+		require.Equal(t, e.Nullable, g.Nullable, "column %d mismatch: %+v vs %+v", i, g, e)
+		require.Equal(t, e.Scale, g.Scale, "column %d mismatch: %+v vs %+v", i, g, e)
 	}
 
 	// Latest schema and tables.
 	latest, err := db2.LatestSchema(ctx(t), full.ID, 1)
-	if err != nil || latest.Version != 1 {
-		t.Fatalf("latest schema: %v %v", latest, err)
-	}
+	require.NoError(t, err, "latest schema: %v %v", latest, err)
+	require.Equal(t, uint32(1), latest.Version, "latest schema: %v %v", latest, err)
 	tables, err := db2.Tables(ctx(t), full.ID)
-	if err != nil || len(tables) != 2 {
-		t.Fatalf("tables: %v %v", tables, err)
-	}
+	require.NoError(t, err, "tables: %v %v", tables, err)
+	require.Len(t, tables, 2, "tables: %v %v", tables, err)
 
 	// Random row reads with value-by-value comparison.
 	for i := uint64(0); i < 2000; i += 37 {
 		row, err := db2.Get(ctx(t), full.ID, 1, i+1, nil)
-		if err != nil {
-			t.Fatalf("get row %d: %v", i+1, err)
-		}
+		require.NoError(t, err, "get row %d", i+1)
 		// Compare each value.
-		if v, _ := row[0].Uint64(); v != i+1 {
-			t.Fatalf("row %d id = %d", i+1, v)
-		}
-		if v, _ := row[1].String(); v != nameFor(i) {
-			t.Fatalf("row %d name = %q", i+1, v)
-		}
-		if v, _ := row[2].Bool(); v != (i%2 == 0) {
-			t.Fatalf("row %d active", i+1)
-		}
-		if v, _ := row[3].Int32(); v != int32(i) {
-			t.Fatalf("row %d age", i+1)
-		}
-		if v, _ := row[4].Float64(); v != float64(i)*1.5 {
-			t.Fatalf("row %d score", i+1)
-		}
+		v, _ := row[0].Uint64()
+		require.Equal(t, i+1, v, "row %d id = %d", i+1, v)
+		s, _ := row[1].String()
+		require.Equal(t, nameFor(i), s, "row %d name = %q", i+1, s)
+		b, _ := row[2].Bool()
+		require.Equal(t, i%2 == 0, b, "row %d active", i+1)
+		age, _ := row[3].Int32()
+		require.Equal(t, int32(i), age, "row %d age", i+1)
+		f, _ := row[4].Float64()
+		require.Equal(t, float64(i)*1.5, f, "row %d score", i+1)
 		em, _ := row[5].String()
-		if (i%50 == 0) != (em == "") {
-			t.Fatalf("row %d email null mismatch", i+1)
-		}
+		require.Equal(t, i%50 == 0, em == "", "row %d email null mismatch", i+1)
 		ts, _ := row[6].DateTimeValue()
 		want := created.Add(time.Duration(i) * time.Second)
-		if ts.UnixNano() != want.UnixNano() {
-			t.Fatalf("row %d created mismatch", i+1)
-		}
+		require.Equal(t, want.UnixNano(), ts.UnixNano(), "row %d created mismatch", i+1)
 		d, _ := row[7].Decimal()
-		if d.Scale != 2 || d.Unscaled.Int64() != int64(i*100+99) {
-			t.Fatalf("row %d balance = %v", i+1, d)
-		}
+		require.Equal(t, int32(2), d.Scale, "row %d balance = %v", i+1, d)
+		require.Equal(t, int64(i*100+99), d.Unscaled.Int64(), "row %d balance = %v", i+1, d)
 	}
 
 	// Exists.
 	ok, err := db2.Exists(ctx(t), full.ID, 1, 1)
-	if err != nil || !ok {
-		t.Fatalf("exists: %v %v", ok, err)
-	}
+	require.NoError(t, err, "exists: %v %v", ok, err)
+	require.True(t, ok, "exists: %v %v", ok, err)
 	ok, err = db2.Exists(ctx(t), full.ID, 1, 99999)
-	if err != nil || ok {
-		t.Fatalf("exists miss: %v %v", ok, err)
-	}
+	require.NoError(t, err, "exists miss: %v %v", ok, err)
+	require.False(t, ok, "exists miss: %v %v", ok, err)
 
 	// Get of a nonexistent row returns ErrNotFound.
-	if _, err := db2.Get(ctx(t), full.ID, 1, 99999, nil); err == nil {
-		t.Fatal("get nonexistent row succeeded")
-	}
+	_, err = db2.Get(ctx(t), full.ID, 1, 99999, nil)
+	require.Error(t, err, "get nonexistent row succeeded")
 
 	// Stats sanity.
 	stats := db2.Stats()
-	if stats.Snapshots != 1 || stats.Blocks < 2 {
-		t.Fatalf("stats: %+v", stats)
-	}
+	require.Equal(t, uint64(1), stats.Snapshots, "stats: %+v", stats)
+	require.GreaterOrEqual(t, stats.Blocks, uint64(2), "stats: %+v", stats)
 }
 
 func nameFor(i uint64) string {
@@ -258,6 +200,3 @@ func itoa(v uint64) string {
 	}
 	return string(b[pos:])
 }
-
-var _ = os.Remove
-var _ = fileformat.MagicDataFile

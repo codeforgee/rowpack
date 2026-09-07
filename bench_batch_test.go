@@ -24,6 +24,8 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // batchBenchCtx parameterizes one batch-read scenario.
@@ -56,7 +58,7 @@ func batchIDs(c batchBenchCtx) []RowID {
 // benchBatchSetup builds the 1M-row store for batch scenarios.
 func benchBatchSetup(b *testing.B, c batchBenchCtx) (*Store, SnapshotID) {
 	b.Helper()
-	return buildBenchStoreOpts(b, filepath.Join(b.TempDir(), "batch"), c.rows,
+	return buildBenchStoreOpts(b, filepath.Join(tmpdb(b), "batch"), c.rows,
 		Options{CacheBytes: cacheBytesFor(c.cold)})
 }
 
@@ -72,9 +74,7 @@ func runBatchGet(b *testing.B, db *Store, snap SnapshotID, ids []RowID) {
 	var dst Row
 	for _, id := range ids {
 		row, err := db.Get(context.Background(), snap, 1, id, dst)
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, err)
 		dst = row
 	}
 }
@@ -113,7 +113,7 @@ func BenchmarkBatchBaselineGet(b *testing.B) {
 // runBatchRead resolves a full batch through the aggregated ReadBatch path.
 func runBatchRead(b *testing.B, db *Store, snap SnapshotID, ids []RowID) {
 	if _, err := db.ReadBatch(context.Background(), snap, 1, ids); err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
 }
 

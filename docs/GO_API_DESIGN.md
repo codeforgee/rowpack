@@ -527,6 +527,10 @@ var (
 	ErrVersionUnsupported  = errors.New("rowpack: unsupported version")
 	ErrStoreMismatch       = errors.New("rowpack: store files do not match")
 	ErrClosed              = errors.New("rowpack: closed")
+	ErrKeyRequired         = errors.New("rowpack: encryption key required")
+	ErrKeyUnavailable      = errors.New("rowpack: encryption key unavailable")
+	ErrKeyIDNotFound       = errors.New("rowpack: encryption key id not found")
+	ErrAuthFailed          = errors.New("rowpack: block authentication failed")
 )
 ```
 
@@ -538,10 +542,11 @@ type CorruptionError struct {
 	TableID    TableID
 	BlockID    uint64
 	Kind       error // ErrCorruptData 或 ErrCorruptIndex
+	Cause      error // 底层原因（如 ErrAuthFailed），可选
 	Reason     string
 }
 func (e *CorruptionError) Error() string
-func (e *CorruptionError) Unwrap() error
+func (e *CorruptionError) Unwrap() []error // [Kind, Cause?]
 
 type CommitError struct {
 	SnapshotID SnapshotID

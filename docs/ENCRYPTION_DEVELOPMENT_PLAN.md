@@ -1,6 +1,6 @@
 # 数据分块加密：分步开发计划
 
-> 状态：执行基线
+> 状态：S1–S7 已完成（提交 8c441c5..HEAD）；S8 性能基准进行中
 > 日期：2026-09-09
 > 前提：格式尚未发布，加密作为创建时可选能力直接进入 v1 格式，
 > 无老格式兼容约束（DATA_BLOCK_ENCRYPTION_FEASIBILITY.md §10，2026-09-09 修订）
@@ -21,13 +21,13 @@
 
 | 步骤 | 内容 | 产物 |
 | --- | --- | --- |
-| S1 | 格式层：FileHeader/BlockHeader 加密字段 + 常量 + 单测 | internal/fileformat |
-| S2 | 加密封装：AES-GCM 块加密/解密、nonce 派生、AAD 构造 | internal/seal |
-| S3 | API 与写路径：Options.Encryption、Create 写 header、commit 加密 payload | options.go / rowpack.go / writer.go |
-| S4 | 读路径：Reader 注入 Decrypter，解密在解压前 | internal/block/reader.go / loader.go |
-| S5 | Open/恢复/重建/校验接入：ErrKeyRequired、recovery、RebuildIndex、Verify | recovery.go / rebuild.go / verify.go |
-| S6 | 集成测试：加密 Store 全功能 + 错误路径 + 篡改 + 崩溃恢复 + 并发 | 测试 |
-| S7 | 格式文档同步：BINARY_FORMAT_V1.md、GO_API_DESIGN.md | docs |
+| S1 ✅ | 格式层：FileHeader/BlockHeader 加密字段 + 常量 + 单测 | internal/fileformat |
+| S2 ✅ | 加密封装：AES-GCM 块加密/解密、nonce 派生、AAD 构造 | internal/seal |
+| S3 ✅ | API 与写路径：Options.Encryption、Create 写 header、commit 加密 payload | options.go / rowpack.go / writer.go |
+| S4 ✅ | 读路径：Reader 注入 Decrypter，解密在解压前 | internal/block/reader.go / loader.go |
+| S5 ✅ | Open/恢复/重建/校验接入：ErrKeyRequired、recovery、RebuildIndex、Verify | recovery.go / rebuild.go / verify.go |
+| S6 ✅ | 集成测试：加密 Store 全功能 + 错误路径 + 篡改 + 崩溃恢复 + 并发 | 测试 |
+| S7 ✅ | 格式文档同步：BINARY_FORMAT_V1.md、GO_API_DESIGN.md | docs |
 | S8 | 性能基准与对比（加密 vs 未加密），报告 | benchmark + docs/bench |
 
 每一步独立提交；S1–S7 以 `go test ./...` + `-race` 全绿为门槛。

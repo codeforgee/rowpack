@@ -72,11 +72,17 @@ RowPack v1 使用两个文件：
 | 60 | 1 | DefaultCompression | 0=None, 1=Zstd |
 | 61 | 1 | DefaultRowEncoding | 1=TypedTuple |
 | 62 | 2 | Flags | v1 为 0 |
-| 64 | 56 | Reserved | 0 |
+| 64 | 1 | EncryptionAlgorithm | 0=None, 1=AES-256-GCM |
+| 65 | 1 | NonceScheme | 0=None, 1=CounterV1 |
+| 66 | 1 | KeyIDLen | 0..31 |
+| 67 | 31 | KeyID | 密钥逻辑标识（ASCII） |
+| 98 | 22 | Reserved | 0 |
 | 120 | 4 | HeaderCRC32C | Header CRC |
 | 124 | 4 | ReservedCRC | 0 |
 
-Header 创建后不更新，最近提交点仅由追加记录表达。
+Header 创建后不更新，最近提交点仅由追加记录表达。加密为创建时可选项：
+非加密 Store 的 offset 64–98 全部为 0，布局与未加密 Store 完全一致；
+加密状态在 Create 时确定，不存在事后补加密。
 
 ### 3.3 SnapshotHeader：96 字节
 
@@ -104,14 +110,24 @@ Header 创建后不更新，最近提交点仅由追加记录表达。
 | 8 | 4 | HeaderSize | 64 |
 | 12 | 1 | BlockKind | 1=Rows, 2=Metadata |
 | 13 | 1 | Compression | 0=None, 1=Zstd |
-| 14 | 2 | Flags | v1 为 0 |
+| 14 | 2 | Flags | bit 0=Encrypted, 其余 0 |
 | 16 | 8 | BlockID | Store 内严格递增 |
 | 24 | 8 | SnapshotID | 所属快照 |
 | 32 | 4 | TableID | 非零 |
 | 36 | 4 | ItemCount | Row 或 Metadata Record 数 |
 | 40 | 4 | RawSize | 未压缩 Payload 长度 |
-| 44 | 4 | StoredSize | 磁盘 Payload 长度 |
+| 44 | 4 | StoredSize | 磁盘 Payload 长度；加密时=密文长度（明文+16B tag） |
 | 48 | 4 | RawCRC32C | 完整未压缩 Payload CRC |
+| 52 | 4 | HeaderCRC32C | |
+| 56 | 4 | KeyEpoch | 加密时块所属密钥代次（未加密为 0） |
+| 60 | 4 | Reserved | 0 |
+
+加密块语义：payload 先压缩后 AES-256-GCM 加密（NonceScheme=1，
+96-bit nonce = KeyEpoch(4B)+BlockID(8B)），密文=明文+16B tag，存于
+payload 区。AAD 绑定 StoreUUID 与 BlockHeader 全字段（除 Flags/KeyEpoch），
+防跨块/跨表/跨 Store 挪用。未加密块 Flags=0、KeyEpoch=0、StoredSize=RawSize
+（None 压缩时）。解密-解压-长度/CRC 校验顺序固定；已提交范围内认证失败
+属中间损坏，必须报错。详见 DATA_BLOCK_ENCRYPTION_FEASIBILITY.md。
 | 52 | 4 | HeaderCRC32C | Header CRC |
 | 56 | 8 | Reserved | 0 |
 

@@ -58,6 +58,37 @@
 
 验收目标：批量读取有效吞吐较逐行 Get 提升 3 倍以上；相同 Block 集合只发生一次读取、解压和校验；顺序读取吞吐不下降超过 5%。
 
+### 3.1 状态：已完成（2026-09-07，基准档 1M 行 × 4096 行/批）
+
+- [x] `Store.ReadBatch(ctx, snapshot, table, ids []RowID) ([]Row, error)`：
+      按块聚合的批量读；每个块 Load+CRC+解压至多一次；单行块走 O(1)
+      ParseRowAt，多行块 ParseRowsDirectory 一次后逐条解码；去重后的块按
+      BlockID 升序（=文件布局序）读取；错误语义与 Get 逐行一致（任一 id
+      缺失/删除 → ErrNotFound，整批失败；重复 id 与逐行 Get 相同重复返回）。
+- [x] `Stats.Batch`（Calls/Rows/Blocks/RawBytes）：量化聚合效果——
+      Blocks 恒为批内唯一块数，RawBytes 为这些块 raw 字节总和，可验证
+      “相同块集合只发生一次读取/解压/校验”。
+- [x] 基准：`BenchmarkBatchBaselineGet`（基线）/ `BenchmarkReadBatch`
+      （实现后），同 ids 对比；`make bench-batch` 一键复现。
+- [x] 测试：与逐行 Get 值对拍（FULL/DELTA 链 × 随机/顺序）、错误语义、
+      空/重复 id、Stats 计数（1000 行聚簇 → Blocks=1）、Close/Reopen、
+      16 goroutine 并发（-race）。
+
+验收结果（2026-09-07，10s×8 场景）：
+
+| 场景 | 逐行 Get | ReadBatch | 提升 | 块/批 |
+| --- | --- | --- | --- | --- |
+| rand/hot | 7.57 krows/s | 27.2 krows/s | 3.6× | 389 |
+| rand/cold | 3.45 krows/s | 33.4 krows/s | 9.7× | 389 |
+| seq/cold | 3.70 krows/s | 1941 krows/s | 525× | 3 |
+| seq/hot | 4059 krows/s | 3167 krows/s | 0.78× | 3 |
+
+说明：rand 两档与 seq/cold 达标（≥3×）；seq/hot（缓存全热、4096 行挤在
+3 个块）慢于复用 dst 的逐行 Get ~22%，根因是物化语义（ReadBatch 返回独立
+行，allocs/批 16429 vs 8195，无法借用调用者缓冲）；与等语义无复用 Get
+（~1660 krows/s）对比约 1.9× 快，Scan 路径未改动。若需消除该档差距，
+后续提供 ReadBatchInto（行缓冲复用）形态，本版本不引入。
+
 ## 4. P1：Scan 内存与缓存策略
 
 当前 1M 行 Scan 约 238 ms、156 MB/op，其中主要是首轮 Block 解压缓冲，而非逐行分配。

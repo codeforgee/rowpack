@@ -1,6 +1,6 @@
 GO ?= go
 
-.PHONY: all build test race vet lint fmt fuzz-short clean golden bench
+.PHONY: all build test race vet lint fmt fuzz-short clean golden bench bench-batch
 
 all: fmt vet test
 
@@ -44,6 +44,12 @@ bench:
 		-bench 'Benchmark(Env|MainMatrix|Latency)' \
 		-benchtime=$(BENCHTIME) -benchmem -count=$(BENCHCOUNT) -v . \
 		2>&1 | tee docs/bench-results.txt
+
+# Tier 1 batch-read comparison (baseline Get vs ReadBatch), 10s per scenario.
+# Larger stores (1M rows) make this slower than the main matrix on purpose.
+bench-batch:
+	$(GO) test -run '^$$' -bench 'Benchmark(BatchBaselineGet|ReadBatch)$$' \
+		-benchmem -benchtime=10s -count=1 .
 
 # Regenerate every golden file from the current implementation.
 # Golden files must be reviewed in the same change as the format change.

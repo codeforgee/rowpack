@@ -12,6 +12,18 @@ type CacheStats struct {
 	Loads         uint64
 }
 
+// BatchStats summarizes ReadBatch activity: how many batches were served,
+// how many rows were returned, how many distinct blocks were loaded, and how
+// many raw bytes were decompressed/verified. Blocks <= Rows and the raw byte
+// count quantify the batch aggregation effect: the same block is loaded and
+// decompressed once per batch even when many rows come from it.
+type BatchStats struct {
+	Calls    uint64 // ReadBatch invocations
+	Rows     uint64 // rows returned across all calls
+	Blocks   uint64 // distinct blocks loaded across all calls
+	RawBytes uint64 // decompressed payload bytes across all calls
+}
+
 // RecoveryStats summarizes the most recent open/recovery.
 type RecoveryStats struct {
 	Performed        bool
@@ -33,6 +45,7 @@ type Stats struct {
 	StoredBytes      uint64
 	IndexMemoryBytes uint64
 	Cache            CacheStats
+	Batch            BatchStats
 	Recovery         RecoveryStats
 }
 
@@ -67,6 +80,10 @@ func (s *Store) Stats() Stats {
 	if l := s.loader; l != nil {
 		stt.Cache.CapacityBytes, stt.Cache.UsedBytes, stt.Cache.Hits, stt.Cache.Misses, stt.Cache.Evictions, stt.Cache.Loads = l.cacheStats()
 	}
+	stt.Batch.Calls = s.batchCalls.Load()
+	stt.Batch.Rows = s.batchRows.Load()
+	stt.Batch.Blocks = s.batchBlocks.Load()
+	stt.Batch.RawBytes = s.batchRawBytes.Load()
 	if v := s.recoveryStats.Load(); v != nil {
 		r := v.(recoveryReport)
 		stt.Recovery.Performed = r.performed

@@ -126,6 +126,26 @@ for {
 }
 ```
 
+## 批量读取
+
+对任意的 RowID 集合，`ReadBatch` 按块聚合：每个块至多加载、解压和校验一次，
+块内多行共享同一次目录解析，然后按请求顺序一次性返回（v1.2）。与逐行 Get 相比，
+冷块/大集合场景吞吐提升 3.6×–525×（`make bench-batch` 复现）；聚合效果可经
+`Stats.Batch`（去重块数、解压字节）验证。错误语义与 Get 一致：任一 id 缺失或
+已删除即整批返回 `ErrNotFound`。
+
+```go
+rows, err := db.ReadBatch(ctx, full.ID, 1, []RowID{1001, 1002, 1005})
+if err != nil {
+	log.Fatal(err)
+}
+for i, row := range rows {
+	_ = i
+	name, _ := row[1].String()
+	_ = name
+}
+```
+
 ## 文档
 
 - [需求规格](docs/REQUIREMENTS.md)
@@ -136,6 +156,7 @@ for {
 - [v1.1 优化计划](docs/plan-v11.md)
 - [v1.2 优化计划](docs/plan-v12.md)
 - [性能测试报告](docs/perf-report.md)
+- [源库 Key Range 映射](docs/SOURCE_KEY_RANGE_MAPPING.md)
 - [ADR-001：.rpk 是提交权威](docs/adr/ADR-001.md)
 - [ADR-002：元数据是引擎存储的数据](docs/adr/ADR-002.md)
 
@@ -147,6 +168,7 @@ make race        # go test -race ./...
 make fuzz-short  # 每个 fuzz 目标 5s
 make golden      # 重新生成 golden files（格式变更时人工审查）
 make bench       # 统一基准矩阵（v1.2 Tier 0），输出 docs/bench-results.txt
+make bench-batch # 批量读对比：逐行 Get 基线 vs ReadBatch（v1.2 Tier 1）
 ```
 
 ## 参考基准

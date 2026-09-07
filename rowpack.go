@@ -100,6 +100,12 @@ type Store struct {
 	lastBlockID    atomic.Uint64
 	txnSeq         atomic.Uint64
 
+	// ReadBatch cumulative counters (see Stats.Batch).
+	batchCalls    atomic.Uint64
+	batchRows     atomic.Uint64
+	batchBlocks   atomic.Uint64
+	batchRawBytes atomic.Uint64
+
 	// zstdEnc is the store-level persistent zstd encoder for the write path.
 	// A store has at most one active writer and block flushing is sequential,
 	// so the encoder is never used concurrently; owning it (instead of going

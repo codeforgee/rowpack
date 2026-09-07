@@ -382,6 +382,22 @@ Decimal 访问器也返回副本，因此通过访问器读值始终安全；保
 
 空 Store 的 LatestSnapshot 返回 `ErrNotFound`。ListSnapshots 按 ID 升序并返回新切片。
 
+批量读取（v1.2 新增）：
+
+```go
+func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table TableID, ids []RowID) ([]Row, error)
+```
+
+ReadBatch 是 Get 的批量对应：对任意 RowID 集合按块聚合——每个块至多
+Load+CRC+解压一次，块内多行复用同一次目录解析，然后按 ids 顺序一一返回
+（重复 id 读两次，语义等价于多次 Get）。错误语义与 Get 一致：任一 id
+缺失或已删除则整批返回 `ErrNotFound`（不返回部分结果）。返回的行均为
+引擎新分配、相互独立（不借用调用者缓冲，也不别名块缓冲）。
+
+聚合效果由 `Stats.Batch` 量化：`Blocks`=去重的块数（≤ len(ids)），
+`RawBytes`=这些块的解压字节，`Calls`/`Rows` 为累计调用与返回行数；
+可用于验证“相同块集合只发生一次读取/解压/校验”。
+
 ## 9. Scan Iterator
 
 ```go

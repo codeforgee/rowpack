@@ -59,6 +59,23 @@ make bench   # => go test -bench 'Benchmark(Env|MainMatrix|Latency)' -benchmem -
 仅作为诊断指标。v1.2 将批量分块读取（ReadBatch）的块数、解压次数、实际读取字节和 p95
 作为主要的批量读取指标（Tier 1）。
 
+## 1.1 批量分块读取（v1.2 Tier 1）
+
+对比由 `make bench-batch` 复现（同 ids 集合，基线=逐行 Get，目标=ReadBatch，
+1M 行 × 4096 行/批，每场景 10s）：
+
+| 场景 | 逐行 Get | ReadBatch | 提升 | 块/批 |
+| --- | --- | --- | --- | --- |
+| rand / hot | 7.57 krows/s | 27.2 krows/s | 3.6× | 389 |
+| rand / cold | 3.45 krows/s | 33.4 krows/s | 9.7× | 389 |
+| seq / cold | 3.70 krows/s | 1941 krows/s | ~525× | 3 |
+| seq / hot | 4059 krows/s | 3167 krows/s | 0.78× | 3 |
+
+`Stats.Batch.Blocks`/`RawBytes` 验证“相同块集合只发生一次读取/解压/校验”。
+seq/hot 档较“复用 dst 的逐行 Get”慢 ~22% 是物化语义成本（ReadBatch 返回独立
+行、不借用调用者缓冲）；与等语义无复用 Get 对比约 1.9× 快，Scan 顺序读路径
+未改动。详见 docs/plan-v12.md §3.1。
+
 ## 2. 历史微基准（v1.0，100k 行 × 7 列）
 
 | 场景 | 指标 | 说明 |

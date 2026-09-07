@@ -189,7 +189,7 @@ func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error
 
 - 公开 API 不提供 `PutMetadata`、`DeleteMetadata`、`Metadata`、`ListMetadata` 及
   `MetadataRecord` / `MetadataField` / `MetadataQuery` / `MetadataWireType` 等类型。
-- TLV 元数据机制保留在 `internal/metadata`，仅供 `DefineSchema` 自产自销的
+- TLV 元数据机制保留在 `../internal/metadata`，仅供 `DefineSchema` 自产自销的
   Table/Column 记录使用。
 - 未来如需元数据透传，以完整的读写 API 一次性设计，不做只写半成品。
 

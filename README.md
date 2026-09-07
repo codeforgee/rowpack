@@ -127,11 +127,11 @@ for {
 
 ## 文档
 
-- [需求规格](REQUIREMENTS.md)
-- [二进制格式 v1](BINARY_FORMAT_V1.md)
-- [元数据格式 v1](METADATA_FORMAT_V1.md)
-- [Go API 设计](GO_API_DESIGN.md)
-- [开发计划](DEVELOPMENT_PLAN.md)
+- [需求规格](docs/REQUIREMENTS.md)
+- [二进制格式 v1](docs/BINARY_FORMAT_V1.md)
+- [元数据格式 v1](docs/METADATA_FORMAT_V1.md)
+- [Go API 设计](docs/GO_API_DESIGN.md)
+- [开发计划](docs/DEVELOPMENT_PLAN.md)
 - [v1.1 优化计划](docs/plan-v11.md)
 - [ADR-001：.rpk 是提交权威](docs/adr/ADR-001.md)
 - [ADR-002：元数据是引擎存储的数据](docs/adr/ADR-002.md)

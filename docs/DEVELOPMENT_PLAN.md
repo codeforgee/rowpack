@@ -87,7 +87,7 @@ RowPack/
 
 - 初始化 Go module，确定最低 Go 版本。
 - 建立目录、包边界和 lint/test 命令。
-- 将所有磁盘常量集中到 `internal/fileformat/constants.go`。
+- 将所有磁盘常量集中到 `../internal/fileformat/constants.go`。
 - 将 Type、RecordType、FieldID、Feature Bit 编号生成或固定为常量。
 - 增加规范一致性测试，检查声明的固定结构大小。
 - 记录 Zstd 库选择及版本策略。
@@ -97,7 +97,7 @@ RowPack/
 
 - 可执行 `go test ./...` 的工程骨架。
 - `format_version.go` 和所有枚举常量。
-- `testdata/golden` 目录及生成策略。
+- `../testdata/golden` 目录及生成策略。
 - ADR-001：为什么 `.rpk` 是提交权威、`.rpi` 可重建。
 - ADR-002：元数据是引擎存储的普通数据，引擎不内建强类型语义。
 

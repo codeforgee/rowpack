@@ -11,7 +11,7 @@ Schema 契约：`DefineSchema` 把列名、逻辑类型、可空性和 Decimal �
 模型（约束、索引、视图、厂商扩展等都不是引擎概念），也从不解释这些记录
 的语义——它们只是通过通用 TLV 规则保存与透传的数据。
 
-TLV 机制位于 `internal/metadata`：记录信封（Envelope）、字段 TLV、元数据块
+TLV 机制位于 `../internal/metadata`：记录信封（Envelope）、字段 TLV、元数据块
 载荷（头部 + 目录）都按本文档布局。未知非 Critical 记录/字段无损保留，
 未知 Critical 内容拒绝打开，扩展新记录类型不需要改外层 Block 格式。
 
@@ -139,7 +139,7 @@ Critical 拒绝。
 ## 6. 引擎 Schema 记录
 
 `DefineSchema(schema)` 把 Schema 契约写成两类记录（字段见下表，字段 ID
-与 `internal/metadata/corefields.go` 一致）：
+与 `../internal/metadata/corefields.go` 一致）：
 
 - **Table 记录（RecordType=2）**：ObjectID = TableID，Revision = Schema
   Version，ExternalKey = 表名。

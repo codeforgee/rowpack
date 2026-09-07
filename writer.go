@@ -595,7 +595,7 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	sh.SnapshotID = w.id
 	sh.ParentSnapshotID = w.parent
 	sh.CreatedUnixNano = w.created
-	sh.WriterNonce = randUint64()
+	sh.WriterNonce = effectiveWriterNonce()
 	if len(w.pending) > 0 {
 		sh.FirstBlockID = w.pending[0].header.BlockID
 	}

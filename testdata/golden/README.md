@@ -28,3 +28,11 @@ make golden     # 等价于 go test ./... -run TestGolden -args -update-golden
 
 CI 中 `go test ./...` 的 golden 测试以只读方式校验：任何样本与实现不一致即失败，
 锁定的 Store 样本必须可打开且内容一致。
+
+## 确定性来源
+
+golden 生成固定了三个非确定性源（`rowpack.go` 的测试钩子）：
+StoreUUID（`testUUIDOverride`）、CreatedAt（`testNowOverride`）、
+SnapshotHeader.WriterNonce（`testNonceOverride`）。生产路径下 WriterNonce
+每次写入随机；任何新引入的非确定性字段都必须同样纳入钩子覆盖，否则每次
+`make golden` 都会产生无关 diff，破坏「人工 diff 审查只看格式变更」的前提。

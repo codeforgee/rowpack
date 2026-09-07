@@ -33,8 +33,9 @@ import (
 // Test-only hooks, set only by tests in this package so golden files are
 // byte-deterministic. The public API surface is unchanged.
 var (
-	testNowOverride  int64
-	testUUIDOverride *[16]byte
+	testNowOverride   int64
+	testUUIDOverride  *[16]byte
+	testNonceOverride *uint64
 )
 
 func effectiveNow() int64 {
@@ -42,6 +43,14 @@ func effectiveNow() int64 {
 		return testNowOverride
 	}
 	return time.Now().UTC().UnixNano()
+}
+
+// effectiveWriterNonce returns the SnapshotHeader.WriterNonce value.
+func effectiveWriterNonce() uint64 {
+	if testNonceOverride != nil {
+		return *testNonceOverride
+	}
+	return randUint64()
 }
 
 func effectiveUUID() ([16]byte, error) {

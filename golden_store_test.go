@@ -27,9 +27,12 @@ func buildFullDeltaStore(t *testing.T, base string) {
 	uuid := [16]byte{0xAA, 0xBB, 0xCC, 0xDD, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C}
 	testUUIDOverride = &uuid
 	testNowOverride = 1757400000000000000
+	nonce := uint64(0x4E4F4E4345474F4C) // "NOCEGOL" — fixed so golden bytes are deterministic
+	testNonceOverride = &nonce
 	t.Cleanup(func() {
 		testUUIDOverride = nil
 		testNowOverride = 0
+		testNonceOverride = nil
 	})
 	opts := Options{}
 	opts.BlockSize = 1024

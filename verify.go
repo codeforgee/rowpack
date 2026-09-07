@@ -83,7 +83,7 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 							return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, TableID: bl.TableID, Kind: ErrCorruptData, Reason: fmt.Sprintf("row %d CRC mismatch", rp.Entries[i].RowID)}
 						}
 						// Decode against the schema when resolvable.
-						schema := st.schemas.Schema(bl.SnapshotID, bl.TableID, rp.Entries[i].SchemaVersion)
+						schema := st.schemas.schema(bl.SnapshotID, bl.TableID, rp.Entries[i].SchemaVersion)
 						if schema != nil {
 							if _, err := decodeRowBytes(rp.RowBytes(i), schema, s.opts); err != nil {
 								return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, TableID: bl.TableID, Kind: ErrCorruptData, Reason: fmt.Sprintf("row %d: %v", rp.Entries[i].RowID, err)}

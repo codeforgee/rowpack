@@ -135,12 +135,12 @@ func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table TableID, 
 
 // readRow reads and decodes a single row from its block via ParseRowAt,
 // avoiding a full block directory parse for random reads.
-func (s *Store) readRow(view *index.View, si *SchemaIndex, loc *index.RowLoc) (Row, SchemaVersion, error) {
+func (s *Store) readRow(view *index.View, si *schemaIndex, loc *index.RowLoc) (Row, SchemaVersion, error) {
 	return s.readRowInto(view, si, loc, nil)
 }
 
 // readRowInto is readRow with a caller-owned destination row.
-func (s *Store) readRowInto(view *index.View, si *SchemaIndex, loc *index.RowLoc, dst Row) (Row, SchemaVersion, error) {
+func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc *index.RowLoc, dst Row) (Row, SchemaVersion, error) {
 	bl := view.Block(loc.BlockID)
 	if bl == nil {
 		return nil, 0, fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)
@@ -166,17 +166,17 @@ func (s *Store) readRowInto(view *index.View, si *SchemaIndex, loc *index.RowLoc
 // rowFromPayload decodes the record at ordinal from an already-built rows
 // directory (used by Scan's block cursor). Callers must already have filtered
 // tombstones.
-func (s *Store) rowFromPayload(rp *block.RowsIndex, bl *index.BlockLoc, loc *index.RowLoc, si *SchemaIndex) (Row, error) {
+func (s *Store) rowFromPayload(rp *block.RowsIndex, bl *index.BlockLoc, loc *index.RowLoc, si *schemaIndex) (Row, error) {
 	return s.rowFromPayloadInto(rp, bl, loc, si, nil)
 }
 
 // rowFromPayloadInto is rowFromPayload with a caller-owned destination row.
-func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc *index.RowLoc, si *SchemaIndex, dst Row) (Row, error) {
+func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc *index.RowLoc, si *schemaIndex, dst Row) (Row, error) {
 	if int(loc.ItemOrdinal) >= len(rp.Entries) {
 		return nil, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", loc.ItemOrdinal, loc.BlockID)
 	}
 	ent := &rp.Entries[loc.ItemOrdinal]
-	schema := si.Schema(bl.SnapshotID, bl.TableID, ent.SchemaVersion)
+	schema := si.schema(bl.SnapshotID, bl.TableID, ent.SchemaVersion)
 	if schema == nil {
 		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ent.SchemaVersion)
 	}
@@ -184,13 +184,13 @@ func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc 
 }
 
 // decodeRow decodes a located row against its schema.
-func (s *Store) decodeRow(ref *block.RowRef, bl *index.BlockLoc, si *SchemaIndex) (Row, error) {
+func (s *Store) decodeRow(ref *block.RowRef, bl *index.BlockLoc, si *schemaIndex) (Row, error) {
 	return s.decodeRowInto(ref, bl, si, nil)
 }
 
 // decodeRowInto is decodeRow with a caller-owned destination row.
-func (s *Store) decodeRowInto(ref *block.RowRef, bl *index.BlockLoc, si *SchemaIndex, dst Row) (Row, error) {
-	schema := si.Schema(bl.SnapshotID, bl.TableID, ref.Entry.SchemaVersion)
+func (s *Store) decodeRowInto(ref *block.RowRef, bl *index.BlockLoc, si *schemaIndex, dst Row) (Row, error) {
+	schema := si.schema(bl.SnapshotID, bl.TableID, ref.Entry.SchemaVersion)
 	if schema == nil {
 		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ref.Entry.SchemaVersion)
 	}
@@ -206,7 +206,7 @@ func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table TableID, 
 	if st.view.Snapshot(snapshot) == nil {
 		return Schema{}, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	schema := st.schemas.Schema(snapshot, table, version)
+	schema := st.schemas.schema(snapshot, table, version)
 	if schema == nil {
 		return Schema{}, fmt.Errorf("%w: schema for table %d version %d", ErrSchemaMismatch, table, version)
 	}
@@ -222,7 +222,7 @@ func (s *Store) LatestSchema(ctx context.Context, snapshot SnapshotID, table Tab
 	if st.view.Snapshot(snapshot) == nil {
 		return Schema{}, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	versions := st.schemas.Versions(snapshot, table)
+	versions := st.schemas.versions(snapshot, table)
 	if len(versions) == 0 {
 		return Schema{}, fmt.Errorf("%w: table %d in snapshot %d", ErrNotFound, table, snapshot)
 	}
@@ -266,7 +266,7 @@ func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]TableInfo, e
 		if err != nil {
 			continue
 		}
-		latest := st.schemas.Latest(snapshot, tid)
+		latest := st.schemas.latest(snapshot, tid)
 		out = append(out, TableInfo{ID: tid, Name: fieldString(rec, metadata.TableTableName), LatestVersion: latest})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

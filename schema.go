@@ -11,10 +11,10 @@ import (
 	"github.com/rowpack/rowpack/internal/metadata"
 )
 
-// SchemaIndex maps (SnapshotID, TableID) -> ordered schema versions and the
+// schemaIndex maps (SnapshotID, TableID) -> ordered schema versions and the
 // resolved codec.Schema per version. It is derived from core Table+Column
 // metadata records and is immutable once built.
-type SchemaIndex struct {
+type schemaIndex struct {
 	bySnapshot map[uint64]map[uint32]*tableSchemas
 }
 
@@ -24,7 +24,7 @@ type tableSchemas struct {
 }
 
 // Schema returns the schema for (snapshot, table, version), or nil.
-func (si *SchemaIndex) Schema(snapshot uint64, table uint32, version uint32) *codec.Schema {
+func (si *schemaIndex) schema(snapshot uint64, table uint32, version uint32) *codec.Schema {
 	ts := si.bySnapshot[snapshot][table]
 	if ts == nil {
 		return nil
@@ -33,7 +33,7 @@ func (si *SchemaIndex) Schema(snapshot uint64, table uint32, version uint32) *co
 }
 
 // Versions returns the sorted schema versions of (snapshot, table).
-func (si *SchemaIndex) Versions(snapshot uint64, table uint32) []uint32 {
+func (si *schemaIndex) versions(snapshot uint64, table uint32) []uint32 {
 	ts := si.bySnapshot[snapshot][table]
 	if ts == nil {
 		return nil
@@ -44,7 +44,7 @@ func (si *SchemaIndex) Versions(snapshot uint64, table uint32) []uint32 {
 }
 
 // Latest returns the highest schema version of (snapshot, table).
-func (si *SchemaIndex) Latest(snapshot uint64, table uint32) uint32 {
+func (si *schemaIndex) latest(snapshot uint64, table uint32) uint32 {
 	ts := si.bySnapshot[snapshot][table]
 	if ts == nil || len(ts.versions) == 0 {
 		return 0
@@ -54,8 +54,8 @@ func (si *SchemaIndex) Latest(snapshot uint64, table uint32) uint32 {
 
 // buildSchemaIndex derives schemas for every snapshot in the view by reading
 // its Table and Column metadata records (resolved along the parent chain).
-func (s *Store) buildSchemaIndex(view *index.View) (*SchemaIndex, error) {
-	si := &SchemaIndex{bySnapshot: make(map[uint64]map[uint32]*tableSchemas)}
+func (s *Store) buildSchemaIndex(view *index.View) (*schemaIndex, error) {
+	si := &schemaIndex{bySnapshot: make(map[uint64]map[uint32]*tableSchemas)}
 	for _, sm := range view.Snapshots() {
 		tables, err := s.deriveTables(view, sm.ID)
 		if err != nil {

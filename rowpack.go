@@ -46,7 +46,7 @@ func effectiveUUID() ([16]byte, error) {
 // index view and the derived schema index. Readers load it once.
 type publishedState struct {
 	view    *index.View
-	schemas *SchemaIndex
+	schemas *schemaIndex
 }
 
 // Store is a RowPack store backed by <base>.rpk and <base>.rpi.

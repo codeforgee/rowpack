@@ -159,47 +159,17 @@ func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]TableInfo, e
 - 返回的 Schema 和 Columns 是副本。
 - `version=0` 不隐式表示 latest；使用 `LatestSchema`。
 
-`DefineSchema` 是便捷入口，内部生成核心 Table 和 Column Metadata。更完整的数据库结构以及未来扩展使用下列通用接口。
+`DefineSchema` 是唯一的 Schema 契约入口，内部生成核心 Table 和 Column Metadata。
 
-### 4.1 通用元数据
+### 4.1 元数据边界
 
-```go
-type MetadataID uint64
-type MetadataType uint32
-type MetadataWireType uint8
+引擎**不公开通用元数据通道**（2026-09 精简决策，取代原 `PutMetadata` / `Metadata` / `ListMetadata` 设计）：
 
-type MetadataField struct {
-	ID       uint16
-	WireType MetadataWireType
-	Critical bool
-	Repeated bool
-	Value    any // 仅允许元数据规范定义的值类型
-}
-
-type MetadataRecord struct {
-	ObjectID    MetadataID
-	ParentID    MetadataID
-	Revision    uint32
-	Type        MetadataType
-	Namespace   string
-	ExternalKey string
-	Critical    bool
-	Fields      []MetadataField
-}
-
-type MetadataQuery struct {
-	Type      MetadataType // 0=全部
-	ParentID  MetadataID   // 0=不过滤
-	Namespace string       // 空=不过滤
-}
-
-func (w *SnapshotWriter) PutMetadata(record MetadataRecord) error
-func (w *SnapshotWriter) DeleteMetadata(id MetadataID, typ MetadataType) error
-func (s *Store) Metadata(ctx context.Context, snapshot SnapshotID, id MetadataID) (MetadataRecord, error)
-func (s *Store) ListMetadata(ctx context.Context, snapshot SnapshotID, query MetadataQuery) (*MetadataIterator, error)
-```
-
-RowPack 引擎**不内建强类型元数据模型**：表结构、约束、注释等数据库元信息一律作为普通记录，通过上面的通用 Metadata API 存储与读取（保序、无损往返、未知字段透传）。引擎不解释这些记录的语义。
+- 公开 API 不提供 `PutMetadata`、`DeleteMetadata`、`Metadata`、`ListMetadata` 及
+  `MetadataRecord` / `MetadataField` / `MetadataQuery` / `MetadataWireType` 等类型。
+- TLV 元数据机制保留在 `internal/metadata`，仅供 `DefineSchema` 自产自销的
+  Table/Column 记录使用。
+- 未来如需元数据透传，以完整的读写 API 一次性设计，不做只写半成品。
 
 行解码所需的最小 Schema 契约由 `DefineSchema` 提供（见 §7），类型字符串为引擎自产自销的规范值；引擎不猜测任何数据库方言类型。
 
@@ -352,7 +322,7 @@ func (w *SnapshotWriter) Commit(ctx context.Context) (SnapshotInfo, error)
 func (w *SnapshotWriter) Abort() error
 ```
 
-Writer 不支持并发调用；实现应使用 guard 返回 `ErrConcurrentWriterUse`。状态机：
+Writer 不支持并发调用；调用方必须自行串行化对同一 Writer 的访问。状态机：
 
 ```text
 Open --Commit success--> Committed
@@ -504,16 +474,14 @@ var (
 	ErrInvalidPath         = errors.New("rowpack: invalid path")
 	ErrInvalidArgument     = errors.New("rowpack: invalid argument")
 	ErrReadOnly            = errors.New("rowpack: read only")
-	ErrWriterBusy          = errors.New("rowpack: writer busy")
-	ErrConcurrentWriterUse = errors.New("rowpack: concurrent writer use")
-	ErrSnapshotCommitted   = errors.New("rowpack: snapshot committed")
+	ErrWriterBusy        = errors.New("rowpack: writer busy")
+	ErrSnapshotCommitted = errors.New("rowpack: snapshot committed")
 	ErrSnapshotAborted     = errors.New("rowpack: snapshot aborted")
 	ErrSnapshotFailed      = errors.New("rowpack: snapshot failed")
 	ErrInvalidParent       = errors.New("rowpack: invalid parent snapshot")
 	ErrSchemaMismatch      = errors.New("rowpack: schema mismatch")
-	ErrSchemaConflict      = errors.New("rowpack: schema conflict")
-	ErrUnsupportedType     = errors.New("rowpack: unsupported type")
-	ErrCorruptData         = errors.New("rowpack: corrupt data")
+	ErrSchemaConflict     = errors.New("rowpack: schema conflict")
+	ErrCorruptData        = errors.New("rowpack: corrupt data")
 	ErrCorruptIndex        = errors.New("rowpack: corrupt index")
 	ErrVersionUnsupported  = errors.New("rowpack: unsupported version")
 	ErrStoreMismatch       = errors.New("rowpack: store files do not match")

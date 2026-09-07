@@ -12,8 +12,6 @@ type (
 	TableID       = uint32
 	RowID         = uint64
 	SchemaVersion = uint32
-	MetadataID    = uint64
-	MetadataType  = uint32
 )
 
 // Type is the logical value type of a column and equals the disk Type ID used

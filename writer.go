@@ -89,12 +89,12 @@ type SnapshotWriter struct {
 	metaBuilder *block.MetadataBlockBuilder
 
 	// schemas defined in this snapshot: (table, version) -> schema
-	schemas map[SchemaKey]*codec.Schema
+	schemas map[schemaKey]*codec.Schema
 
 	// encBuf is reused across row encodes to cut per-row allocation.
 	encBuf []byte
 	// seen row keys to reject duplicates
-	seenRows map[RowKey]struct{}
+	seenRows map[rowKey]struct{}
 
 	// pending blocks in flush order (rows and metadata interleaved)
 	pending []*pendingBlock
@@ -108,14 +108,14 @@ type SnapshotWriter struct {
 	rawBytes       uint64
 }
 
-// SchemaKey identifies a schema version.
-type SchemaKey struct {
+// schemaKey identifies a schema version.
+type schemaKey struct {
 	Table   TableID
 	Version SchemaVersion
 }
 
-// RowKey identifies a row within a table.
-type RowKey struct {
+// rowKey identifies a row within a table.
+type rowKey struct {
 	Table TableID
 	Row   RowID
 }
@@ -175,8 +175,8 @@ func (s *Store) BeginSnapshot(ctx context.Context, typ SnapshotType, opts Snapsh
 		allowEmpty:  opts.AllowEmpty,
 		state:       writerOpen,
 		rowBuilders: make(map[TableID]*block.RowsBlockBuilder),
-		schemas:     make(map[SchemaKey]*codec.Schema),
-		seenRows:    make(map[RowKey]struct{}),
+		schemas:     make(map[schemaKey]*codec.Schema),
+		seenRows:    make(map[rowKey]struct{}),
 		allocator:   metadata.NewObjectIDAllocator(),
 	}
 	w.allocator = s.seedAllocator()
@@ -235,7 +235,7 @@ func (w *SnapshotWriter) DefineSchema(schema codec.Schema) error {
 	if err := schema.Validate(w.store.opts.codecLimits()); err != nil {
 		return err
 	}
-	key := SchemaKey{Table: schema.TableID, Version: schema.Version}
+	key := schemaKey{Table: schema.TableID, Version: schema.Version}
 	if existing, ok := w.schemas[key]; ok {
 		if !schemaEqual(existing, &schema) {
 			return fmt.Errorf("%w: schema %d v%d differs from existing definition", ErrSchemaConflict, schema.TableID, schema.Version)
@@ -245,13 +245,13 @@ func (w *SnapshotWriter) DefineSchema(schema codec.Schema) error {
 	// Check parent chain monotonicity.
 	st := w.store.state.Load()
 	if st != nil {
-		if existing := st.schemas.Schema(w.parentSnapshotFor(), schema.TableID, schema.Version); existing != nil {
+		if existing := st.schemas.schema(w.parentSnapshotFor(), schema.TableID, schema.Version); existing != nil {
 			if !schemaEqual(existing, &schema) {
 				return fmt.Errorf("%w: schema %d v%d conflicts with committed definition", ErrSchemaConflict, schema.TableID, schema.Version)
 			}
 			return nil
 		}
-		latest := st.schemas.Latest(w.parentSnapshotFor(), schema.TableID)
+		latest := st.schemas.latest(w.parentSnapshotFor(), schema.TableID)
 		if schema.Version <= latest {
 			return fmt.Errorf("%w: schema %d version %d not greater than latest %d", ErrSchemaConflict, schema.TableID, schema.Version, latest)
 		}
@@ -430,7 +430,7 @@ func (w *SnapshotWriter) put(ctx context.Context, typ ChangeType, table TableID,
 	if rowID == 0 {
 		return fmt.Errorf("%w: row id is zero", ErrInvalidArgument)
 	}
-	key := RowKey{Table: table, Row: rowID}
+	key := rowKey{Table: table, Row: rowID}
 	if _, dup := w.seenRows[key]; dup {
 		return fmt.Errorf("%w: duplicate (table %d, row %d) in snapshot %d", ErrAlreadyExists, table, rowID, w.id)
 	}
@@ -464,12 +464,12 @@ func (w *SnapshotWriter) put(ctx context.Context, typ ChangeType, table TableID,
 }
 
 func (w *SnapshotWriter) resolveSchema(table TableID, version SchemaVersion) (*codec.Schema, error) {
-	if schema, ok := w.schemas[SchemaKey{Table: table, Version: version}]; ok {
+	if schema, ok := w.schemas[schemaKey{Table: table, Version: version}]; ok {
 		return schema, nil
 	}
 	st := w.store.state.Load()
 	if st != nil {
-		if schema := st.schemas.Schema(w.parentSnapshotFor(), table, version); schema != nil {
+		if schema := st.schemas.schema(w.parentSnapshotFor(), table, version); schema != nil {
 			return schema, nil
 		}
 	}
@@ -765,9 +765,9 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 
 // buildNewSchemas derives the schema index for the new snapshot only (the
 // parent snapshots' schemas are reused from the old index).
-func (w *SnapshotWriter) buildNewSchemas(newView *index.View) (*SchemaIndex, error) {
+func (w *SnapshotWriter) buildNewSchemas(newView *index.View) (*schemaIndex, error) {
 	base := w.store.state.Load()
-	si := &SchemaIndex{bySnapshot: make(map[uint64]map[uint32]*tableSchemas)}
+	si := &schemaIndex{bySnapshot: make(map[uint64]map[uint32]*tableSchemas)}
 	if base != nil && base.schemas != nil {
 		for snap, tables := range base.schemas.bySnapshot {
 			si.bySnapshot[snap] = tables

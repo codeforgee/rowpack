@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"testing"
 	"time"
 
@@ -16,9 +18,36 @@ import (
 // BenchmarkEnv.
 
 func BenchmarkEnv(b *testing.B) {
-	// Informational benchmark: prints Go + Zstd versions and dataset geometry.
-	b.Logf("go=1.27 zstd=klauspost/compress/v1.20.0 blockSize=%d compression=zstd dataset=100k rows x 7 cols",
-		fileformat.DefaultBlockSize)
+	// Informational benchmark: prints the environment (Go version, module
+	// versions, platform) plus the reference dataset geometry measured from a
+	// freshly built store, so every run records reproducible context.
+	bi, ok := debug.ReadBuildInfo()
+	zstdVer := "unknown"
+	goVer := runtime.Version()
+	if ok {
+		for _, dep := range bi.Deps {
+			if dep.Path == "github.com/klauspost/compress" {
+				zstdVer = dep.Version
+			}
+		}
+	}
+	base := filepath.Join(b.TempDir(), "env")
+	db, _ := buildBenchStoreOpts(b, base, 100000, Options{})
+	st := db.Stats()
+	db.Close()
+	bytesPerRow := 0.0
+	if st.DataFileBytes > 0 {
+		bytesPerRow = float64(st.DataFileBytes) / 100000
+	}
+	ratio := 0.0
+	if st.RawBytes > 0 {
+		ratio = float64(st.StoredBytes) / float64(st.RawBytes)
+	}
+	b.Logf("go=%s zstd=%s os=%s/%s cacheBytes=%d blockSize=%d dataset=100k rows x 7 cols "+
+		"dataMB=%.1f ratio=%.3f bytePerRow=%.1f indexMB=%.1f",
+		goVer, zstdVer, runtime.GOOS, runtime.GOARCH, fileformat.DefaultCacheBytes,
+		fileformat.DefaultBlockSize, float64(st.DataFileBytes)/(1<<20), ratio, bytesPerRow,
+		float64(st.IndexMemoryBytes)/(1<<20))
 	b.N = 0
 }
 
@@ -46,14 +75,20 @@ func benchSchema() Schema {
 	}}
 }
 
-// buildBenchStore writes nRows into a FULL snapshot and returns the open store
-// plus snapshot ID.
 func buildBenchStore(b *testing.B, base string, nRows uint64, blockSize int) (*Store, SnapshotID) {
 	b.Helper()
 	opts := Options{}
 	if blockSize > 0 {
 		opts.BlockSize = blockSize
 	}
+	return buildBenchStoreOpts(b, base, nRows, opts)
+}
+
+// buildBenchStoreOpts builds nRows into a FULL snapshot with the given
+// options. Options must already be defaults-resolved-safe (negative CacheBytes
+// disables the cache). It is the unified setup used by all matrix benchmarks.
+func buildBenchStoreOpts(b *testing.B, base string, nRows uint64, opts Options) (*Store, SnapshotID) {
+	b.Helper()
 	db, err := Create(base, opts)
 	if err != nil {
 		b.Fatal(err)

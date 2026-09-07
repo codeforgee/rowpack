@@ -146,22 +146,31 @@ make test        # go test ./...
 make race        # go test -race ./...
 make fuzz-short  # 每个 fuzz 目标 5s
 make golden      # 重新生成 golden files（格式变更时人工审查）
+make bench       # 统一基准矩阵（v1.2 Tier 0），输出 docs/bench-results.txt
 ```
 
 ## 参考基准
 
-环境：Go 1.27 / darwin/arm64 / klauspost zstd v1.20 / BlockSize 256 KiB / Zstd / SyncCommit，
-数据集 100k 行 × 7 列。数值随磁盘与 CPU 变化，仅作相对参考。
+统一矩阵由 `make bench` 复现（`BenchmarkEnv` + `BenchmarkMainMatrix` +
+`BenchmarkLatency`，BlockSize × 缓存 × 持久化 × mmap/readat 的剪枝矩阵，带
+p50/p95/p99 与峰值 RSS），完整结果落盘 `docs/bench-results.txt`，要点见
+[docs/perf-report.md](docs/perf-report.md) §1。环境：Go 1.27 / darwin/arm64 /
+klauspost zstd v1.20 / BlockSize 256 KiB / Zstd / SyncCommit，数据集 100k 行 × 7 列。
+数值随磁盘与 CPU 变化，仅作相对参考。
 
-| 基准 | 结果 |
+| 基准（256K/mmap 档） | 结果 |
 | --- | --- |
-| FULL 顺序写 | ~360 krows/s, ~72 MB/s（allocs 较 v1.0 -16%） |
-| Get 冷读（缓存关闭，mmap） | ~273 µs/op |
-| Get 热读（缓存命中） | ~3 µs/op / 2 allocs（复用 dst） |
-| 并发 Get 1/8 goroutine | ~195 µs/op（读路径无锁） |
-| Scan 100k 行 | ~32 ms（复用 dst ~22 ms / 928 krows/s / -86% allocs） |
-| Open 索引重放（100k 行） | ~8 ms（1M 行索引常驻 22 MB，较 v1.0 -93%） |
-| RebuildIndex（100k 行） | ~92 ms |
+| FULL 顺序写 / 隔离写 | ~1032 / 1996 krows/s |
+| Get 热读（复用 dst） | ~0.5 µs / 2 allocs |
+| Get 冷读 | ~255 µs / 6 allocs |
+| 并发 Get 64 goroutine | ~6.7 µs（LRU 锁主导） |
+| Scan 100k / Scan 1M | 13.7 ms / 243 ms |
+| Get / Scan DeepChain（32 层） | 3.4 µs / 31.9 ms |
+| Open 索引重放 / RebuildIndex | 5.7 ms / 27.2 ms |
+
+> 注意：热读真实吞吐 ~2M get/s。README 早期版本的 7–12 µs、300 µs 等数值受到低
+> `-benchtime` 一次性开销稀释，已由统一矩阵的预热逻辑消除；历史数据见
+> docs/benchmarks-v1.md。
 
 ## 兼容性
 

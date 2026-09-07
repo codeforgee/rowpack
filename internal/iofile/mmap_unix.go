@@ -62,7 +62,7 @@ func (m *readMapper) view(offset, n int64) ([]byte, func(), error) {
 			m.mu.Unlock()
 			return nil, nil, fmt.Errorf("rowpack: view [%d,%d) beyond file size %d", offset, offset+n, fi.Size())
 		}
-		if m.disabled || fi.Size() == 0 {
+		if noMmapForced.Load() || m.disabled || fi.Size() == 0 {
 			m.mu.Unlock()
 			return m.fallbackView(offset, n)
 		}

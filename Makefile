@@ -1,6 +1,6 @@
 GO ?= go
 
-.PHONY: all build test race vet lint fmt fuzz-short clean golden
+.PHONY: all build test race vet lint fmt fuzz-short clean golden bench
 
 all: fmt vet test
 
@@ -32,6 +32,18 @@ fuzz-short:
 		echo "fuzzing $$pkg :: $$base"; \
 		$(GO) test $$pkg -run '^$$' -fuzz '^'$$base'$$' -fuzztime=5s || exit 1; \
 	done
+
+# Unified v1.2 benchmark matrix: one command reproduces the whole baseline
+# (env + matrix + latency). Output saved to docs/bench-results.txt; use
+# BENCHTIME to override iterations (default 3x) and BENCHCOUNT for runs.
+BENCHTIME ?= 3x
+BENCHCOUNT ?= 1
+bench:
+	mkdir -p docs
+	$(GO) test -run '^$$' \
+		-bench 'Benchmark(Env|MainMatrix|Latency)' \
+		-benchtime=$(BENCHTIME) -benchmem -count=$(BENCHCOUNT) -v . \
+		2>&1 | tee docs/bench-results.txt
 
 # Regenerate every golden file from the current implementation.
 # Golden files must be reviewed in the same change as the format change.

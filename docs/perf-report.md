@@ -1,42 +1,63 @@
 # RowPack 性能测试报告
 
-> 文档状态：统一基线；历史批次数据保留在本文末尾和 docs/benchmarks-v1.md
+> 文档状态：统一基线（v1.2 Tier 0）
 > 日期：2026-09-07（当前基线）
-> 环境：Go 1.27.0 / darwin arm64 (Apple Silicon, M 系列) / klauspost/compress v1.20.0 (zstd)
-> 格式：BlockSize 256 KiB / Zstd / SyncCommit / 块缓存 64 MiB
-> 复现命令见 §1；端到端：`go test ./ -run TestPerfEndToEnd -v`
+> 环境：Go 1.27.0 / darwin arm64 (Apple Silicon M1 Pro) / klauspost/compress v1.20.0 (zstd)
+> 说明：**本报告 §1 只有一组当前基线**——由统一矩阵 `make bench` 生成，完整输出
+> 落在 `docs/bench-results.txt`（含每个子测试的 ns/op、B/op、allocs/op、吞吐、
+> 数据文件大小、压缩率、缓存命中率、索引内存与峰值 RSS 增量）。历史批次数据
+> 保留在本文末尾 `§2+` 和 docs/benchmarks-v1.md，仅用于回溯，不作为对比基线。
 
-## 1. 当前统一基线（2026-09-07）
+## 1. 当前统一基线（v1.2 Tier 0，2026-09-07）
 
-以下数据是当前性能比较的唯一基准。除特别说明外，均为 Go 1.27 / darwin arm64
-(Apple M1 Pro) / zstd v1.20 / BlockSize 256 KiB / Cache 64 MiB / SyncCommit，
-数据集为 100k 行 × 7 列；运行方式为：
+单条命令复现全部基线（`make bench`，默认 `-benchtime=3x -count=1`；可用
+`BENCHTIME`/`BENCHCOUNT` 覆盖）：
 
 ```sh
-go test ./ -run '^$' -bench 'Benchmark(FullSequentialWrite|GetColdRead|GetHotRead|GetHotReadInto|ConcurrentGet|Scan|ScanInto|ScanDeepChain|GetDeepChain|OpenReplay|RebuildIndex|IsolatedWrite)$' -benchtime=5x -benchmem
+make bench   # => go test -bench 'Benchmark(Env|MainMatrix|Latency)' -benchmem -count=1
 ```
 
-| 场景 | 当前结果 | 备注 |
-| --- | --- | --- |
-| FULL 顺序写 | 95 ms/op | 包含一次 SyncCommit |
-| 隔离写入 | 49.8–51.3 ms/100k 行 | 预构造 Row，约 2M 行/s |
-| Get 热读 | 9.5 µs/op，4 allocs | 缓存命中 |
-| Get 热读（复用 dst） | 7.1 µs/op，2 allocs | 缓存命中 |
-| Get 冷读 | 269 µs/op，10 allocs | 缓存关闭，mmap |
-| 并发 Get | 5.9/5.0/6.0/4.9 µs | 1/8/32/64 goroutine，热缓存 |
-| Scan 100k | 15.6 ms/op，189 allocs | FULL，热缓存 |
-| Scan 1M | 238 ms/op | 约 841k rows/s |
-| Scan DeepChain | 30.8 ms/op | FULL + 32 层 DELTA |
-| Get DeepChain | 4.2 µs/op | 32 层，热缓存 |
-| Open Replay | 5.1 ms/op | 100k 行索引 |
-| RebuildIndex | 31.4 ms/op | 100k 行 |
+- `BenchmarkEnv`：运行时自描述环境 + 真实数据集几何（100k × 7 列，bs=256K：
+  dataMB=2.0，bytePerRow=20.9，ratio=0.168，indexMB=2.3）。
+- `BenchmarkMainMatrix`：64 个子测试覆盖 写/读/扫描/链/打开 场景 × BlockSize
+  (64K/256K/1M) × 缓存(hot/cold) × 持久化(sync/async) × I/O(mmap/readat)，
+  读场景带 `b.ResetTimer` 前预热，保证低 benchtime 下 per-op 数值不稀释。
+- `BenchmarkLatency`：固定 4096 样本点读 p50/p95/p99（此子测试只看延迟列，
+  ns/op 与 B/op 列无意义）。
 
-说明：历史报告中的 10.3/20/9.5 µs、47/62/69/15.6 ms 等数值来自不同优化批次或不同
-运行参数，不再并列作为当前结果。`benchmarks-v1.md` 保留这些历史数据，仅用于回溯。
+以下为 256K / mmap / sync / 热缓存档位的参考值（完整矩阵见
+`docs/bench-results.txt`）：
+
+| 场景（256K/mmap） | 结果 | 说明 |
+| --- | --- | --- |
+| FULL 顺序写（sync） | 96.9 ms / 100k，1032 krows/s | 含一次 SyncCommit |
+| 隔离写（sync） | 50.1 ms / 100k，1996 krows/s | 预构造 Row |
+| 隔离写（async） | 39.2 ms / 100k，2554 krows/s | 预构造 Row |
+| FULL 顺序写（async） | 86.9 ms / 100k，1150 krows/s | 无 fsync |
+| Get 热读（复用 dst） | ~0.46 µs，2 allocs，104 B | 缓存命中 |
+| Get 热读（无复用） | ~0.53 µs，2 allocs | 同上（dst 复用后差异极小） |
+| Get 冷读 | 255 µs，6 allocs，328 KB | 缓存关闭，mmap |
+| 并发 Get 8 / 64 goroutine | 6.6 / 6.7 µs（并行，缓存全热） | LRU 全局锁为主导成本 |
+| Scan 100k（热） | 13.7 ms，7312 krows/s | 缓存可容纳全部块 |
+| Scan 100k（冷） | 24.2 ms，4138 krows/s | 每轮全量 mmap 读+解压+CRC |
+| Scan 1M | 243 ms，4116 krows/s | 22.9MiB 索引常驻 |
+| 随机读 1M 冷 | 303 µs | 未预热，接近冷读 |
+| Get DeepChain（32 层，热） | 3.4 µs | 父链解析 + 单行解码 |
+| Scan DeepChain（32 层） | 31.9 ms，4133 krows/s | 132k 行合并 |
+| Open 索引重放（100k） | 5.7 ms，28.7 MB/op | .rpi 全量载入 |
+| RebuildIndex（100k） | 27.2 ms，71 MB/op | .rpk 扫描 + 索引重建 |
+| 延迟 Get 热读 p50/p95/p99 | 250 / 292 / 625 ns | 4096 样本 |
+| 延迟 Get 冷读 p50/p95/p99 | 276 / 317 / 506 µs | 4096 样本 |
+| 延迟 DeepChain p50/p95/p99 | 1.9 / 2.5 / 4.8 µs | 4096 样本 |
+
+> 注：热读真实吞吐 ~2M get/s（0.5 µs），远优于历史报告中的 7–12 µs——历史数值
+> 受低 `-benchtime` 下一次性开销（GC/页缓存）稀释，非真实性能；统一矩阵的
+> 预热逻辑已消除该偏差。并发 Get 未随 goroutine 扩展（6 µs 平台），指向
+> v1.2 Tier 2 的 LRU 分片优化点。
 
 访问模式说明：快照的主要使用方式预计是按表、范围或 RowID 集合批量读取，因此单行冷读
-269 µs 仅作为诊断指标。v1.2 应以批量请求涉及的 Block 数、实际读取次数、解压次数、
-返回行吞吐和 p95 延迟作为主要读取指标。
+仅作为诊断指标。v1.2 将批量分块读取（ReadBatch）的块数、解压次数、实际读取字节和 p95
+作为主要的批量读取指标（Tier 1）。
 
 ## 2. 历史微基准（v1.0，100k 行 × 7 列）
 

@@ -12,3 +12,6 @@
 
 # Coverage
 coverage.out
+
+# Machine-specific benchmark output (regenerate with `make bench`)
+docs/bench-results.txt

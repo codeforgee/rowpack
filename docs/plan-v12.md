@@ -20,6 +20,29 @@
 
 验收：所有当前基准可以由单条命令重现，报告只保留一组当前基线。
 
+### 2.1 状态：已完成（实现于 2026-09-07，文档同步于本次变更）
+
+- [x] `BenchmarkMainMatrix`（bench_matrix_test.go）：场景 × BlockSize × 缓存 ×
+      持久化 × I/O 路径的统一剪枝矩阵，子测试命名即维度（如
+      `scan/bs=256K/cache=hot/io=mmap`），单条命令跑完全部基线：
+      `go test -run '^$' -bench 'Benchmark(Env|MainMatrix|Latency)' -benchmem`。
+- [x] `BenchmarkEnv`：运行时探测 Go / zstd 模块版本、OS/arch，并用真实构建的
+      100k 数据集测量 `dataMB / ratio / bytePerRow / indexMB`，保证报告自描述。
+- [x] `BenchmarkLatency`：固定 4096 样本的 p50/p95/p99 点读延迟（hot / into /
+      cold / deepchain）。注：该子测试为固定采样设计，`ns/op`/`B/op` 列无意义，
+      只看 `p50ns/p95ns/p99ns`。
+- [x] 每子测试额外指标：`krows/s|kget/s` 吞吐、`dataMB` 数据文件大小、
+      `ratio`=存储/原始压缩率、`idxMB` 索引常驻、`hitpct` 缓存命中率、
+      `rssdMB` 进程峰值 RSS 增量（getrusage，非 unix 平台为 0）。
+- [x] mmap vs ReadAt 对比：`iofile.ForceReadAt` 测试钩子强制所有新视图走
+      ReadAt 兜底路径（生产路径不变，仅 one-branch OR）。
+- [x] `make bench`：单条命令复现全部基线并落到 docs/bench-results.txt；
+      `BENCHTIME`/`BENCHCOUNT` 可覆盖。- 测量卫生：读场景在 `b.ResetTimer` 前
+      预热吸收一次性开销（GC/页缓存），避免低 `-benchtime` 稀释 per-op 数值。
+
+遗留（留给后续版本）：解压字节数计数（`Stats` 无按路径拆分的解压统计，待 Tier 1
+批量读一起加）；跨进程多实例的矩阵编排。
+
 ## 3. P0：批量分块读取
 
 快照的主要访问模式预计是按表或 RowID 范围批量读取。当前逐行读取可能重复触发 Block 定位、读取、解压和校验，因此 v1.2 应优先把请求按 Block 聚合。

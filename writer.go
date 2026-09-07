@@ -192,9 +192,6 @@ func (s *Store) seedAllocator() *metadata.ObjectIDAllocator {
 	alloc := metadata.NewObjectIDAllocator()
 	if st := s.state.Load(); st != nil {
 		for _, sm := range st.view.Snapshots() {
-			for _, oid := range st.view.MetadataByType(sm.ID, uint32(fileformat.RecordHeader)) {
-				alloc.Force(oid, "header")
-			}
 			for _, t := range st.view.MetadataByType(sm.ID, uint32(fileformat.RecordTable)) {
 				alloc.Force(t, "table")
 			}
@@ -267,8 +264,6 @@ func (w *SnapshotWriter) DefineSchema(schema codec.Schema) error {
 		ExternalKey: schema.Name,
 		Fields: []metadata.Field{
 			{ID: metadata.TableTableName, WireType: fileformat.WireString, Value: schema.Name},
-			{ID: metadata.TableSchema, WireType: fileformat.WireString, Value: ""},
-			{ID: metadata.TableTotalRows, WireType: fileformat.WireSint, Value: int64(0)},
 		},
 	}
 	if err := w.writeMetadata(tableRec); err != nil {
@@ -282,15 +277,11 @@ func (w *SnapshotWriter) DefineSchema(schema codec.Schema) error {
 			Revision:   1,
 			Namespace:  fileformat.NamespaceCore,
 			Fields: []metadata.Field{
-				{ID: metadata.ColTableName, WireType: fileformat.WireString, Value: schema.Name},
-				{ID: metadata.ColColumnName, WireType: fileformat.WireString, Value: col.Name},
-				{ID: metadata.ColDataType, WireType: fileformat.WireString, Value: dialectName(col.Type)},
-				{ID: metadata.ColColumnType, WireType: fileformat.WireString, Value: dialectName(col.Type)},
-				{ID: metadata.ColNullable, WireType: fileformat.WireString, Value: nullString(col.Nullable)},
 				{ID: metadata.ColColumnID, WireType: fileformat.WireSint, Value: int64(i + 1)},
+				{ID: metadata.ColColumnName, WireType: fileformat.WireString, Value: col.Name},
+				{ID: metadata.ColColumnType, WireType: fileformat.WireString, Value: typeName(col.Type)},
+				{ID: metadata.ColNullable, WireType: fileformat.WireString, Value: nullString(col.Nullable)},
 				{ID: metadata.ColDataScale, WireType: fileformat.WireSint, Value: int64(col.Scale)},
-				{ID: metadata.ColDataPrec, WireType: fileformat.WireSint, Value: int64(0)},
-				{ID: metadata.ColDataLength, WireType: fileformat.WireSint, Value: int64(0)},
 			},
 		}
 		if err := w.writeMetadata(colRec); err != nil {

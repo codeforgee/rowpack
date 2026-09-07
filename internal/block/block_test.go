@@ -325,7 +325,7 @@ func metadataEntry(oid uint64) metadata.DirectoryEntry {
 	return metadata.DirectoryEntry{
 		ObjectID:   oid,
 		Revision:   1,
-		RecordType: uint32(fileformat.RecordHeader),
+		RecordType: uint32(fileformat.RecordTable),
 		Operation:  fileformat.OperationUpsert,
 	}
 }

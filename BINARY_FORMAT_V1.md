@@ -168,7 +168,7 @@ Record 长度为 `24 + RowLength`。Block CRC 是完整性权威，Row CRC 用�
 
 ### 3.6 Metadata Block Payload
 
-Metadata Block 保存数据库、命名空间、表、列、约束、索引及厂商扩展。核心 Table 与 Column 记录共同构成 TypedTuple Schema。其目录、通用 TLV Record、核心字段编号和扩展规则见 [METADATA_FORMAT_V1.md](METADATA_FORMAT_V1.md)。解释 Rows Block 所需的 Metadata 必须已在当前物理位置之前或父快照中提交。
+Metadata Block 保存引擎的 Schema 记录（Table/Column）及任意其他 TLV 记录。核心 Table 与 Column 记录共同构成 TypedTuple Schema；其他记录作为普通数据保存/透传，引擎不解释其语义。其目录、通用 TLV Record 和字段规则见 [METADATA_FORMAT_V1.md](METADATA_FORMAT_V1.md)。解释 Rows Block 所需的 Metadata 必须已在当前物理位置之前或父快照中提交。
 
 ### 3.7 TypedTuple 行编码
 

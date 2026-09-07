@@ -442,7 +442,7 @@ func TestRebuildIndexErrors(t *testing.T) {
 
 // ---- schema helpers ----
 
-func TestColumnTypeAndDialectRoundTrip(t *testing.T) {
+func TestColumnTypeAndNameRoundTrip(t *testing.T) {
 	types := []codec.Type{
 		codec.TypeBool, codec.TypeInt8, codec.TypeInt16, codec.TypeInt32, codec.TypeInt64,
 		codec.TypeUint8, codec.TypeUint16, codec.TypeUint32, codec.TypeUint64,
@@ -450,29 +450,23 @@ func TestColumnTypeAndDialectRoundTrip(t *testing.T) {
 		codec.TypeDate, codec.TypeTime, codec.TypeDateTime, codec.TypeDecimal,
 	}
 	for _, ct := range types {
-		name := dialectName(ct)
-		got, err := columnType(name, "")
+		name := typeName(ct)
+		got, err := columnType(name)
 		if err != nil || got != ct {
 			t.Fatalf("roundtrip %d -> %q -> %d, %v", ct, name, got, err)
 		}
 	}
-	// The columnType parameter wins over dataType.
-	if got, err := columnType("bigint", "uint64"); err != nil || got != codec.TypeUint64 {
-		t.Fatalf("columnType precedence: %d, %v", got, err)
-	}
-	// Unknown database-specific strings are not guessed.
-	if _, err := columnType("bigint unsigned", ""); !errors.Is(err, errUnknownColumnType) {
+	// Unknown type strings are not guessed: the record is treated as plain
+	// stored data and its table is skipped in the schema index.
+	if _, err := columnType("bigint unsigned"); !errors.Is(err, errUnknownColumnType) {
 		t.Fatalf("unknown type: %v", err)
 	}
-	if got := dialectName(codec.Type(200)); got != "unknown" {
-		t.Fatalf("dialectName(unknown) = %q", got)
+	if got := typeName(codec.Type(200)); got != "unknown" {
+		t.Fatalf("typeName(unknown) = %q", got)
 	}
 }
 
-func TestLowerAsciiAndNullString(t *testing.T) {
-	if got := lowerAscii("MiXeD Case 9-!"); got != "mixed case 9-!" {
-		t.Fatalf("lowerAscii = %q", got)
-	}
+func TestNullString(t *testing.T) {
 	if nullString(true) != "YES" || nullString(false) != "NO" {
 		t.Fatal("nullString wrong")
 	}

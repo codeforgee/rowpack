@@ -1,7 +1,6 @@
 package metadata
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -56,7 +55,7 @@ func (r *Record) Encode(schema KnownFieldSchema) ([]byte, error) {
 			}
 		}
 	}
-	fieldsLen, err := fieldsBytes(fields, 0)
+	fieldsLen, err := fieldsBytes(fields)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +81,7 @@ func (r *Record) Encode(schema KnownFieldSchema) ([]byte, error) {
 	dst = append(dst, r.Namespace...)
 	dst = append(dst, r.ExternalKey...)
 	for i := range fields {
-		dst, err = encodeField(dst, &fields[i], 0)
+		dst, err = encodeField(dst, &fields[i])
 		if err != nil {
 			return nil, err
 		}
@@ -140,7 +139,7 @@ func (r *Record) Decode(src []byte, known KnownFieldSchema) error {
 		if pos >= fieldsEnd {
 			return fmt.Errorf("rowpack: metadata record field %d exceeds fields region", i)
 		}
-		f, used, err := decodeField(body[pos:fieldsEnd], 0)
+		f, used, err := decodeField(body[pos:fieldsEnd])
 		if err != nil {
 			return err
 		}
@@ -188,21 +187,6 @@ func ensureSingle(fields []Field, idx int) error {
 	return nil
 }
 
-// encodeValueRaw re-encodes a parsed field's value bytes for lossless
-// passthrough of unknown non-critical fields.
-func encodeValueRaw(f Field) []byte {
-	enc, err := encodeFieldValue(&f, 0)
-	if err != nil {
-		return nil
-	}
-	return enc
-}
-
-// EncodeValue returns the canonical encoded value bytes of a field.
-func (f *Field) EncodeValue() ([]byte, error) {
-	return encodeFieldValue(f, 0)
-}
-
 func sortFields(fs []Field) {
 	// Insertion sort by ID, stable (order within same ID preserved).
 	for i := 1; i < len(fs); i++ {
@@ -220,18 +204,4 @@ func (r *Record) FieldByID(id uint16) *Field {
 		}
 	}
 	return nil
-}
-
-// SameContent reports whether two records are byte-identical (used for
-// idempotent schema checks).
-func (r *Record) SameContent(other *Record) bool {
-	a, err := r.Encode(nil)
-	if err != nil {
-		return false
-	}
-	b, err := other.Encode(nil)
-	if err != nil {
-		return false
-	}
-	return bytes.Equal(a, b)
 }

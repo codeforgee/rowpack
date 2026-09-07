@@ -25,10 +25,14 @@
 ```text
 internal/fileformat   固定结构编解码、CRC、边界验证
 internal/codec        Schema 与 TypedTuple
+internal/metadata     元数据 TLV 与 Schema 记录（Table/Column）
 internal/block        Block 构建、Zstd、Directory
 internal/index        索引事务与不可变内存视图
 internal/cache        并发 Block Cache
+internal/iofile       只读 mmap/ReadAt 文件抽象
+internal/lockfile     跨进程单写者锁
 internal/recovery     打开、校验、恢复
+internal/fault        测试故障注入
 ```
 
 codec 热路径 API（唯一编解码入口；API 未定型故不保留旧签名兼容层）：
@@ -189,9 +193,7 @@ func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error
   Table/Column 记录使用。
 - 未来如需元数据透传，以完整的读写 API 一次性设计，不做只写半成品。
 
-行解码所需的最小 Schema 契约由 `DefineSchema` 提供（见 §7），类型字符串为引擎自产自销的规范值；引擎不猜测任何数据库方言类型。
-
-如上层（数据库备份/还原工具）需要 13 类强类型模型与方言映射（对应 `meta.Store` 的 Header、Tables、Columns、PrimaryKeys、Indexes、UniqueKeys、ForeignKeys、AutoInc、TabComments、ColComments、Views、Functions、VirtualColumns），应在**引擎之外的独立适配层**实现，按真实数据库 fixture 设计，不冻结进引擎。字段编号参考见 METADATA_FORMAT_V1.md §6/§7。
+行解码所需的最小 Schema 契约由 `DefineSchema` 提供（见 §7），类型字符串为引擎自产自销的规范值；引擎不猜测任何数据库方言类型，也不为约束、索引、视图等数据库对象内建模型——它们只是经通用 TLV 保存/透传的普通数据。
 
 ## 5. 创建与打开
 

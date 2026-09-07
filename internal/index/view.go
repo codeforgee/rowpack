@@ -69,7 +69,6 @@ type MetadataLoc struct {
 type View struct {
 	snapshots      map[uint64]*SnapshotMeta
 	blocks         map[uint64]*BlockLoc
-	blocksBySnap   map[uint64][]uint64                // SnapshotID -> sorted BlockIDs
 	metadata       map[uint64]map[uint64]*MetadataLoc // SnapshotID -> ObjectID -> loc
 	metadataByType map[uint64]map[uint32][]uint64     // SnapshotID -> RecordType -> sorted ObjectIDs
 	rows           map[uint64]map[uint32]*rowShard    // SnapshotID -> TableID -> shard
@@ -98,7 +97,6 @@ func EmptyView() *View {
 	return &View{
 		snapshots:      make(map[uint64]*SnapshotMeta),
 		blocks:         make(map[uint64]*BlockLoc),
-		blocksBySnap:   make(map[uint64][]uint64),
 		metadata:       make(map[uint64]map[uint64]*MetadataLoc),
 		metadataByType: make(map[uint64]map[uint32][]uint64),
 		rows:           make(map[uint64]map[uint32]*rowShard),
@@ -140,9 +138,6 @@ func (v *View) Blocks() []*BlockLoc {
 	}
 	return out
 }
-
-// BlockIDs returns the sorted block IDs of a snapshot.
-func (v *View) BlockIDs(snapshot uint64) []uint64 { return v.blocksBySnap[snapshot] }
 
 // Row returns the row location of (snapshot, table, rowID), or nil. The
 // returned pointer aliases the immutable row shard and must be treated as
@@ -381,10 +376,8 @@ func (v *View) Apply(t *Txn, maxDepth uint32) (*View, error) {
 			RawCRC32C: be.RawCRC32C,
 		}
 		nv.blocks[be.BlockID] = bl
-		nv.blocksBySnap[se.SnapshotID] = append(nv.blocksBySnap[se.SnapshotID], be.BlockID)
 		meta.StoredBytes += uint64(be.StoredSize)
 	}
-	sortU64s(nv.blocksBySnap[se.SnapshotID])
 
 	// Metadata.
 	metaMap := make(map[uint64]*MetadataLoc)
@@ -535,7 +528,6 @@ func (v *View) shallowCopy() *View {
 	nv := &View{
 		snapshots:      make(map[uint64]*SnapshotMeta, len(v.snapshots)+1),
 		blocks:         make(map[uint64]*BlockLoc, len(v.blocks)+8),
-		blocksBySnap:   make(map[uint64][]uint64, len(v.blocksBySnap)+1),
 		metadata:       make(map[uint64]map[uint64]*MetadataLoc, len(v.metadata)+1),
 		metadataByType: make(map[uint64]map[uint32][]uint64, len(v.metadataByType)+1),
 		rows:           make(map[uint64]map[uint32]*rowShard, len(v.rows)+1),
@@ -545,9 +537,6 @@ func (v *View) shallowCopy() *View {
 	}
 	for k, b := range v.blocks {
 		nv.blocks[k] = b
-	}
-	for k, ids := range v.blocksBySnap {
-		nv.blocksBySnap[k] = ids
 	}
 	for k, m := range v.metadata {
 		nv.metadata[k] = m

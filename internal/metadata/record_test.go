@@ -7,35 +7,33 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
-func headerRecord() *Record {
-	return &Record{
-		RecordType:  uint32(fileformat.RecordHeader),
-		ObjectID:    1,
-		Revision:    1,
-		Namespace:   fileformat.NamespaceCore,
-		ExternalKey: "mysql:production",
-		Fields: []Field{
-			{ID: HeaderDBType, WireType: fileformat.WireString, Value: "mysql"},
-			{ID: HeaderDBName, WireType: fileformat.WireString, Value: "production"},
-			{ID: HeaderDBVersion, WireType: fileformat.WireString, Value: "8.4.2"},
-			{ID: HeaderCharset, WireType: fileformat.WireString, Value: "utf8mb4"},
-			{ID: HeaderSnapshotType, WireType: fileformat.WireSint, Value: int64(1)},
-		},
-	}
-}
-
 func tableRecord() *Record {
 	return &Record{
 		RecordType:  uint32(fileformat.RecordTable),
 		ObjectID:    2,
 		Revision:    1,
 		Namespace:   fileformat.NamespaceCore,
-		ExternalKey: "app.users",
+		ExternalKey: "users",
 		Fields: []Field{
 			{ID: TableTableName, WireType: fileformat.WireString, Value: "users"},
-			{ID: TableSchema, WireType: fileformat.WireString, Value: "app"},
-			{ID: TableTotalRows, WireType: fileformat.WireSint, Value: int64(100000)},
-			{ID: TableBytes, WireType: fileformat.WireSint, Value: int64(8388608)},
+		},
+	}
+}
+
+func columnRecord() *Record {
+	return &Record{
+		RecordType:  uint32(fileformat.RecordColumn),
+		ObjectID:    3,
+		ParentID:    2,
+		Revision:    1,
+		Namespace:   fileformat.NamespaceCore,
+		ExternalKey: "users:1:id",
+		Fields: []Field{
+			{ID: ColColumnID, WireType: fileformat.WireSint, Value: int64(1)},
+			{ID: ColColumnName, WireType: fileformat.WireString, Value: "id"},
+			{ID: ColColumnType, WireType: fileformat.WireString, Value: "uint64"},
+			{ID: ColNullable, WireType: fileformat.WireString, Value: "NO"},
+			{ID: ColDataScale, WireType: fileformat.WireSint, Value: int64(0)},
 		},
 	}
 }
@@ -46,19 +44,19 @@ func TestRecordRoundTrip(t *testing.T) {
 		rec    *Record
 		schema KnownFieldSchema
 	}{
-		{"header", headerRecord(), CoreFieldSchemas[uint32(fileformat.RecordHeader)]},
 		{"table", tableRecord(), CoreFieldSchemas[uint32(fileformat.RecordTable)]},
+		{"column", columnRecord(), CoreFieldSchemas[uint32(fileformat.RecordColumn)]},
 		{"unknown-ns", &Record{
 			RecordType:  65537,
 			ObjectID:    500,
 			ParentID:    2,
 			Revision:    1,
-			Namespace:   "com.mysql",
+			Namespace:   "example.com.ext",
 			ExternalKey: "ext",
 			Critical:    false,
 			Fields: []Field{
 				{ID: 1, WireType: fileformat.WireString, Value: "v1"},
-				{ID: 3, WireType: fileformat.WireUint, Value: uint64(300)},
+				{ID: 3, WireType: fileformat.WireString, Value: "v3"},
 			},
 		}, nil},
 	} {
@@ -83,57 +81,28 @@ func TestRecordRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRecordFieldSetRoundTrip(t *testing.T) {
-	props := []Field{
-		{ID: 1, WireType: fileformat.WireString, Value: "collation"},
-		{ID: 2, WireType: fileformat.WireString, Value: "utf8mb4_0900_ai_ci"},
-	}
-	rec := &Record{
-		RecordType: uint32(fileformat.RecordHeader),
-		ObjectID:   1,
-		Revision:   1,
-		Namespace:  fileformat.NamespaceCore,
-		Fields: []Field{
-			{ID: HeaderProperties, WireType: fileformat.WireFieldSet, Value: props},
-			{ID: HeaderIncludes, WireType: fileformat.WireStringList, Value: []string{"a", "b", "c"}},
-		},
-	}
-	enc, err := rec.Encode(CoreFieldSchemas[uint32(fileformat.RecordHeader)])
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got Record
-	if err := got.Decode(enc, CoreFieldSchemas[uint32(fileformat.RecordHeader)]); err != nil {
-		t.Fatal(err)
-	}
-	f := got.FieldByID(HeaderProperties)
-	sub, ok := f.Value.([]Field)
-	if !ok || len(sub) != 2 || sub[1].Value.(string) != "utf8mb4_0900_ai_ci" {
-		t.Fatalf("field set not preserved: %#v", f)
-	}
-	il, _ := got.FieldByID(HeaderIncludes).Value.([]string)
-	if len(il) != 3 || il[2] != "c" {
-		t.Fatalf("string list not preserved: %#v", il)
-	}
-}
-
 func TestUnknownNonCriticalPassthrough(t *testing.T) {
-	// A known record type carrying an unknown non-critical field (ID 99).
+	// A known record type carrying an unknown non-critical field (ID 99) with
+	// a reserved wire type (1): the exact bytes must survive a decode/re-encode
+	// round trip without the engine interpreting the value.
 	enc1 := func() []byte {
-		rec := headerRecord()
-		rec.Fields = append(rec.Fields,
-			Field{ID: 99, WireType: fileformat.WireBytes, Value: []byte{0xDE, 0xAD, 0xBE, 0xEF}})
-		b, err := rec.Encode(CoreFieldSchemas[uint32(fileformat.RecordHeader)])
+		rec := tableRecord()
+		rec.Fields = append(rec.Fields, Field{ID: 99, WireType: 1, raw: []byte{0x2A}})
+		b, err := rec.Encode(CoreFieldSchemas[uint32(fileformat.RecordTable)])
 		if err != nil {
 			t.Fatal(err)
 		}
 		return b
 	}()
 	var got Record
-	if err := got.Decode(enc1, CoreFieldSchemas[uint32(fileformat.RecordHeader)]); err != nil {
+	if err := got.Decode(enc1, CoreFieldSchemas[uint32(fileformat.RecordTable)]); err != nil {
 		t.Fatal(err)
 	}
-	enc2, err := got.Encode(CoreFieldSchemas[uint32(fileformat.RecordHeader)])
+	f := got.FieldByID(99)
+	if f == nil || f.Value != nil || string(f.raw) != "\x2a" {
+		t.Fatalf("reserved wire type field not passed through: %+v", f)
+	}
+	enc2, err := got.Encode(CoreFieldSchemas[uint32(fileformat.RecordTable)])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,21 +112,21 @@ func TestUnknownNonCriticalPassthrough(t *testing.T) {
 }
 
 func TestUnknownCriticalRejected(t *testing.T) {
-	rec := headerRecord()
+	rec := tableRecord()
 	rec.Fields = append(rec.Fields, Field{ID: 200, WireType: fileformat.WireString, Value: "x", Critical: true})
-	enc, err := rec.Encode(CoreFieldSchemas[uint32(fileformat.RecordHeader)])
+	enc, err := rec.Encode(CoreFieldSchemas[uint32(fileformat.RecordTable)])
 	if err != nil {
 		t.Fatal(err)
 	}
 	var got Record
-	if err := got.Decode(enc, CoreFieldSchemas[uint32(fileformat.RecordHeader)]); err == nil {
+	if err := got.Decode(enc, CoreFieldSchemas[uint32(fileformat.RecordTable)]); err == nil {
 		t.Fatal("unknown critical field accepted")
 	}
 }
 
 func TestRecordRejectsBadInput(t *testing.T) {
-	rec := headerRecord()
-	enc, _ := rec.Encode(CoreFieldSchemas[uint32(fileformat.RecordHeader)])
+	rec := tableRecord()
+	enc, _ := rec.Encode(CoreFieldSchemas[uint32(fileformat.RecordTable)])
 	lim := len(enc)
 
 	// Every truncation prefix must fail.
@@ -177,33 +146,33 @@ func TestRecordRejectsBadInput(t *testing.T) {
 	if err := (&Record{}).Decode(bad, nil); err == nil {
 		t.Fatal("accepted bad record CRC")
 	}
-	// Non-canonical field order: swap first two fields' values.
-	// Field 1 (DBType) and field 3 (DBName) both 4-byte-ish... craft manually.
-	rec2 := headerRecord()
+	// Non-canonical field order: encode sorts canonically, so feed reversed
+	// order and expect decode to still succeed after canonical re-encode.
+	rec2 := columnRecord()
 	rec2.Fields = []Field{
-		{ID: HeaderDBName, WireType: fileformat.WireString, Value: "x"},
-		{ID: HeaderDBType, WireType: fileformat.WireString, Value: "y"},
+		{ID: ColColumnName, WireType: fileformat.WireString, Value: "x"},
+		{ID: ColColumnID, WireType: fileformat.WireSint, Value: int64(1)},
 	}
-	enc2, err := rec2.Encode(CoreFieldSchemas[uint32(fileformat.RecordHeader)])
+	enc2, err := rec2.Encode(CoreFieldSchemas[uint32(fileformat.RecordColumn)])
 	if err == nil {
 		// Encode should have sorted canonically; decoding must then succeed.
 		var r Record
-		if err := r.Decode(enc2, CoreFieldSchemas[uint32(fileformat.RecordHeader)]); err != nil {
+		if err := r.Decode(enc2, CoreFieldSchemas[uint32(fileformat.RecordColumn)]); err != nil {
 			t.Fatalf("canonical sort not enforced: %v", err)
 		}
 	}
 }
 
 func TestWireTypeMismatchRejected(t *testing.T) {
-	rec := headerRecord()
-	rec.Fields = []Field{{ID: HeaderDBType, WireType: fileformat.WireSint, Value: int64(1)}}
-	if _, err := rec.Encode(CoreFieldSchemas[uint32(fileformat.RecordHeader)]); err == nil {
+	rec := tableRecord()
+	rec.Fields = []Field{{ID: TableTableName, WireType: fileformat.WireSint, Value: int64(1)}}
+	if _, err := rec.Encode(CoreFieldSchemas[uint32(fileformat.RecordTable)]); err == nil {
 		t.Fatal("accepted wrong wire type for known field")
 	}
 }
 
 func TestPayloadBuildParse(t *testing.T) {
-	recs := []*Record{headerRecord(), tableRecord()}
+	recs := []*Record{tableRecord(), columnRecord()}
 	entries := make([]DirectoryEntry, 0, len(recs))
 	bodies := make([][]byte, 0, len(recs))
 	for _, r := range recs {
@@ -259,9 +228,9 @@ func TestPayloadBuildParse(t *testing.T) {
 }
 
 func TestPayloadRejects(t *testing.T) {
-	rec := headerRecord()
-	b, _ := rec.Encode(CoreFieldSchemas[uint32(fileformat.RecordHeader)])
-	payload, _ := Build([]DirectoryEntry{{ObjectID: 1, Revision: 1, RecordType: 1, Operation: fileformat.OperationUpsert}}, [][]byte{b})
+	rec := tableRecord()
+	b, _ := rec.Encode(CoreFieldSchemas[uint32(fileformat.RecordTable)])
+	payload, _ := Build([]DirectoryEntry{{ObjectID: 2, Revision: 1, RecordType: 2, Operation: fileformat.OperationUpsert}}, [][]byte{b})
 	// Truncations.
 	for n := 0; n < len(payload); n++ {
 		if _, err := Parse(payload[:n]); err == nil {

@@ -191,10 +191,9 @@ type derivedColumn struct {
 }
 
 func deriveColumn(rec *metadata.Record) (derivedColumn, error) {
-	dataType := fieldString(rec, metadata.ColDataType)
 	colType := fieldString(rec, metadata.ColColumnType)
 	nullableStr := fieldString(rec, metadata.ColNullable)
-	t, err := columnType(dataType, colType)
+	t, err := columnType(colType)
 	if err != nil {
 		return derivedColumn{}, err
 	}
@@ -249,15 +248,10 @@ func isNullableString(s string) bool {
 var errUnknownColumnType = errors.New("rowpack: unknown column type string")
 
 // columnType resolves the engine-interpreted TypedTuple type of a Column
-// record. Only the canonical strings written by DefineSchema are understood;
-// database-specific type strings (mysql "bigint unsigned", oracle "NUMBER",
-// ...) are deliberately NOT guessed here. They live in metadata as plain
-// stored data and are interpreted by upper-layer adapters, if at all.
-func columnType(dataType, columnType string) (codec.Type, error) {
-	t := columnType
-	if t == "" {
-		t = dataType
-	}
+// record's canonical type string. Only the strings written by DefineSchema
+// are understood; unknown type strings mark the record as plain stored data
+// (their table is skipped in the schema index, never failing the open).
+func columnType(t string) (codec.Type, error) {
 	switch t {
 	case "bool":
 		return codec.TypeBool, nil
@@ -297,9 +291,9 @@ func columnType(dataType, columnType string) (codec.Type, error) {
 	return 0, fmt.Errorf("%w: %q", errUnknownColumnType, t)
 }
 
-// dialectName maps a codec type to the built-in canonical dialect string
-// (the inverse of columnType).
-func dialectName(t codec.Type) string {
+// typeName maps a codec type to its canonical type string (the inverse of
+// columnType).
+func typeName(t codec.Type) string {
 	switch t {
 	case codec.TypeBool:
 		return "bool"
@@ -345,16 +339,6 @@ func nullString(nullable bool) string {
 		return "YES"
 	}
 	return "NO"
-}
-
-func lowerAscii(s string) string {
-	b := []byte(s)
-	for i := range b {
-		if b[i] >= 'A' && b[i] <= 'Z' {
-			b[i] += 'a' - 'A'
-		}
-	}
-	return string(b)
 }
 
 // readMetadataRecord reads and decodes one metadata record from the data file

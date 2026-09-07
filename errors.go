@@ -24,7 +24,6 @@ var (
 	ErrCorruptIndex       = errors.New("rowpack: corrupt index")
 	ErrVersionUnsupported = errors.New("rowpack: unsupported version")
 	ErrStoreMismatch      = errors.New("rowpack: store files do not match")
-	ErrLimitExceeded      = errors.New("rowpack: limit exceeded")
 	ErrClosed             = errors.New("rowpack: closed")
 )
 

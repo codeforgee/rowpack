@@ -20,7 +20,7 @@ func seedFuzz(f *testing.F, seeds ...[]byte) {
 }
 
 func validRecordBytes() []byte {
-	b, err := headerRecord().Encode(CoreFieldSchemas[uint32(fileformat.RecordHeader)])
+	b, err := tableRecord().Encode(CoreFieldSchemas[uint32(fileformat.RecordTable)])
 	if err != nil {
 		panic(err)
 	}
@@ -29,21 +29,21 @@ func validRecordBytes() []byte {
 
 func FuzzMetadataRecordDecode(f *testing.F) {
 	seedFuzz(f, validRecordBytes(), func() []byte {
-		b, _ := tableRecord().Encode(nil)
+		b, _ := columnRecord().Encode(nil)
 		return b
 	}())
 	f.Fuzz(func(t *testing.T, data []byte) {
 		_ = (&Record{}).Decode(data, nil)
-		_ = (&Record{}).Decode(data, CoreFieldSchemas[uint32(fileformat.RecordHeader)])
+		_ = (&Record{}).Decode(data, CoreFieldSchemas[uint32(fileformat.RecordTable)])
 	})
 }
 
 func FuzzMetadataPayloadParse(f *testing.F) {
-	b, err := headerRecord().Encode(CoreFieldSchemas[uint32(fileformat.RecordHeader)])
+	b, err := tableRecord().Encode(CoreFieldSchemas[uint32(fileformat.RecordTable)])
 	if err != nil {
 		panic(err)
 	}
-	payload, err := Build([]DirectoryEntry{{ObjectID: 1, Revision: 1, RecordType: 1, Operation: fileformat.OperationUpsert}}, [][]byte{b})
+	payload, err := Build([]DirectoryEntry{{ObjectID: 2, Revision: 1, RecordType: 2, Operation: fileformat.OperationUpsert}}, [][]byte{b})
 	if err != nil {
 		panic(err)
 	}

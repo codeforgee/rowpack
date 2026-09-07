@@ -14,12 +14,11 @@
 
 - `.rpk` 数据文件和 `.rpi` 索引文件。
 - FULL、DELTA 快照及 INSERT、UPDATE、DELETE。
-- 通用元数据记录（TLV）无损存储与透传；元数据即引擎中的数据。（2026-09 v1.2 前精简修订：TLV 机制保留为引擎内部实现，不再公开通用元数据 API，见 ADR-002 决策 2a。）
+- 元数据作为普通数据无损读写：`DefineSchema` 写引擎自产自销的 Table/Column Schema 记录（TLV），引擎不解释其他记录的语义。
 - Zstd Block 压缩和 None 模式。
 - 并发随机读、单写者和一致的快照可见性。
 - TypedTuple 行编码及全部 v1 数据类型。
 - Scan、Block Cache、校验与崩溃恢复。
-- 元数据作为普通数据无损读写，引擎不解释其语义。
 - Golden files、Fuzz、race、故障注入和基准测试。
 
 ## 2. 实施原则
@@ -48,10 +47,12 @@ RowPack/
 ├── internal/
 │   ├── fileformat/            // 固定磁盘结构
 │   ├── codec/                 // TypedTuple
-│   ├── metadata/              // Metadata TLV 与核心字段
+│   ├── metadata/              // Metadata TLV 与 Schema 记录
 │   ├── block/                 // Block 构建/读取/压缩
 │   ├── index/                 // IndexTxn 与内存视图
 │   ├── cache/                 // 并发 LRU
+│   ├── iofile/                // 只读 mmap/ReadAt 文件抽象
+│   ├── lockfile/              // 跨进程单写者锁
 │   ├── recovery/              // 打开和恢复状态机
 │   └── fault/                 // 测试故障注入
 ├── testdata/
@@ -75,10 +76,10 @@ RowPack/
 | M6 | DELTA、历史读取与 Scan | 8–12 人日 |
 | M7 | Cache、并发与资源生命周期 | 6–9 人日 |
 | M8 | 崩溃恢复、校验与索引重建 | 9–13 人日 |
-| ~~M9~~ | 元数据适配层（引擎之外，2026-09-06 决策移出引擎核心） | — |
+| ~~M9~~ | 元数据适配层（引擎之外，2026-09-06 决策删除：不再为上层保留 RecordType 约定） | — |
 | M10 | 性能、兼容性与 v1.0 发布 | 6–10 人日 |
 
-单人串行预计 66–97 人日。该估算包括测试和文档，不包括未知数据库方言的类型映射补齐。多人开发时可并行部分 codec、cache、工具和适配工作，但 M1–M5 的主路径应保持单一格式负责人审核。
+单人串行预计 66–97 人日。该估算包括测试和文档，不包括未知数据库方言的类型映射（不属于引擎职责）。多人开发时可并行部分 codec、cache、工具和适配工作，但 M1–M5 的主路径应保持单一格式负责人审核。
 
 ## 5. M0：工程骨架与规范冻结
 
@@ -141,30 +142,20 @@ RowPack/
 - 实现所有 WireType、规范排序和嵌套深度限制。
 - 实现未知非 Critical 字段无损保留。
 - 实现未知 Critical 字段拒绝逻辑。
-- 固定 13 种核心 RecordType 及其 FieldID。
+- 固定引擎 Schema 记录类型（Table=2、Column=3）及其 FieldID。
 - 字符串字段原样保存（不做规范化）。
 - 实现 ObjectID 分配器和稳定 ExternalKey 映射。
-
-### 7.2 核心元数据
-
-- 实现 Header、Table、Column、PrimaryKey、Index、UniqueKey、ForeignKey、AutoInc、TableComment、ColComment、View、Function、VirtualColumn 的内部模型。
-- Go `int` 与磁盘 i64 转换必须检查溢出。
-- 保留每个列表的原始顺序。
-- 复合主键/外键逐列记录，不聚合丢失 KeySeq 或对应关系。
-- `DataDefault`、`ViewText`、`FuncText` 原文往返一致。
 
 ### 7.3 TypedTuple
 
 - 实现 Null Bitmap。
 - 实现全部定宽整数、浮点数、String、Bytes、Date、Time、DateTime、Decimal。
 - Decimal 实现唯一规范编码。
-- 实现 Schema 派生接口：根据 Header 方言和 Column 属性得到逻辑 Type。
-- 类型派生由接口抽象，核心提供显式 Schema 路径；各数据库方言映射作为可注册组件补齐。
 - Fuzz 行 Decoder 和 Metadata Decoder。
 
 ### 7.4 完成标准
 
-- 每个核心元数据字段均有非零、零值、空值和 Unicode round-trip 测试。
+- 每个 Schema 记录字段均有非零、零值、空值和 Unicode round-trip 测试。
 - 字符串字段的空字符串、带空白原文往返一致。
 - 所有 TypedTuple 类型具有边界值测试。
 - 未知扩展记录读入再写出后字节完全一致。
@@ -215,7 +206,7 @@ RowPack/
 
 - 实现 `DefaultOptions`、Create、Open、Close。
 - 实现 SnapshotWriter 状态机。
-- 实现 DefineSchema、PutMetadata、Insert、Apply、Commit、Abort。
+- 实现 DefineSchema、Insert、Apply、Commit、Abort。
 - 实现 SyncCommit 和 AsyncCommit。
 - 实现 CommitError.Unknown。
 - 实现 Get、Exists、Snapshot、LatestSnapshot、ListSnapshots。
@@ -311,23 +302,11 @@ RowPack/
 - 中间损坏明确失败，不跳过。
 - 满足 AC-007、AC-008、AC-009、AC-010。
 
-## 14. M9：元数据适配层（引擎之外，不冻结）
+## 14. M9：元数据适配层（已删除）
 
 > 2026-09-06 决策修订（ADR-002）：引擎不内建强类型元数据模型、不猜方言类型。
-> 元数据通过通用 TLV 记录通道作为普通数据存储；13 类强类型模型与方言映射
-> 属于上层数据库适配层，按真实 fixture 设计，不冻结进引擎核心 API。
-
-### 14.1 任务（如实施，放在引擎之外的独立包）
-
-- 按 `meta.Store` 列表结构组织 13 类强类型模型（字段编号参考 METADATA_FORMAT_V1.md §6/§7）。
-- 实现数据库方言到 TypedTuple Type 的映射（引擎不内建；行解码只认 `DefineSchema` 的规范类型字符串）。
-- 字符串字段保存原文并保持列表顺序，复合 PK/FK 逐列 KeySeq。
-- 使用真实 MySQL、Oracle、SQL Server、PostgreSQL、DM 元数据 fixture 往返测试。
-
-### 14.2 引擎已完成的部分（M5/M6）
-
-- `DefineSchema`：引擎行解码的最小 Schema 契约，写入自产自销的规范类型字符串。
-- 通用 `PutMetadata` / `Metadata`：无损存储/透传任意元数据记录，引擎不解释语义。
+> 行解码所需的最小 Schema 契约由 `DefineSchema` 提供；其余数据库元数据作为
+> 普通 TLV 记录保存/透传，语义解释不属于引擎职责。
 
 ## 15. M10：性能、兼容性与发布
 
@@ -383,7 +362,6 @@ M0
 
 - M2 的 Metadata 与 TypedTuple 可由不同开发者并行，但共享编号和错误规范。
 - M7 Cache 可在 M4 后独立开发。
-- M9 的 fixture 和映射表可在 M2 后开始，最终集成依赖 M5。
 - README、示例和 inspect 工具可在 M5 后持续进行。
 
 ## 17. Issue 拆分模板
@@ -413,7 +391,7 @@ M0
 5. 实现 Snapshot/Block Header/Footer。
 6. 实现 IndexTxn 固定结构。
 7. 实现 Metadata Field TLV。
-8. 实现通用 Metadata 记录（TLV）API。
+8. 实现 Metadata TLV 记录与 Schema 记录（Table/Column）。
 9. 实现 TypedTuple 定宽类型与 Null Bitmap。
 10. 实现 String/Bytes/DateTime/Decimal。
 11. 实现 None/Zstd Block。
@@ -422,7 +400,7 @@ M0
 14. 实现 Create/Open/Close。
 15. 实现 SnapshotWriter FULL 和 Get。
 
-首个可演示版本定义为 Issue 1–15 完成：能够写入一个含 Header/Table/Column 元数据的 Zstd FULL 快照，关闭、重开并随机读取行。
+首个可演示版本定义为 Issue 1–15 完成：能够写入一个含 Table/Column Schema 元数据的 Zstd FULL 快照，关闭、重开并随机读取行。
 
 ## 19. 主要风险与缓解
 
@@ -432,7 +410,7 @@ M0
 | 两文件提交窗口 | 调用者不知道是否成功 | `.rpk` 权威、CommitError.Unknown、重开查询 ID |
 | DELTA 链过长 | Get/Scan 退化 | 深度限制、指标；后续 checkpoint/compact |
 | 索引全量载入内存 | 大文件内存高 | 统计和 benchmark；v1 后引入 mmap/分页索引 |
-| 元数据方言差异 | 行类型映射不正确 | 保存原字段、显式派生接口、真实 DB fixtures |
+| 元数据方言差异 | 行类型映射不正确 | 保存原字段；行解码只认 `DefineSchema` 规范类型字符串，不猜方言 |
 | Property 字段未来变化 | 元信息丢失 | 有序 FieldSet、未知 TLV 无损透传 |
 | Go int 平台差异 | 32 位溢出 | 磁盘 i64、读回边界检查 |
 | 压缩炸弹/损坏长度 | OOM 或崩溃 | 分配前验证、解压目标上限、Fuzz |
@@ -447,7 +425,7 @@ M0
 2. 所有公开 API 有测试和 GoDoc。
 3. 所有磁盘 Decoder 通过 Fuzz，所有并发路径通过 race。
 4. FULL/DELTA、历史读取、Scan、Cache 和恢复达到验收标准。
-5. `meta.Store` 13 类核心数据逐字段无损往返。
+5. Schema 记录（DefineSchema）逐字段无损往返。
 6. 未知非 Critical 元数据能无损透传，Critical 元数据能安全拒绝。
 7. v1 golden files 已锁定并纳入 CI。
 8. 发布包不含未受控格式 TODO、调试输出或可触发 panic 的不可信输入路径。

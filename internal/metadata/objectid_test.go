@@ -21,9 +21,6 @@ func TestObjectIDAllocator(t *testing.T) {
 	if a.Alloc("rowpack.meta.v1", "app.users") != id1 {
 		t.Fatal("allocator not stable for repeated key")
 	}
-	if a.ExternalKey(id1) != "app.users" {
-		t.Fatalf("external key mapping wrong: %q", a.ExternalKey(id1))
-	}
 	// Table-space IDs are reserved and never collide.
 	if a.Alloc("rowpack.meta.v1", "col") < TableSpaceEnd {
 		t.Fatal("allocator returned a table-space ID")

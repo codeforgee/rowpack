@@ -2,6 +2,7 @@ package index
 
 import (
 	"errors"
+	"sort"
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -115,12 +116,14 @@ func TestViewBlocksAndBlockIDs(t *testing.T) {
 	if v.Block(42) != nil {
 		t.Fatal("Block(42) should be nil")
 	}
-	ids := v.BlockIDs(2)
-	if len(ids) != 1 || ids[0] != 2 {
-		t.Fatalf("BlockIDs(2) = %v", ids)
+	var ids []uint64
+	for _, b := range v.Blocks() {
+		if b.SnapshotID == 2 {
+			ids = append(ids, b.BlockID)
+		}
 	}
-	if v.BlockIDs(99) != nil {
-		t.Fatal("BlockIDs(99) should be nil")
+	if len(ids) != 1 || ids[0] != 2 {
+		t.Fatalf("blocks of snapshot 2 = %v", ids)
 	}
 	all := v.Blocks()
 	if len(all) != 3 {
@@ -412,9 +415,15 @@ func TestApplyBlockIDSorting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids := nv.BlockIDs(1)
+	var ids []uint64
+	for _, b := range nv.Blocks() {
+		if b.SnapshotID == 1 {
+			ids = append(ids, b.BlockID)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	if len(ids) != 3 || ids[0] != 10 || ids[1] != 20 || ids[2] != 30 {
-		t.Fatalf("BlockIDs not sorted: %v", ids)
+		t.Fatalf("blocks of snapshot 1 = %v", ids)
 	}
 	if nv.MemoryBytes() == 0 {
 		t.Fatal("memory bytes not accumulated")

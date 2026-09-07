@@ -53,20 +53,8 @@ func TestFrozenEnums(t *testing.T) {
 		{"TypeTime", TypeTime, ValueType(15)},
 		{"TypeDateTime", TypeDateTime, ValueType(16)},
 		{"TypeDecimal", TypeDecimal, ValueType(17)},
-		{"RecordHeader", RecordHeader, RecordType(1)},
 		{"RecordTable", RecordTable, RecordType(2)},
 		{"RecordColumn", RecordColumn, RecordType(3)},
-		{"RecordPrimaryKey", RecordPrimaryKey, RecordType(4)},
-		{"RecordIndex", RecordIndex, RecordType(5)},
-		{"RecordUniqueKey", RecordUniqueKey, RecordType(6)},
-		{"RecordForeignKey", RecordForeignKey, RecordType(7)},
-		{"RecordAutoInc", RecordAutoInc, RecordType(8)},
-		{"RecordTableComment", RecordTableComment, RecordType(9)},
-		{"RecordColComment", RecordColComment, RecordType(10)},
-		{"RecordView", RecordView, RecordType(11)},
-		{"RecordFunction", RecordFunction, RecordType(12)},
-		{"RecordVirtualColumn", RecordVirtualColumn, RecordType(13)},
-		{"HeaderObjectID", HeaderObjectID, 1},
 		{"FlagCritical", FlagCritical, 1},
 		{"FieldFlagCritical", FieldFlagCritical, 1},
 		{"FieldFlagRepeated", FieldFlagRepeated, 2},
@@ -141,18 +129,9 @@ func TestFeatureBits(t *testing.T) {
 	}
 }
 
-// TestRecordTypeRanges protects the reserved and vendor type ranges.
-func TestRecordTypeRanges(t *testing.T) {
-	if RecordTypeReservedEnd != 1024 {
-		t.Errorf("RecordTypeReservedEnd = %d, want 1024", RecordTypeReservedEnd)
-	}
-	if RecordTypeStandardStart != 1024 {
-		t.Errorf("RecordTypeStandardStart = %d, want 1024", RecordTypeStandardStart)
-	}
-	if RecordTypeVendorStart != 65536 {
-		t.Errorf("RecordTypeVendorStart = %d, want 65536", RecordTypeVendorStart)
-	}
-	if RecordVirtualColumn >= RecordType(RecordTypeReservedEnd) {
-		t.Errorf("core RecordType %d must stay below reserved range start %d", RecordVirtualColumn, RecordTypeReservedEnd)
+// TestRecordTypeValues protects the engine's schema record type numbers.
+func TestRecordTypeValues(t *testing.T) {
+	if RecordTable != 2 || RecordColumn != 3 {
+		t.Errorf("schema record types changed: Table=%d Column=%d", RecordTable, RecordColumn)
 	}
 }

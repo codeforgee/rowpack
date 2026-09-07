@@ -30,7 +30,7 @@ func TestAppender(t *testing.T) {
 	if a.Offset() != 10 {
 		t.Fatalf("offset = %d", a.Offset())
 	}
-	if _, err := a.AppendZeroes(6); err != nil {
+	if _, err := a.Append(make([]byte, 6)); err != nil {
 		t.Fatal(err)
 	}
 	if a.Offset() != 16 {

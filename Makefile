@@ -36,7 +36,7 @@ fuzz-short:
 # Regenerate every golden file from the current implementation.
 # Golden files must be reviewed in the same change as the format change.
 golden:
-	$(GO) test ./... -run 'TestGolden' -args -update-golden
+	$(GO) test . -run 'TestGolden' -args -update-golden
 
 clean:
 	rm -rf *.test coverage.out

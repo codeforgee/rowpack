@@ -18,7 +18,8 @@ func TestAppenderReadAllSizeFile(t *testing.T) {
 	if _, err := a.Append([]byte("hello")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.AppendZeroes(20000); err != nil { // multi-chunk padding path
+	// Multi-chunk write path (previously AppendZeroes' 8 KiB chunking).
+	if _, err := a.Append(make([]byte, 20000)); err != nil {
 		t.Fatal(err)
 	}
 	size, err := a.Size()

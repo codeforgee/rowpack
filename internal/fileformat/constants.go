@@ -147,33 +147,16 @@ const (
 	WireFieldSet      WireType = 10
 )
 
-// Core metadata namespaces and record type ranges.
-const (
-	NamespaceCore  = "rowpack.meta.v1"
-	HeaderObjectID = 1 // Header keeps ObjectID 1; other objects start at 2
+// Metadata record namespace. Records written by the engine (DefineSchema
+// schema records) use this namespace.
+const NamespaceCore = "rowpack.meta.v1"
 
-	RecordTypeReservedEnd   = 1024 // 14-1023 reserved
-	RecordTypeStandardStart = 1024 // standard extensions 1024-65535
-	RecordTypeVendorStart   = 65536
-)
-
-// Core metadata RecordType identifiers, frozen for v1.
+// Metadata RecordType identifiers used by the engine, frozen for v1.
 type RecordType uint32
 
 const (
-	RecordHeader        RecordType = 1
-	RecordTable         RecordType = 2
-	RecordColumn        RecordType = 3
-	RecordPrimaryKey    RecordType = 4
-	RecordIndex         RecordType = 5
-	RecordUniqueKey     RecordType = 6
-	RecordForeignKey    RecordType = 7
-	RecordAutoInc       RecordType = 8
-	RecordTableComment  RecordType = 9
-	RecordColComment    RecordType = 10
-	RecordView          RecordType = 11
-	RecordFunction      RecordType = 12
-	RecordVirtualColumn RecordType = 13
+	RecordTable  RecordType = 2 // Table schema record
+	RecordColumn RecordType = 3 // Column schema record
 )
 
 // TypedTuple v1 value type identifiers. These equal the public API Type enum

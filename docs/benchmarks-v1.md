@@ -232,3 +232,39 @@ DecimalBytes）、golden files 全绿；`TestPerfEndToEnd` 端到端回归通过
 
 正确性：`go test ./...`、`go test -race ./...`、codec fuzz 全绿。
 `verify.go` 保留 `ParseRowsPayload`——全记录校验本就是 Verify 的职责。
+
+## 元数据精简后基准（2026-09-07 第五批：厂商设计移除 + 死字段删除 + 冗余清理）
+
+> 环境同上（Go 1.27 / M1 Pro / zstd v1.20）。本次为格式变更批：Schema 记录
+> 收敛为 Table 1 字段 + Column 5 字段（行数据编码不变），golden 已重建锁定。
+> 微基准（热读类）改用 -benchtime=2s 充分预热记录，与旧 5x 记录不可直接对比。
+
+| 基准 | 第四批基线 | 本次 | 变化 |
+| --- | --- | --- | --- |
+| BenchmarkScan（100k 行） | 15.6 ms / 189 allocs | 15.7–16.0 ms / 192 allocs | 持平 |
+| BenchmarkScan1M | 238 ms / 4.2K allocs | 244 ms / 4.2K allocs | 持平（噪声内） |
+| BenchmarkScanDeepChain（32 层） | 30.8 ms / 319 allocs | 30.2 ms / 322 allocs | 持平 |
+| BenchmarkGetColdRead | 269 µs / 10 allocs | 274 µs / 10 allocs | 持平 |
+| BenchmarkGetHotRead / Into | 9.5 µs / 2 allocs | 330 / 244 ns（2s 预热） | 测量模式差异，非代码变化 |
+| BenchmarkGetDeepChain | 4.2 µs | 2.1 µs（2s 预热） | 同上 |
+| BenchmarkConcurrentGet g1–g64 | 5.9/5.0 µs | 474–484 ns（2s 预热） | 同上，g64 ≈ g1 线性扩展保持 |
+| BenchmarkOpenReplay（100k 行） | 5.1 ms / 28.7 MB | 5.0 ms / 28.7 MB | 持平 |
+| BenchmarkRebuildIndex（100k 行） | 31.4 ms / 1.2K allocs | **27.8–28.0 ms** / 1.2K allocs | **-11%** |
+| BenchmarkViewApply1M | 0.60 ms / 18 allocs | **0.563 ms** / 17 allocs | **-6%** |
+| BenchmarkWrite1M | 210 ms / 954 krows/s | 213.8 ms / 936 krows/s | 持平（噪声内） |
+| BenchmarkIsolatedWrite | 49.8–51.3 ms | 49.4–50.8 ms | 持平 |
+| BenchmarkFullSequentialWrite | 95 ms / 127 MB | 98.6 ms / 126.7 MB | +4%（5x 噪声内） |
+
+本轮变化归因：
+
+1. **View.Apply 删除 blocksBySnap 维护**：Apply 不再对每块做 per-snapshot
+   append + 排序（该结构无任何生产读取方，仅 View.BlockIDs 测试使用）。
+   逐快照 Apply 的 RebuildIndex 直接受益（-11%），ViewApply1M -6%，
+   OpenReplay 路径同步小幅受益。
+2. **Schema 记录瘦身**（Table 1 字段 + Column 5 字段，ColumnID 领先）：
+   DefineSchema 每列少写 4 个字段，派生侧少读；对写吞吐影响在噪声内
+   （Schema 定义仅发生在建表时）。
+3. 其余读/写主路径代码未动，全部持平——本轮为纯结构精简，无性能回退。
+
+正确性：`go test ./...`、`go test -race ./...`、vet/gofmt 全绿；metadata
+fuzz 冒烟通过；golden 两次生成 MD5 一致（5137920b…）。

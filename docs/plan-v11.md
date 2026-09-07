@@ -9,7 +9,7 @@
 
 - [x] V1.1-A 读路径 Row 复用（2026-09-07 完成）
 - [x] V1.1-B 写路径分配削减（2026-09-07 完成）
-- [ ] V1.1-C 冷读 mmap
+- [x] V1.1-C 冷读 mmap（2026-09-07 完成）
 - [ ] V1.1-D 索引落地内存
 
 ## 1. 目标
@@ -75,12 +75,26 @@ race/fuzz/golden 全绿。
 
 任务：
 
-- [ ] `internal/iofile` 提供只读 mmap 视图（按需映射、分片 remap）。
-- [ ] `block.Reader` 支持从 mmap 区域直接解压，减少一次用户态拷贝。
-- [ ] 只读模式与缓存并存：mmap 命中不 cache，避免双份内存。
+- [x] `internal/iofile` 提供只读 mmap 视图（整文件映射、增长时在写锁下
+      remap，旧映射仅在无活动视图时释放；mmap 失败永久回退 ReadAt 拷贝；
+      Truncate/Close 释放映射避免 SIGBUS）。
+- [x] `block.Reader` 支持从 mmap 区域直接切片 stored payload，zstd 解压到
+      全新缓冲；None 压缩块复制后返回，缓存永不别名文件映射。
+- [x] `fileformat.verifyCRC` 改为非变异实现（分段 CRC），解码器契约升级为
+      「输入不可变」，只读映射可安全作为解码输入。
 
-验收：冷读基准与分配下降；文件增长下 mmap 边界与截断行为正确；
-Windows 平台无 mmap 时回退 ReadAt。
+语义与边界：
+
+- 映射生存期由 RWMutex 串行化：视图仅在 done 之前有效，remap 等待所有
+  活动视图退出后才能 munmap；header 视图在解析后立即释放，避免与后续
+  payload 视图的 remap 死锁。
+- 平台：unix（Linux/macOS/BSD）启用；Windows 无 mmap 回退 ReadAt。
+- 恢复截断（Appender.Truncate）同步释放映射；映射失败永久降级，读路径
+  不会因 mmap 限制而整体不可用。
+
+验收：冷读基准 300µs/418KB → 273µs/361KB/op（消除 256 KiB stored 堆分配
+与一次用户态拷贝）；mmap 与 ReadAt 逐块等价性测试、并发 remap race 测试、
+全量测试/race/fuzz/golden 全绿。
 
 ### V1.1-D：索引落地内存（架构级）
 

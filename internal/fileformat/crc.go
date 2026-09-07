@@ -36,16 +36,17 @@ func finalizeCRC(buf []byte, crcOff int) uint32 {
 }
 
 // verifyCRC verifies the 4-byte CRC field at crcOff of buf, treating the field
-// as zero during computation. The field is restored afterwards so callers can
-// keep using the buffer. The returned value is the stored CRC.
+// as zero during computation. buf is not modified: the CRC is computed over
+// the spans before and after the field plus four zero bytes, so decoders can
+// safely accept buffers that alias read-only file mappings (mmap views).
+// The returned value is the stored CRC.
 func verifyCRC(buf []byte, crcOff int) (uint32, error) {
 	if len(buf) < crcOff+4 {
 		return 0, fmt.Errorf("buffer too short for CRC field at %d: have %d", crcOff, len(buf))
 	}
 	want := binary.LittleEndian.Uint32(buf[crcOff:])
-	putU32(buf[crcOff:], 0)
-	got := CRC32C(buf)
-	putU32(buf[crcOff:], want)
+	var zero [4]byte
+	got := CRC32CConcat(buf[:crcOff], zero[:], buf[crcOff+4:])
 	if got != want {
 		return 0, fmt.Errorf("CRC mismatch: stored=0x%08x computed=0x%08x", want, got)
 	}

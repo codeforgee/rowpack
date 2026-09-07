@@ -94,6 +94,13 @@ v1.1 首批优化内容：
    与参照编码器逐字节等价性测试覆盖。
 4. **schema.Validate 零分配**：≤64 列用 O(n²) 名称比较替代 map（读写路径
    每行调用不再分配）；bitmap 零填充改栈数组。
+5. **冷读 mmap**（同日第二批）：`iofile.Appender.View` 只读整文件映射、
+   增长 remap（RWMutex 串行化，mmap 失败永久回退 ReadAt，Truncate/Close
+   释放映射）；`block.Reader` 直接切片映射区的 stored payload，zstd 解压
+   到全新缓冲，None 块复制后返回（缓存永不别名映射）；`fileformat.verifyCRC`
+   改非变异实现，解码器契约升级为「输入不可变」。冷读 300µs/418KB →
+   273µs/361KB/op（消除 256 KiB stored 堆分配与一次用户态拷贝，-9% 耗时）。
+   新增 mmap/ReadAt 逐块等价、增长/截断边界、并发 remap race 测试。
 
 正确性：`go test ./...`、`go test -race ./...`、fuzz（TupleDecode/
 DecimalBytes）、golden files 全绿；`TestPerfEndToEnd` 端到端回归通过。

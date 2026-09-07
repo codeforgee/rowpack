@@ -11,10 +11,12 @@ import (
 )
 
 // Appender wraps an append-only file. It tracks its own write offset and is
-// the only writer to the file, matching the single-writer model.
+// the only writer to the file, matching the single-writer model. Reads go
+// through ReadAt or View so they never disturb the write cursor.
 type Appender struct {
 	f      *os.File
 	offset int64
+	mapper *readMapper
 }
 
 // OpenAppender opens path for read/write appending, creating it when create
@@ -33,7 +35,30 @@ func OpenAppender(path string, create bool) (*Appender, error) {
 		f.Close()
 		return nil, err
 	}
-	return &Appender{f: f, offset: fi.Size()}, nil
+	return &Appender{f: f, offset: fi.Size(), mapper: newReadMapper(f)}, nil
+}
+
+// View returns a stable view of [offset, offset+n). On platforms with mmap
+// support the returned slice aliases an internal read-only mapping of the
+// whole file and is valid only until done is called: a racing append may
+// trigger a remap, which is serialized against active views. On platforms
+// without mmap support it is a fresh ReadAt copy. The caller must not retain
+// the slice past done and must not write through it.
+func (a *Appender) View(offset, n int64) ([]byte, func(), error) {
+	return a.mapper.view(offset, n)
+}
+
+// viewCopy is the portable ReadAt fallback view: a fresh copy the caller
+// owns outright.
+func (a *Appender) viewCopy(offset, n int64) ([]byte, func(), error) {
+	if n < 0 || offset < 0 {
+		return nil, nil, fmt.Errorf("rowpack: invalid view range [%d,%d)", offset, offset+n)
+	}
+	b := make([]byte, n)
+	if _, err := a.f.ReadAt(b, offset); err != nil {
+		return nil, nil, err
+	}
+	return b, func() {}, nil
 }
 
 // Offset returns the current write offset (bytes appended so far).
@@ -77,7 +102,8 @@ func (a *Appender) AppendZeroes(n int) (int64, error) {
 func (a *Appender) Sync() error { return a.f.Sync() }
 
 // Truncate cuts the file back to n bytes (used by recovery to drop invalid
-// tails). It also rewinds the write offset.
+// tails). It also rewinds the write offset and drops any read mapping so
+// views never cover bytes beyond the new EOF.
 func (a *Appender) Truncate(n int64) error {
 	if err := a.f.Truncate(n); err != nil {
 		return err
@@ -85,6 +111,7 @@ func (a *Appender) Truncate(n int64) error {
 	if n < a.offset {
 		a.offset = n
 	}
+	a.mapper.unmap()
 	return nil
 }
 
@@ -116,8 +143,11 @@ func (a *Appender) Size() (int64, error) {
 // File returns the underlying file handle (read-only use).
 func (a *Appender) File() *os.File { return a.f }
 
-// Close flushes and closes the file.
-func (a *Appender) Close() error { return a.f.Close() }
+// Close unmaps any read view and closes the file.
+func (a *Appender) Close() error {
+	a.mapper.unmap()
+	return a.f.Close()
+}
 
 // Exists reports whether path exists.
 func Exists(path string) bool {

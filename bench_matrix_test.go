@@ -82,6 +82,10 @@ func reportCacheMetrics(b *testing.B, st Stats) {
 	if h+m > 0 {
 		b.ReportMetric(100*float64(h)/float64(h+m), "hitpct")
 	}
+	h, m = st.ScanCache.Hits, st.ScanCache.Misses
+	if h+m > 0 {
+		b.ReportMetric(100*float64(h)/float64(h+m), "scanhitpct")
+	}
 }
 
 func bsLabel(bs int) string {

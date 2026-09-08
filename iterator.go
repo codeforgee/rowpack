@@ -61,6 +61,11 @@ type Iterator struct {
 	curBlk     *index.BlockLoc
 	curPayload *block.RowsIndex
 	dirEntries []fileformat.RowDirectoryEntry
+	// curRef is the current block reference. Cache hits are cache-owned
+	// (Release no-op); transient misses own a pooled scratch that is
+	// returned when the cursor moves to the next block or the iterator
+	// closes.
+	curRef *scanRef
 
 	err    error
 	closed bool
@@ -170,17 +175,20 @@ func (it *Iterator) Next() (Row, bool) {
 		select {
 		case <-it.ctx.Done():
 			it.err = it.ctx.Err()
+			it.releaseBlock()
 			return nil, false
 		default:
 		}
 	}
 	rowID, loc, ok := it.nextLoc()
 	if !ok {
+		it.releaseBlock()
 		return nil, false
 	}
 	row, err := it.rowAt(loc, it.buf)
 	if err != nil {
 		it.err = err
+		it.releaseBlock()
 		return nil, false
 	}
 	it.curRowID = rowID
@@ -267,19 +275,34 @@ func (it *Iterator) locateBlock(loc *index.RowLoc) error {
 	if bl == nil {
 		return fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)
 	}
-	blk, err := it.store.loader.Load(int64(bl.DataOffset), bl.BlockID)
+	ref, err := it.store.loader.LoadScan(int64(bl.DataOffset), bl.BlockID)
 	if err != nil {
 		return err
 	}
-	rp, err := block.ParseRowsDirectory(blk.Raw, bl.ItemCount, it.dirEntries)
+	rp, err := block.ParseRowsDirectory(ref.Raw(), bl.ItemCount, it.dirEntries)
 	if err != nil {
+		ref.Release()
 		return err
 	}
+	// The new directory is built from ref's buffer; the previous block (if
+	// any) is no longer referenced, so its scratch can be returned to the
+	// pool before the cursor moves.
+	it.releaseBlock()
 	it.dirEntries = rp.Entries
 	it.curBlockID = loc.BlockID
 	it.curBlk = bl
 	it.curPayload = rp
+	it.curRef = ref
 	return nil
+}
+
+// releaseBlock returns the current block's scratch (if any) to the pool.
+// Callers must no longer reference curPayload's raw buffer. Idempotent.
+func (it *Iterator) releaseBlock() {
+	if it.curRef != nil {
+		it.curRef.Release()
+		it.curRef = nil
+	}
 }
 
 // RowID returns the current row's RowID.
@@ -291,5 +314,6 @@ func (it *Iterator) Err() error { return it.err }
 // Close releases the iterator. It is idempotent.
 func (it *Iterator) Close() error {
 	it.closed = true
+	it.releaseBlock()
 	return nil
 }

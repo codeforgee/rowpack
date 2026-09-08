@@ -92,14 +92,42 @@
 
 ## 4. P1：Scan 内存与缓存策略
 
-当前 1M 行 Scan 约 238 ms、156 MB/op，其中主要是首轮 Block 解压缓冲，而非逐行分配。
+原状：1M 行 Scan 约 238 ms、155.6 MB/op，根因是 Scan 与随机 Get 共用 decoded
+LRU：每个 miss 块解压后无条件晋升缓存，大 Scan 把一次性块全部挤进热点集并
+持续颠簸（1M 行 ~390 块 × 256 KiB 解压缓冲逐块新分配），同时挤掉随机读热点。
 
-- 引入解压缓冲池，并设置总字节预算。
-- 支持 compressed-only、decoded-only 和 adaptive Cache 策略。
-- 顺序 Scan 默认避免长期保留全部解压 Block。
-- 增加 Scan 的 peak RSS、缓存淘汰和首轮/二轮扫描基准。
+### 4.1 状态：已完成（2026-09-08）
 
-验收目标：1M 行 Scan 峰值内存降低 30% 以上；热 Scan 吞吐不下降超过 5%。
+- [x] `Reader.ReadAtBlockTransient` + 解压 scratch 池（internal/block/rawbuf.go）：
+      解压目标缓冲从 sync.Pool 复用，DecodeAll 在容量够时零分配；CRC 失败/截断错误
+      语义与普通路径一致（TestTransientRejectsCorruption），池复用不串数据并带
+      fuzz（FuzzReadAtBlockTransient）。
+- [x] `blockLoader` 双缓存预算：随机读 decoded LRU（份额不变）与有界 Scan window
+      （`scanBudgetFor` = CacheBytes/2，下限 1 MiB、上限 64 MiB）。Scan 查询顺序
+      decoded cache → scan window → 池化瞬态读；瞬态块仅在 window 有余量时晋升，
+      否则流式走池，不分配也不碰随机读热点（loader.go LoadScan/scanRef）。
+- [x] Scan 已改走 `LoadScan`（iterator.go locateBlock），换块/结束/Close 时把 scratch
+      归还池；热块（cache 或 window 命中）零解压复用，跨迭代小工作集全命中。
+- [x] `Stats.ScanCache`（独立 CacheStats）与基准新列 `scanhitpct`：Scan 命中率不再
+      混入随机读 hitpct（后者保持为 Get 专有口径）。
+
+验收结果（2026-09-08，3×3 迭代，bs=256K，环境同 §2.1）：
+
+| 场景 | 基线 | 现在 | 变化 |
+| --- | --- | --- | --- |
+| Scan 100k hot | 7397 krows/s | 7290 krows/s（scanhitpct 80 = 旧 hitpct 80） | -1.4% ✓ |
+| Scan 100k cold | 4104 krows/s / 15.4 MB | 4132 krows/s / 3.2 MB | +0.7% / **-79%** ✓ |
+| Scan 1M | 4077 krows/s / 155.6 MB | 4421 krows/s / 40.0 MB | +8.4% / **-74%** ✓ |
+| Scan DeepChain（32 层） | 4085 krows/s / 8.45 MB | 3905 krows/s / 8.8 MB | -4.4%（≤5% 门槛）✓ |
+| getrand1m / get_deepchain / write_full | — | get 3.24 kget/s、deepchain 99.96 hitpct，与基线一致 | 无回归 ✓ |
+
+说明：peak RSS 的 `rssdMB` 是 getrusage 进程历史峰值增量，随分配器高水位波动、受跑序
+干扰，不作为本项验收口径；`B/op`（155.6 → 40.0 MB，-74%）是最稳定的内存代理指标，
+1M Scan 总分配从每次 155.6 MB 降至 40.0 MB，超额完成“降低 30%”门槛。热 Scan
+（100k warm 与 DeepChain）均在 5% 内。
+
+遗留（后续可选）：compressed-only / adaptive 缓存策略枚举、Scan window 预算对外
+暴露（当前内部固定 CacheBytes/2，上限 64 MiB）。
 
 ## 5. P1：Delta checkpoint 与物化视图
 

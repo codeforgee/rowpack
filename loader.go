@@ -9,22 +9,49 @@ import (
 // merging (singleflight). Only CRC-validated blocks enter the cache; CRC
 // failures are never cached. Blocks larger than the cache capacity are
 // readable but not cached.
+//
+// Two caches with separate budgets serve different access patterns:
+//
+//   - cache: the decoded random-read hot set (Get / ReadBatch). Its contents
+//     are never displaced by scans.
+//   - scan: a bounded decoded window for streaming reads. Blocks promoted
+//     here are reused across scan iterations (small working sets hit fully);
+//     once the window is full, further scan blocks stream through the
+//     scratch pool, never allocating and never evicting the hot set.
 type blockLoader struct {
 	reader *block.Reader
 	cache  *cache.LRU
+	scan   *cache.LRU
 	sf     cache.Group
 }
 
+// scanBudgetFor bounds the scan window to a share of the cache budget: half
+// of it, floored at 1 MiB and capped at 64 MiB so huge explicit cache sizes
+// do not let scans squat on the random-read hot set. Small and layered scan
+// sets (deep chains) fit the window and are reused across iterations; very
+// large scans fill it and then stream through the pool without allocating.
+func scanBudgetFor(cacheBytes int64) int64 {
+	b := cacheBytes / 2
+	if b < 1<<20 {
+		return 1 << 20
+	}
+	if b > 64<<20 {
+		return 64 << 20
+	}
+	return b
+}
+
 func newBlockLoader(reader *block.Reader, cacheBytes int64) *blockLoader {
-	var lru *cache.LRU
+	var lru, scn *cache.LRU
 	if cacheBytes > 0 {
 		lru = cache.NewLRU(cacheBytes)
+		scn = cache.NewLRU(scanBudgetFor(cacheBytes))
 	}
-	return &blockLoader{reader: reader, cache: lru}
+	return &blockLoader{reader: reader, cache: lru, scan: scn}
 }
 
 // Load returns the validated block at offset with the given block ID, serving
-// from cache when possible.
+// from the (random-read) cache when possible.
 func (l *blockLoader) Load(offset int64, blockID uint64) (*block.Block, error) {
 	if l.cache == nil {
 		return l.reader.ReadAtBlock(offset)
@@ -48,10 +75,65 @@ func (l *blockLoader) Load(offset int64, blockID uint64) (*block.Block, error) {
 	return v.(*block.Block), nil
 }
 
+// scanRef wraps a block for streamed use. Cache-owned blocks are served
+// directly (Release is a no-op); transient (uncached) blocks own a pooled
+// scratch buffer that Release returns to the pool.
+type scanRef struct {
+	blk *block.Block
+	sc  *block.BlockScratch
+}
+
+// Raw returns the validated uncompressed payload.
+func (r *scanRef) Raw() []byte { return r.blk.Raw }
+
+// Release returns any pooled scratch. It is idempotent.
+func (r *scanRef) Release() {
+	if r.sc != nil {
+		r.sc.Release()
+		r.sc = nil
+	}
+}
+
+// LoadScan serves streaming reads (Scan, batch windows). Lookup order is the
+// random-read cache, then the scan window; a miss is decompressed into a
+// pooled scratch. The block is promoted into the scan window only while the
+// window has room, so large scans neither evict the random-read hot set nor
+// allocate per block.
+func (l *blockLoader) LoadScan(offset int64, blockID uint64) (*scanRef, error) {
+	if l.cache != nil {
+		if v, ok := l.cache.Get(blockID); ok {
+			return &scanRef{blk: v.(*block.Block)}, nil
+		}
+		if v, ok := l.scan.Get(blockID); ok {
+			return &scanRef{blk: v.(*block.Block)}, nil
+		}
+	}
+	sc, err := l.reader.ReadAtBlockTransient(offset)
+	if err != nil {
+		return nil, err
+	}
+	if l.scan != nil && uint64(len(sc.Raw)) <= l.scan.Remaining() {
+		blk := &block.Block{Header: sc.Header, Raw: make([]byte, len(sc.Raw))}
+		copy(blk.Raw, sc.Raw)
+		l.scan.Put(blockID, int64(len(blk.Raw)), blk)
+		sc.Release()
+		return &scanRef{blk: blk}, nil
+	}
+	return &scanRef{blk: &sc.Block, sc: sc}, nil
+}
+
 // cacheStats returns the cache counters (nil-safe).
 func (l *blockLoader) cacheStats() (capBytes, used, hits, misses, evictions, loads uint64) {
 	if l.cache == nil {
 		return 0, 0, 0, 0, 0, 0
 	}
 	return l.cache.CapacityBytes(), l.cache.UsedBytes(), l.cache.Hits(), l.cache.Misses(), l.cache.Evictions(), l.cache.Loads()
+}
+
+// scanStats returns the scan-window counters (nil-safe).
+func (l *blockLoader) scanStats() (capBytes, used, hits, misses, evictions, loads uint64) {
+	if l.scan == nil {
+		return 0, 0, 0, 0, 0, 0
+	}
+	return l.scan.CapacityBytes(), l.scan.UsedBytes(), l.scan.Hits(), l.scan.Misses(), l.scan.Evictions(), l.scan.Loads()
 }

@@ -44,7 +44,8 @@ type Stats struct {
 	RawBytes         uint64
 	StoredBytes      uint64
 	IndexMemoryBytes uint64
-	Cache            CacheStats
+	Cache            CacheStats // random-read decoded block cache
+	ScanCache        CacheStats // bounded decoded scan window
 	Batch            BatchStats
 	Recovery         RecoveryStats
 }
@@ -79,6 +80,7 @@ func (s *Store) Stats() Stats {
 	}
 	if l := s.loader; l != nil {
 		stt.Cache.CapacityBytes, stt.Cache.UsedBytes, stt.Cache.Hits, stt.Cache.Misses, stt.Cache.Evictions, stt.Cache.Loads = l.cacheStats()
+		stt.ScanCache.CapacityBytes, stt.ScanCache.UsedBytes, stt.ScanCache.Hits, stt.ScanCache.Misses, stt.ScanCache.Evictions, stt.ScanCache.Loads = l.scanStats()
 	}
 	stt.Batch.Calls = s.batchCalls.Load()
 	stt.Batch.Rows = s.batchRows.Load()

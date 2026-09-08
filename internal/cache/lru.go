@@ -117,6 +117,22 @@ func (c *LRU) CapacityBytes() uint64 {
 	return uint64(c.capacity)
 }
 
+// Remaining returns the free byte budget, or 0 when full or nil. Callers use
+// it to decide whether promoting another entry is worthwhile without
+// allocating the entry first.
+func (c *LRU) Remaining() uint64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	free := c.capacity - c.used
+	if free < 0 {
+		return 0
+	}
+	return uint64(free)
+}
+
 // UsedBytes returns the currently used bytes.
 func (c *LRU) UsedBytes() uint64 {
 	if c == nil {

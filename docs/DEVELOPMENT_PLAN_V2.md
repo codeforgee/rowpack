@@ -5,6 +5,7 @@
 > 格式设计：[BINARY_FORMAT_V2.md](BINARY_FORMAT_V2.md)
 > API 设计：[GO_API_DESIGN_V2.md](GO_API_DESIGN_V2.md)
 > 架构决策：[ADR-003](adr/ADR-003.md)
+> 风险清单：[V2_DESIGN_RISKS.md](V2_DESIGN_RISKS.md)（各里程碑已标注对应 R 项）
 
 ## 1. 开发原则
 
@@ -61,6 +62,10 @@
 - Get 通过现有 Row Index 定位 Block 和 ItemOrdinal；
 - Close/Reopen、只读、空文件和超大行测试。
 
+**本里程碑显式包含 R1/R5：** 恢复扫描器必须识别 IndexTxn 四类结构（BINARY_FORMAT_V2
+§10.1），正常写入的文件 Open 不得报 mid-file corruption；重放按 IndexTxn 区段读，**不得
+整文件 ReadAll**，并加 Open 峰值内存基准（不随数据量放大）。
+
 性能门槛：FULL 写入以当前测试环境重新建立 v2 基线；一次提交只发生一次 fsync。
 
 ## 6. V2-M3：DELTA 与恢复
@@ -73,6 +78,17 @@
 - Header、Block、Footer 各位置故障注入；
 - 中间损坏与尾部不完整区分；
 - `CommitError{Unknown:true}` 语义验证。
+
+**本里程碑显式包含 R2/R3/R7/R8/R9：**
+
+- 重放改为逐 snapshot 独立校验：中间 IndexTxn 位腐 → 仅该 snapshot 用 Blocks 内存重建并
+  Apply，**继续处理后续已提交 snapshot**（不可沿用 v1 “首个坏 txn 即停”语义，R2）；
+- 提交判定两维分离测试：Footer 自身 CRC 有效 + 索引绑定失败 = 已提交数据 + 内存重建索引；
+  Footer 缺失 = 未提交；Block 数据损坏 = 硬错（R3）；
+- 后续 FULL checkpoint（R7）：FULL→DELTA 链、FULL 后 Depth 重置、Footer 链 SnapshotID
+  单调在 FULL 后的往返与崩溃注入；
+- IndexTxn 区间边界强制（R8）：`BodyBytes` 与 Header/Footer 区间一致性、跨 txn 消费
+  防护；fault 点位按 v2 提交顺序重排并新增 indel txn/footer 撕裂点（R9）。
 
 完成标准：每个追加边界执行崩溃注入，重开后只能看到提交前或提交后的完整状态。
 
@@ -99,6 +115,11 @@ Batch = 1 / 10 / 100 / 1k / 10k / 100k rows
 
 性能门槛：同 Block 不重复解压；批量路径较循环 Get 提升至少 3 倍。
 
+**前置（R14）**：M4 开工前冻结 Block RowID envelope 的来源——由 `view.Apply` 按
+RowIndexEntry 集合派生 per-(Snapshot, Table, Block) 的 Min/MaxRowIDExclusive（磁盘块头不
+加字段），并钉死 MaxUint64 边界表达（MaxRowIDExclusive=0 表示无上界）；同时冻结批量重复
+ID/不可见行语义（R17）与重排缓冲上界（R18）。
+
 ## 8. V2-M5：Block Cache 与批量规划
 
 - 为解压 Block 建立按字节预算的 LRU；
@@ -114,9 +135,12 @@ Batch = 1 / 10 / 100 / 1k / 10k / 100k rows
 - 只实现 AES-256-GCM；
 - Rows/Metadata Block 先压缩后加密；
 - AAD 绑定 Store/Snapshot/Block/Header；
+- 索引 nonce 位内域分离（R11）：`KeyEpoch(31bit) ‖ 域标志(1bit) ‖ 计数器(8B)`，块域与
+  索引域互斥，nonce 唯一性不依赖 AAD；
+- Footer 的 IndexTxnCRC32C 覆盖落盘密文字节（R12）：撕裂/位腐在无密钥路径可检；
 - nonce 唯一性、KeyEpoch、错误密钥和密钥丢失测试；
 - 加密 Batch/Scan 不重复调用 KeyProvider；
-- 加密恢复和篡改故障注入；
+- 加密恢复和篡改故障注入（含加密 IndexTxn 的尾巴/中间撕裂）；
 - 完整性能报告。
 
 完成标准：认证失败绝不返回明文；加密路径无 nonce 复用；文档和 golden 冻结后发布。

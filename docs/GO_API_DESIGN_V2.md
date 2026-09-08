@@ -3,6 +3,7 @@
 > 状态：设计草案
 > 日期：2026-09-08
 > 格式基线：[BINARY_FORMAT_V2.md](BINARY_FORMAT_V2.md)
+> 风险清单：[V2_DESIGN_RISKS.md](V2_DESIGN_RISKS.md)（API 相关 R17–R21 已按本文档核定）
 
 ## 1. API 原则
 
@@ -63,7 +64,8 @@ type BatchReadOptions struct {
 }
 ```
 
-范围必须满足 `Start < End`。多个范围允许重叠，进入 planner 后先规范化、合并和去重。
+范围必须满足 `Start < End`（`End == 0` 的“无上界”语义仅限 Scan，`ReadRowRanges` 一律拒绝；
+避免同一结构在两处语义不同，R18）。多个范围允许重叠，进入 planner 后先规范化、合并和去重。
 
 ## 4. 批量读取 API
 
@@ -94,9 +96,17 @@ func (it *BatchIterator) Close() error
 func (it *BatchIterator) Stats() BatchReadStats
 ```
 
-`BatchOrderRowID` 是默认值，允许 planner 按物理 Block offset 读取后用有界缓冲恢复 RowID
-顺序。`BatchOrderInput` 只适用于 `ReadRowsByIDs`，重复输入 RowID 是否重复返回必须在实现前
-固定；建议输入先去重，每个可见 Row 只返回一次。
+`BatchOrderRowID` 是默认值，允许 planner 按物理 Block offset 读取后用**有界**缓冲恢复
+RowID 顺序；重排缓冲的行数上界必须钉死（≤ MaxRows 或 PrefetchBlocks×平均 ItemCount，
+超限返回 `ErrBatchLimit`），防止整批随机读时缓冲膨胀到与请求等量（R18）。
+
+`BatchOrderInput` 只适用于 `ReadRowsByIDs`。**重复 RowID 的语义（R17）已定：默认与 v1
+`ReadBatch` 一致——重复输入重复返回，输入下标与输出行一一映射；不静默去重**。如提供
+去重选项必须显式命名，并注意去重后 `BatchOrderInput` 的下标映射不再成立。
+
+**与 v1 `ReadBatch` 的差异必须声明为 BREAKING**：v1 任一 id 不可见（missing/deleted）时
+整批返回 `ErrNotFound`；v2 §11 改为默认跳过不可见 RowID。两者不能自动切换，差异通过
+Stats（RequestedIDs vs RowsReturned）暴露。
 
 ## 5. 读取统计
 
@@ -133,7 +143,9 @@ validate/normalize request
 ```
 
 同一请求内 `(SnapshotID, BlockID)` 只允许读取、解密、解压和完整校验一次。请求取消后
-必须停止预读和解压，并释放尚未返回的缓冲。
+必须停止预读和解压，并释放尚未返回的缓冲；`Parallelism > 0` 时必须 drain 工作协程
+（goroutine-leak 测试），`Stats()` 与 `Next` 并发调用声明为不支持（或原子累计）（R19）。
+`MaxBytes` 取”限制工作集“口径：超出返回可识别的 `ErrBatchLimit`，迭代器随即失效。
 
 ## 7. Get 与稀疏导航
 
@@ -175,7 +187,9 @@ func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table TableID, row
 ## 10. FULL checkpoint 与文件重写
 
 FULL checkpoint 不需要新增特殊格式：上层读取目标 Snapshot 的完整可见状态，再写入一个
-新的 FULL Snapshot。
+新的 FULL Snapshot。**依赖项**：v1 只允许唯一 FULL（writer 强制 id=1，BINARY_FORMAT_V2 §18 R7
+已决议取消该约束）；本 API 依赖 v2 格式层支持任意多次 FULL（SnapshotID 递增、Depth 重置）。
+未落地该格式语义前，本节的 checkpoint 能力不可用。
 
 未来如需压实或整理 v2 文件，可以提供只处理 v2 的重写 API：
 
@@ -210,8 +224,8 @@ ErrAuthentication
 
 ## 12. 待验证 API 决策
 
-1. `BatchOrderInput` 是否值得支持；
-2. 重复 RowID 的返回语义；
+1. `BatchOrderInput` 是否值得支持（已定：默认保留 v1 重复返回语义，R17）；
+2. 重复 RowID 的返回语义（已定：与 v1 一致，不静默去重，R17）；
 3. BatchIterator 是否需要暴露 Block 边界事件；
-4. `MaxBytes` 是限制返回值、工作集还是二者；
+4. `MaxBytes` 是限制返回值、工作集还是二者（草案取“工作集”，R19）；
 5. 批量读取是否提供回调便利 API；

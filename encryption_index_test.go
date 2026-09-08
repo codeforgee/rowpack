@@ -2,17 +2,17 @@ package rowpack
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/rowpack/rowpack/internal/seal"
 	"github.com/stretchr/testify/require"
 )
 
 // ---- V2-M6: 加密 IndexTxn（R11 nonce 域分离 / R12 密文 CRC）----
+// IndexTxn 密文域 tamper -> 内存重建 由 TestM8RebuildSnapshotFromBlocks 的
+// encrypted 子测覆盖（tamperFirstIndexTxn 对密文生效）。
 
 // TestSealNonceDomainsAreDisjoint is the R11 gate: index-domain nonces always
 // carry bit 31 of the epoch word; block-domain nonces never do — no counter
@@ -46,48 +46,6 @@ func TestSealNonceDomainsAreDisjoint(t *testing.T) {
 	require.Error(t, err)
 	_, err = c.OpenWith(seal.Nonce(0, 7), aadB, ctIndex)
 	require.Error(t, err)
-}
-
-// TestEncryptedIndexTxnTamper flips a byte inside a stored encrypted index
-// txn body: the footer-bound CRC (over stored ciphertext, R12) detects the
-// tear without a key, and open rebuilds that snapshot's index in memory.
-func TestEncryptedIndexTxnTamper(t *testing.T) {
-	base := filepath.Join(tmpdb(t), "enc-txn-tamper")
-	keyID := "tx"
-	enc := func() Options { return encOptions(keyID) }
-	db, _ := buildConcurrentStore(t, base, enc())
-	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: 1})
-	require.NoError(t, w.Insert(context.Background(), 1, 7000, 1, Row{Uint64(7000), String("t")}))
-	_, err := w.Commit(context.Background())
-	require.NoError(t, err)
-	db.Close()
-
-	// Locate the FIRST stored IndexTxn and flip one ciphertext body byte.
-	data, err := os.ReadFile(base + ".rpk")
-	require.NoError(t, err)
-	first := -1
-	for i := 0; i+8 <= len(data); i++ {
-		if string(data[i:i+8]) == fileformat.MagicIndexTxnHdr {
-			first = i
-			break
-		}
-	}
-	require.Greater(t, first, 0, "no IndexTxnHeader found")
-	var h fileformat.IndexTxnHeader
-	require.NoError(t, h.Unmarshal(data[first : first+fileformat.IndexTxnHeaderSize]))
-	require.NotZero(t, h.BodyBytes, "encrypted txn must carry a nonzero stored body")
-	body := first + fileformat.IndexTxnHeaderSize + 10 // inside the ciphertext
-	data[body] ^= 0xFF
-	require.NoError(t, os.WriteFile(base+".rpk", data, 0o644))
-
-	db2, err := Open(base, enc())
-	require.NoError(t, err, "open with tampered encrypted txn: %v", err)
-	defer db2.Close()
-	require.Equal(t, uint64(1), db2.Stats().Recovery.SnapshotsRebuilt, "SnapshotsRebuilt = %d, want 1", db2.Stats().Recovery.SnapshotsRebuilt)
-	r, err := db2.Get(context.Background(), 1, 1, 42, nil)
-	require.NoError(t, err)
-	v, _ := r[1].String()
-	require.Equal(t, "n-42", v, "row 42 after in-memory rebuild")
 }
 
 // countingKeyProvider counts Key calls: the M6 gate requires batch/scan reads

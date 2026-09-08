@@ -1,13 +1,10 @@
 package rowpack
 
 import (
-	"bytes"
 	"context"
-	"os"
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/stretchr/testify/require"
 )
 
@@ -42,21 +39,8 @@ func TestCreateOpenPathErrors(t *testing.T) {
 
 // TestOpenStoreMismatch was removed: single-file stores have no UUID
 // pairing, so there is no cross-file mismatch state (v2, M2).
-
-func TestOpenCorruptHeader(t *testing.T) {
-	base := tmpdb(t) + "/c"
-	db, err := Create(base, Options{})
-	require.NoError(t, err)
-	db.Close()
-
-	// Corrupt the data header magic.
-	raw, err := os.ReadFile(base + ".rpk")
-	require.NoError(t, err)
-	raw[0] = 'X'
-	require.NoError(t, os.WriteFile(base+".rpk", raw, 0o644))
-	_, err = Open(base, Options{})
-	require.Error(t, err, "Open accepted a corrupt data header")
-}
+// Header corruption (magic, version) is covered by TestM10CorruptSamples;
+// block/payload corruption by TestM8Verify / TestM8MidFileCorruption.
 
 // ---- Read API error paths ----
 
@@ -198,48 +182,9 @@ func TestIteratorLifecycle(t *testing.T) {
 }
 
 // ---- Recovery internals ----
-
-// appendFile appends raw bytes to path (store must be closed).
-func appendFile(t *testing.T, path string, raw []byte) {
-	t.Helper()
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
-	require.NoError(t, err)
-	defer f.Close()
-	_, err = f.Write(raw)
-	require.NoError(t, err)
-}
-
-func craftedSnapshotPair(t *testing.T, id uint64) []byte {
-	t.Helper()
-	var hdr [fileformat.SnapshotHeaderSize]byte
-	var ftr [fileformat.SnapshotFooterSize]byte
-	sh := fileformat.SnapshotHeader{SnapshotType: fileformat.SnapshotFull, SnapshotID: id}
-	require.NoError(t, sh.MarshalTo(hdr[:]))
-	sf := fileformat.SnapshotFooter{SnapshotType: fileformat.SnapshotFull, SnapshotID: id}
-	require.NoError(t, sf.MarshalTo(ftr[:]))
-	return append(hdr[:], ftr[:]...)
-}
-
-func TestRecoveryGarbageTail(t *testing.T) {
-	base := tmpdb(t) + "/g"
-	db := newEmptyStoreAt(t, base)
-	commitOneFull(t, db, 5)
-	db.Close()
-
-	sizeBefore := fileSize(t, base+".rpk")
-	appendFile(t, base+".rpk", bytes.Repeat([]byte{0xA5}, 512))
-
-	db2, err := Open(base, Options{})
-	require.NoError(t, err, "reopen with garbage tail: %v", err)
-	defer db2.Close()
-	st := db2.Stats()
-	require.True(t, st.Recovery.Performed, "recovery stats = %+v", st.Recovery)
-	require.Equal(t, uint64(512), st.Recovery.DataTailIgnored, "recovery stats = %+v", st.Recovery)
-	require.Equal(t, sizeBefore, fileSize(t, base+".rpk"), "tail not truncated: %d -> %d", sizeBefore, fileSize(t, base+".rpk"))
-	// Data is intact.
-	_, err = db2.Get(context.Background(), 1, 1, 5, nil)
-	require.NoError(t, err, "row 5 after recovery: %v", err)
-}
+// Tail-truncation and mid-file corruption scenarios now live in
+// recovery_test.go (TestM8TailTruncated, TestM8MidFileCorruption,
+// TestM8DataTailTruncated).
 
 func TestRecoveryRebuildGhostSnapshot(t *testing.T) {
 	base := tmpdb(t) + "/ghost"
@@ -274,42 +219,8 @@ func TestRecoveryRebuildGhostSnapshot(t *testing.T) {
 	require.NoError(t, err, "row 5 after second reopen: %v", err)
 }
 
-func TestRecoveryMidFileCorruption(t *testing.T) {
-	base := tmpdb(t) + "/mid"
-	db := newEmptyStoreAt(t, base)
-	commitOneFull(t, db, 5)
-	db.Close()
-
-	// Truncated snapshot at offset X, followed by a complete one: the
-	// incomplete region is mid-file corruption, never silently skipped.
-	raw := craftedSnapshotPair(t, 5) // valid header (walk starts), 96-byte footer acts as garbage
-	broken := raw[:fileformat.SnapshotHeaderSize]
-	broken = append(broken, bytes.Repeat([]byte{0xA5}, 256)...)
-	broken = append(broken, craftedSnapshotPair(t, 99)...)
-	appendFile(t, base+".rpk", broken)
-
-	_, err := Open(base, Options{})
-	require.Error(t, err, "Open error = %v, want mid-file corruption", err)
-	require.Contains(t, err.Error(), "mid-file corruption", "Open error = %v, want mid-file corruption", err)
-}
-
 // ---- Verify ----
-
-func TestVerifyModes(t *testing.T) {
-	db := newEmptyStore(t)
-	full := commitOneFull(t, db, 50)
-
-	for _, mode := range []VerifyMode{VerifyQuick, VerifyFull} {
-		rep, err := db.Verify(context.Background(), mode)
-		require.NoError(t, err, "Verify(%v): %v", mode, err)
-		require.Equal(t, uint64(1), rep.SnapshotsChecked, "SnapshotsChecked = %d", rep.SnapshotsChecked)
-		require.NotZero(t, rep.BlocksChecked, "BlocksChecked = %d", rep.BlocksChecked)
-		if mode == VerifyFull {
-			require.Equal(t, uint64(50), rep.RowsChecked, "RowsChecked = %d, want 50", rep.RowsChecked)
-		}
-	}
-	_ = full
-}
+// Healthy-store and tampered-store verify coverage lives in TestM8Verify.
 
 // RebuildIndex error paths were removed with the index file (v2): index
 // recovery is automatic and in-memory; see BINARY_FORMAT_V2 §14.
@@ -349,11 +260,4 @@ func newEmptyStoreAt(t *testing.T, base string) *Store {
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
 	return db
-}
-
-func fileSize(t *testing.T, path string) int64 {
-	t.Helper()
-	fi, err := os.Stat(path)
-	require.NoError(t, err)
-	return fi.Size()
 }

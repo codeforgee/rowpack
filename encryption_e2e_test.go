@@ -10,6 +10,41 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// tamperFirstRowsPayload flips one byte mid-ciphertext of the first Rows
+// block so block/rows reads and verify must fail with ErrAuthFailed (or, for
+// a plain store, a CRC mismatch).
+func tamperFirstRowsPayload(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	defer f.Close()
+	off := int64(fileformat.DataFileHeaderSize + fileformat.SnapshotHeaderSize)
+	for {
+		var bh fileformat.BlockHeader
+		var bhBuf [fileformat.BlockHeaderSize]byte
+		if _, err := f.ReadAt(bhBuf[:], off); err != nil {
+			require.NoError(t, err)
+		}
+		require.NoError(t, bh.Unmarshal(bhBuf[:]))
+		if bh.BlockKind == fileformat.BlockKindRows {
+			flip := off + fileformat.BlockHeaderSize + int64(bh.StoredSize)/2
+			b := make([]byte, 1)
+			if _, err := f.ReadAt(b, flip); err != nil {
+				require.NoError(t, err)
+			}
+			b[0] ^= 0xFF
+			if _, err := f.WriteAt(b, flip); err != nil {
+				require.NoError(t, err)
+			}
+			return
+		}
+		if string(bhBuf[0:8]) == "RPKSNAPF" {
+			require.Fail(t, "no rows block found")
+		}
+		off += fileformat.BlockHeaderSize + int64(bh.StoredSize)
+	}
+}
+
 // TestEncryptedStoreReadAfterReopen is the end-to-end round trip: FULL +
 // DELTA (updates/deletes) written to an encrypted store, read back via
 // Get/Scan/ReadBatch/Exists, closed, reopened with the key, and verified
@@ -139,32 +174,7 @@ func TestEncryptedStoreTamper(t *testing.T) {
 	db.Close()
 
 	// Flip a byte in the middle of the first Rows block payload.
-	f, err := os.OpenFile(base+".rpk", os.O_RDWR, 0)
-	require.NoError(t, err)
-	hdr := make([]byte, fileformat.DataFileHeaderSize)
-	_, err = f.ReadAt(hdr, 0)
-	require.NoError(t, err)
-	off := int64(fileformat.DataFileHeaderSize + fileformat.SnapshotHeaderSize)
-	for {
-		var bh fileformat.BlockHeader
-		var bhBuf [fileformat.BlockHeaderSize]byte
-		_, err := f.ReadAt(bhBuf[:], off)
-		require.NoError(t, err)
-		require.NoError(t, bh.Unmarshal(bhBuf[:]))
-		if bh.BlockKind == fileformat.BlockKindRows {
-			flip := off + fileformat.BlockHeaderSize + int64(bh.StoredSize)/2
-			b := make([]byte, 1)
-			_, err := f.ReadAt(b, flip)
-			require.NoError(t, err)
-			b[0] ^= 0xFF
-			_, err = f.WriteAt(b, flip)
-			require.NoError(t, err)
-			break
-		}
-		require.NotEqual(t, "RPKSNAPF", string(bhBuf[0:8]), "no rows block found")
-		off += fileformat.BlockHeaderSize + int64(bh.StoredSize)
-	}
-	f.Close()
+	tamperFirstRowsPayload(t, base+".rpk")
 
 	db2, err := Open(base, Options{Encryption: &EncryptionConfig{
 		KeyProvider: &staticKeyProvider{keyID: "k4", key: testKey("k4")},

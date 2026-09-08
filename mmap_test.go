@@ -16,7 +16,7 @@ import (
 // reads never let cached blocks alias the file mapping (V1.1-C).
 func TestMmapReaderEquivalence(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "mmap")
-	db, fullID := buildMmapStore(t, base, 5000)
+	db, fullID := buildMemStore(t, base, 5000)
 	st, err := db.captureState()
 	require.NoError(t, err)
 	view := st.view
@@ -46,20 +46,4 @@ func TestMmapReaderEquivalence(t *testing.T) {
 		_, err := db.Get(context.Background(), fullID, 1, i+1, nil)
 		require.NoError(t, err, "get %d", i+1)
 	}
-}
-
-// buildMmapStore writes nRows into a FULL snapshot and returns the open store.
-func buildMmapStore(t *testing.T, base string, nRows uint64) (*Store, SnapshotID) {
-	t.Helper()
-	db, err := Create(base, Options{})
-	require.NoError(t, err)
-	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	require.NoError(t, err)
-	require.NoError(t, w.DefineSchema(benchSchema()))
-	for i := uint64(0); i < nRows; i++ {
-		require.NoError(t, w.Insert(context.Background(), 1, i+1, 1, benchRow(i)))
-	}
-	full, err := w.Commit(context.Background())
-	require.NoError(t, err)
-	return db, full.ID
 }

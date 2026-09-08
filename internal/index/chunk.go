@@ -117,11 +117,10 @@ func encodeRowChunk(entries []fileformat.RowIndexEntry, buf []byte) []byte {
 	return re.buf
 }
 
-// decodeRowChunk decodes count entries from the frozen delta layout with
+// decodeRowChunk decodes count entries from the frozen delta layout into dst with
 // strict bounds checks: truncated or malformed input is an error, never a
 // panic. SnapshotID is txn-wide and stamped by the caller.
-func decodeRowChunk(raw []byte, count uint32, snapshotID uint64) ([]fileformat.RowIndexEntry, error) {
-	entries := make([]fileformat.RowIndexEntry, 0, count)
+func decodeRowChunk(dst []fileformat.RowIndexEntry, raw []byte, count uint32, snapshotID uint64) ([]fileformat.RowIndexEntry, error) {
 	pos := 0
 	readUvarint := func() (uint64, error) {
 		v, n := binary.Uvarint(raw[pos:])
@@ -212,12 +211,12 @@ func decodeRowChunk(raw []byte, count uint32, snapshotID uint64) ([]fileformat.R
 			return nil, fmt.Errorf("rowpack: row chunk entry %d: bad change type %d", i, e.ChangeType)
 		}
 		e.SnapshotID = snapshotID
-		entries = append(entries, e)
+		dst = append(dst, e)
 	}
 	if pos != len(raw) {
 		return nil, fmt.Errorf("rowpack: row chunk has %d trailing bytes", len(raw)-pos)
 	}
-	return entries, nil
+	return dst, nil
 }
 
 // ---- chunk body assembly (write path) ----
@@ -531,8 +530,13 @@ type storedBody struct {
 
 // parseStoredBody walks the chunk sequence and directory, authenticating and
 // decoding every chunk. crypto must be non-nil iff the chunks are encrypted.
-func parseStoredBody(region []byte, snapshotID uint64, crypto *ChunkCrypto) (*storedBody, error) {
-	sb := &storedBody{plainCRC: fileformat.CRC32C(nil)}
+func parseStoredBody(region []byte, snapshotID uint64, metadataCount, blockCount, rowCount int, crypto *ChunkCrypto) (*storedBody, error) {
+	sb := &storedBody{
+		metadata: make([]fileformat.MetadataIndexEntry, 0, metadataCount),
+		blocks:   make([]fileformat.BlockIndexEntry, 0, blockCount),
+		rows:     make([]fileformat.RowIndexEntry, 0, rowCount),
+		plainCRC: fileformat.CRC32C(nil),
+	}
 	pos := 0
 	seq := uint32(0)
 	nextOrd := map[uint8]uint32{}
@@ -626,11 +630,11 @@ func parseStoredBody(region []byte, snapshotID uint64, crypto *ChunkCrypto) (*st
 				sb.blocks = append(sb.blocks, e)
 			}
 		case fileformat.IndexChunkKindRow:
-			rows, err := decodeRowChunk(raw, h.EntryCount, snapshotID)
+			rows, err := decodeRowChunk(sb.rows, raw, h.EntryCount, snapshotID)
 			if err != nil {
 				return nil, fmt.Errorf("rowpack: row chunk %d: %w", seq, err)
 			}
-			sb.rows = append(sb.rows, rows...)
+			sb.rows = rows
 		default:
 			return nil, fmt.Errorf("rowpack: chunk %d unknown kind %d", seq, h.EntryKind)
 		}

@@ -27,6 +27,9 @@ type committedSnapshot struct {
 	footerCRC   uint32 // footer FooterCRC32C
 	footerBytes []byte
 	blockIDs    []uint64
+	blockCount  uint32
+	metaCount   uint32
+	rowCount    uint64
 }
 
 // recoveryReport records what the most recent open repaired.
@@ -335,6 +338,9 @@ func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, n
 			c.ftrTxnCRC = ftr.IndexTxnCRC32C
 			c.footerCRC = footerCRCValue(fb[:])
 			c.footerBytes = append([]byte(nil), fb[:]...)
+			c.blockCount = ftr.BlockCount
+			c.metaCount = ftr.MetadataBlockCount
+			c.rowCount = ftr.RowRecordCount
 			return c, true, c.end, nil
 		default:
 			return c, false, 0, nil // unknown structure: break
@@ -383,6 +389,19 @@ func (s *Store) buildIndexTxnFromData(c *committedSnapshot) (*index.Txn, error) 
 	var blockEntries []fileformat.BlockIndexEntry
 	var metaEntries []fileformat.MetadataIndexEntry
 	var rowEntries []fileformat.RowIndexEntry
+	// Footer counts passed CRC validation, but remain untrusted input. Bound
+	// capacity hints to avoid turning a forged footer into an OOM request.
+	const maxPreallocBytes = uint64(64 << 20)
+	boundedCap := func(count uint64, entrySize int) int {
+		limit := maxPreallocBytes / uint64(entrySize)
+		if count > limit {
+			count = limit
+		}
+		return int(count)
+	}
+	blockEntries = make([]fileformat.BlockIndexEntry, 0, boundedCap(uint64(c.blockCount), fileformat.BlockIndexEntrySize))
+	metaEntries = make([]fileformat.MetadataIndexEntry, 0, boundedCap(uint64(c.metaCount), fileformat.MetadataIndexEntrySize))
+	rowEntries = make([]fileformat.RowIndexEntry, 0, boundedCap(c.rowCount, fileformat.RowIndexEntrySize))
 	var rowCount uint64
 
 	cur := c.blocksStart

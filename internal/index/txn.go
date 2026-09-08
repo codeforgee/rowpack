@@ -249,7 +249,21 @@ func ParseTxnChunked(data []byte, crypto *ChunkCrypto) (*Txn, error) {
 	if f.DataSnapshotEnd != h.DataSnapshotEnd {
 		return nil, errors.New("rowpack: index txn data end mismatch")
 	}
-	sb, err := parseStoredBody(region, h.SnapshotID, crypto)
+	// Counts are untrusted until all chunks have been checked. Use them only
+	// as bounded capacity hints so a forged header cannot force an enormous
+	// allocation before payload validation.
+	const maxPreallocBytes = uint64(64 << 20)
+	boundedCap := func(count uint64, entrySize int) int {
+		limit := maxPreallocBytes / uint64(entrySize)
+		if count > limit {
+			count = limit
+		}
+		return int(count)
+	}
+	sb, err := parseStoredBody(region, h.SnapshotID,
+		boundedCap(uint64(h.MetadataEntryCount), fileformat.MetadataIndexEntrySize),
+		boundedCap(uint64(h.BlockEntryCount), fileformat.BlockIndexEntrySize),
+		boundedCap(h.RowEntryCount, fileformat.RowIndexEntrySize), crypto)
 	if err != nil {
 		return nil, err
 	}

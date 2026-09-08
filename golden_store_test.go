@@ -2,6 +2,7 @@ package rowpack
 
 import (
 	"context"
+	"crypto/sha256"
 	"flag"
 	"fmt"
 	"math/big"
@@ -12,6 +13,21 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestGoldenManifest(t *testing.T) {
+	want := map[string]string{
+		"empty-store.rpk":            "cd0a96b72ad858d8bceb946b4ae77b1667b6bf17b9d79d72c9b282a52ddc34f7",
+		"rows-payload-all-types.bin": "db95f863c3250ee64f55e09400dd4327a790814ca2846c7accbd0b3eca1f7433",
+		"full-delta-store.rpk":       "71b2c6956c3025230f1fe99d10261c37991eb223c3dccfc766c9fea7ec348ac3",
+		"encrypted-store.rpk":        "afaefc7673d8e32e1d5d4854c956b070febc50fc3c0edcde76347984c17fd3d8",
+	}
+	for name, digest := range want {
+		data, err := os.ReadFile(goldenPath(name))
+		require.NoError(t, err, "read golden %s", name)
+		require.Equal(t, digest, fmt.Sprintf("%x", sha256.Sum256(data)),
+			"golden %s changed; disk-format changes require versioning and explicit manifest review", name)
+	}
+}
 
 // updateGolden regenerates store golden samples. Enable with
 // `go test ./... -run TestGolden -args -update-golden` (see Makefile).
@@ -86,15 +102,19 @@ func bigI(v int64) *big.Int {
 // TestGoldenStoreSamples locks the FULL+DELTA+empty store and verifies it.
 func TestGoldenStoreSamples(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "golden-store")
+	buildFullDeltaStore(t, base)
+	generated, err := os.ReadFile(base + ".rpk")
+	require.NoError(t, err)
 	if *updateGolden {
-		buildFullDeltaStore(t, base)
-		data, err := os.ReadFile(base + ".rpk")
-		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(goldenPath("full-delta-store.rpk"), data, 0o644))
+		require.NoError(t, os.WriteFile(goldenPath("full-delta-store.rpk"), generated, 0o644))
 		return
 	}
 	data, err := os.ReadFile(goldenPath("full-delta-store.rpk"))
 	require.NoError(t, err, "read golden (regenerate with make golden): %v", err)
+	require.Equal(t, data, generated, "writer output differs from locked golden (regenerate with make golden only for an intentional format change)")
+	// Re-open a copy of the locked bytes, keeping semantic compatibility
+	// verification independent from the just-generated file.
+	base = filepath.Join(tmpdb(t), "golden-store-open")
 	require.NoError(t, os.WriteFile(base+".rpk", data, 0o644))
 	db, err := Open(base, Options{})
 	require.NoError(t, err)

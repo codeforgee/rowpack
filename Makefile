@@ -59,6 +59,8 @@ bench-batch:
 # Golden files must be reviewed in the same change as the format change.
 golden:
 	$(GO) test . -run 'TestGolden' -args -update-golden
+	$(GO) test ./internal/block -run 'TestGolden' -args -update-golden
+	$(GO) test ./internal/fileformat -run 'TestGolden' -args -update-golden
 
 clean:
 	rm -rf *.test coverage.out

@@ -96,20 +96,18 @@ func (d *storeDecrypter) Decrypt(h fileformat.BlockHeader, ciphertext []byte) ([
 	return pt, nil
 }
 
-// DecryptIndex opens one index-domain sealed transaction body (R11): the
-// nonce is (epoch | IndexDomainBit) ‖ txn sequence and the AAD binds the
-// store, snapshot and stored extent. The returned plaintext is the raw
-// body+footer bytes.
-func (d *storeDecrypter) DecryptIndex(epoch uint32, txnSeq, snapshotID, txnStart, txnEnd uint64, ciphertext []byte) ([]byte, error) {
+// OpenIndexChunk authenticates and decrypts one sealed index txn chunk. The
+// nonce is HMAC-derived from (txn sequence, chunk sequence) and the AAD binds
+// store, txn, chunk identity and lengths (doc §5.3/§5.4). The returned
+// plaintext is the compressed chunk payload.
+func (d *storeDecrypter) OpenIndexChunk(epoch uint32, txnSeq, snapshotID uint64, chunkSeq uint32, kind uint8, firstOrdinal, rawBytes, storedBytes uint32, stored []byte) ([]byte, error) {
 	c, err := d.cipherFor(epoch)
 	if err != nil {
 		return nil, err
 	}
-	nonce := seal.NonceIndex(epoch, txnSeq)
-	aad := seal.BuildAADIndex(&d.uuid, snapshotID, txnStart, txnEnd, epoch)
-	pt, err := c.OpenWith(nonce, aad[:], ciphertext)
+	pt, err := c.OpenIndexChunk(&d.uuid, txnSeq, snapshotID, chunkSeq, firstOrdinal, rawBytes, storedBytes, kind, epoch, stored)
 	if err != nil {
-		return nil, fmt.Errorf("%w: index txn (snapshot %d): %v", ErrAuthFailed, snapshotID, err)
+		return nil, fmt.Errorf("%w: index chunk %d (txn %d, snapshot %d): %v", ErrAuthFailed, chunkSeq, txnSeq, snapshotID, err)
 	}
 	return pt, nil
 }

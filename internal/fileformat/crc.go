@@ -62,3 +62,8 @@ func verifyCRC(buf []byte, crcOff int) (uint32, error) {
 	}
 	return want, nil
 }
+
+// CRC32CConcat2 extends a running CRC-32C with one more slice.
+func CRC32CConcat2(c uint32, b []byte) uint32 {
+	return crc32.Update(c, castagnoli, b)
+}

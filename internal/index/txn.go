@@ -16,6 +16,13 @@ type Txn struct {
 	Blocks   []fileformat.BlockIndexEntry
 	Rows     []fileformat.RowIndexEntry
 	Footer   fileformat.IndexTxnFooter
+
+	// Resolved layout bounds (BuildStored/BuildStoredBody only; zero for
+	// parsed txns). dataStart/dataEnd feed the snapshot entry, txnStart/
+	// txnEnd feed the footer; commit captures them to place the footer and
+	// the outer SnapshotFooter.
+	dataStart, dataEnd uint64
+	txnStart, txnEnd   int64
 }
 
 // Builder assembles one index transaction for a snapshot.
@@ -128,61 +135,33 @@ func (b *Builder) Reserve(meta, blocks, rows int) {
 	}
 }
 
-// Build serializes the complete index transaction bytes for the .rpi file.
-// dataSnapshotStart/End locate the snapshot in the .rpk file; dataFooterCRC is
-// the data SnapshotFooter's FooterCRC32C used for cross-file verification.
-// The returned bytes start with the IndexTxnHeader and end after the footer
-// (caller appends padding).
+// Build serializes the complete index transaction (chunked body layout:
+// chunk headers + payloads + directory) wrapped in the IndexTxnHeader and
+// IndexTxnFooter. Plain stores only — encrypted writers go through
+// BuildStored with a ChunkCrypto. The snapshot entry's DataStart/DataEnd are
+// taken from the entry passed to SetSnapshot; the offset arguments only fill
+// the footer fields.
 func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC uint32, txnStart, txnEnd int64) ([]byte, *Txn, error) {
-	if b.snapshot == nil {
-		return nil, nil, errors.New("rowpack: no snapshot entry to build")
-	}
-	// Allocate the exact output once and marshal the header, body entries and
-	// footer directly into their final regions: counts are known, so neither
-	// the body nor the output is ever reallocated or copied (the previous
-	// body-then-copy construction materialized the txn twice, ~80 B per row
-	// at commit peak). MarshalTo is not inlinable due to its error path, but
-	// writing through region slices keeps even the per-entry scratch off the
-	// heap.
-	bodyLen := fileformat.SnapshotIndexEntrySize +
-		len(b.metadata)*fileformat.MetadataIndexEntrySize +
-		len(b.blocks)*fileformat.BlockIndexEntrySize +
-		len(b.rows)*fileformat.RowIndexEntrySize
-	out := make([]byte, fileformat.IndexTxnHeaderSize+bodyLen+fileformat.IndexTxnFooterSize)
-	bodyStart := fileformat.IndexTxnHeaderSize
-	pos := bodyStart
-	appendTo := func(n int, f func(dst []byte) error) error {
-		if err := f(out[pos : pos+n]); err != nil {
-			return err
-		}
-		pos += n
-		return nil
-	}
-	if err := appendTo(fileformat.SnapshotIndexEntrySize, b.snapshot.MarshalTo); err != nil {
+	body, plainCRC, txn, err := b.BuildStoredBody(nil, 0, func(int) (uint64, uint64, int64, int64) {
+		return dataSnapshotStart, dataSnapshotEnd, txnStart, txnEnd
+	})
+	if err != nil {
 		return nil, nil, err
 	}
-	for i := range b.metadata {
-		if err := appendTo(fileformat.MetadataIndexEntrySize, b.metadata[i].MarshalTo); err != nil {
-			return nil, nil, err
-		}
+	h := b.header(dataSnapshotStart, dataSnapshotEnd)
+	f := b.footer(dataSnapshotEnd, dataFooterCRC, plainCRC, txnStart, txnEnd)
+	out, err := AssembleIndexTxn(h, 0, body, f)
+	if err != nil {
+		return nil, nil, err
 	}
-	for i := range b.blocks {
-		if err := appendTo(fileformat.BlockIndexEntrySize, b.blocks[i].MarshalTo); err != nil {
-			return nil, nil, err
-		}
-	}
-	for i := range b.rows {
-		if err := appendTo(fileformat.RowIndexEntrySize, b.rows[i].MarshalTo); err != nil {
-			return nil, nil, err
-		}
-	}
-	if pos != bodyStart+bodyLen {
-		return nil, nil, fmt.Errorf("rowpack: index txn body %d bytes, want %d", pos-bodyStart, bodyLen)
-	}
-	body := out[bodyStart : bodyStart+bodyLen]
-	bodyCRC := fileformat.CRC32C(body)
+	txn.Header = h
+	txn.Footer = f
+	return out, txn, nil
+}
 
-	h := fileformat.IndexTxnHeader{
+// header assembles the IndexTxnHeader fields from the builder state.
+func (b *Builder) header(dataSnapshotStart, dataSnapshotEnd uint64) fileformat.IndexTxnHeader {
+	return fileformat.IndexTxnHeader{
 		TxnSequence:        b.sequence,
 		SnapshotID:         b.snapshot.SnapshotID,
 		DataSnapshotStart:  dataSnapshotStart,
@@ -190,34 +169,58 @@ func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC
 		MetadataEntryCount: uint32(len(b.metadata)),
 		BlockEntryCount:    uint32(len(b.blocks)),
 		RowEntryCount:      uint64(len(b.rows)),
-		BodyBytes:          uint64(len(body)),
 	}
-	f := fileformat.IndexTxnFooter{
+}
+
+// footer assembles the IndexTxnFooter fields from the builder state.
+func (b *Builder) footer(dataSnapshotEnd uint64, dataFooterCRC, plainCRC uint32, txnStart, txnEnd int64) fileformat.IndexTxnFooter {
+	return fileformat.IndexTxnFooter{
 		TxnSequence:      b.sequence,
 		SnapshotID:       b.snapshot.SnapshotID,
 		TxnStartOffset:   uint64(txnStart),
 		TxnEndOffset:     uint64(txnEnd),
 		DataSnapshotEnd:  dataSnapshotEnd,
-		BodyCRC32C:       bodyCRC,
+		BodyCRC32C:       plainCRC,
 		DataFooterCRC32C: dataFooterCRC,
 	}
-	if err := h.MarshalTo(out[:fileformat.IndexTxnHeaderSize]); err != nil {
+}
+
+// BuildStored serializes the chunked index transaction with an optional
+// chunk-crypto context (nil = plain). resolveDataBounds is called with the
+// final stored body length to fix the snapshot entry's [DataStart, DataEnd]
+// (the snapshot chunk's stored size is content-independent, so one pass
+// suffices); nil passes the entry's own values through. keyEpoch is stamped
+// into the header reserved word for encrypted stores.
+func (b *Builder) BuildStored(crypto *ChunkCrypto, level int, resolveBounds func(bodyLen int) (dataStart, dataEnd uint64, txnStart, txnEnd int64),
+	dataFooterCRC uint32, keyEpoch uint32,
+) ([]byte, *Txn, error) {
+	body, plainCRC, txn, err := b.BuildStoredBody(crypto, level, resolveBounds)
+	if err != nil {
 		return nil, nil, err
 	}
-	if err := f.MarshalTo(out[len(out)-fileformat.IndexTxnFooterSize:]); err != nil {
+	h := b.header(txn.dataStart, txn.dataEnd)
+	f := b.footer(txn.dataEnd, dataFooterCRC, plainCRC, txn.txnStart, txn.txnEnd)
+	out, err := AssembleIndexTxn(h, keyEpoch, body, f)
+	if err != nil {
 		return nil, nil, err
 	}
-	txn := &Txn{Header: h, Snapshot: *b.snapshot, Footer: f}
-	txn.Metadata = b.metadata
-	txn.Blocks = b.blocks
-	txn.Rows = b.rows
+	txn.Header = h
+	txn.Footer = f
 	return out, txn, nil
 }
 
 // ParseTxn parses and validates one index transaction from data, which must
-// contain exactly one txn (header + body + footer). It verifies header/footer
-// magic, sizes, CRCs, body CRC, and entry CRCs.
+// contain exactly one txn (header + chunked body + footer). It verifies
+// header/footer magic, sizes, CRCs, the chunk directory, per-chunk payload
+// CRCs, and entry decoding.
 func ParseTxn(data []byte) (*Txn, error) {
+	return ParseTxnChunked(data, nil)
+}
+
+// ParseTxnChunked is ParseTxn with an optional chunk-crypto context. crypto
+// must be non-nil iff the txn's chunks are encrypted; it authenticates and
+// decrypts each chunk payload in place of the caller.
+func ParseTxnChunked(data []byte, crypto *ChunkCrypto) (*Txn, error) {
 	if len(data) < fileformat.IndexTxnHeaderSize+fileformat.IndexTxnFooterSize {
 		return nil, errors.New("rowpack: index txn too short")
 	}
@@ -228,11 +231,11 @@ func ParseTxn(data []byte) (*Txn, error) {
 	if h.BodyBytes > uint64(len(data)-fileformat.IndexTxnHeaderSize-fileformat.IndexTxnFooterSize) {
 		return nil, errors.New("rowpack: index txn body exceeds input")
 	}
-	body := data[fileformat.IndexTxnHeaderSize : fileformat.IndexTxnHeaderSize+int(h.BodyBytes)]
-	if len(body) != int(h.BodyBytes) {
+	region := data[fileformat.IndexTxnHeaderSize : fileformat.IndexTxnHeaderSize+int(h.BodyBytes)]
+	if uint64(len(region)) != h.BodyBytes {
 		return nil, errors.New("rowpack: index txn body length mismatch")
 	}
-	ftrOff := fileformat.IndexTxnHeaderSize + len(body)
+	ftrOff := fileformat.IndexTxnHeaderSize + len(region)
 	if len(data) != ftrOff+fileformat.IndexTxnFooterSize {
 		return nil, errors.New("rowpack: index txn trailing bytes")
 	}
@@ -246,66 +249,27 @@ func ParseTxn(data []byte) (*Txn, error) {
 	if f.DataSnapshotEnd != h.DataSnapshotEnd {
 		return nil, errors.New("rowpack: index txn data end mismatch")
 	}
-	if f.BodyCRC32C != fileformat.CRC32C(body) {
+	sb, err := parseStoredBody(region, h.SnapshotID, crypto)
+	if err != nil {
+		return nil, err
+	}
+	if f.BodyCRC32C != sb.plainCRC {
 		return nil, errors.New("rowpack: index txn body CRC mismatch")
 	}
-
-	t := &Txn{Header: h, Footer: f}
-	pos := 0
-	// Snapshot entry.
-	se := fileformat.SnapshotIndexEntry{}
-	if err := se.Unmarshal(body[pos:]); err != nil {
-		return nil, fmt.Errorf("rowpack: index txn snapshot entry: %w", err)
+	if !sb.hasSnap {
+		return nil, errors.New("rowpack: index txn has no snapshot chunk")
 	}
-	pos += fileformat.SnapshotIndexEntrySize
-	if se.SnapshotID != h.SnapshotID {
+	if sb.snapshot.SnapshotID != h.SnapshotID {
 		return nil, errors.New("rowpack: index txn snapshot id mismatch")
 	}
-	t.Snapshot = se
-
-	need := func(n int) ([]byte, error) {
-		if pos+n > len(body) {
-			return nil, errors.New("rowpack: index txn entries exceed body")
-		}
-		s := body[pos : pos+n]
-		pos += n
-		return s, nil
+	if uint32(len(sb.metadata)) != h.MetadataEntryCount {
+		return nil, fmt.Errorf("rowpack: index txn %d metadata entries, header says %d", len(sb.metadata), h.MetadataEntryCount)
 	}
-	for i := uint32(0); i < h.MetadataEntryCount; i++ {
-		s, err := need(fileformat.MetadataIndexEntrySize)
-		if err != nil {
-			return nil, err
-		}
-		var e fileformat.MetadataIndexEntry
-		if err := e.Unmarshal(s); err != nil {
-			return nil, fmt.Errorf("rowpack: metadata entry %d: %w", i, err)
-		}
-		t.Metadata = append(t.Metadata, e)
+	if uint32(len(sb.blocks)) != h.BlockEntryCount {
+		return nil, fmt.Errorf("rowpack: index txn %d block entries, header says %d", len(sb.blocks), h.BlockEntryCount)
 	}
-	for i := uint32(0); i < h.BlockEntryCount; i++ {
-		s, err := need(fileformat.BlockIndexEntrySize)
-		if err != nil {
-			return nil, err
-		}
-		var e fileformat.BlockIndexEntry
-		if err := e.Unmarshal(s); err != nil {
-			return nil, fmt.Errorf("rowpack: block entry %d: %w", i, err)
-		}
-		t.Blocks = append(t.Blocks, e)
+	if uint64(len(sb.rows)) != h.RowEntryCount {
+		return nil, fmt.Errorf("rowpack: index txn %d row entries, header says %d", len(sb.rows), h.RowEntryCount)
 	}
-	for i := uint64(0); i < h.RowEntryCount; i++ {
-		s, err := need(fileformat.RowIndexEntrySize)
-		if err != nil {
-			return nil, err
-		}
-		var e fileformat.RowIndexEntry
-		if err := e.Unmarshal(s); err != nil {
-			return nil, fmt.Errorf("rowpack: row entry %d: %w", i, err)
-		}
-		t.Rows = append(t.Rows, e)
-	}
-	if pos != len(body) {
-		return nil, errors.New("rowpack: index txn body has trailing bytes")
-	}
-	return t, nil
+	return &Txn{Header: h, Footer: f, Snapshot: sb.snapshot, Metadata: sb.metadata, Blocks: sb.blocks, Rows: sb.rows}, nil
 }

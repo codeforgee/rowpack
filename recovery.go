@@ -151,70 +151,39 @@ func (s *Store) readIndexTxn(c *committedSnapshot) (txn *index.Txn, seq uint64, 
 	if span <= 0 || span > int64(^uint32(0)) {
 		return nil, 0, false, nil // implausible range: rebuild
 	}
-	// The footer binds the txn by exact byte extent plus CRC over the stored
-	// bytes (ciphertext when encrypted), so neither decoding nor a key is
-	// needed to detect a torn or bit-rotted txn (R8/R12).
+	// The footer binds the STORED bytes (ciphertext when encrypted), so a
+	// torn or bit-rotted txn is detected before any key is needed (R12).
 	buf := make([]byte, span)
 	if _, rerr := s.data.ReadAt(buf, c.txnStart); rerr != nil {
 		return nil, 0, false, fmt.Errorf("rowpack: read IndexTxn of snapshot %d: %w", c.snapshotID, rerr)
 	}
-	// The footer binds the STORED bytes (ciphertext when encrypted), so a
-	// torn or bit-rotted txn is detected before any key is needed (R12).
 	if fileformat.CRC32C(buf) != c.ftrTxnCRC {
 		return nil, 0, false, nil
 	}
-	data := buf
+	var crypto *index.ChunkCrypto
+	var h fileformat.IndexTxnHeader
 	if s.header.EncryptionAlgorithm != fileformat.EncNone {
-		pt, derr := s.decryptIndexTxn(buf)
-		if derr != nil {
-			// Authentication failure means the txn body is corrupt (its
-			// stored extent already passed the footer CRC): rebuild in memory.
-			return nil, 0, false, nil
+		if herr := h.Unmarshal(buf); herr != nil {
+			return nil, 0, false, nil // unreadable header: rebuild
 		}
-		data = pt
+		epoch := fileformat.IndexTxnHeaderKeyEpoch(buf)
+		crypto = &index.ChunkCrypto{
+			TxnSequence: h.TxnSequence,
+			SnapshotID:  h.SnapshotID,
+			Epoch:       epoch,
+			Open: func(chunkSeq uint32, kind uint8, firstOrdinal uint32, rawBytes int, stored []byte) ([]byte, error) {
+				return s.decrypter.OpenIndexChunk(epoch, h.TxnSequence, h.SnapshotID, chunkSeq, kind, firstOrdinal, uint32(rawBytes), uint32(len(stored)), stored)
+			},
+		}
 	}
-	txn, perr := index.ParseTxn(data)
+	txn, perr := index.ParseTxnChunked(buf, crypto)
 	if perr != nil {
+		// Per-chunk authentication/parse failure means the txn is corrupt
+		// (its stored extent already passed the footer CRC): rebuild in
+		// memory (R2).
 		return nil, 0, false, nil
 	}
 	return txn, txn.Header.TxnSequence, true, nil
-}
-
-// decryptIndexTxn decrypts one stored (plaintext header + sealed body +
-// plaintext footer) index transaction into ParseTxn-ready plaintext: header
-// re-stamped with the plaintext BodyBytes. Authentication is index-domain
-// (R11): nonce from (epoch | domain bit) ‖ txn sequence, AAD binding
-// store/snapshot/extent taken from the plaintext footer.
-func (s *Store) decryptIndexTxn(stored []byte) ([]byte, error) {
-	const hs, fs = fileformat.IndexTxnHeaderSize, fileformat.IndexTxnFooterSize
-	if len(stored) < hs+fs {
-		return nil, fmt.Errorf("rowpack: encrypted index txn too short: %d", len(stored))
-	}
-	var h fileformat.IndexTxnHeader
-	if err := h.Unmarshal(stored[:hs]); err != nil {
-		return nil, err
-	}
-	if int(h.BodyBytes) > len(stored)-hs-fs {
-		return nil, fmt.Errorf("rowpack: index txn body %d exceeds stored %d", h.BodyBytes, len(stored)-hs-fs)
-	}
-	ct := stored[hs : hs+int(h.BodyBytes)]
-	var f fileformat.IndexTxnFooter
-	if err := f.Unmarshal(stored[len(stored)-fs:]); err != nil {
-		return nil, err
-	}
-	epoch := fileformat.IndexTxnHeaderKeyEpoch(stored[:hs])
-	pt, err := s.decrypter.DecryptIndex(epoch, h.TxnSequence, h.SnapshotID, f.TxnStartOffset, f.TxnEndOffset, ct)
-	if err != nil {
-		return nil, err
-	}
-	plain := make([]byte, 0, hs+len(pt)+fs)
-	plain = append(plain, stored[:hs]...)
-	plain = append(plain, pt...)
-	plain = append(plain, stored[len(stored)-fs:]...)
-	if err := fileformat.PatchIndexTxnHeaderForStorage(plain[:hs], uint64(len(pt)), 0); err != nil {
-		return nil, err
-	}
-	return plain, nil
 }
 
 // scanDataFile walks the single file from after the header, collecting

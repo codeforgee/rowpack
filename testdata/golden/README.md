@@ -13,13 +13,25 @@
 | `full-delta-store.rpk` | FULL + DELTA + 空 DELTA + 超大行（单文件，含内嵌 IndexTxn） | M2 |
 | `encrypted-store.rpk` | 加密 FULL Store（None 压缩 + 固定 key，锁定 Header 加密字段/块 Flags/KeyEpoch/密文布局） | M6 |
 
+## 锁定摘要（SHA-256）
+
+| 文件 | SHA-256 |
+| --- | --- |
+| `empty-store.rpk` | `cd0a96b72ad858d8bceb946b4ae77b1667b6bf17b9d79d72c9b282a52ddc34f7` |
+| `rows-payload-all-types.bin` | `db95f863c3250ee64f55e09400dd4327a790814ca2846c7accbd0b3eca1f7433` |
+| `full-delta-store.rpk` | `71b2c6956c3025230f1fe99d10261c37991eb223c3dccfc766c9fea7ec348ac3` |
+| `encrypted-store.rpk` | `afaefc7673d8e32e1d5d4854c956b070febc50fc3c0edcde76347984c17fd3d8` |
+
+这些摘要描述当前冻结的 v2 IndexTxn Chunk 格式。修改任一摘要均视为有意的磁盘格式变更，
+必须经过格式审查并按版本策略建立新的 golden 样本族。
+
 损坏样本由 `TestM10CorruptSamples` 从健康 Store 动态构建（坏 Magic、未知主版本、
 负载损坏、IndexTxn 损坏），不静态保存。
 
 ## 生成命令
 
 ```sh
-make golden     # 等价于 go test ./... -run TestGolden -args -update-golden
+make golden     # 依次运行含 golden 生成器的 root、internal/block、internal/fileformat 包
 ```
 
 生成后必须人工 diff 审查（`git diff --stat testdata/golden`），确认字节变化只来自

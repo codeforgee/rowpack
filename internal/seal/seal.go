@@ -17,8 +17,12 @@ package seal
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
@@ -97,6 +101,13 @@ func NonceIndex(epoch uint32, txnSequence uint64) [fileformat.EncNonceLen]byte {
 	return Nonce(epoch|IndexDomainBit, txnSequence)
 }
 
+// chunkNonceKeyLabel domain-separates the chunk-nonce HMAC subkey derivation
+// from any other use of the data key.
+var chunkNonceKeyLabel = []byte("RowPack index chunk nonce key v1")
+
+// chunkNonceInfoPrefix domain-separates the per-chunk nonce input.
+var chunkNonceInfoPrefix = []byte("RowPackIdxChunkV1")
+
 // aadMagicIndex domain-separates the index AAD layout from the block AAD.
 var aadMagicIndex = [16]byte{'R', 'o', 'w', 'P', 'a', 'c', 'k', 'I', 'n', 'd', 'e', 'x', 'V', '1', 0, 0}
 
@@ -125,6 +136,62 @@ func BuildAADIndex(uuid *[16]byte, snapshotID, txnStart, txnEnd uint64, epoch ui
 	return aad
 }
 
+// aadMagicIndexChunk domain-separates the chunk AAD layout.
+var aadMagicIndexChunk = [16]byte{'R', 'o', 'w', 'P', 'a', 'c', 'k', 'I', 'C', 'h', 'k', 'V', '1', 0, 0, 0}
+
+// AADIndexChunkSize is the fixed serialized chunk AAD length.
+const AADIndexChunkSize = 72
+
+// BuildAADIndexChunk serializes the domain-separated AAD for one encrypted
+// index chunk. It binds every field that gives the chunk its identity and
+// length semantics (doc §5.4). File offsets are intentionally excluded: the
+// chunk's stored size depends on compression while the footer offsets depend
+// on all stored sizes, so offset binding would be circular — the footer's
+// region CRC and byte extent carry the offset binding instead.
+//
+//	 0..15  aadMagicIndexChunk
+//	16..31  store UUID
+//	32..39  TxnSequence
+//	40..47  SnapshotID
+//	48..51  ChunkSequence
+//	52..55  FirstEntryOrdinal
+//	56      EntryKind
+//	57..59  reserved
+//	60..63  RawBytes
+//	64..67  StoredBytes
+//	68..71  KeyEpoch
+func BuildAADIndexChunk(uuid *[16]byte, txnSeq, snapshotID uint64, chunkSeq, firstOrdinal, rawBytes, storedBytes uint32, kind uint8, epoch uint32) [AADIndexChunkSize]byte {
+	var aad [AADIndexChunkSize]byte
+	copy(aad[0:16], aadMagicIndexChunk[:])
+	copy(aad[16:32], uuid[:])
+	le64(aad[32:40], txnSeq)
+	le64(aad[40:48], snapshotID)
+	le32(aad[48:52], chunkSeq)
+	le32(aad[52:56], firstOrdinal)
+	aad[56] = kind
+	le32(aad[60:64], rawBytes)
+	le32(aad[64:68], storedBytes)
+	le32(aad[68:72], epoch)
+	return aad
+}
+
+// SealIndexChunk seals one compressed index chunk payload under the chunk
+// nonce/AAD. The returned ciphertext carries exactly AESGCMTagLen extra bytes.
+func (c *Cipher) SealIndexChunk(uuid *[16]byte, txnSeq, snapshotID uint64, chunkSeq, firstOrdinal, rawBytes, storedBytes uint32, kind uint8, epoch uint32, plaintext []byte) ([]byte, error) {
+	nonce := c.NonceIndexChunk(txnSeq, chunkSeq)
+	aad := BuildAADIndexChunk(uuid, txnSeq, snapshotID, chunkSeq, firstOrdinal, rawBytes, storedBytes, kind, epoch)
+	return c.SealWith(nonce, aad[:], plaintext), nil
+}
+
+// OpenIndexChunk authenticates and opens one stored (compressed) chunk
+// payload. storedBytes must be the header-declared payload length including
+// the tag.
+func (c *Cipher) OpenIndexChunk(uuid *[16]byte, txnSeq, snapshotID uint64, chunkSeq, firstOrdinal, rawBytes, storedBytes uint32, kind uint8, epoch uint32, stored []byte) ([]byte, error) {
+	nonce := c.NonceIndexChunk(txnSeq, chunkSeq)
+	aad := BuildAADIndexChunk(uuid, txnSeq, snapshotID, chunkSeq, firstOrdinal, rawBytes, storedBytes, kind, epoch)
+	return c.OpenWith(nonce, aad[:], stored)
+}
+
 // SealWith encrypts plaintext under an explicit nonce/AAD pair (index path;
 // the block path uses Seal which derives both from the header).
 func (c *Cipher) SealWith(nonce [fileformat.EncNonceLen]byte, aad []byte, plaintext []byte) []byte {
@@ -147,6 +214,10 @@ func (c *Cipher) OpenWith(nonce [fileformat.EncNonceLen]byte, aad []byte, cipher
 // Cipher is safe for concurrent use (cipher.AEAD is).
 type Cipher struct {
 	aead cipher.AEAD
+	key  [32]byte
+
+	chunkHkOnce sync.Once
+	chunkHk     [sha256.Size]byte // derived HMAC subkey for chunk nonces
 }
 
 // NewCipher creates a Cipher from a 32-byte (AES-256) key.
@@ -168,7 +239,42 @@ func NewCipher(key []byte) (*Cipher, error) {
 	if gcm.Overhead() != fileformat.AESGCMTagLen {
 		return nil, fmt.Errorf("seal: gcm overhead %d, want %d", gcm.Overhead(), fileformat.AESGCMTagLen)
 	}
-	return &Cipher{aead: gcm}, nil
+	var key32 [32]byte
+	copy(key32[:], key)
+	return &Cipher{aead: gcm, key: key32}, nil
+}
+
+// chunkNonceKey derives (once) the HMAC subkey used for index chunk nonces.
+// Storing the key material here is internal to seal; it never leaves the
+// package except through authenticated ciphertext.
+func (c *Cipher) chunkNonceKey() [sha256.Size]byte {
+	c.chunkHkOnce.Do(func() {
+		mac := hmac.New(sha256.New, c.key[:])
+		mac.Write(chunkNonceKeyLabel)
+		copy(c.chunkHk[:], mac.Sum(nil))
+	})
+	return c.chunkHk
+}
+
+// NonceIndexChunk returns the deterministic 96-bit nonce for one encrypted
+// index txn chunk: Trunc12(HMAC-SHA256(chunkNonceKey, BE(txnSeq) ‖ BE(chunkSeq))).
+// The 96-bit nonce space of NonceIndex is already occupied by
+// (epoch, txnSequence), so chunk nonces are derived instead; injectivity of
+// (txnSeq, chunkSeq) rests on HMAC collision resistance. Direct alternatives
+// (truncating txnSeq, XOR-ing the low word) were rejected: both can produce
+// nonce reuse.
+func (c *Cipher) NonceIndexChunk(txnSeq uint64, chunkSeq uint32) [fileformat.EncNonceLen]byte {
+	hk := c.chunkNonceKey()
+	mac := hmac.New(sha256.New, hk[:])
+	mac.Write(chunkNonceInfoPrefix)
+	var in [12]byte
+	binary.BigEndian.PutUint64(in[0:8], txnSeq)
+	binary.BigEndian.PutUint32(in[8:12], chunkSeq)
+	mac.Write(in[:])
+	sum := mac.Sum(nil)
+	var n [fileformat.EncNonceLen]byte
+	copy(n[:], sum[:fileformat.EncNonceLen])
+	return n
 }
 
 // Seal encrypts plaintext into a fresh ciphertext buffer (plaintext +

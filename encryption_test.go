@@ -247,16 +247,18 @@ func TestGoldenEncryptedStore(t *testing.T) {
 		}
 	}
 	base := filepath.Join(tmpdb(t), "golden-enc")
+	buildEncryptedGoldenStore(t, base)
+	generated, err := os.ReadFile(base + ".rpk")
+	require.NoError(t, err)
 	if *updateGolden {
-		buildEncryptedGoldenStore(t, base)
-		data, err := os.ReadFile(base + ".rpk")
-		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(goldenPath("encrypted-store.rpk"), data, 0o644))
+		require.NoError(t, os.WriteFile(goldenPath("encrypted-store.rpk"), generated, 0o644))
 		return
 	}
 	// Copy the golden sample and open it with the key.
 	data, err := os.ReadFile(goldenPath("encrypted-store.rpk"))
 	require.NoError(t, err, "read golden (regenerate with make golden): %v", err)
+	require.Equal(t, data, generated, "writer output differs from locked encrypted golden (regenerate with make golden only for an intentional format change)")
+	base = filepath.Join(tmpdb(t), "golden-enc-open")
 	require.NoError(t, os.WriteFile(base+".rpk", data, 0o644))
 	db, err := Open(base, enc())
 	require.NoError(t, err, "open golden: %v", err)

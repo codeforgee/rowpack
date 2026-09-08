@@ -3,12 +3,16 @@
 RowPack 是一个使用 Go 实现的轻量级嵌入式二维表存储引擎，面向备份、快照、
 差异归档和本地分析等「顺序写入、随机读取」场景。
 
-- 双文件格式：`<base>.rpk`（数据，append-only，提交权威）+ `<base>.rpi`（索引，可重建）。
-- 支持 FULL / DELTA 快照以及 INSERT / UPDATE / DELETE 变更。
+- **单文件格式**：`<base>.rpk` 一个文件承载全部数据与索引，数据块与每快照
+  IndexTxn 交错追加，由扩展 SnapshotFooter 一次性原子提交（一次 fsync）。
+  备份/迁移/复制即拷贝单个文件。
+- 支持 FULL / DELTA 快照以及 INSERT / UPDATE / DELETE 变更；任意时刻可提交
+  新 FULL checkpoint（快照 ID 全局递增，深度重置）。
 - Zstandard 块压缩（默认 256 KiB 目标块）。
 - 按快照、表和行随机访问，历史快照不可变、不受后续提交影响。
 - 多读单写：读操作无锁并发，写操作单写者串行，提交原子可见。
-- 校验、崩溃恢复与索引重建，不依赖独立 WAL。
+- 校验与崩溃恢复不依赖独立 WAL：未提交尾部打开时截断；单个 IndexTxn 损坏
+  时从该快照自身的数据块在内存重建索引，后续快照照常重放。
 - Schema 与源数据库设计元信息分层：`DefineSchema` 把 RowPack 自身的 Canonical
   Schema 写成引擎自产自销的 Table/Column 记录（内部 TLV）；它只服务于行编码/解码，
   不会按源数据库方言建模。源数据库原始元信息属于上层 Source Metadata，当前不提供
@@ -94,7 +98,7 @@ func main() {
 
 ## 关键概念
 
-- **Store**：一对 `<base>.rpk` / `<base>.rpi` 文件及其运行时状态。
+- **Store**：单个 `<base>.rpk` 文件及其运行时状态。
 - **Snapshot**：不可变、原子提交的行变更集合，FULL 或 DELTA，形成父子链。
 - **RowID**：表内稳定逻辑行标识，与业务主键相互独立。
 - **Block**：压缩与校验单位，属于一个快照和一个表。
@@ -128,31 +132,42 @@ for {
 
 ## 批量读取
 
-对任意的 RowID 集合，`ReadBatch` 按块聚合：每个块至多加载、解压和校验一次，
-块内多行共享同一次目录解析，然后按请求顺序一次性返回（v1.2）。与逐行 Get 相比，
-冷块/大集合场景吞吐提升 3.6×–525×（`make bench-batch` 复现）；聚合效果可经
-`Stats.Batch`（去重块数、解压字节）验证。错误语义与 Get 一致：任一 id 缺失或
-已删除即整批返回 `ErrNotFound`。
+批量读取按块聚合：每个块至多加载、解密、解压和校验一次，经有界重排缓冲按请求
+顺序流出。两个入口：
+
+- `ReadRowsByIDs`：显式 RowID 集合；重复输入重复返回（与输入下标 1:1），
+  缺失/已删除行跳过（不报错，`Stats` 反映差异）。
+- `ReadRowRanges`：多范围，重叠自动合并，升序输出。
 
 ```go
-rows, err := db.ReadBatch(ctx, full.ID, 1, []RowID{1001, 1002, 1005})
+it, err := db.ReadRowsByIDs(ctx, full.ID, 1, []RowID{1001, 1002, 1005},
+	rowpack.BatchReadOptions{Order: rowpack.BatchOrderInput})
 if err != nil {
 	log.Fatal(err)
 }
-for i, row := range rows {
-	_ = i
+defer it.Close()
+for {
+	id, row, ok := it.Next(nil)
+	if !ok {
+		break
+	}
 	name, _ := row[1].String()
+	_ = id
 	_ = name
 }
+st := it.Stats() // 块数、解压字节、命中与跳过差异
 ```
+
+`Parallelism > 1` 启用并行块解码（发射顺序不变）。冷缓存连续 1000 行场景较
+逐行 Get 提升约 400×（`BenchmarkBatchVsGetLoop` 复现）。
 
 ## 文档
 
 - [需求规格](docs/REQUIREMENTS.md)
-- [二进制格式 v1](docs/BINARY_FORMAT_V1.md)
-- [单文件格式 v2 设计](docs/BINARY_FORMAT_V2.md)
+- [二进制格式（v2 单文件）](docs/BINARY_FORMAT_V2.md) · [v2 风险清单](docs/V2_DESIGN_RISKS.md)
 - [v2 Go API 设计](docs/GO_API_DESIGN_V2.md)
 - [v2 单文件开发计划](docs/DEVELOPMENT_PLAN_V2.md)
+- [二进制格式 v1（预发布史）](docs/BINARY_FORMAT_V1.md)
 - [元数据格式 v1](docs/METADATA_FORMAT_V1.md)
 - [Go API 设计](docs/GO_API_DESIGN.md)
 - [开发计划](docs/DEVELOPMENT_PLAN.md)
@@ -192,7 +207,7 @@ klauspost zstd v1.20 / BlockSize 256 KiB / Zstd / SyncCommit，数据集 100k �
 | 并发 Get 64 goroutine | ~6.7 µs（LRU 锁主导） |
 | Scan 100k / Scan 1M | 13.7 ms / 243 ms |
 | Get / Scan DeepChain（32 层） | 3.4 µs / 31.9 ms |
-| Open 索引重放 / RebuildIndex | 5.7 ms / 27.2 ms |
+| Open 索引重放 | ~5.7 ms |
 
 > 注意：热读真实吞吐 ~2M get/s。README 早期版本的 7–12 µs、300 µs 等数值受到低
 > `-benchtime` 一次性开销稀释，已由统一矩阵的预热逻辑消除；历史数据见
@@ -200,6 +215,9 @@ klauspost zstd v1.20 / BlockSize 256 KiB / Zstd / SyncCommit，数据集 100k �
 
 ## 兼容性
 
-- v1 磁盘格式冻结：golden files 纳入 CI，任何字节级变化视为格式变更。
-- 枚举值、字段编号、golden 样本发布后不得修改。
+- v2（单文件，Magic `ROWPACK2`）是当前且唯一的格式线；v1 预发布格式从未发布，
+  v2 打开器在 magic 处即拒绝 v1 文件。
+- golden files 纳入 CI：任何字节级变化视为格式变更。
+- 加密 store 使用 AES-256-GCM；数据块与 IndexTxn 分域加密封装（nonce 位域
+  互斥），Footer 绑定落盘字节 CRC，无需密钥即可检出撕裂。
 - 支持 Linux / macOS / Windows amd64/arm64（跨进程写锁在无 flock 平台明确报错）。

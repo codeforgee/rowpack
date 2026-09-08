@@ -32,14 +32,13 @@ const (
 // RequiredFeaturesV1 is the feature bit set of a v1 store.
 const RequiredFeaturesV1 = FeatureTypedTupleV1 | FeatureZstd | FeatureMetadataBlock | FeatureDeltaSnapshot
 
-// ASCII magics. All are exactly 8 bytes. MagicDataFile identifies the v2
+// ASCII magics. All are exactly 8 bytes. MagicDataFile identifies the
 // single-file store; it deliberately differs from the prerelease v1 data
 // magic (`ROWPACKD`) so v2 openers reject v1 files at the first 8 bytes
-// without probing anything else. MagicIndexFile remains defined until the
-// index file removal lands (M2: single-file FULL path), then is deleted.
+// without probing anything else. There is no separate index magic: the
+// IndexTxn stream lives inside the data file.
 const (
 	MagicDataFile    = "ROWPACK2"
-	MagicIndexFile   = "ROWPACKI"
 	MagicSnapshotHdr = "RPKSNAPH"
 	MagicSnapshotFtr = "RPKSNAPF"
 	MagicBlockHdr    = "RPKBLOCK"
@@ -54,7 +53,6 @@ const (
 // regions). These values are frozen by the v1 spec and protected by tests.
 const (
 	DataFileHeaderSize     = 128
-	IndexFileHeaderSize    = 128
 	SnapshotHeaderSize     = 96
 	SnapshotFooterSize     = 144
 	BlockHeaderSize        = 64
@@ -72,10 +70,7 @@ const (
 )
 
 // Reserved field offsets that must stay fixed by the spec.
-const (
-	DataFileHeaderCRC32COffset  = 120
-	IndexFileHeaderCRC32COffset = 120
-)
+const DataFileHeaderCRC32COffset = 120
 
 // SnapshotFooterV2 marker offsets (BINARY_FORMAT_V2.md §7). The footer is
 // 144 bytes; FooterCRC32C at 136 covers the whole structure with its own

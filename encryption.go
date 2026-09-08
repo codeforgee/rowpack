@@ -13,8 +13,9 @@ import (
 // never stores or manages keys: the key ID is persisted in the store header,
 // the raw key material is only ever held by the provider (and, transiently, in
 // the process's AEAD state). A store created with encryption requires a
-// provider at every Open, Verify and RebuildIndex; without one those entry
-// points fail with ErrKeyRequired.
+// provider at every Open and Verify; without one those entry points fail
+// with ErrKeyRequired (in-memory IndexTxn rebuilds also require the key,
+// because they re-read and authenticate every block).
 type KeyProvider interface {
 	// Key returns the raw key bytes for (keyID, epoch). Epoch 0 is the
 	// initial epoch; an encrypted store with rotated keys requests the epoch

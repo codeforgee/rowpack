@@ -264,7 +264,7 @@ func TestCommitFailedWriterState(t *testing.T) {
 	// Simulate an I/O failure mid-commit by closing the data file at a fault
 	// point: commitLocked fails, the writer enters writerFailed and the
 	// writer slot stays held.
-	fault.Inject("commit.data-header.before", func() { db.data.Close() })
+	fault.Inject("commit.header.before", func() { db.data.Close() })
 	t.Cleanup(fault.Clear)
 	_, err = w.Commit(context.Background())
 	require.Error(t, err, "commit should fail after data file close")

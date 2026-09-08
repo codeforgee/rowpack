@@ -140,19 +140,6 @@ func TestFileHeaderKeyIDLimits(t *testing.T) {
 	require.Error(t, h2.Unmarshal(buf), "over-long key id length accepted")
 }
 
-func TestIndexFileHeader(t *testing.T) {
-	h := &IndexFileHeader{FileHeader: FileHeader{
-		StoreUUID:          [16]byte{16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1},
-		CreatedUnixNano:    1600000000000000000,
-		RequiredFeatures:   RequiredFeaturesV1,
-		DefaultBlockSize:   256 << 10,
-		DefaultCompression: CompressionZstd,
-		DefaultRowEncoding: RowEncodingTypedTuple,
-	}}
-	roundTrip(t, "IndexFileHeader", h.MarshalTo, h.Unmarshal)
-	testFixedStructure(t, "IndexFileHeader", h.MarshalTo, h.Unmarshal, true, IndexFileHeaderSize)
-}
-
 func TestSnapshotHeader(t *testing.T) {
 	h := &SnapshotHeader{
 		SnapshotType:     SnapshotDelta,

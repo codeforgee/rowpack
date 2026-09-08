@@ -1,14 +1,15 @@
-// Package rowpack implements the RowPack v1 embedded table storage engine.
+// Package rowpack implements the RowPack single-file embedded table storage
+// engine.
 //
 // RowPack stores two-dimensional table data, its version history and database
-// metadata in a pair of append-only files:
+// metadata in one append-only file <base>.rpk: data blocks and the per-snapshot
+// IndexTxn stream share the single file and are committed together by the
+// extended SnapshotFooter (BINARY_FORMAT_V2.md). There is no separate index
+// file, no UUID pairing and no cross-file recovery.
 //
-//   - <base>.rpk: the data file, the authoritative source of committed facts.
-//   - <base>.rpi: the derived navigation index, rebuildable from the data file.
-//
-// The on-disk format is fixed by the v1 binary and metadata specifications
-// (BINARY_FORMAT_V1.md, METADATA_FORMAT_V1.md). The format version is frozen
-// as Major=1, Minor=0 (see internal/fileformat): unknown major versions are
+// The on-disk format is fixed by the v2 binary and metadata specifications
+// (BINARY_FORMAT_V2.md, METADATA_FORMAT_V1.md). The format version is frozen
+// as Major=2, Minor=0 (see internal/fileformat): unknown major versions are
 // rejected when opening a store, and higher minor versions are only opened
 // when all required feature bits are recognized.
 package rowpack
@@ -72,12 +73,11 @@ type publishedState struct {
 	schemas *schemaIndex
 }
 
-// Store is a RowPack store backed by <base>.rpk and <base>.rpi.
+// Store is a RowPack store backed by the single file <base>.rpk.
 type Store struct {
-	basePath  string
-	dataPath  string
-	indexPath string
-	opts      Options
+	basePath string
+	dataPath string
+	opts     Options
 
 	uuid     [16]byte
 	header   fileformat.DataFileHeader
@@ -91,7 +91,6 @@ type Store struct {
 	decrypter *storeDecrypter
 
 	data   *iofile.Appender
-	index  *iofile.Appender
 	reader *block.Reader
 	loader *blockLoader
 	lock   *lockfile.Lock
@@ -107,6 +106,10 @@ type Store struct {
 	lastSnapshotID atomic.Uint64
 	lastBlockID    atomic.Uint64
 	txnSeq         atomic.Uint64
+	// lastFooterOffset is the file offset of the most recently committed
+	// SnapshotFooter. Written under writeMu / recover; read by Commit to fill
+	// the next footer's PreviousFooterOffset.
+	lastFooterOffset uint64
 
 	// ReadBatch cumulative counters (see Stats.Batch).
 	batchCalls    atomic.Uint64
@@ -126,15 +129,15 @@ type Store struct {
 	recoveryStats atomic.Value // holds recoveryReport
 }
 
-// Create creates a new empty store at basePath (no extension). It fails with
-// ErrInvalidPath if basePath ends in .rpk or .rpi, and never overwrites
-// existing files.
+// Create creates a new empty single-file store at basePath (no extension). It
+// fails with ErrInvalidPath if basePath ends in .rpk or .rpi, and never
+// overwrites existing files.
 func Create(basePath string, opts Options) (*Store, error) {
 	resolved, err := opts.resolved()
 	if err != nil {
 		return nil, err
 	}
-	dataPath, indexPath, err := pairPaths(basePath)
+	dataPath, err := dataPathOf(basePath)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +156,7 @@ func Create(basePath string, opts Options) (*Store, error) {
 		DefaultRowEncoding: fileformat.RowEncodingTypedTuple,
 	}
 	// Encryption is fixed at Create: resolve the initial key and stamp the
-	// headers. A plain store keeps all encryption bytes zero.
+	// header. A plain store keeps all encryption bytes zero.
 	encCipher, err := buildEncryptor(resolved.Encryption)
 	if err != nil {
 		return nil, err
@@ -163,57 +166,45 @@ func Create(basePath string, opts Options) (*Store, error) {
 		dataHdr.NonceScheme = fileformat.NonceCounterV1
 		dataHdr.KeyID = []byte(resolved.Encryption.KeyID)
 	}
-	idxHdr := fileformat.IndexFileHeader{}
-	idxHdr.FileHeader = dataHdr.FileHeader
 
 	var dh [fileformat.DataFileHeaderSize]byte
 	if err := dataHdr.MarshalTo(dh[:]); err != nil {
 		return nil, err
 	}
-	var ih [fileformat.IndexFileHeaderSize]byte
-	if err := idxHdr.MarshalTo(ih[:]); err != nil {
+	if err := iofile.CreateSingle(dataPath, dh[:]); err != nil {
 		return nil, err
 	}
-	if err := iofile.CreatePair(dataPath, indexPath, dh[:], ih[:]); err != nil {
-		return nil, err
-	}
-	return openFiles(basePath, dataPath, indexPath, resolved, uuid, dataHdr, false)
+	return openStore(basePath, dataPath, resolved, uuid, dataHdr, false)
 }
 
-// Open opens an existing store read-write (or read-only with opts.ReadOnly).
+// Open opens an existing single-file store read-write (or read-only with
+// opts.ReadOnly).
 func Open(basePath string, opts Options) (*Store, error) {
 	resolved, err := opts.resolved()
 	if err != nil {
 		return nil, err
 	}
-	dataPath, indexPath, err := pairPaths(basePath)
+	dataPath, err := dataPathOf(basePath)
 	if err != nil {
 		return nil, err
 	}
-	if !iofile.Exists(dataPath) || !iofile.Exists(indexPath) {
-		return nil, fmt.Errorf("%w: missing data or index file (%s, %s)", ErrNotFound, dataPath, indexPath)
+	if !iofile.Exists(dataPath) {
+		return nil, fmt.Errorf("%w: missing store file %s", ErrNotFound, dataPath)
 	}
-	return openFiles(basePath, dataPath, indexPath, resolved, [16]byte{}, fileformat.DataFileHeader{}, resolved.ReadOnly)
+	return openStore(basePath, dataPath, resolved, [16]byte{}, fileformat.DataFileHeader{}, resolved.ReadOnly)
 }
 
-func openFiles(basePath, dataPath, indexPath string, opts Options, uuid [16]byte, header fileformat.DataFileHeader, readOnly bool) (*Store, error) {
+func openStore(basePath, dataPath string, opts Options, uuid [16]byte, header fileformat.DataFileHeader, readOnly bool) (*Store, error) {
 	df, err := iofile.OpenAppender(dataPath, false)
 	if err != nil {
-		return nil, fmt.Errorf("rowpack: open data file: %w", err)
-	}
-	inf, err := iofile.OpenAppender(indexPath, false)
-	if err != nil {
-		df.Close()
-		return nil, fmt.Errorf("rowpack: open index file: %w", err)
+		return nil, fmt.Errorf("rowpack: open store file: %w", err)
 	}
 	s := &Store{
-		basePath:  basePath,
-		dataPath:  dataPath,
-		indexPath: indexPath,
-		opts:      opts,
-		readOnly:  readOnly,
-		data:      df,
-		index:     inf,
+		basePath: basePath,
+		dataPath: dataPath,
+		opts:     opts,
+		readOnly: readOnly,
+		data:     df,
 	}
 	s.reader = block.NewReader(df, block.Limits{
 		MaxRawBytes:    opts.Limits.MaxRawBlockBytes,
@@ -227,14 +218,12 @@ func openFiles(basePath, dataPath, indexPath string, opts Options, uuid [16]byte
 		lock, err := lockfile.Acquire(basePath + ".lock")
 		if err != nil {
 			df.Close()
-			inf.Close()
 			return nil, err
 		}
 		s.lock = lock
 	}
 	if err := s.initOpen(); err != nil {
 		df.Close()
-		inf.Close()
 		if s.lock != nil {
 			s.lock.Release()
 		}
@@ -249,7 +238,8 @@ func (s *Store) Path() string { return s.basePath }
 // ReadOnly reports whether the store was opened read-only.
 func (s *Store) ReadOnly() bool { return s.readOnly }
 
-// UUID returns the store's pairing UUID shared by the .rpk and .rpi files.
+// UUID returns the store's identity, used as cache key and encryption AAD
+// domain seed. Single-file stores carry one UUID in the header.
 func (s *Store) UUID() [16]byte { return s.uuid }
 
 // Close aborts any active writer, flushes, and closes the files. It is
@@ -296,9 +286,6 @@ func (s *Store) Close() error {
 	if err := s.data.Close(); err != nil {
 		errs = append(errs, err)
 	}
-	if err := s.index.Close(); err != nil {
-		errs = append(errs, err)
-	}
 	s.releaseZstdEncoder()
 	s.state.Store(nil)
 	if s.lock != nil {
@@ -324,20 +311,7 @@ func (s *Store) readDataHeader() (fileformat.DataFileHeader, error) {
 	return h, nil
 }
 
-func (s *Store) readIndexHeader() (fileformat.IndexFileHeader, error) {
-	var h fileformat.IndexFileHeader
-	buf := make([]byte, fileformat.IndexFileHeaderSize)
-	if _, err := s.index.ReadAt(buf, 0); err != nil {
-		return h, fmt.Errorf("rowpack: read index header: %w", err)
-	}
-	if err := h.Unmarshal(buf); err != nil {
-		if fileformat.IsVersionError(err) {
-			return h, fmt.Errorf("%w: %v", ErrVersionUnsupported, err)
-		}
-		return h, err
-	}
-	return h, nil
-}
+// readIndexHeader was removed with the separate index file (v2).
 
 func (s *Store) checkOpen() error {
 	if s.closed.Load() {
@@ -347,22 +321,12 @@ func (s *Store) checkOpen() error {
 }
 
 func (s *Store) initOpen() error {
-	// Read both headers and verify pairing.
+	// Read and validate the single-file header.
 	dataHdr, err := s.readDataHeader()
 	if err != nil {
 		return err
 	}
-	idxHdr, err := s.readIndexHeader()
-	if err != nil {
-		return err
-	}
-	if dataHdr.StoreUUID != idxHdr.StoreUUID {
-		return fmt.Errorf("%w: data uuid %x index uuid %x", ErrStoreMismatch, dataHdr.StoreUUID, idxHdr.StoreUUID)
-	}
 	if err := dataHdr.CheckVersion(); err != nil {
-		return fmt.Errorf("%w: %v", ErrVersionUnsupported, err)
-	}
-	if err := idxHdr.CheckVersion(); err != nil {
 		return fmt.Errorf("%w: %v", ErrVersionUnsupported, err)
 	}
 	s.uuid = dataHdr.StoreUUID
@@ -435,10 +399,12 @@ func le32(b []byte) uint32 {
 // footerCRCValue returns the stored SnapshotFooter FooterCRC32C.
 func footerCRCValue(fb []byte) uint32 { return le32(fb[fileformat.SnapshotFooterCRC32COffset:]) }
 
-func pairPaths(basePath string) (string, string, error) {
+// dataPathOf resolves the single store file path. Like v1, base paths
+// carrying a .rpk/.rpi extension are rejected so a store never ends up at
+// double-extension paths (R21; final `.rpk`-suffix policy is a M0 decision).
+func dataPathOf(basePath string) (string, error) {
 	if strings.HasSuffix(basePath, ".rpk") || strings.HasSuffix(basePath, ".rpi") {
-		return "", "", fmt.Errorf("%w: base path %q must not carry an extension", ErrInvalidPath, basePath)
+		return "", fmt.Errorf("%w: base path %q must not carry an extension", ErrInvalidPath, basePath)
 	}
-	clean := filepath.Clean(basePath)
-	return clean + ".rpk", clean + ".rpi", nil
+	return filepath.Clean(basePath) + ".rpk", nil
 }

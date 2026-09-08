@@ -88,19 +88,14 @@ func TestGoldenStoreSamples(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "golden-store")
 	if *updateGolden {
 		buildFullDeltaStore(t, base)
-		for _, ext := range []string{".rpk", ".rpi"} {
-			data, err := os.ReadFile(base + ext)
-			require.NoError(t, err)
-			require.NoError(t, os.WriteFile(goldenPath("full-delta-store"+ext), data, 0o644))
-		}
+		data, err := os.ReadFile(base + ".rpk")
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(goldenPath("full-delta-store.rpk"), data, 0o644))
 		return
 	}
-	// Copy the golden samples into a temp dir and open them.
-	for _, ext := range []string{".rpk", ".rpi"} {
-		data, err := os.ReadFile(goldenPath("full-delta-store" + ext))
-		require.NoError(t, err, "read golden %s: %v (regenerate with make golden)", ext, err)
-		require.NoError(t, os.WriteFile(base+ext, data, 0o644))
-	}
+	data, err := os.ReadFile(goldenPath("full-delta-store.rpk"))
+	require.NoError(t, err, "read golden (regenerate with make golden): %v", err)
+	require.NoError(t, os.WriteFile(base+".rpk", data, 0o644))
 	db, err := Open(base, Options{})
 	require.NoError(t, err)
 	defer db.Close()

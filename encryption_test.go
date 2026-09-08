@@ -121,7 +121,7 @@ func TestEncryptedWriteSealsBlocks(t *testing.T) {
 	require.NoError(t, err)
 	off := int64(fileformat.DataFileHeaderSize + fileformat.SnapshotHeaderSize)
 	sawEncrypted := 0
-	for off < int64(len(raw)) && string(raw[off:off+8]) != "RPKSNAPF" {
+	for off < int64(len(raw)) && string(raw[off:off+8]) != fileformat.MagicIndexTxnHdr {
 		var bh fileformat.BlockHeader
 		require.NoError(t, bh.Unmarshal(raw[off:off+fileformat.BlockHeaderSize]), "block header at %d", off)
 		require.True(t, bh.Encrypted, "block %d at %d not encrypted", bh.BlockID, off)
@@ -144,7 +144,7 @@ func TestPlainStoreBlocksUnencrypted(t *testing.T) {
 	raw, err := os.ReadFile(dir + "/db.rpk")
 	require.NoError(t, err)
 	off := int64(fileformat.DataFileHeaderSize + fileformat.SnapshotHeaderSize)
-	for off < int64(len(raw)) && string(raw[off:off+8]) != "RPKSNAPF" {
+	for off < int64(len(raw)) && string(raw[off:off+8]) != fileformat.MagicIndexTxnHdr {
 		var bh fileformat.BlockHeader
 		require.NoError(t, bh.Unmarshal(raw[off:off+fileformat.BlockHeaderSize]), "block header at %d", off)
 		require.False(t, bh.Encrypted || bh.KeyEpoch != 0, "plain block %d carries encryption bytes", bh.BlockID)
@@ -249,19 +249,15 @@ func TestGoldenEncryptedStore(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "golden-enc")
 	if *updateGolden {
 		buildEncryptedGoldenStore(t, base)
-		for _, ext := range []string{".rpk", ".rpi"} {
-			data, err := os.ReadFile(base + ext)
-			require.NoError(t, err)
-			require.NoError(t, os.WriteFile(goldenPath("encrypted-store"+ext), data, 0o644))
-		}
+		data, err := os.ReadFile(base + ".rpk")
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(goldenPath("encrypted-store.rpk"), data, 0o644))
 		return
 	}
-	// Copy the golden samples and open them with the key.
-	for _, ext := range []string{".rpk", ".rpi"} {
-		data, err := os.ReadFile(goldenPath("encrypted-store" + ext))
-		require.NoError(t, err, "read golden %s: %v (regenerate with make golden)", ext, err)
-		require.NoError(t, os.WriteFile(base+ext, data, 0o644))
-	}
+	// Copy the golden sample and open it with the key.
+	data, err := os.ReadFile(goldenPath("encrypted-store.rpk"))
+	require.NoError(t, err, "read golden (regenerate with make golden): %v", err)
+	require.NoError(t, os.WriteFile(base+".rpk", data, 0o644))
 	db, err := Open(base, enc())
 	require.NoError(t, err, "open golden: %v", err)
 	defer db.Close()

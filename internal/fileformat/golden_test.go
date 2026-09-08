@@ -40,43 +40,19 @@ func buildEmptyDataHeader() []byte {
 	return buf
 }
 
-// buildEmptyIndexHeader renders the canonical empty-store .rpi header.
-func buildEmptyIndexHeader() []byte {
-	var h IndexFileHeader
-	h.FileHeader = FileHeader{
-		StoreUUID:          fixedStoreUUID,
-		CreatedUnixNano:    1757400000000000000,
-		RequiredFeatures:   RequiredFeaturesV1,
-		OptionalFeatures:   0,
-		DefaultBlockSize:   DefaultBlockSize,
-		DefaultCompression: CompressionZstd,
-		DefaultRowEncoding: RowEncodingTypedTuple,
-		Flags:              0,
-	}
-	buf := make([]byte, IndexFileHeaderSize)
-	_ = h.MarshalTo(buf)
-	return buf
-}
-
-// TestGoldenEmptyStore locks the two-header "empty Store" golden files.
+// TestGoldenEmptyStore locks the single 128-byte "empty store" golden file.
 func TestGoldenEmptyStore(t *testing.T) {
-	want := map[string][]byte{
-		"empty-store.rpk": buildEmptyDataHeader(),
-		"empty-store.rpi": buildEmptyIndexHeader(),
+	data := buildEmptyDataHeader()
+	path := goldenPath("empty-store.rpk")
+	if *updateGolden {
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, data, 0o644))
+		return
 	}
-	for name, data := range want {
-		path := goldenPath(name)
-		if *updateGolden {
-			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-			require.NoError(t, os.WriteFile(path, data, 0o644))
-			continue
-		}
-		got, err := os.ReadFile(path)
-		require.NoError(t, err, "read golden %s: %v (regenerate with make golden)", name, err)
-		if string(got) != string(data) {
-			require.Fail(t, "golden %s differs from implementation (regenerate with make golden)", name)
-		}
-		// Golden must be exactly the two-header size.
-		require.Equal(t, DataFileHeaderSize, len(got), "golden %s size = %d, want %d", name, len(got), DataFileHeaderSize)
+	got, err := os.ReadFile(path)
+	require.NoError(t, err, "read golden %s: %v (regenerate with make golden)", path, err)
+	if string(got) != string(data) {
+		require.Fail(t, "golden %s differs from implementation (regenerate with make golden)", path)
 	}
+	require.Equal(t, DataFileHeaderSize, len(got), "golden size = %d, want %d", len(got), DataFileHeaderSize)
 }

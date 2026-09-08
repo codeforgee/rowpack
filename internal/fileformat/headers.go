@@ -123,21 +123,8 @@ func (h *DataFileHeader) Unmarshal(src []byte) error {
 	return err
 }
 
-// IndexFileHeader is the fixed 128-byte header of a .rpi index file.
-type IndexFileHeader struct {
-	FileHeader
-}
-
-// MarshalTo writes the serialized form of h into dst.
-func (h *IndexFileHeader) MarshalTo(dst []byte) error {
-	return h.FileHeader.marshalTo(dst, MagicIndexFile)
-}
-
-// Unmarshal validates src and fills h.
-func (h *IndexFileHeader) Unmarshal(src []byte) error {
-	_, err := h.FileHeader.unmarshal(src, MagicIndexFile)
-	return err
-}
+// IndexFileHeader was removed with the separate index file (v2 single-file
+// stores embed the IndexTxn stream in the .rpk).
 
 // CheckVersion verifies that a header's minor version and feature bits are
 // openable. A higher minor version is acceptable only when every required

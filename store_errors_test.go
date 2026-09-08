@@ -40,21 +40,8 @@ func TestCreateOpenPathErrors(t *testing.T) {
 	require.True(t, nonzero, "UUID should be non-zero after open")
 }
 
-func TestOpenStoreMismatch(t *testing.T) {
-	dir := tmpdb(t)
-	a, err := Create(dir+"/a", Options{})
-	require.NoError(t, err)
-	b, err := Create(dir+"/b", Options{})
-	require.NoError(t, err)
-	a.Close()
-	b.Close()
-	// Pair a's data with b's index: UUIDs no longer match.
-	data, err := os.ReadFile(dir + "/a.rpi")
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(dir+"/b.rpi", data, 0o644))
-	_, err = Open(dir+"/b", Options{})
-	require.ErrorIs(t, err, ErrStoreMismatch, "mismatched pair: %v", err)
-}
+// TestOpenStoreMismatch was removed: single-file stores have no UUID
+// pairing, so there is no cross-file mismatch state (v2, M2).
 
 func TestOpenCorruptHeader(t *testing.T) {
 	base := tmpdb(t) + "/c"
@@ -275,12 +262,16 @@ func TestRecoveryRebuildGhostSnapshot(t *testing.T) {
 	require.Equal(t, uint64(99), snaps[1].ID)
 	_, err = db2.Get(context.Background(), 1, 1, 5, nil)
 	require.NoError(t, err, "row 5: %v", err)
-	// The rebuilt txn is persisted: a second reopen is stable and idempotent.
+	// In-memory rebuilds are not written back (BINARY_FORMAT_V2 §10.2): the
+	// ghost snapshot still has no stored IndexTxn, so every reopen rebuilds it
+	// once. The store remains fully readable and the file is never modified.
 	db2.Close()
 	db3, err := Open(base, Options{})
 	require.NoError(t, err, "second reopen: %v", err)
 	defer db3.Close()
-	require.Zero(t, db3.Stats().Recovery.SnapshotsRebuilt, "second rebuild = %d, want 0", db3.Stats().Recovery.SnapshotsRebuilt)
+	require.Equal(t, uint64(1), db3.Stats().Recovery.SnapshotsRebuilt, "second rebuild = %d, want 1 (in-memory only)", db3.Stats().Recovery.SnapshotsRebuilt)
+	_, err = db3.Get(context.Background(), 1, 1, 5, nil)
+	require.NoError(t, err, "row 5 after second reopen: %v", err)
 }
 
 func TestRecoveryMidFileCorruption(t *testing.T) {
@@ -320,18 +311,8 @@ func TestVerifyModes(t *testing.T) {
 	_ = full
 }
 
-// ---- RebuildIndex error paths ----
-
-func TestRebuildIndexErrors(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	err := RebuildIndex(ctx, tmpdb(t)+"/x", RebuildOptions{})
-	require.ErrorIs(t, err, context.Canceled, "cancelled rebuild: %v", err)
-	err = RebuildIndex(context.Background(), tmpdb(t)+"/x.rpk", RebuildOptions{})
-	require.ErrorIs(t, err, ErrInvalidPath, "bad path rebuild: %v", err)
-	err = RebuildIndex(context.Background(), tmpdb(t)+"/missing", RebuildOptions{})
-	require.ErrorIs(t, err, ErrNotFound, "missing data rebuild: %v", err)
-}
+// RebuildIndex error paths were removed with the index file (v2): index
+// recovery is automatic and in-memory; see BINARY_FORMAT_V2 §14.
 
 // ---- schema helpers ----
 

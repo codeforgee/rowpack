@@ -128,12 +128,12 @@ func header(base string) {
 	db := open(base)
 	defer db.Close()
 	st := db.Stats()
-	fmt.Printf("path: %s.rpk / %s.rpi\n", db.Path(), db.Path())
+	fmt.Printf("path: %s.rpk\n", db.Path())
 	fmt.Printf("uuid: %x\n", db.UUID())
 	fmt.Printf("readonly: %v\n", db.ReadOnly())
 	fmt.Printf("snapshots=%d blocks=%d tables=%d logicalRows=%d\n", st.Snapshots, st.Blocks, st.Tables, st.LogicalRows)
-	fmt.Printf("dataBytes=%d indexBytes=%d rawBytes=%d storedBytes=%d indexMemory=%d\n",
-		st.DataFileBytes, st.IndexFileBytes, st.RawBytes, st.StoredBytes, st.IndexMemoryBytes)
+	fmt.Printf("dataBytes=%d rawBytes=%d storedBytes=%d indexMemory=%d\n",
+		st.DataFileBytes, st.RawBytes, st.StoredBytes, st.IndexMemoryBytes)
 	fmt.Printf("cache: hits=%d misses=%d evictions=%d used=%d/%d\n",
 		st.Cache.Hits, st.Cache.Misses, st.Cache.Evictions, st.Cache.UsedBytes, st.Cache.CapacityBytes)
 	fmt.Printf("recovery: performed=%v dataTail=%d indexTail=%d rebuilt=%d\n",

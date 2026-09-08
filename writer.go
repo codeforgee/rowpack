@@ -580,13 +580,14 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 		return SnapshotInfo{}, fmt.Errorf("%w: empty FULL snapshot", ErrInvalidArgument)
 	}
 	// Fault injection points (test-only): crash between these positions.
-	fault.Check("commit.data-header.before")
+	fault.Check("commit.header.before")
 
 	// Assign block IDs first so the snapshot header can record FirstBlockID.
 	for _, blk := range w.pending {
 		blk.header.BlockID = w.store.lastBlockID.Add(1)
 	}
-	// Assign offsets and write to .rpk.
+	// Single-file commit order: SnapshotHeader -> Blocks -> IndexTxn ->
+	// SnapshotFooter, then exactly one Sync (BINARY_FORMAT_V2 §8).
 	startOffset := w.store.data.Offset()
 	snapStart := startOffset
 	var sh fileformat.SnapshotHeader
@@ -649,52 +650,28 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	}
 	// Note: block CRCs are computed from the header CRC fields (offset 52).
 
-	snapEnd := w.store.data.Offset()
-	// Footer.
-	var ftr fileformat.SnapshotFooter
-	ftr.SnapshotType = fileformat.SnapshotType(w.typ)
-	ftr.SnapshotID = w.id
-	ftr.ParentSnapshotID = w.parent
-	ftr.SnapshotStartOffset = uint64(snapStart)
-	ftr.SnapshotEndOffset = uint64(snapEnd + fileformat.SnapshotFooterSize)
-	ftr.FirstBlockID = sh.FirstBlockID
-	ftr.BlockCount = blockCount
-	ftr.MetadataBlockCount = metaBlockCount
-	ftr.RowRecordCount = w.rowRecordCount
-	ftr.RawBytes = rawBytes
-	ftr.BlocksCRC32C = fileformat.CRC32C(blockCRCs)
-	var fb [fileformat.SnapshotFooterSize]byte
-	if err := ftr.MarshalTo(fb[:]); err != nil {
-		return SnapshotInfo{}, err
-	}
-	if _, err := w.store.data.Append(fb[:]); err != nil {
-		return SnapshotInfo{}, err
-	}
-	fault.Check("commit.data-footer.after")
-	dataEnd := w.store.data.Offset()
+	blocksEnd := w.store.data.Offset()
 
-	// Durability: data sync.
-	unknown := false
-	fault.Check("commit.data-sync.before")
-	if w.store.opts.Durability == SyncCommit {
-		if err := w.store.data.Sync(); err != nil {
-			return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: true, Err: err}
-		}
-	}
-	fault.Check("commit.data-sync.after")
-	// After the data sync, failures are "outcome unknown".
-	unknown = true
-
-	// Build and append the index transaction.
-	txnBuilder := index.NewBuilder(w.store.txnSeq.Add(1))
-	// Pre-allocate for all flushed blocks.
-	var rBlocks, rMeta, rRows int
+	// The IndexTxn byte length is fully determined by the entry counts, so the
+	// txn and footer offsets can be computed before serialization; the footer
+	// binds the txn by exact byte extent plus CRC over the stored bytes.
+	txnLen := int64(0)
+	txnLen += fileformat.IndexTxnHeaderSize + fileformat.SnapshotIndexEntrySize + fileformat.IndexTxnFooterSize
 	for _, blk := range w.pending {
-		rBlocks++
-		rMeta += len(blk.meta)
-		rRows += len(blk.rows)
+		txnLen += int64(len(blk.meta))*fileformat.MetadataIndexEntrySize +
+			fileformat.BlockIndexEntrySize + int64(len(blk.rows))*fileformat.RowIndexEntrySize
 	}
-	txnBuilder.Reserve(rMeta, rBlocks, rRows)
+	txnStart := blocksEnd
+	txnEnd := txnStart + txnLen
+	snapEnd := txnEnd + fileformat.SnapshotFooterSize
+
+	// Build the embedded IndexTxn. DataEnd is the SnapshotFooter end (the
+	// whole txn byte range, BINARY_FORMAT_V2 §6). DataFooterCRC32C is not
+	// bound in v2: the footer (written later) carries the authoritative
+	// IndexTxnCRC32C and the binding direction is footer -> txn.
+	unknown := false
+	txnBuilder := index.NewBuilder(w.store.txnSeq.Add(1))
+	txnBuilder.Reserve(0, len(w.pending), 0)
 	snapEntry := fileformat.SnapshotIndexEntry{
 		SnapshotID:       w.id,
 		ParentSnapshotID: w.parent,
@@ -702,12 +679,11 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 		BlockCount:       blockCount,
 		RowRecordCount:   w.rowRecordCount,
 		DataStart:        uint64(snapStart),
-		DataEnd:          uint64(dataEnd),
+		DataEnd:          uint64(snapEnd),
 		CreatedUnixNano:  w.created,
-		DataFooterCRC32C: footerCRCValue(fb[:]),
 	}
 	if err := txnBuilder.SetSnapshot(snapEntry); err != nil {
-		return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: unknown, Err: err}
+		return SnapshotInfo{}, err
 	}
 	for _, blk := range w.pending {
 		if err := txnBuilder.AddBlock(fileformat.BlockIndexEntry{
@@ -722,39 +698,77 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 			ItemCount:   blk.header.ItemCount,
 			RawCRC32C:   blk.header.RawCRC32C,
 		}); err != nil {
-			return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: unknown, Err: err}
+			return SnapshotInfo{}, err
 		}
 		for i := range blk.meta {
 			blk.meta[i].BlockID = blk.header.BlockID
 			if err := txnBuilder.AddMetadata(blk.meta[i]); err != nil {
-				return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: unknown, Err: err}
+				return SnapshotInfo{}, err
 			}
 		}
 		for i := range blk.rows {
 			blk.rows[i].BlockID = blk.header.BlockID
 			if err := txnBuilder.AddRow(blk.rows[i]); err != nil {
-				return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: unknown, Err: err}
+				return SnapshotInfo{}, err
 			}
 		}
 	}
-	fault.Check("commit.index.before")
-	txnStart := w.store.index.Offset()
-	txnEnd := txnStart + int64(0)
-	txnBytes, txn, err := txnBuilder.Build(uint64(snapStart), uint64(dataEnd), footerCRCValue(fb[:]), txnStart, txnEnd+int64(0))
+	fault.Check("commit.txn.before")
+	txnBytes, txn, err := txnBuilder.Build(uint64(snapStart), uint64(snapEnd), 0, txnStart, txnEnd)
 	if err != nil {
-		return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: unknown, Err: err}
+		return SnapshotInfo{}, err
 	}
-	txnEnd = txnStart + int64(len(txnBytes))
-	if _, err := w.store.index.Append(txnBytes); err != nil {
-		return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: unknown, Err: err}
+	if int64(len(txnBytes)) != txnLen {
+		// Internal invariant: the boundary hop must match the precomputed
+		// extent, otherwise the footer's extent binding would be wrong.
+		return SnapshotInfo{}, fmt.Errorf("rowpack: index txn length %d != precomputed %d", len(txnBytes), txnLen)
 	}
-	fault.Check("commit.index-sync.before")
+	if _, err := w.store.data.Append(txnBytes); err != nil {
+		return SnapshotInfo{}, err
+	}
+
+	// Footer: the commit authority; also binds the IndexTxn bytes.
+	var ftr fileformat.SnapshotFooter
+	ftr.SnapshotType = fileformat.SnapshotType(w.typ)
+	ftr.SnapshotID = w.id
+	ftr.ParentSnapshotID = w.parent
+	ftr.PreviousFooterOffset = w.store.lastFooterOffset
+	ftr.SnapshotStartOffset = uint64(snapStart)
+	ftr.BlocksStartOffset = uint64(snapStart) + fileformat.SnapshotHeaderSize
+	ftr.BlocksEndOffset = uint64(blocksEnd)
+	ftr.IndexTxnStartOffset = uint64(txnStart)
+	ftr.IndexTxnEndOffset = uint64(txnEnd)
+	ftr.SnapshotEndOffset = uint64(snapEnd)
+	ftr.FirstBlockID = sh.FirstBlockID
+	ftr.BlockCount = blockCount
+	ftr.MetadataBlockCount = metaBlockCount
+	ftr.RowRecordCount = w.rowRecordCount
+	ftr.RawBytes = rawBytes
+	ftr.StoredBytes = uint64(snapEnd - snapStart)
+	ftr.BlocksCRC32C = fileformat.CRC32C(blockCRCs)
+	ftr.IndexTxnCRC32C = fileformat.CRC32C(txnBytes)
+	var fb [fileformat.SnapshotFooterSize]byte
+	if err := ftr.MarshalTo(fb[:]); err != nil {
+		return SnapshotInfo{}, err
+	}
+	if _, err := w.store.data.Append(fb[:]); err != nil {
+		return SnapshotInfo{}, err
+	}
+	fault.Check("commit.footer.after")
+	if w.store.data.Offset() != snapEnd {
+		return SnapshotInfo{}, fmt.Errorf("rowpack: snapshot end %d != %d", w.store.data.Offset(), snapEnd)
+	}
+
+	// Durability: one sync for the whole transaction.
+	fault.Check("commit.sync.before")
 	if w.store.opts.Durability == SyncCommit {
-		if err := w.store.index.Sync(); err != nil {
-			return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: unknown, Err: err}
+		if err := w.store.data.Sync(); err != nil {
+			return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: true, Err: err}
 		}
 	}
-	fault.Check("commit.index-sync.after")
+	fault.Check("commit.sync.after")
+	// After the single sync, failures are "outcome unknown".
+	unknown = true
 
 	st := w.store.state.Load()
 	newView, err := st.view.Apply(txn, w.store.opts.Limits.MaxSnapshotDepth)
@@ -767,6 +781,7 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	}
 	fault.Check("commit.publish.before")
 	w.store.state.Store(&publishedState{view: newView, schemas: newSchemas})
+	w.store.lastFooterOffset = uint64(txnEnd)
 	fault.Check("commit.publish.after")
 	w.state = writerCommitted
 	w.store.writer.CompareAndSwap(w, nil)
@@ -779,7 +794,7 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 		BlockCount:  blockCount,
 		ChangeCount: w.rowRecordCount,
 		RawBytes:    rawBytes,
-		StoredBytes: uint64(w.store.data.Offset() - startOffset),
+		StoredBytes: uint64(snapEnd - snapStart),
 	}, nil
 }
 

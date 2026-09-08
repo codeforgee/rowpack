@@ -31,8 +31,9 @@ type ReplayResult struct {
 	View        *View
 }
 
-// Replay sequentially replays index transactions from the .rpi content after
-// its 128-byte header. Transactions are only accepted when header, body,
+// Replay sequentially replays index transactions from a byte stream starting
+// after its fixed header. (The single-file store replays per-snapshot ranges
+// instead; see Store.recover.) Transactions are only accepted when header, body,
 // footer, all entry CRCs and (when verifier is non-nil) the data footer CRC
 // are valid; an invalid or truncated tail stops the replay and is reported,
 // never partially applied. A txn whose snapshot duplicates an existing one

@@ -155,59 +155,28 @@ func Exists(path string) bool {
 	return err == nil
 }
 
-// CreatePair creates the data and index files with exclusive create, writes
-// their headers, and syncs them. On any failure it removes both files so a
-// partially created store never survives (rollback strategy).
-func CreatePair(dataPath, indexPath string, dataHeader, indexHeader []byte) error {
-	removeData := func() { os.Remove(dataPath) }
-	removeIndex := func() { os.Remove(indexPath) }
-
+// CreateSingle creates the single store file with exclusive create, writes
+// its header, and syncs it. On any failure it removes the file so a partially
+// created store never survives.
+func CreateSingle(dataPath string, dataHeader []byte) error {
 	df, err := os.OpenFile(dataPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
-		return fmt.Errorf("rowpack: create data file: %w", err)
+		return fmt.Errorf("rowpack: create store file: %w", err)
 	}
+	remove := func() { os.Remove(dataPath) }
 	if _, err := df.Write(dataHeader); err != nil {
 		df.Close()
-		removeData()
-		return fmt.Errorf("rowpack: write data header: %w", err)
+		remove()
+		return fmt.Errorf("rowpack: write store header: %w", err)
 	}
 	if err := df.Sync(); err != nil {
 		df.Close()
-		removeData()
-		return fmt.Errorf("rowpack: sync data header: %w", err)
-	}
-	inf, err := os.OpenFile(indexPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		df.Close()
-		removeData()
-		return fmt.Errorf("rowpack: create index file: %w", err)
-	}
-	// From here on both files were created by this call; any failure removes
-	// both so a partially created store never survives.
-	if _, err := inf.Write(indexHeader); err != nil {
-		inf.Close()
-		df.Close()
-		removeData()
-		removeIndex()
-		return fmt.Errorf("rowpack: write index header: %w", err)
-	}
-	if err := inf.Sync(); err != nil {
-		inf.Close()
-		df.Close()
-		removeData()
-		removeIndex()
-		return fmt.Errorf("rowpack: sync index header: %w", err)
+		remove()
+		return fmt.Errorf("rowpack: sync store header: %w", err)
 	}
 	if err := df.Close(); err != nil {
-		inf.Close()
-		removeData()
-		removeIndex()
-		return fmt.Errorf("rowpack: close data file: %w", err)
-	}
-	if err := inf.Close(); err != nil {
-		removeData()
-		removeIndex()
-		return fmt.Errorf("rowpack: close index file: %w", err)
+		remove()
+		return fmt.Errorf("rowpack: close store file: %w", err)
 	}
 	return nil
 }

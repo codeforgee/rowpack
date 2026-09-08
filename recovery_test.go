@@ -1,6 +1,7 @@
 package rowpack
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -95,14 +96,14 @@ func TestM8CrashFaultPoints(t *testing.T) {
 		point         string
 		wantSnapshots int
 	}{
-		{"commit.data-header.before", 0}, // nothing written
-		{"commit.block.before", 0},       // header only, no footer
-		{"commit.data-footer.after", 1},  // data committed, no index
-		{"commit.data-sync.after", 1},    // data synced, no index
-		{"commit.index.before", 1},       // data committed, no index
-		{"commit.index-sync.before", 1},  // index written but not synced
-		{"commit.publish.after", 1},      // fully committed
+		{"commit.header.before", 0}, // nothing written
+		{"commit.block.before", 0},  // header only, no footer
+		{"commit.txn.before", 0},    // header+blocks, no footer: uncommitted tail
+		{"commit.footer.after", 1},  // fully committed (footer + txn)
+		{"commit.sync.after", 1},    // committed and synced
+		{"commit.publish.after", 1}, // committed and published
 	}
+
 	for _, c := range cases {
 		t.Run(c.point, func(t *testing.T) {
 			base := filepath.Join(tmpdb(t), "store")
@@ -119,7 +120,7 @@ func TestM8CrashFaultPoints(t *testing.T) {
 			require.NoError(t, err, "read-only reopen: %v", err)
 			ro.Close()
 			after := fileSizes(t, base)
-			for _, ext := range []string{".rpk", ".rpi"} {
+			for _, ext := range []string{".rpk", ".lock"} {
 				require.Equal(t, before[ext], after[ext], "read-only open modified %s: %d -> %d", ext, before[ext], after[ext])
 			}
 		})
@@ -129,7 +130,7 @@ func TestM8CrashFaultPoints(t *testing.T) {
 func fileSizes(t *testing.T, base string) map[string]int64 {
 	t.Helper()
 	out := map[string]int64{}
-	for _, ext := range []string{".rpk", ".rpi", ".lock"} {
+	for _, ext := range []string{".rpk", ".lock"} {
 		if fi, err := os.Stat(base + ext); err == nil {
 			out[ext] = fi.Size()
 		}
@@ -137,56 +138,35 @@ func fileSizes(t *testing.T, base string) map[string]int64 {
 	return out
 }
 
-// TestM8IndexTruncated simulates a crash mid-index-write by truncating the
-// index file to a partial transaction.
-func TestM8IndexTruncated(t *testing.T) {
+// TestM8TailTruncated simulates a crash mid-transaction by truncating the
+// single file inside the last snapshot: without a complete SnapshotFooter the
+// last snapshot is an uncommitted tail and is dropped on read-write Open.
+func TestM8TailTruncated(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "it")
 	db, fullID := buildConcurrentStore(t, base, Options{})
-	// Commit a second snapshot so the index has two txns.
+	// Commit a second snapshot so the file holds two txns.
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: fullID})
 	require.NoError(t, w.Insert(context.Background(), 1, 9999, 1, Row{Uint64(9999), String("x")}))
 	_, err := w.Commit(context.Background())
 	require.NoError(t, err)
 	db.Close()
 
-	// Truncate the index file mid-second-txn.
-	idxPath := base + ".rpi"
-	fi, _ := os.Stat(idxPath)
-	f, _ := os.OpenFile(idxPath, os.O_RDWR, 0o644)
-	truncLen := fi.Size() - 40 // cut into the second txn footer
-	f.Truncate(truncLen)
-	f.Close()
+	// Truncate mid-last-txn-footer: the 2nd snapshot loses its footer.
+	fi, _ := os.Stat(base + ".rpk")
+	require.NoError(t, os.Truncate(base+".rpk", fi.Size()-40))
 
 	db2, err := Open(base, Options{})
 	require.NoError(t, err, "reopen: %v", err)
 	defer db2.Close()
 	snaps, _ := db2.ListSnapshots(context.Background())
-	require.Len(t, snaps, 2, "snapshots = %d, want 2 (index tail rebuilt from data)", len(snaps))
-	r, err := db2.Get(context.Background(), snaps[1].ID, 1, 9999, nil)
-	require.NoError(t, err, "row 9999: %v", err)
-	v, _ := r[1].String()
-	require.Equal(t, "x", v, "row 9999 = %q", v)
+	require.Len(t, snaps, 1, "snapshots = %d, want 1 (truncated tail dropped)", len(snaps))
+	_, err = db2.Get(context.Background(), snaps[0].ID, 1, 9999, nil)
+	require.Error(t, err, "row 9999 must be gone with the uncommitted tail: %v", err)
 }
 
-// TestM8IndexDeleted verifies that a completely missing index requires
-// explicit RebuildIndex (Open never opens without both files), and that the
-// rebuilt store is fully readable.
-func TestM8IndexDeleted(t *testing.T) {
-	base := filepath.Join(tmpdb(t), "noidx")
-	db, _ := buildConcurrentStore(t, base, Options{})
-	db.Close()
-	require.NoError(t, os.Remove(base+".rpi"))
-	_, err := Open(base, Options{})
-	require.Error(t, err, "Open succeeded with a missing index file")
-	require.NoError(t, RebuildIndex(context.Background(), base, RebuildOptions{Durability: SyncCommit}), "rebuild: %v", err)
-	db2, err := Open(base, Options{})
-	require.NoError(t, err, "reopen after rebuild: %v", err)
-	defer db2.Close()
-	snaps, _ := db2.ListSnapshots(context.Background())
-	require.Len(t, snaps, 1, "snapshots = %d, want 1", len(snaps))
-	_, err = db2.Get(context.Background(), 1, 1, 42, nil)
-	require.NoError(t, err, "row 42: %v", err)
-}
+// TestM8IndexDeleted was removed with the index file (v2): there is no
+// separate .rpi to delete, and a committed snapshot whose IndexTxn is
+// missing or corrupt recovers automatically in memory (TestM8RebuildSnapshotFromBlocks).
 
 // TestM8MidFileCorruption verifies structural corruption between two valid
 // snapshots is a hard error, never silently skipped.
@@ -249,20 +229,52 @@ func TestM8Verify(t *testing.T) {
 	require.Error(t, err, "full verify missed payload corruption")
 }
 
-// TestM8RebuildIndex rebuilds a deleted index through the explicit API.
-func TestM8RebuildIndex(t *testing.T) {
+// tamperFirstIndexTxn flips one byte inside the first IndexTxn body so the
+// stored bytes no longer match the footer-bound IndexTxnCRC32C: the first
+// snapshot is still committed, but its txn must be rebuilt in memory on open.
+func tamperFirstIndexTxn(tb testing.TB, path string) {
+	tb.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(tb, err)
+	first := bytes.Index(data, []byte(fileformat.MagicIndexTxnHdr))
+	require.Greater(tb, first, 0, "no IndexTxnHeader found")
+	body := first + fileformat.IndexTxnHeaderSize + 10 // inside SnapshotIndexEntry
+	require.Less(tb, body, len(data), "txn body offset out of range")
+	data[body] ^= 0xFF
+	require.NoError(tb, os.WriteFile(path, data, 0o644))
+}
+
+// TestM8RebuildSnapshotFromBlocks corrupts the first snapshot's stored
+// IndexTxn and verifies open rebuilds it in memory from its own blocks while
+// later snapshots replay normally (BINARY_FORMAT_V2 §10.2, R2).
+func TestM8RebuildSnapshotFromBlocks(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "rebuild")
 	db, _ := buildConcurrentStore(t, base, Options{})
+	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: 1})
+	_ = w.Insert(context.Background(), 1, 5001, 1, Row{Uint64(5001), String("v")})
+	_, err := w.Commit(context.Background())
+	require.NoError(t, err)
 	db.Close()
-	require.NoError(t, os.Remove(base+".rpi"))
-	require.NoError(t, RebuildIndex(context.Background(), base, RebuildOptions{Durability: SyncCommit}))
+
+	// Flip one byte inside the FIRST IndexTxn body: the txn must still parse
+	// structurally, but its CRC (also bound by the footer) diverges from the
+	// stored bytes.
+	tamperFirstIndexTxn(t, base+".rpk")
+
 	db2, err := Open(base, Options{})
-	require.NoError(t, err, "reopen after rebuild: %v", err)
+	require.NoError(t, err, "reopen with corrupt IndexTxn: %v", err)
 	defer db2.Close()
+	require.Equal(t, uint64(1), db2.Stats().Recovery.SnapshotsRebuilt, "SnapshotsRebuilt = %d, want 1", db2.Stats().Recovery.SnapshotsRebuilt)
+	// The first snapshot's rows still resolve (rebuilt in memory) ...
 	r, err := db2.Get(context.Background(), 1, 1, 42, nil)
 	require.NoError(t, err, "row 42: %v", err)
 	v, _ := r[1].String()
 	require.Equal(t, "n-42", v, "row 42 = %q", v)
+	// ... and the second snapshot's txn replayed normally.
+	r2, err := db2.Get(context.Background(), 2, 1, 5001, nil)
+	require.NoError(t, err, "row 5001: %v", err)
+	v2, _ := r2[1].String()
+	require.Equal(t, "v", v2, "row 5001 = %q", v2)
 }
 
 // TestM8DataTailTruncated simulates a partial snapshot appended after the

@@ -33,28 +33,10 @@ func validDataHeader() []byte {
 	return mustMarshal2(&h)
 }
 
-func validIndexHeader() []byte {
-	var h IndexFileHeader
-	h.StoreUUID = [16]byte{9, 8, 7}
-	h.CreatedUnixNano = 1700000000000000000
-	h.RequiredFeatures = RequiredFeaturesV1
-	h.DefaultBlockSize = 256 << 10
-	h.DefaultCompression = CompressionZstd
-	h.DefaultRowEncoding = RowEncodingTypedTuple
-	return mustMarshal2(&h)
-}
-
 func FuzzDataFileHeader(f *testing.F) {
 	fuzzSeed(f, validDataHeader())
 	f.Fuzz(func(t *testing.T, data []byte) {
 		_ = (&DataFileHeader{}).Unmarshal(data)
-	})
-}
-
-func FuzzIndexFileHeader(f *testing.F) {
-	fuzzSeed(f, validIndexHeader())
-	f.Fuzz(func(t *testing.T, data []byte) {
-		_ = (&IndexFileHeader{}).Unmarshal(data)
 	})
 }
 

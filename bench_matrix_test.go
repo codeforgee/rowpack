@@ -16,7 +16,7 @@ package rowpack
 //   - 写场景：BlockSize × 持久化（Sync/Async）；不读盘，无 I/O 路径维度。
 //   - 100k 读场景：BlockSize × 缓存（hot/cold）× I/O（mmap/readat）。
 //   - 1M 读场景：仅 BlockSize × mmap（构建 1M 行耗时高，readat 对比以 100k 为准）。
-//   - OpenReplay / RebuildIndex：仅 BlockSize（不读块缓存）。
+//   - OpenReplay / IndexRebuild：仅 BlockSize（不读块缓存）。
 //   - DELTA 链：仅 BlockSize × mmap。
 
 import (
@@ -429,18 +429,19 @@ func benchOpenReplay(b *testing.B, c benchCtx) {
 	}
 }
 
-func benchRebuildIndex(b *testing.B, c benchCtx) {
+func benchIndexRebuildOnOpen(b *testing.B, c benchCtx) {
 	c.applyIO(b)
 	base := filepath.Join(tmpdb(b), "rb")
 	db, _ := buildBenchStoreOpts(b, base, 100000, c.opts())
 	db.Close()
+	// Corrupt the first IndexTxn body: every reopen rebuilds it in memory
+	// (v2 §10.2). The file is never rewritten.
+	tamperFirstIndexTxn(b, base+".rpk")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		idx := db.Path() + ".rpi"
-		_ = removeFile(idx)
-		if err := RebuildIndex(context.Background(), db.Path(), RebuildOptions{Durability: AsyncCommit}); err != nil {
-			require.NoError(b, err)
-		}
+		db2, err := Open(base, Options{})
+		require.NoError(b, err)
+		db2.Close()
 	}
 }
 
@@ -514,9 +515,9 @@ func BenchmarkMainMatrix(b *testing.B) {
 		b.Run(name, func(b *testing.B) {
 			benchOpenReplay(b, benchCtx{bs: bs})
 		})
-		name = fmt.Sprintf("rebuild/bs=%s", bsLabel(bs))
+		name = fmt.Sprintf("index_rebuild/bs=%s", bsLabel(bs))
 		b.Run(name, func(b *testing.B) {
-			benchRebuildIndex(b, benchCtx{bs: bs})
+			benchIndexRebuildOnOpen(b, benchCtx{bs: bs})
 		})
 	}
 }

@@ -9,47 +9,62 @@ import (
 	"github.com/rowpack/rowpack/internal/metadata"
 )
 
-// committedSnapshot is one validated, committed snapshot in the data file.
+// committedSnapshot is one validated, committed snapshot in the single data
+// file. The structure offsets come from the SnapshotFooter (BINARY_FORMAT_V2
+// §7), so an IndexTxn rebuild never needs the (possibly corrupt) IndexTxn
+// itself.
 type committedSnapshot struct {
-	snapshotID uint64
-	start      int64
-	end        int64
-	blockIDs   []uint64
-	footerCRC  uint32
+	snapshotID  uint64
+	start       int64 // SnapshotHeader offset
+	end         int64 // offset just after SnapshotFooter
+	footerOff   int64 // SnapshotFooter offset
+	blocksStart int64
+	blocksEnd   int64
+	txnStart    int64
+	txnEnd      int64
+	prevFooter  uint64 // PreviousFooterOffset as recorded by the footer
+	ftrTxnCRC   uint32 // footer IndexTxnCRC32C (over stored txn bytes)
+	footerCRC   uint32 // footer FooterCRC32C
+	footerBytes []byte
+	blockIDs    []uint64
 }
 
 // recoveryReport records what the most recent open repaired.
 type recoveryReport struct {
 	performed        bool
 	dataTailIgnored  uint64
-	indexTailIgnored uint64
-	snapshotsRebuilt uint64
+	indexTailIgnored uint64 // stored bytes of IndexTxns rebuilt in memory
+	snapshotsRebuilt uint64 // snapshots whose IndexTxn was rebuilt in memory
 }
 
-// recover implements the open/recovery state machine:
+// recover implements the single-file open/recovery state machine:
 //
-//  1. The data file is scanned for all committed snapshots (authoritative).
-//  2. The index is replayed; a tail that references invalid data or fails
-//     validation is ignored (and truncated in read-write mode).
-//  3. Committed data snapshots missing from the index are rebuilt from the
-//     data file (persisted to .rpi in read-write mode).
-//  4. A data tail without a valid footer is truncated (read-write) or
-//     reported (read-only).
-//
-// Mid-file corruption (a broken region between two valid commit points) is a
-// hard error and never skipped.
+//  1. The file is scanned from the header, walking the four fixed structures
+//     (SnapshotHeader / BlockHeader / IndexTxn / SnapshotFooter). All
+//     committed snapshots are collected; the region after the last valid
+//     footer is an uncommitted tail.
+//  2. Each committed snapshot's IndexTxn is read from its footer-recorded
+//     range and replayed into the view independently. A snapshot whose txn
+//     fails validation (length, footer-bound CRC, parse, or apply) is rebuilt
+//     from its own blocks in memory (R2: mid-file IndexTxn corruption never
+//     stops later snapshots; a duplicate/inconsistent apply after rebuild is
+//     mid-file corruption).
+//  3. Any committed data snapshot that cannot be rebuilt (broken block
+//     headers, authentication, decompression or CRC) is a hard error
+//     (BINARY_FORMAT_V2 §10.3).
+//  4. The uncommitted tail is truncated (read-write) or reported (read-only).
 func (s *Store) recover() error {
 	report := recoveryReport{}
 	defer func() {
 		s.recoveryStats.Store(report)
 	}()
 
-	// 1. Scan data for committed snapshots and detect the recoverable tail.
+	// 1. Scan for committed snapshots and the recoverable tail.
 	committed, tailStart, err := s.scanDataFile()
 	if err != nil {
 		return err
 	}
-	var lastSnapshot, maxBlock uint64
+	var lastSnapshot, maxBlock, lastSeq uint64
 	for _, c := range committed {
 		if c.snapshotID > lastSnapshot {
 			lastSnapshot = c.snapshotID
@@ -60,64 +75,42 @@ func (s *Store) recover() error {
 			}
 		}
 	}
-	committedByID := make(map[uint64]committedSnapshot, len(committed))
-	for _, c := range committed {
-		committedByID[c.snapshotID] = c
-	}
 
-	// 2. Replay the index.
-	idxData, err := s.index.ReadAll()
-	if err != nil {
-		return err
-	}
-	res, err := index.Replay(idxData, fileformat.IndexFileHeaderSize, s.opts.Limits.MaxSnapshotDepth, &dataFooterVerifier{store: s})
-	if err != nil {
-		return fmt.Errorf("rowpack: index replay: %w", err)
-	}
-	// Seed the txn sequence before any rebuild append, so rebuilt txns get
-	// strictly increasing sequences that replay accepts.
-	s.txnSeq.Store(res.LastSeq)
-	view := res.View
-	if res.TailIgnored > 0 {
-		report.performed = true
-		report.indexTailIgnored = uint64(res.TailIgnored)
-		if !s.readOnly {
-			// Truncate the invalid index tail.
-			if err := s.index.Truncate(res.LastOffset); err != nil {
-				return fmt.Errorf("rowpack: truncate index tail: %w", err)
+	// 2. Per-snapshot IndexTxn replay with in-memory rebuild fallback.
+	view := index.EmptyView()
+	for _, c := range committed {
+		txn, seq, ok, err := s.readIndexTxn(&c)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if seq > lastSeq {
+				lastSeq = seq
 			}
+			nv, aerr := view.Apply(txn, s.opts.Limits.MaxSnapshotDepth)
+			if aerr == nil {
+				view = nv
+				continue
+			}
+			// A valid-looking txn that does not apply (e.g. parent missing):
+			// fall through to the rebuild path; a rebuilt txn that also fails
+			// to apply is mid-file corruption.
 		}
-	}
-
-	// 3. Rebuild committed data snapshots missing from the index.
-	// Process in SnapshotID order so parent chains build correctly.
-	for _, c := range committed {
-		if view.Snapshot(c.snapshotID) != nil {
-			continue
-		}
-		txn, err := s.buildIndexTxnFromData(&c)
+		// IndexTxn missing/corrupt: rebuild from this snapshot's blocks.
+		rtxn, err := s.buildIndexTxnFromData(&c)
 		if err != nil {
 			return fmt.Errorf("rowpack: rebuild snapshot %d: %w", c.snapshotID, err)
 		}
-		nv, err := view.Apply(txn, s.opts.Limits.MaxSnapshotDepth)
+		nv, err := view.Apply(rtxn, s.opts.Limits.MaxSnapshotDepth)
 		if err != nil {
-			return fmt.Errorf("rowpack: apply rebuilt snapshot %d: %w", c.snapshotID, err)
+			return fmt.Errorf("rowpack: snapshot %d chain invalid after rebuild: %w", c.snapshotID, err)
 		}
 		view = nv
 		report.performed = true
 		report.snapshotsRebuilt++
-		if !s.readOnly {
-			txnBytes := marshalTxn(txn, s.txnSeq.Add(1), s.index.Offset())
-			if _, err := s.index.Append(txnBytes); err != nil {
-				return fmt.Errorf("rowpack: append rebuilt index: %w", err)
-			}
-		}
+		report.indexTailIgnored += uint64(c.txnEnd - c.txnStart)
 	}
-	if !s.readOnly && report.snapshotsRebuilt > 0 {
-		if err := s.index.Sync(); err != nil {
-			return err
-		}
-	}
+	s.txnSeq.Store(lastSeq)
 
 	// 4. Handle the data tail.
 	dataSize, err := s.data.Size()
@@ -129,13 +122,16 @@ func (s *Store) recover() error {
 		report.dataTailIgnored = uint64(dataSize - tailStart)
 		if !s.readOnly {
 			if err := s.data.Truncate(tailStart); err != nil {
-				return fmt.Errorf("rowpack: truncate data tail: %w", err)
+				return fmt.Errorf("rowpack: truncate tail: %w", err)
 			}
 		}
 	}
 
 	s.lastSnapshotID.Store(lastSnapshot)
 	s.lastBlockID.Store(maxBlock)
+	if len(committed) > 0 {
+		s.lastFooterOffset = uint64(committed[len(committed)-1].footerOff)
+	}
 
 	schemas, err := s.buildSchemaIndex(view)
 	if err != nil {
@@ -145,171 +141,241 @@ func (s *Store) recover() error {
 	return nil
 }
 
-// scanDataFile walks the .rpk from after the header, collecting committed
-// snapshots and the start offset of any recoverable tail. A broken region
-// between two valid commit points is reported as mid-file corruption.
+// readIndexTxn reads and validates one committed snapshot's IndexTxn range.
+// It returns ok=false when the txn is missing, length-inconsistent with the
+// footer range, fails the footer-bound IndexTxnCRC32C check, or fails
+// parsing; the caller then rebuilds from blocks. A range that cannot even be
+// read (I/O error) is a hard error.
+func (s *Store) readIndexTxn(c *committedSnapshot) (txn *index.Txn, seq uint64, ok bool, err error) {
+	span := c.txnEnd - c.txnStart
+	if span <= 0 || span > int64(^uint32(0)) {
+		return nil, 0, false, nil // implausible range: rebuild
+	}
+	// The footer binds the txn by exact byte extent plus CRC over the stored
+	// bytes (ciphertext when encrypted), so neither decoding nor a key is
+	// needed to detect a torn or bit-rotted txn (R8/R12).
+	buf := make([]byte, span)
+	if _, rerr := s.data.ReadAt(buf, c.txnStart); rerr != nil {
+		return nil, 0, false, fmt.Errorf("rowpack: read IndexTxn of snapshot %d: %w", c.snapshotID, rerr)
+	}
+	if fileformat.CRC32C(buf) != c.ftrTxnCRC {
+		return nil, 0, false, nil
+	}
+	txn, perr := index.ParseTxn(buf)
+	if perr != nil {
+		return nil, 0, false, nil
+	}
+	return txn, txn.Header.TxnSequence, true, nil
+}
+
+// scanDataFile walks the single file from after the header, collecting
+// committed snapshots and the start offset of any recoverable tail. It
+// recognizes the four fixed structures (BINARY_FORMAT_V2 §10.1): Snapshot
+// Header, Block Header, IndexTxn and Snapshot Footer. A broken region between
+// two valid commit points is reported as mid-file corruption. The mid/tail
+// discriminator is the presence of a later VALID SNAPSHOT FOOTER (the commit
+// authority, R3), NOT a SnapshotHeader: an IndexTxn header whose magic is
+// bit-rotted must not demote a committed snapshot to an uncommitted tail.
 func (s *Store) scanDataFile() ([]committedSnapshot, int64, error) {
 	size, err := s.data.Size()
 	if err != nil {
 		return nil, 0, err
 	}
 	if size < fileformat.DataFileHeaderSize {
-		return nil, 0, fmt.Errorf("rowpack: data file %d bytes too small", size)
+		return nil, 0, fmt.Errorf("rowpack: store file %d bytes too small", size)
 	}
 	var out []committedSnapshot
 	pos := int64(fileformat.DataFileHeaderSize)
 	for pos < size {
-		if size-pos < fileformat.SnapshotHeaderSize {
-			break // trailing partial header
-		}
-		var shBuf [fileformat.SnapshotHeaderSize]byte
-		if _, err := s.data.ReadAt(shBuf[:], pos); err != nil {
+		c, complete, next, err := s.walkSnapshot(pos)
+		if err != nil {
 			return nil, 0, err
 		}
-		var sh fileformat.SnapshotHeader
-		if err := sh.Unmarshal(shBuf[:]); err != nil {
-			break // not a valid snapshot header: recoverable tail
+		if complete {
+			out = append(out, c)
+			pos = next
+			continue
 		}
-		snapStart := pos
-		var blockIDs []uint64
-		cur := snapStart + fileformat.SnapshotHeaderSize
-		foundFooter := false
-		for {
-			if size-cur < fileformat.BlockHeaderSize {
-				break // snapshot truncated: recoverable at snapStart
-			}
-			probeLen := int(size - cur)
-			if probeLen > fileformat.SnapshotFooterSize {
-				probeLen = fileformat.SnapshotFooterSize
-			}
-			probe := make([]byte, probeLen)
-			if _, err := s.data.ReadAt(probe, cur); err != nil {
-				return nil, 0, err
-			}
-			if string(probe[0:8]) == fileformat.MagicSnapshotFtr {
-				if probeLen < fileformat.SnapshotFooterSize {
-					break // truncated footer
-				}
-				var ftr fileformat.SnapshotFooter
-				if err := ftr.Unmarshal(probe[:fileformat.SnapshotFooterSize]); err != nil {
-					break // interrupted footer write: recoverable at snapStart
-				}
-				if ftr.SnapshotID != sh.SnapshotID {
-					return nil, 0, fmt.Errorf("rowpack: mid-file corruption: footer snapshot %d != header snapshot %d at %d", ftr.SnapshotID, sh.SnapshotID, cur)
-				}
-				snapEnd := cur + fileformat.SnapshotFooterSize
-				out = append(out, committedSnapshot{snapshotID: sh.SnapshotID, start: snapStart, end: snapEnd, blockIDs: blockIDs, footerCRC: footerCRCValue(probe[:fileformat.SnapshotFooterSize])})
-				pos = snapEnd
-				foundFooter = true
-				break
-			}
-			var bh fileformat.BlockHeader
-			if err := bh.Unmarshal(probe[:fileformat.BlockHeaderSize]); err != nil {
-				// Neither a footer nor a valid block header. If this is a
-				// valid snapshot header, the current snapshot was truncated;
-				// otherwise check whether a committed snapshot exists later.
-				if probeLen >= fileformat.SnapshotHeaderSize {
-					var nsh fileformat.SnapshotHeader
-					if err := nsh.Unmarshal(probe[:fileformat.SnapshotHeaderSize]); err == nil {
-						break // truncated snapshot at snapStart
-					}
-				}
-				if hasLaterValidSnapshot(s.data, cur, size) {
-					return nil, 0, fmt.Errorf("rowpack: mid-file corruption at offset %d", cur)
-				}
-				break // garbage tail
-			}
-			payload := int64(bh.StoredSize)
-			if cur+fileformat.BlockHeaderSize+payload > size {
-				break // truncated block: recoverable at snapStart
-			}
-			blockIDs = append(blockIDs, bh.BlockID)
-			cur += fileformat.BlockHeaderSize + payload
+		// The snapshot at pos broke: a valid Footer later means mid-file
+		// corruption; otherwise this is the recoverable tail.
+		if s.hasLaterValidFooter(pos, size) {
+			return nil, 0, fmt.Errorf("rowpack: mid-file corruption at offset %d", pos)
 		}
-		if !foundFooter {
-			// The current snapshot is incomplete. If a valid commit exists
-			// after the break point, this is mid-file corruption.
-			if hasLaterValidSnapshot(s.data, cur, size) {
-				return nil, 0, fmt.Errorf("rowpack: mid-file corruption at offset %d", cur)
-			}
-			break // recoverable tail starting at snapStart
-		}
+		break
 	}
 	return out, pos, nil
 }
 
-// hasLaterValidSnapshot reports whether a fully valid snapshot (header +
-// blocks + footer) exists at or after offset. Used to distinguish recoverable
-// tail truncation from mid-file corruption.
-func hasLaterValidSnapshot(ra interface {
-	ReadAt([]byte, int64) (int, error)
-}, from, size int64) bool {
-	pos := from
-	for pos+fileformat.SnapshotHeaderSize <= size {
-		var shBuf [fileformat.SnapshotHeaderSize]byte
-		if _, err := ra.ReadAt(shBuf[:], pos); err != nil {
-			return false
+// walkSnapshot attempts to walk one complete snapshot starting at a valid
+// SnapshotHeader position. It returns complete=false when the snapshot is
+// truncated or structurally broken (the caller distinguishes tail vs mid-file
+// corruption). Structural inconsistencies between the header and a later
+// committed footer (IDs disagreeing) are reported as an error here.
+func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, next int64, err error) {
+	size, err := s.data.Size()
+	if err != nil {
+		return c, false, 0, err
+	}
+	var sh [fileformat.SnapshotHeaderSize]byte
+	if size-start < fileformat.SnapshotHeaderSize {
+		return c, false, 0, nil
+	}
+	if _, err := s.data.ReadAt(sh[:], start); err != nil {
+		return c, false, 0, err
+	}
+	var hdr fileformat.SnapshotHeader
+	if err := hdr.Unmarshal(sh[:]); err != nil {
+		return c, false, 0, nil // not a valid header: tail
+	}
+	c.snapshotID = hdr.SnapshotID
+	c.start = start
+	c.blocksStart = start + fileformat.SnapshotHeaderSize
+	cur := c.blocksStart
+	for cur < size {
+		if size-cur < 8 {
+			return c, false, 0, nil // truncated
 		}
-		var sh fileformat.SnapshotHeader
-		if err := sh.Unmarshal(shBuf[:]); err != nil {
-			pos += 8 // magic is 8 bytes; step to find the next header
-			continue
+		var magic [8]byte
+		if _, err := s.data.ReadAt(magic[:], cur); err != nil {
+			return c, false, 0, err
 		}
-		// Found a header; walk to see if it completes.
-		cur := pos + fileformat.SnapshotHeaderSize
-		for cur+fileformat.BlockHeaderSize <= size {
-			var probe [fileformat.SnapshotFooterSize]byte
-			n, err := ra.ReadAt(probe[:], cur)
-			if err != nil && n < fileformat.BlockHeaderSize {
-				break
+		switch string(magic[:]) {
+		case fileformat.MagicBlockHdr:
+			if size-cur < fileformat.BlockHeaderSize {
+				return c, false, 0, nil
 			}
-			if string(probe[0:8]) == fileformat.MagicSnapshotFtr {
-				var ftr fileformat.SnapshotFooter
-				if ftr.Unmarshal(probe[:]) == nil && ftr.SnapshotID == sh.SnapshotID {
-					return true
-				}
-				return false
+			var bhBuf [fileformat.BlockHeaderSize]byte
+			if _, err := s.data.ReadAt(bhBuf[:], cur); err != nil {
+				return c, false, 0, err
 			}
 			var bh fileformat.BlockHeader
-			if err := bh.Unmarshal(probe[:fileformat.BlockHeaderSize]); err != nil {
-				return false
+			if err := bh.Unmarshal(bhBuf[:]); err != nil {
+				return c, false, 0, nil // broken block header: break
 			}
+			if cur+fileformat.BlockHeaderSize+int64(bh.StoredSize) > size {
+				return c, false, 0, nil // truncated payload
+			}
+			c.blockIDs = append(c.blockIDs, bh.BlockID)
 			cur += fileformat.BlockHeaderSize + int64(bh.StoredSize)
+		case fileformat.MagicIndexTxnHdr:
+			if size-cur < fileformat.IndexTxnHeaderSize {
+				return c, false, 0, nil
+			}
+			var thBuf [fileformat.IndexTxnHeaderSize]byte
+			if _, err := s.data.ReadAt(thBuf[:], cur); err != nil {
+				return c, false, 0, err
+			}
+			var th fileformat.IndexTxnHeader
+			if err := th.Unmarshal(thBuf[:]); err != nil {
+				return c, false, 0, nil
+			}
+			body := int64(th.BodyBytes)
+			if body < 0 || cur+fileformat.IndexTxnHeaderSize+body+fileformat.IndexTxnFooterSize > size {
+				return c, false, 0, nil // truncated txn
+			}
+			ftrOff := cur + fileformat.IndexTxnHeaderSize + body
+			if size-ftrOff < fileformat.IndexTxnFooterSize {
+				return c, false, 0, nil
+			}
+			var tfBuf [fileformat.IndexTxnFooterSize]byte
+			if _, err := s.data.ReadAt(tfBuf[:], ftrOff); err != nil {
+				return c, false, 0, err
+			}
+			var tf fileformat.IndexTxnFooter
+			if err := tf.Unmarshal(tfBuf[:]); err != nil {
+				return c, false, 0, nil
+			}
+			c.txnStart = cur
+			c.txnEnd = ftrOff + fileformat.IndexTxnFooterSize
+			cur = c.txnEnd
+		case fileformat.MagicSnapshotFtr:
+			if size-cur < fileformat.SnapshotFooterSize {
+				return c, false, 0, nil // interrupted footer write
+			}
+			var fb [fileformat.SnapshotFooterSize]byte
+			if _, err := s.data.ReadAt(fb[:], cur); err != nil {
+				return c, false, 0, err
+			}
+			var ftr fileformat.SnapshotFooter
+			if err := ftr.Unmarshal(fb[:]); err != nil {
+				return c, false, 0, nil
+			}
+			if ftr.SnapshotID != c.snapshotID {
+				return c, false, 0, fmt.Errorf("rowpack: mid-file corruption: footer snapshot %d != header snapshot %d at %d", ftr.SnapshotID, c.snapshotID, cur)
+			}
+			// Footer range disambiguation: an empty txn (no blocks) sees the
+			// IndexTxnHeader immediately after the SnapshotHeader, so
+			// c.txnStart is set while c.blocksEnd is still the header end.
+			blocksEnd := c.txnStart
+			if c.txnStart == 0 {
+				blocksEnd = cur
+			}
+			c.blocksEnd = blocksEnd
+			c.footerOff = cur
+			c.end = cur + fileformat.SnapshotFooterSize
+			c.prevFooter = ftr.PreviousFooterOffset
+			c.ftrTxnCRC = ftr.IndexTxnCRC32C
+			c.footerCRC = footerCRCValue(fb[:])
+			c.footerBytes = append([]byte(nil), fb[:]...)
+			return c, true, c.end, nil
+		default:
+			return c, false, 0, nil // unknown structure: break
 		}
-		return false
+	}
+	return c, false, 0, nil // ran out of file without a footer
+}
+
+// hasLaterValidFooter reports whether a valid SnapshotFooter exists at or
+// after offset. Footer positions are NOT 8-aligned (block payload lengths are
+// arbitrary), so this walks byte-by-byte; it runs only on the corrupt/tail
+// path, and a false positive requires an 8-byte magic collision plus a
+// passing CRC-32C over 144 bytes (~2^-32 per candidate), which is
+// negligible. The footer is the commit authority: its presence means earlier
+// bytes in this region are mid-file corruption, never an uncommitted tail
+// (R3).
+func (s *Store) hasLaterValidFooter(from, size int64) bool {
+	for p := from; p+fileformat.SnapshotFooterSize <= size; p++ {
+		var magic [8]byte
+		if _, err := s.data.ReadAt(magic[:], p); err != nil {
+			return false
+		}
+		if string(magic[:]) != fileformat.MagicSnapshotFtr {
+			continue
+		}
+		var fb [fileformat.SnapshotFooterSize]byte
+		if _, err := s.data.ReadAt(fb[:], p); err != nil {
+			return false
+		}
+		var ftr fileformat.SnapshotFooter
+		if err := ftr.Unmarshal(fb[:]); err != nil {
+			continue
+		}
+		if ftr.SnapshotID == 0 {
+			continue
+		}
+		return true
 	}
 	return false
 }
 
 // buildIndexTxnFromData reconstructs the index transaction for a committed
-// data snapshot that is missing from the index, by reading and parsing its
-// blocks.
+// snapshot whose IndexTxn is missing or corrupt, by reading and parsing its
+// blocks in [BlocksStartOffset, BlocksEndOffset).
 func (s *Store) buildIndexTxnFromData(c *committedSnapshot) (*index.Txn, error) {
-	var shBuf [fileformat.SnapshotHeaderSize]byte
-	if _, err := s.data.ReadAt(shBuf[:], c.start); err != nil {
-		return nil, err
-	}
-	var sh fileformat.SnapshotHeader
-	if err := sh.Unmarshal(shBuf[:]); err != nil {
-		return nil, err
-	}
 	var blockEntries []fileformat.BlockIndexEntry
 	var metaEntries []fileformat.MetadataIndexEntry
 	var rowEntries []fileformat.RowIndexEntry
 	var rowCount uint64
 
-	cur := c.start + fileformat.SnapshotHeaderSize
-	for cur < c.end-fileformat.SnapshotFooterSize {
+	cur := c.blocksStart
+	for cur < c.blocksEnd {
 		var bhBuf [fileformat.BlockHeaderSize]byte
 		if _, err := s.data.ReadAt(bhBuf[:], cur); err != nil {
 			return nil, err
 		}
 		var bh fileformat.BlockHeader
 		if err := bh.Unmarshal(bhBuf[:]); err != nil {
-			return nil, err
-		}
-		if string(bhBuf[0:8]) == fileformat.MagicSnapshotFtr {
-			break
+			return nil, fmt.Errorf("rowpack: block header at %d: %w", cur, err)
 		}
 		blk, err := s.loader.Load(cur, bh.BlockID)
 		if err != nil {
@@ -361,7 +427,16 @@ func (s *Store) buildIndexTxnFromData(c *committedSnapshot) (*index.Txn, error) 
 		cur += fileformat.BlockHeaderSize + int64(bh.StoredSize)
 	}
 
-	builder := index.NewBuilder(0) // sequence filled by caller
+	var shBuf [fileformat.SnapshotHeaderSize]byte
+	if _, err := s.data.ReadAt(shBuf[:], c.start); err != nil {
+		return nil, err
+	}
+	var sh fileformat.SnapshotHeader
+	if err := sh.Unmarshal(shBuf[:]); err != nil {
+		return nil, err
+	}
+
+	builder := index.NewBuilder(0) // sequence filled by the writer on commit
 	builder.Reserve(len(metaEntries), len(blockEntries), len(rowEntries))
 	snapEntry := fileformat.SnapshotIndexEntry{
 		SnapshotID:       sh.SnapshotID,
@@ -392,36 +467,9 @@ func (s *Store) buildIndexTxnFromData(c *committedSnapshot) (*index.Txn, error) 
 			return nil, err
 		}
 	}
-	_, txn, err := builder.Build(uint64(c.start), uint64(c.end), c.footerCRC, 0, 0)
+	_, txn, err := builder.Build(uint64(c.start), uint64(c.end), c.footerCRC, c.txnStart, c.txnEnd)
 	if err != nil {
 		return nil, err
 	}
 	return txn, nil
-}
-
-// marshalTxn serializes a rebuilt txn with the given sequence and offsets.
-// TxnStartOffset/TxnEndOffset are informational (replay derives positions by
-// walking). The end offset is computed from the header's BodyBytes (the
-// serialized length is independent of the offset fields), so a single Build
-// suffices.
-func marshalTxn(txn *index.Txn, seq uint64, start int64) []byte {
-	b := index.NewBuilder(seq)
-	b.Reserve(len(txn.Metadata), len(txn.Blocks), len(txn.Rows))
-	se := txn.Snapshot
-	_ = b.SetSnapshot(se)
-	for i := range txn.Blocks {
-		_ = b.AddBlock(txn.Blocks[i])
-	}
-	for i := range txn.Metadata {
-		_ = b.AddMetadata(txn.Metadata[i])
-	}
-	for i := range txn.Rows {
-		_ = b.AddRow(txn.Rows[i])
-	}
-	end := start + int64(fileformat.IndexTxnHeaderSize+txn.Header.BodyBytes) + fileformat.IndexTxnFooterSize
-	out, _, err := b.Build(se.DataStart, se.DataEnd, se.DataFooterCRC32C, start, end)
-	if err != nil {
-		panic(err)
-	}
-	return out
 }

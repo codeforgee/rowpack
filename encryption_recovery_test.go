@@ -13,37 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestEncryptedRebuildIndex: explicit RebuildIndex requires the key and, with
-// it, re-derives the full index from sealed blocks.
-func TestEncryptedRebuildIndex(t *testing.T) {
-	base := filepath.Join(tmpdb(t), "enc-rebuild")
-	keyID := "rk"
-	enc := func() Options { return encOptions(keyID) }
-	db, _ := buildConcurrentStore(t, base, enc())
-	db.Close()
-	require.NoError(t, os.Remove(base+".rpi"))
-
-	// Without a key: reject.
-	err := RebuildIndex(context.Background(), base, RebuildOptions{Durability: SyncCommit})
-	require.ErrorIs(t, err, ErrKeyRequired, "rebuild without key = %v, want ErrKeyRequired", err)
-	// With the key: succeeds.
-	require.NoError(t, RebuildIndex(context.Background(), base, RebuildOptions{
-		Durability: SyncCommit,
-		Encryption: &EncryptionConfig{
-			KeyProvider: &staticKeyProvider{keyID: keyID, key: testKey(keyID)},
-			KeyID:       keyID,
-		},
-	}), "rebuild with key: %v", err)
-
-	db2, err := Open(base, enc())
-	require.NoError(t, err)
-	defer db2.Close()
-	row, err := db2.Get(context.Background(), 1, 1, 42, nil)
-	require.NoError(t, err)
-	v, _ := row[1].String()
-	require.Equal(t, "n-42", v, "row 42 = %q, want n-42", v)
-}
-
 // TestEncryptedVerify: full verify on an encrypted store passes when intact;
 // after a single ciphertext byte is flipped, both quick and full verify fail
 // with ErrAuthFailed (the loader reads/authenticates every block in both
@@ -71,11 +40,11 @@ func TestEncryptedVerify(t *testing.T) {
 	}
 }
 
-// TestEncryptedRecoveryFromTruncatedIndex simulates a truncated .rpi tail
-// (data ahead of index): read-write Open rebuilds the tail from sealed blocks
-// — recovery.buildIndexTxnFromData authenticates and decrypts every block —
-// so the store recovers only when opened with its key.
-func TestEncryptedRecoveryFromTruncatedIndex(t *testing.T) {
+// TestEncryptedRecoveryFromTruncatedTail truncates the single file inside
+// the last snapshot transaction: without a complete SnapshotFooter the last
+// snapshot is an uncommitted tail, so read-write Open truncates it away. The
+// crypto contract is unchanged: an encrypted store opens only with its key.
+func TestEncryptedRecoveryFromTruncatedTail(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "enc-recover")
 	keyID := "ck"
 	enc := func() Options { return encOptions(keyID) }
@@ -86,14 +55,10 @@ func TestEncryptedRecoveryFromTruncatedIndex(t *testing.T) {
 	require.NoError(t, err)
 	db.Close()
 
-	// Truncate the index mid-second-txn.
-	idxPath := base + ".rpi"
-	fi, err := os.Stat(idxPath)
+	// Truncate mid-last-txn: the 2nd snapshot loses its footer.
+	fi, err := os.Stat(base + ".rpk")
 	require.NoError(t, err)
-	f, err := os.OpenFile(idxPath, os.O_RDWR, 0o644)
-	require.NoError(t, err)
-	require.NoError(t, f.Truncate(fi.Size()-40))
-	f.Close()
+	require.NoError(t, os.Truncate(base+".rpk", fi.Size()-40))
 
 	// Opening without the key fails at the key contract, before recovery.
 	_, err = Open(base, Options{})
@@ -104,11 +69,9 @@ func TestEncryptedRecoveryFromTruncatedIndex(t *testing.T) {
 	defer db2.Close()
 	snaps, err := db2.ListSnapshots(context.Background())
 	require.NoError(t, err)
-	require.Len(t, snaps, 2, "snapshots = %d, want 2 (index tail rebuilt from sealed data)", len(snaps))
-	r, err := db2.Get(context.Background(), snaps[1].ID, 1, 9999, nil)
-	require.NoError(t, err, "row 9999 after recovery: %v", err)
-	v, _ := r[1].String()
-	require.Equal(t, "x", v, "row 9999 = %q", v)
+	require.Len(t, snaps, 1, "snapshots = %d, want 1 (truncated tail dropped)", len(snaps))
+	_, err = db2.Get(context.Background(), snaps[0].ID, 1, 9999, nil)
+	require.Error(t, err, "row 9999 must be gone with the uncommitted tail: %v", err)
 }
 
 // TestEncryptedCrashChildHelper is the crash child for encrypted stores: it
@@ -151,13 +114,12 @@ func TestEncryptedCrashFaultPoints(t *testing.T) {
 		point         string
 		wantSnapshots int
 	}{
-		{"commit.data-header.before", 0},
-		{"commit.block.before", 0},
-		{"commit.data-footer.after", 1},
-		{"commit.data-sync.after", 1},
-		{"commit.index.before", 1},
-		{"commit.index-sync.before", 1},
-		{"commit.publish.after", 1},
+		{"commit.header.before", 0}, // nothing written
+		{"commit.block.before", 0},  // header only, no footer
+		{"commit.txn.before", 0},    // header+blocks, no footer
+		{"commit.footer.after", 1},  // fully committed (footer + txn)
+		{"commit.sync.after", 1},    // committed and synced
+		{"commit.publish.after", 1}, // committed and published
 	}
 	for _, c := range cases {
 		t.Run(c.point, func(t *testing.T) {
@@ -187,7 +149,7 @@ func TestEncryptedCrashFaultPoints(t *testing.T) {
 			require.NoError(t, err, "read-only reopen: %v", err)
 			ro.Close()
 			after := fileSizes(t, base)
-			for _, ext := range []string{".rpk", ".rpi"} {
+			for _, ext := range []string{".rpk", ".lock"} {
 				require.Equal(t, before[ext], after[ext], "read-only open modified %s: %d -> %d", ext, before[ext], after[ext])
 			}
 		})

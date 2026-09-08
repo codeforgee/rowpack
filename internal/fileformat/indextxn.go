@@ -5,8 +5,9 @@ import (
 	"encoding/binary"
 )
 
-// IndexTxnHeader is the fixed 80-byte header of one index transaction in the
-// .rpi file. Each committed snapshot has exactly one index transaction.
+// IndexTxnHeader is the fixed 80-byte header of one index transaction. Each
+// committed snapshot has exactly one index transaction, embedded in the
+// single store file between the blocks and the SnapshotFooter.
 type IndexTxnHeader struct {
 	TxnSequence        uint64
 	SnapshotID         uint64

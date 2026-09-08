@@ -75,9 +75,8 @@ func (s *Store) Stats() Stats {
 	if sz, err := s.data.Size(); err == nil {
 		stt.DataFileBytes = sz
 	}
-	if sz, err := s.index.Size(); err == nil {
-		stt.IndexFileBytes = sz
-	}
+	// Single-file store: the embedded IndexTxn stream is part of the data
+	// file; there is no separate index byte count (M2).
 	if l := s.loader; l != nil {
 		stt.Cache.CapacityBytes, stt.Cache.UsedBytes, stt.Cache.Hits, stt.Cache.Misses, stt.Cache.Evictions, stt.Cache.Loads = l.cacheStats()
 		stt.ScanCache.CapacityBytes, stt.ScanCache.UsedBytes, stt.ScanCache.Hits, stt.ScanCache.Misses, stt.ScanCache.Evictions, stt.ScanCache.Loads = l.scanStats()

@@ -1,4 +1,4 @@
-// Package index implements the .rpi index transaction format, its sequential
+// Package index implements the index transaction format, its sequential
 // replay, and the immutable in-memory index view that all reads resolve
 // against. A view is published atomically on commit and never mutated in
 // place, so concurrent readers can share it without locks.

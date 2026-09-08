@@ -50,11 +50,11 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 			}
 		} else if sm.Type == fileformat.SnapshotDelta {
 			if view.Snapshot(sm.Parent) == nil {
-				return rep, &CorruptionError{File: s.indexPath, SnapshotID: sm.ID, Kind: ErrCorruptIndex, Reason: fmt.Sprintf("DELTA parent %d missing", sm.Parent)}
+				return rep, &CorruptionError{File: s.dataPath, SnapshotID: sm.ID, Kind: ErrCorruptIndex, Reason: fmt.Sprintf("DELTA parent %d missing", sm.Parent)}
 			}
 		}
 		if sm.Depth > s.opts.Limits.MaxSnapshotDepth {
-			return rep, &CorruptionError{File: s.indexPath, SnapshotID: sm.ID, Kind: ErrCorruptIndex, Reason: "snapshot chain too deep"}
+			return rep, &CorruptionError{File: s.dataPath, SnapshotID: sm.ID, Kind: ErrCorruptIndex, Reason: "snapshot chain too deep"}
 		}
 	}
 

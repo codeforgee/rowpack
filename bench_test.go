@@ -3,7 +3,6 @@ package rowpack
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -244,22 +243,20 @@ func BenchmarkOpenReplay(b *testing.B) {
 	}
 }
 
-func BenchmarkRebuildIndex(b *testing.B) {
+func BenchmarkReopenRebuildIndex(b *testing.B) {
 	base := filepath.Join(tmpdb(b), "reb")
 	db, _ := buildBenchStore(b, base, 100000, 0)
 	db.Close()
+	// Corrupt the first IndexTxn body: every reopen rebuilds it in memory
+	// (BINARY_FORMAT_V2 §10.2). The store data file is never rewritten.
+	tamperFirstIndexTxn(b, base+".rpk")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// Simulate a missing index each iteration.
-		idx := db.Path() + ".rpi"
-		_ = removeFile(idx)
-		if err := RebuildIndex(context.Background(), db.Path(), RebuildOptions{Durability: AsyncCommit}); err != nil {
-			require.NoError(b, err)
-		}
+		db2, err := Open(base, Options{})
+		require.NoError(b, err)
+		db2.Close()
 	}
 }
-
-func removeFile(path string) error { return os.Remove(path) }
 
 // ---- 大规模 / DELTA 链场景基准 ----
 

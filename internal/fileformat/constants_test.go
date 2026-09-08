@@ -74,7 +74,7 @@ func TestFrozenEnums(t *testing.T) {
 // v1 spec tables.
 func TestFrozenMagicsAndSizes(t *testing.T) {
 	for _, m := range []string{
-		MagicDataFile, MagicIndexFile, MagicSnapshotHdr, MagicSnapshotFtr,
+		MagicDataFile, MagicSnapshotHdr, MagicSnapshotFtr,
 		MagicBlockHdr, MagicRowsPayload, MagicMetaPayload,
 		MagicIndexTxnHdr, MagicIndexTxnFtr,
 	} {
@@ -87,7 +87,6 @@ func TestFrozenMagicsAndSizes(t *testing.T) {
 		want int
 	}{
 		{"DataFileHeaderSize", DataFileHeaderSize, 128},
-		{"IndexFileHeaderSize", IndexFileHeaderSize, 128},
 		{"SnapshotHeaderSize", SnapshotHeaderSize, 96},
 		{"SnapshotFooterSize", SnapshotFooterSize, 144},
 		{"BlockHeaderSize", BlockHeaderSize, 64},
@@ -109,7 +108,6 @@ func TestFrozenMagicsAndSizes(t *testing.T) {
 	}
 
 	assert.Less(t, DataFileHeaderCRC32COffset+8, DataFileHeaderSize+1, "DataFileHeader CRC field at %d plus trailing reserved does not fit in %d", DataFileHeaderCRC32COffset, DataFileHeaderSize)
-	assert.Less(t, IndexFileHeaderCRC32COffset+8, IndexFileHeaderSize+1, "IndexFileHeader CRC field at %d plus trailing reserved does not fit in %d", IndexFileHeaderCRC32COffset, IndexFileHeaderSize)
 }
 
 // TestFeatureBits protects the feature bit numbering.

@@ -46,22 +46,14 @@ func TestAppender(t *testing.T) {
 	require.Equal(t, int64(10), a.Offset(), "offset after truncate = %d", a.Offset())
 }
 
-func TestCreatePairRollback(t *testing.T) {
+func TestCreateSingleRollback(t *testing.T) {
 	dir := tmpdb(t)
 	data := filepath.Join(dir, "s.rpk")
-	idx := filepath.Join(dir, "s.rpi")
 
-	// Index path already exists -> exclusive create fails and data is removed.
-	require.NoError(t, os.WriteFile(idx, []byte("x"), 0o644))
-	require.Error(t, CreatePair(data, idx, []byte("h1"), []byte("h2")), "CreatePair succeeded with existing index file")
-	require.False(t, Exists(data), "data file not rolled back after failed create")
-	// Cleanup and create both fresh.
-	require.NoError(t, os.Remove(idx))
-	require.NoError(t, CreatePair(data, idx, []byte("h1"), []byte("h2")), "CreatePair should succeed")
+	// Write the header; a second create must fail with exclusive create
+	// (no overwrite) and a failed create must not leave a partial file.
+	require.NoError(t, CreateSingle(data, []byte("h1")))
 	d, _ := os.ReadFile(data)
-	i, _ := os.ReadFile(idx)
-	require.True(t, bytes.Equal(d, []byte("h1")), "headers not written")
-	require.True(t, bytes.Equal(i, []byte("h2")), "headers not written")
-	// Second create must fail with exclusive create (no overwrite).
-	require.Error(t, CreatePair(data, idx, []byte("x"), []byte("y")), "CreatePair overwrote existing files")
+	require.True(t, bytes.Equal(d, []byte("h1")), "header not written")
+	require.Error(t, CreateSingle(data, []byte("x")), "CreateSingle overwrote existing file")
 }

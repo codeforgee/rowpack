@@ -111,12 +111,7 @@ func (t TimeOfDay) Time() time.Time {
 	return time.Unix(0, int64(t)).UTC()
 }
 
-var _ = errors.New
-
 // ---- Decimal canonical big-endian two's-complement encoding ----
-
-// decimalMaxBytes caps the serialized unscaled integer length.
-const decimalMaxBytes = 1 << 20 // 1 MiB, well above practical decimals
 
 // encodeDecimalBytes returns the canonical minimal big-endian two's-complement
 // bytes of u: no redundant 0x00 (positive) or 0xFF (negative) sign-extension

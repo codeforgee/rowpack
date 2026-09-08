@@ -360,7 +360,7 @@ func TestBoundaryValues(t *testing.T) {
 	row[7] = Uint32(0)
 	row[8] = Uint64(0)
 	row[9] = Float32(0)
-	row[10] = Float64(-0.0)
+	row[10] = Float64(math.Copysign(0, -1)) // genuine negative zero
 	row[11] = String("")
 	row[12] = Bytes(nil)
 	row[13] = DateValue(0)

@@ -1,0 +1,1052 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RowPack v2 单文件二进制格式 · File Format Reference</title>
+<style>
+/* ============================= Design Tokens ============================= */
+:root[data-theme="dark"] {
+  --bg: #0a0e17;
+  --bg-soft: #0e1422;
+  --panel: #111a2c;
+  --panel-2: #0d1524;
+  --border: rgba(148, 163, 184, 0.14);
+  --border-strong: rgba(148, 163, 184, 0.26);
+  --text: #e6ebf4;
+  --text-dim: #9aa7bd;
+  --text-faint: #66738c;
+  --accent: #818cf8;
+  --accent-2: #22d3ee;
+  --grad: linear-gradient(135deg, #818cf8 0%, #22d3ee 100%);
+  --code-bg: rgba(148, 163, 184, 0.09);
+  --shadow: 0 10px 40px -12px rgba(0, 0, 0, 0.55);
+  --strip-bg: rgba(148, 163, 184, 0.08);
+  --c-magic: #f59e0b; --c-ver: #94a3b8;   --c-id: #a78bfa;  --c-cnt: #34d399;
+  --c-off:  #60a5fa; --c-crc: #fb7185;    --c-flg: #f472b6; --c-enum: #fbbf24;
+  --c-ts:   #fb923c; --c-nnc: #e879f9;    --c-rsv: #475569; --c-pay: #22d3ee;
+  --c-magic-t: #2a1c04; --c-ver-t: #10151d; --c-id-t: #170f2e; --c-cnt-t: #04241a;
+  --c-off-t: #0a1e38; --c-crc-t: #320b12; --c-flg-t: #310a20; --c-enum-t: #291b02;
+  --c-ts-t: #2b1204; --c-nnc-t: #2c0a2e; --c-rsv-t: #0a0f18; --c-pay-t: #04252b;
+}
+:root[data-theme="light"] {
+  --bg: #f6f8fc;
+  --bg-soft: #eef2f9;
+  --panel: #ffffff;
+  --panel-2: #f8fafd;
+  --border: rgba(15, 23, 42, 0.10);
+  --border-strong: rgba(15, 23, 42, 0.20);
+  --text: #17233b;
+  --text-dim: #4c5a72;
+  --text-faint: #8593aa;
+  --accent: #4f46e5;
+  --accent-2: #0891b2;
+  --grad: linear-gradient(135deg, #4f46e5 0%, #0891b2 100%);
+  --code-bg: rgba(15, 23, 42, 0.06);
+  --shadow: 0 10px 32px -14px rgba(15, 23, 42, 0.18);
+  --strip-bg: rgba(15, 23, 42, 0.05);
+  --c-magic: #fcd34d; --c-ver: #cbd5e1;  --c-id: #c4b5fd;  --c-cnt: #6ee7b7;
+  --c-off:  #93c5fd; --c-crc: #fda4af;   --c-flg: #f9a8d4; --c-enum: #fde68a;
+  --c-ts:   #fdba74; --c-nnc: #f0abfc;   --c-rsv: #e2e8f0; --c-pay: #a5f3fc;
+  --c-magic-t: #451a03; --c-ver-t: #1e293b; --c-id-t: #2e1065; --c-cnt-t: #064e3b;
+  --c-off-t: #1e3a8a; --c-crc-t: #881337; --c-flg-t: #831843; --c-enum-t: #713f12;
+  --c-ts-t: #7c2d12; --c-nnc-t: #701a75; --c-rsv-t: #475569; --c-pay-t: #164e63;
+}
+
+/* ============================= Base ============================= */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+}
+code, .mono, table.bytes, .tree-box, .flow, .kbad {
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "JetBrains Mono",
+    Consolas, "Liberation Mono", monospace;
+}
+a { color: var(--accent-2); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ============================= Top Bar ============================= */
+.topbar {
+  position: sticky; top: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 28px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border);
+}
+.topbar .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .02em; }
+.topbar .brand .logo {
+  width: 26px; height: 26px; border-radius: 8px; background: var(--grad);
+  display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 800;
+}
+.topbar .brand span.ver { color: var(--text-faint); font-weight: 500; font-size: 12.5px; }
+.theme-btn {
+  border: 1px solid var(--border-strong); background: var(--panel); color: var(--text-dim);
+  border-radius: 10px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+  transition: all .18s ease;
+}
+.theme-btn:hover { color: var(--text); border-color: var(--accent); }
+
+/* ============================= Layout ============================= */
+.wrap { max-width: 1280px; margin: 0 auto; padding: 0 28px 90px; display: grid;
+  grid-template-columns: 236px minmax(0, 1fr); gap: 44px; }
+aside.toc { position: sticky; top: 64px; align-self: start; padding: 34px 0 40px; max-height: calc(100vh - 64px); overflow: auto; }
+aside.toc .toc-title { font-size: 11.5px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--text-faint); margin: 0 0 12px 14px; font-weight: 700; }
+aside.toc nav a {
+  display: block; padding: 6px 14px; margin: 1px 0; border-left: 2px solid transparent;
+  color: var(--text-dim); font-size: 13.5px; border-radius: 0 8px 8px 0;
+  transition: all .15s ease;
+}
+aside.toc nav a:hover { color: var(--text); background: var(--code-bg); text-decoration: none; }
+aside.toc nav a.active { color: var(--accent); border-left-color: var(--accent); background: var(--code-bg); font-weight: 600; }
+main { min-width: 0; padding-top: 34px; }
+
+/* ============================= Hero ============================= */
+.hero { padding: 8px 0 34px; }
+.hero .eyebrow { color: var(--accent-2); font-size: 12.5px; font-weight: 700; letter-spacing: .22em;
+  text-transform: uppercase; margin-bottom: 14px; }
+.hero h1 { font-size: 40px; line-height: 1.18; font-weight: 800; letter-spacing: -0.02em; }
+.hero h1 .grad { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.hero p.sub { margin-top: 16px; max-width: 760px; color: var(--text-dim); font-size: 15.5px; }
+.hero .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+.kbad {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 5px 11px;
+  border-radius: 999px; border: 1px solid var(--border-strong); background: var(--panel);
+  color: var(--text-dim);
+}
+.kbad b { color: var(--text); font-weight: 600; }
+.kbad .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--grad); }
+
+/* ============================= Sections ============================= */
+section { margin-bottom: 64px; scroll-margin-top: 84px; }
+.sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 8px; }
+.sec-head .no {
+  font-size: 12px; font-weight: 800; letter-spacing: .1em; color: var(--accent);
+  background: var(--code-bg); padding: 3px 9px; border-radius: 7px;
+}
+.sec-head h2 { font-size: 24px; font-weight: 750; letter-spacing: -0.01em; }
+.sec-desc { color: var(--text-dim); max-width: 820px; margin-bottom: 22px; }
+.sec-desc code, p code, li code, td code {
+  background: var(--code-bg); padding: 1.5px 6px; border-radius: 6px; font-size: 12.5px; color: var(--text);
+}
+h3.sub { font-size: 16.5px; font-weight: 700; margin: 34px 0 12px; display: flex; align-items: center; gap: 9px; }
+h3.sub::before { content: ""; width: 8px; height: 8px; border-radius: 3px; background: var(--grad); }
+
+/* ============================= Cards & Panels ============================= */
+.card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+  padding: 22px 24px; box-shadow: var(--shadow);
+}
+.callout {
+  border-radius: 14px; padding: 16px 20px; margin: 18px 0; font-size: 14px;
+  border: 1px solid var(--border-strong); background: var(--panel-2);
+}
+.callout .t { font-weight: 700; display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+.callout.warn .t { color: var(--c-crc); }
+.callout.key .t { color: var(--accent); }
+.callout.ok .t { color: #10b981; }
+
+/* ============================= File Layout Diagram ============================= */
+.tree { border: 1px solid var(--border); border-radius: 16px; overflow: hidden; background: var(--panel); box-shadow: var(--shadow); }
+.tree-box { padding: 12px 18px; border-bottom: 1px solid var(--border); display: flex; gap: 14px; align-items: flex-start; font-size: 13.5px; }
+.tree-box:last-child { border-bottom: none; }
+.tree-box .bar { flex: 0 0 5px; align-self: stretch; border-radius: 3px; min-height: 20px; }
+.tree-box .nm { font-weight: 700; }
+.tree-box .sz { color: var(--text-faint); font-size: 12px; }
+.tree-box .ds { color: var(--text-dim); font-size: 12.5px; margin-top: 1px; }
+.tree-box .kids { margin: 8px 0 2px; border-left: 1px dashed var(--border-strong); padding-left: 14px; display: grid; gap: 4px; }
+.tree-box .kids .row { font-size: 12.5px; color: var(--text-dim); }
+.tree-box .kids .row b { color: var(--text); font-weight: 600; }
+.bg-magic { background: var(--c-magic); } .bg-block { background: var(--c-id); }
+.bg-idx { background: var(--c-cnt); } .bg-ftr { background: var(--c-crc); }
+.bg-tail { background: var(--c-rsv); } .bg-hdr { background: var(--c-ver); }
+
+.file-strip { display: flex; gap: 3px; margin-top: 14px; }
+.file-strip .seg {
+  height: 44px; border-radius: 8px; display: grid; place-items: center;
+  color: #fff; font-size: 11px; font-weight: 700; text-align: center; line-height: 1.25;
+  overflow: hidden; white-space: nowrap;
+}
+.file-strip .seg small { font-weight: 500; opacity: .85; font-size: 10px; display: block; }
+
+/* ============================= Tables ============================= */
+table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+table.tbl th {
+  text-align: left; font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-faint); font-weight: 700; padding: 9px 12px; border-bottom: 1px solid var(--border-strong);
+}
+table.tbl td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.tbl tr:last-child td { border-bottom: none; }
+table.tbl tr:hover td { background: var(--code-bg); }
+table.tbl td.num { color: var(--accent-2); white-space: nowrap; }
+table.tbl .muted { color: var(--text-faint); }
+.tag {
+  display: inline-block; font-size: 11px; font-weight: 700; padding: 1.5px 8px;
+  border-radius: 6px; background: var(--code-bg); color: var(--text-dim); border: 1px solid var(--border);
+}
+.tbl-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow); }
+.tbl-scroll table.tbl th:first-child { border-top-left-radius: 14px; }
+.tbl-scroll table.tbl th:last-child { border-top-right-radius: 14px; }
+
+/* ============================= Structure Cards ============================= */
+.struct { margin-bottom: 26px; border: 1px solid var(--border); border-radius: 16px; background: var(--panel); box-shadow: var(--shadow); overflow: hidden; }
+.struct-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 15px 20px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
+.struct-head .name { font-weight: 750; font-size: 15px; }
+.struct-head .meta { display: flex; gap: 7px; flex-wrap: wrap; margin-left: auto; }
+.chip { font-size: 11.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border-strong); color: var(--text-dim); font-weight: 600; }
+.chip.magic { color: var(--c-magic); border-color: color-mix(in srgb, var(--c-magic) 45%, transparent); }
+.chip.size { color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 40%, transparent); }
+.chip.note { color: var(--text-faint); }
+.struct-body { padding: 16px 20px 20px; }
+.struct-note { font-size: 12.5px; color: var(--text-dim); margin: 10px 2px 0; }
+
+/* Byte map strip */
+.bmap { display: flex; gap: 2px; height: 34px; border-radius: 9px; background: var(--strip-bg); padding: 3px; margin-bottom: 14px; overflow: hidden; }
+.bmap .f { border-radius: 5px; min-width: 4px; position: relative; transition: transform .12s ease, filter .12s ease; }
+.bmap .f:hover { filter: brightness(1.15); transform: scaleY(1.18); z-index: 2; }
+.bmap .f span {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 9.5px; font-weight: 700; color: var(--seg-t, #fff); overflow: hidden;
+  padding: 0 2px; white-space: nowrap;
+}
+
+/* Byte table */
+table.bytes { width: 100%; border-collapse: collapse; font-size: 12.8px; }
+table.bytes th { text-align: left; color: var(--text-faint); font-size: 11px; letter-spacing: .07em; text-transform: uppercase; padding: 7px 10px; border-bottom: 1px solid var(--border-strong); }
+table.bytes td { padding: 6.5px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.bytes tr:last-child td { border-bottom: none; }
+table.bytes tr.hl td { background: var(--code-bg); }
+table.bytes td.off { color: var(--text-faint); white-space: nowrap; }
+table.bytes td.sz { color: var(--text-dim); white-space: nowrap; }
+table.bytes td.ty { white-space: nowrap; }
+table.bytes td.fn { font-weight: 650; white-space: nowrap; }
+table.bytes td.ds { color: var(--text-dim); min-width: 260px; }
+.dotc { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 7px; vertical-align: 0; }
+
+/* ============================= Flows ============================= */
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0; font-size: 13px; }
+.flow .step {
+  background: var(--panel-2); border: 1px solid var(--border-strong); padding: 7px 13px;
+  border-radius: 10px; font-size: 12.5px; font-weight: 600; color: var(--text);
+}
+.flow .step i { font-style: normal; color: var(--accent); margin-right: 6px; font-weight: 800; }
+.flow .arr { color: var(--text-faint); font-size: 14px; }
+
+ol.proto { counter-reset: st; list-style: none; display: grid; gap: 9px; margin: 12px 0; }
+ol.proto li {
+  counter-increment: st; display: flex; gap: 13px; align-items: flex-start;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 11px 16px;
+}
+ol.proto li::before {
+  content: counter(st); flex: 0 0 26px; height: 26px; border-radius: 9px; background: var(--grad);
+  color: #fff; font-weight: 800; font-size: 13px; display: grid; place-items: center; margin-top: 2px;
+}
+ol.proto li b { display: block; font-size: 13.5px; }
+ol.proto li span.d { color: var(--text-dim); font-size: 12.8px; }
+
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+
+footer.foot { border-top: 1px solid var(--border); margin-top: 20px; padding: 28px 0 10px; color: var(--text-faint); font-size: 13px; }
+footer.foot .src { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+@media (max-width: 1000px) {
+  .wrap { grid-template-columns: 1fr; }
+  aside.toc { display: none; }
+  .hero h1 { font-size: 30px; }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand"><div class="logo">RP</div> RowPack <span class="ver">· 文件格式参考 · Format v2</span></div>
+  <button class="theme-btn" id="themeBtn" title="切换主题">◐ 主题</button>
+</div>
+
+<div class="wrap">
+<!-- ================================ TOC ================================ -->
+<aside class="toc">
+  <div class="toc-title">目录 · Contents</div>
+  <nav id="tocNav">
+    <a href="#s1">01 · 格式总览</a>
+    <a href="#s2">02 · Magic 与固定尺寸</a>
+    <a href="#s3">03 · 固定结构字节布局</a>
+    <a href="#s4">04 · 行数据编码</a>
+    <a href="#s5">05 · 元数据编码</a>
+    <a href="#s6">06 · IndexTxn 与分块</a>
+    <a href="#s7">07 · 提交 / 打开 / 恢复</a>
+    <a href="#s8">08 · 加密设计</a>
+    <a href="#s9">09 · 不变量与上限</a>
+    <a href="#s10">10 · 读取路径</a>
+  </nav>
+</aside>
+
+<!-- ================================ MAIN ================================ -->
+<main>
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <div class="eyebrow">Single-File Binary Format Reference</div>
+  <h1>RowPack <span class="grad">v2 单文件格式</span><br>字节级规范速览</h1>
+  <p class="sub">
+    RowPack 是嵌入式二维表存储引擎。v2 格式将数据块与每快照 IndexTxn 索引流交错追加在同一个
+    <code>&lt;base&gt;.rpk</code> 文件中，由快照末尾的 <b>SnapshotFooter</b> 作为唯一提交权威 ——
+    数据、索引与提交标志在一次 fsync 中原子落盘。本文档按字节梳理全部磁盘结构，与
+    <code>internal/fileformat</code> 实现一一对应。
+  </p>
+  <div class="badges">
+    <span class="kbad"><span class="dot"></span>Magic <b>ROWPACK2</b></span>
+    <span class="kbad">Major <b>2</b> · Minor <b>0</b></span>
+    <span class="kbad">字节序 <b>Little-Endian</b></span>
+    <span class="kbad">对齐 <b>8 字节</b></span>
+    <span class="kbad">校验 <b>CRC-32C (Castagnoli)</b></span>
+    <span class="kbad">压缩 <b>Zstandard</b></span>
+    <span class="kbad">加密 <b>AES-256-GCM</b></span>
+    <span class="kbad">写入模型 <b>Append-Only</b></span>
+  </div>
+</header>
+
+<!-- ============================ S1 总览 ============================ -->
+<section id="s1">
+  <div class="sec-head"><span class="no">01</span><h2>格式总览</h2></div>
+  <p class="sec-desc">
+    一个 <code>.rpk</code> 文件 = 一个 128 字节 FileHeader + 若干个 SnapshotTxn（+ 可能存在的未提交尾部）。
+    每个 SnapshotTxn 承载一个不可变快照（FULL 或 DELTA）：先写数据块，再写内嵌 IndexTxn，最后以固定 144 字节的
+    SnapshotFooter 收尾并原子提交。
+  </p>
+
+  <div class="file-strip" aria-hidden="true">
+    <div class="seg bg-hdr" style="flex:2" title="FileHeader">FileHeader<small>128 B</small></div>
+    <div class="seg bg-block" style="flex:6" title="SnapshotTxn 1">SnapshotTxn 1<small>数据 + 索引 + Footer</small></div>
+    <div class="seg bg-block" style="flex:6" title="SnapshotTxn 2">SnapshotTxn 2<small>…</small></div>
+    <div class="seg bg-block" style="flex:6" title="SnapshotTxn N">SnapshotTxn N<small>…</small></div>
+    <div class="seg bg-tail" style="flex:2" title="未提交尾部（打开时截断/忽略）">未提交尾部</div>
+  </div>
+
+  <div class="tree" style="margin-top:18px">
+    <div class="tree-box"><div class="bar bg-hdr"></div><div>
+      <div><span class="nm">FileHeader</span> <span class="sz">128 B · Magic “ROWPACK2”</span></div>
+      <div class="ds">文件身份与全局默认值（UUID、版本、能力位、块大小、压缩、加密参数）。创建后<b>永不更新</b>。</div>
+    </div></div>
+    <div class="tree-box"><div class="bar bg-block"></div><div>
+      <div><span class="nm">SnapshotTxn × N</span> <span class="sz">每个 = 一个原子提交的快照</span></div>
+      <div class="ds">快照 ID 全局递增；FULL 可在任意时刻重新提交（Depth 重置），DELTA 沿父链解析可见性。</div>
+      <div class="kids">
+        <div class="row">① <b>SnapshotHeader</b> — 96 B，“RPKSNAPH”，快照类型 / ID / 父 ID / 首 BlockID</div>
+        <div class="row">② <b>Blocks …</b> — [BlockHeader 64 B (“RPKBLOCK”) + 压缩(→加密) Payload] × M，Rows / Metadata 两类</div>
+        <div class="row">③ <b>IndexTxn</b> — “RPITXNBH” 头 → 分块条目体 → 明文块目录 → “RPITXNEF” 尾</div>
+        <div class="row">④ <b>SnapshotFooter</b> — 144 B，“RPKSNAPF”，<b>唯一提交权威</b>，绑定全部区间 offset 与 CRC</div>
+      </div>
+    </div></div>
+    <div class="tree-box"><div class="bar bg-tail"></div><div>
+      <div><span class="nm">[可选] 未提交尾部</span> <span class="sz">最后一个有效 Footer 之后的一切</span></div>
+      <div class="ds">读写打开时截断（先退映射再截断）；只读打开时忽略并报告；其中任何数据 / 索引都不可见。</div>
+    </div></div>
+  </div>
+
+  <div class="callout key"><div class="t">🔑 提交权威（R3）</div>
+    快照是否已提交，<b>只看 SnapshotFooter 自身</b>：FooterCRC32C 校验通过，且其记录的 offset 自洽并在文件范围内。
+    <code>BlocksCRC32C</code> / <code>IndexTxnCRC32C</code> 绑定失败只影响索引可用性（触发内存重建），<b>不改变提交事实</b>；
+    但 Block 数据本身的损坏（块头 / 密文认证 / 解压长度 / Raw CRC）是硬错误，绝不跳过。
+  </div>
+</section>
+
+<!-- ============================ S2 Magic ============================ -->
+<section id="s2">
+  <div class="sec-head"><span class="no">02</span><h2>Magic 与固定尺寸</h2></div>
+  <p class="sec-desc">
+    全部 Magic 均为恰好 8 字节 ASCII。v2 数据文件 Magic 有意区别于 v1 预发布的 <code>ROWPACKD</code>，
+    使 v2 打开器在前 8 字节即拒绝 v1 文件。索引流没有独立 Magic —— 它内嵌在数据文件中。
+  </p>
+  <div class="grid2">
+    <div class="tbl-scroll"><table class="tbl">
+      <thead><tr><th>Magic</th><th>标识的结构</th><th>出现位置</th></tr></thead>
+      <tbody>
+        <tr><td class="num">ROWPACK2</td><td>数据文件头（单文件 Store）</td><td class="muted">offset 0</td></tr>
+        <tr><td class="num">RPKSNAPH</td><td>SnapshotHeader</td><td class="muted">每个 SnapshotTxn 开头</td></tr>
+        <tr><td class="num">RPKBLOCK</td><td>BlockHeader</td><td class="muted">每个数据块之前</td></tr>
+        <tr><td class="num">RPKROWPL</td><td>Rows Block 载荷头（解压后）</td><td class="muted">块 Payload 内</td></tr>
+        <tr><td class="num">RPKMETAP</td><td>Metadata Block 载荷头（解压后）</td><td class="muted">块 Payload 内</td></tr>
+        <tr><td class="num">RPITXNBH</td><td>IndexTxnHeader</td><td class="muted">SnapshotFooter 之前的索引事务头</td></tr>
+        <tr><td class="num">RPITXNEF</td><td>IndexTxnFooter</td><td class="muted">索引事务尾</td></tr>
+        <tr><td class="num">RPKSNAPF</td><td>SnapshotFooter（提交标志）</td><td class="muted">每个 SnapshotTxn 末尾</td></tr>
+        <tr><td class="num">RPICHNK1</td><td>IndexChunkHeader</td><td class="muted">IndexTxn 体内每个分块前</td></tr>
+      </tbody>
+    </table></div>
+    <div class="tbl-scroll"><table class="tbl">
+      <thead><tr><th>固定结构</th><th class="num">尺寸 (B)</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="fn">DataFileHeader</td><td class="num">128</td><td class="muted">文件头，含加密预留区 64..120</td></tr>
+        <tr><td class="fn">SnapshotHeader</td><td class="num">96</td><td class="muted">快照头</td></tr>
+        <tr><td class="fn">SnapshotFooter</td><td class="num">144</td><td class="muted">提交权威（M0 冻结布局）</td></tr>
+        <tr><td class="fn">BlockHeader</td><td class="num">64</td><td class="muted">块头，KeyEpoch@56</td></tr>
+        <tr><td class="fn">RowsPayloadHeader</td><td class="num">32</td><td class="muted">“RPKROWPL”</td></tr>
+        <tr><td class="fn">RowDirectoryEntry</td><td class="num">24</td><td class="muted">行目录项 × ItemCount</td></tr>
+        <tr><td class="fn">RowRecordHeader</td><td class="num">24</td><td class="muted">行记录头 + 记录体</td></tr>
+        <tr><td class="fn">MetaPayloadHeader</td><td class="num">32</td><td class="muted">“RPKMETAP”</td></tr>
+        <tr><td class="fn">MetaDirectoryEntry</td><td class="num">32</td><td class="muted">元数据目录项 × ItemCount</td></tr>
+        <tr><td class="fn">IndexTxnHeader / Footer</td><td class="num">80 / 80</td><td class="muted">索引事务首尾</td></tr>
+        <tr><td class="fn">IndexChunkHeader</td><td class="num">64</td><td class="muted">“RPICHNK1”</td></tr>
+        <tr><td class="fn">IndexChunkDirEntry</td><td class="num">32</td><td class="muted">明文块目录项 × M</td></tr>
+        <tr><td class="fn">SnapshotIndexEntry</td><td class="num">72</td><td class="muted">快照摘要条目 × 1</td></tr>
+        <tr><td class="fn">MetadataIndexEntry</td><td class="num">48</td><td class="muted">元数据条目 × N</td></tr>
+        <tr><td class="fn">BlockIndexEntry</td><td class="num">56</td><td class="muted">块定位条目 × B</td></tr>
+        <tr><td class="fn">RowIndexEntry</td><td class="num">40</td><td class="muted">行定位条目 × R</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+  <p class="struct-note">CRC 规则：每个固定结构的 CRC-32C 覆盖整个结构，且计算时将其<b>自身 CRC 字段视为 0</b>（解码侧按“字段前段 + 4 字节 0 + 字段后段”三段拼接计算，安全兼容只读 mmap）。</p>
+</section>
+
+<!-- ============================ S3 字节布局 ============================ -->
+<section id="s3">
+  <div class="sec-head"><span class="no">03</span><h2>固定结构字节布局</h2></div>
+  <p class="sec-desc">
+    以下 11 个固定结构构成格式的骨架。每个结构给出等比例字节图与逐字段表；
+    颜色语义：<span class="dotc" style="background:var(--c-magic)"></span>Magic
+    <span class="dotc" style="background:var(--c-ver)"></span>版本/尺寸
+    <span class="dotc" style="background:var(--c-id)"></span>标识符
+    <span class="dotc" style="background:var(--c-cnt)"></span>计数/长度
+    <span class="dotc" style="background:var(--c-off)"></span>文件 offset
+    <span class="dotc" style="background:var(--c-crc)"></span>CRC
+    <span class="dotc" style="background:var(--c-flg)"></span>标志位
+    <span class="dotc" style="background:var(--c-enum)"></span>枚举
+    <span class="dotc" style="background:var(--c-ts)"></span>时间戳
+    <span class="dotc" style="background:var(--c-nnc)"></span>加密
+    <span class="dotc" style="background:var(--c-pay)"></span>数据字节
+    <span class="dotc" style="background:var(--c-rsv)"></span>保留(必须为 0)
+  </p>
+  <div id="structs"><!-- JS 渲染 --></div>
+</section>
+
+<!-- ============================ S4 行编码 ============================ -->
+<section id="s4">
+  <div class="sec-head"><span class="no">04</span><h2>行数据编码（Rows Block）</h2></div>
+  <p class="sec-desc">
+    一个 Rows Block 只属于一个快照和一张表。写入顺序固定：<b>行载荷 → Zstd 压缩 →（可选）AES-256-GCM 加密</b>，
+    读取时逆序还原。解压后的载荷结构为：
+  </p>
+  <div class="flow">
+    <span class="step">RowsPayloadHeader · 32 B</span><span class="arr">→</span>
+    <span class="step">RowDirectoryEntry × ItemCount（按写入顺序）</span><span class="arr">→</span>
+    <span class="step">RowRecordHeader + 记录体 × ItemCount</span>
+  </div>
+  <h3 class="sub">TypedTuple v1 行编码</h3>
+  <p class="sec-desc">
+    每条非 DELETE 记录的记录体为 TypedTuple v1 编码（<code>RowEncoding=1</code>）：
+    <code>u32 ColumnCount</code> ‖ <code>u32 NullBitmapBytes = ⌈列数/8⌉</code> ‖
+    <b>NULL 位图</b>（bit i = 1 ⇒ 第 i 列为 NULL，LSB 在前，末字节高位必须清零）‖
+    <b>非 NULL 列按 Schema 顺序依次编码的值</b>。解码后不允许存在尾部剩余字节。
+    DELETE 记录携带 <code>RowEncoding=0、RowLength=0、RowCRC=0</code>，无记录体。
+  </p>
+  <div class="tbl-scroll"><table class="tbl">
+    <thead><tr><th class="num">TypeID</th><th>类型</th><th class="num">TypeID</th><th>类型</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>Bool</td><td class="num">10</td><td>Float32</td></tr>
+      <tr><td class="num">2</td><td>Int8</td><td class="num">11</td><td>Float64</td></tr>
+      <tr><td class="num">3</td><td>Int16</td><td class="num">12</td><td>String</td></tr>
+      <tr><td class="num">4</td><td>Int32</td><td class="num">13</td><td>Bytes</td></tr>
+      <tr><td class="num">5</td><td>Int64</td><td class="num">14</td><td>Date</td></tr>
+      <tr><td class="num">6</td><td>Uint8</td><td class="num">15</td><td>Time</td></tr>
+      <tr><td class="num">7</td><td>Uint16</td><td class="num">16</td><td>DateTime</td></tr>
+      <tr><td class="num">8</td><td>Uint32</td><td class="num">17</td><td>Decimal</td></tr>
+      <tr><td class="num">9</td><td>Uint64</td><td class="num muted">—</td><td class="muted">17 种类型全部通过 golden 往返测试</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============================ S5 元数据 ============================ -->
+<section id="s5">
+  <div class="sec-head"><span class="no">05</span><h2>元数据编码（Metadata Block）</h2></div>
+  <p class="sec-desc">
+    Schema 与引擎自产元信息以通用 TLV 记录写入 Metadata Block（命名空间 <code>rowpack.meta.v1</code>）。
+    引擎自身冻结两类记录：<code>RecordTable=2</code>（表）与 <code>RecordColumn=3</code>（列）——
+    <code>DefineSchema</code> 即通过它们把 Canonical Schema 写成引擎“自产自销”的数据。
+    载荷结构：<code>PayloadHeader(32B, “RPKMETAP”)</code> ‖ 目录项×N ‖ 记录体区；
+    DELETE 目录项必须 offset/length/CRC 全 0。记录体 TLV 的字段值类型（WireType）：
+  </p>
+  <div class="tbl-scroll"><table class="tbl">
+    <thead><tr><th class="num">WireType</th><th>编码</th><th class="num">WireType</th><th>编码</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>Bool</td><td class="num">6</td><td>ObjectRef</td></tr>
+      <tr><td class="num">2</td><td>Uint</td><td class="num">7</td><td>StringList</td></tr>
+      <tr><td class="num">3</td><td>Sint</td><td class="num">8</td><td>ObjectRefList</td></tr>
+      <tr><td class="num">4</td><td>String</td><td class="num">9</td><td>Expression</td></tr>
+      <tr><td class="num">5</td><td>Bytes</td><td class="num">10</td><td>FieldSet</td></tr>
+    </tbody>
+  </table></div>
+  <p class="struct-note">字段标志位：<code>FieldFlagCritical = 1&lt;&lt;0</code>、<code>FieldFlagRepeated = 1&lt;&lt;1</code>；记录 / 字段带 Critical 位时，未知记录或字段必须视为错误。</p>
+</section>
+
+<!-- ============================ S6 IndexTxn ============================ -->
+<section id="s6">
+  <div class="sec-head"><span class="no">06</span><h2>IndexTxn 与分块（Chunking）</h2></div>
+  <p class="sec-desc">
+    每个已提交快照恰好对应一个内嵌索引事务，位于该快照全部数据块之后、SnapshotFooter 之前。
+    IndexTxn 是<b>派生的导航结构</b>：提供 <code>(SnapshotID, TableID, RowID) → BlockID, ItemOrdinal</code> 的行定位、
+    块定位与快照摘要；损坏时可以从本事务的数据块在内存重建。
+  </p>
+  <div class="flow">
+    <span class="step">IndexTxnHeader · 80 B（明文）</span><span class="arr">→</span>
+    <span class="step">[IndexChunkHeader 64 B + 存储态载荷] × M</span><span class="arr">→</span>
+    <span class="step">IndexChunkDirectory · 32 B × M（明文）</span><span class="arr">→</span>
+    <span class="step">IndexTxnFooter · 80 B</span>
+  </div>
+  <div class="callout key"><div class="t">📐 区间权威校验（R8）</div>
+    每个 txn 必须满足 <code>IndexTxnEnd = IndexTxnStart + 80(IndexTxnHeader) + BodyBytes + 80(IndexTxnFooter)</code>，
+    且 <code>SnapshotEndOffset = IndexTxnEndOffset + 144(SnapshotFooter)</code>；任一不满足即视为损坏。
+    <code>BodyBytes</code> 计的是 Header 与 Footer 之间的<b>存储态字节</b>（分块 + 目录，加密时含 GCM tag）——
+    明文与加密 Store 语义一致，扫描器无需理解分块即可跳过整个事务。
+    <code>DataSnapshotEnd</code> 沿用 v1 语义：指向 SnapshotFooter 之后（即整个 SnapshotTxn 的结束，IndexTxn 属于该范围）。
+  </div>
+  <h3 class="sub">分块参数</h3>
+  <ul style="margin:6px 0 0 20px; color:var(--text-dim); font-size:13.5px">
+    <li>条目按 Kind 分流（1 Snapshot / 2 Metadata / 3 Block / 4 Row），各自切成多个块；默认目标：<b>4096 条/块 或 256 KiB/块</b>。</li>
+    <li>每块独立压缩（None/Zstd）与独立认证（加密 Store 下每块单独 AES-GCM 封装）。</li>
+    <li>解析硬上限（防压缩炸弹，分配前强制）：EntryCount ≤ <b>2²⁰</b>，RawBytes ≤ <b>16 MiB</b>，StoredBytes ≤ <b>16 MiB</b>。</li>
+    <li>块目录为明文（即使加密 Store），无键即可定位分块；仅暴露块大小与条目数，目录自身无 CRC（由 Footer 区域 CRC 与各块头 CRC 覆盖）。</li>
+  </ul>
+  <h3 class="sub">四类索引条目</h3>
+  <p class="sec-desc" style="margin-bottom:12px">
+    行索引继续按层提供按 RowID 有序的分片：范围查询对分片二分定位 span 即等价于 envelope 过滤，零额外内存（R14 决议）。
+    SnapshotIndexEntry 中的 <code>DataEnd</code> 指向 SnapshotFooter 之后，重放校验用
+    <code>footer = DataEnd − 144</code> 直接取回提交标志。
+  </p>
+</section>
+
+<!-- ============================ S7 提交/打开/恢复 ============================ -->
+<section id="s7">
+  <div class="sec-head"><span class="no">07</span><h2>提交 · 打开 · 恢复</h2></div>
+
+  <h3 class="sub">SyncCommit 提交协议（单次 fsync）</h3>
+  <ol class="proto">
+    <li><div><b>append SnapshotHeader</b><span class="d">“RPKSNAPH”，96 B，快照类型 / ID / 父 ID / 首 BlockID / WriterNonce</span></div></li>
+    <li><div><b>append Metadata / Rows Blocks</b><span class="d">逐块：64 B 块头 + 压缩（→加密）载荷；BlockID 单调递增，永不改写</span></div></li>
+    <li><div><b>build & append IndexTxn</b><span class="d">构建分块条目体 + 明文块目录；offset 在此刻解析定案</span></div></li>
+    <li><div><b>append SnapshotFooter</b><span class="d">144 B；BlocksCRC32C = 按物理写序拼接各块 HeaderCRC32C（4 B×N）的 CRC；IndexTxnCRC32C = 整个事务存储态字节的 CRC</span></div></li>
+    <li><div><b>fsync 单文件</b><span class="d">从此刻起失败属于“结果未知”：调用者按 SnapshotID 查询，不得盲目重放非幂等业务</span></div></li>
+    <li><div><b>原子发布 index.View</b><span class="d">进程内可见性切换</span></div></li>
+    <li><div><b>返回成功</b><span class="d">AsyncCommit 顺序相同但不主动 fsync；掉电允许丢失最近提交</span></div></li>
+  </ol>
+  <p class="struct-note">Abort：没有 SnapshotFooter 的尾部不可见；读写模式可立即截断到 SnapshotHeader 之前，或留待下次 Open 时截断。</p>
+
+  <h3 class="sub">物理扫描协议（R1）—— 四类固定结构</h3>
+  <div class="tbl-scroll"><table class="tbl">
+    <thead><tr><th>遇到的结构</th><th>Magic</th><th>扫描动作</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">SnapshotHeader</td><td class="num">RPKSNAPH</td><td class="muted">开始一个新 SnapshotTxn</td></tr>
+      <tr><td class="fn">BlockHeader</td><td class="num">RPKBLOCK</td><td class="muted">按 StoredSize 跳过载荷</td></tr>
+      <tr><td class="fn">IndexTxnHeader</td><td class="num">RPITXNBH</td><td class="muted">按 BodyBytes 跳过，随后<b>必须</b>出现 IndexTxnFooter（RPITXNEF）</td></tr>
+      <tr><td class="fn">SnapshotFooter</td><td class="num">RPKSNAPF</td><td class="muted">结束当前 SnapshotTxn</td></tr>
+    </tbody>
+  </table></div>
+  <p class="struct-note">未知结构出现在最后一个有效 Footer 之前 → 中间损坏硬错误；之后 → 属于未提交尾部。空 DELTA（0 块）时 IndexTxnHeader 直接跟在 SnapshotHeader 之后，协议同样适用。该扫描永不需要密钥（加密 Store 的索引头 / 块目录 / Footer 均保持明文）。</p>
+
+  <h3 class="sub">打开流程</h3>
+  <div class="flow">
+    <span class="step"><i>1</i>校验 FileHeader</span><span class="arr">→</span>
+    <span class="step"><i>2</i>文件尾定位最后有效 SnapshotFooter</span><span class="arr">→</span>
+    <span class="step"><i>3</i>沿 PreviousFooterOffset 建立快照目录</span><span class="arr">→</span>
+    <span class="step"><i>4</i>逐快照独立读取 / 校验 IndexTxn 区段并 Apply</span><span class="arr">→</span>
+    <span class="step"><i>5</i>派生 SchemaIndex，发布 Store 状态</span>
+  </div>
+  <div class="callout warn"><div class="t">⚠️ 逐快照独立重放（R2）</div>
+    某个快照的 IndexTxn 校验失败时：<b>提交事实仍由其 Footer 决定</b>，按 Footer 给出的
+    <code>[BlocksStart, BlocksEnd)</code> 扫描本事务数据块在内存重建索引，报告 <code>IndexRebuiltInMemory</code>，
+    然后<b>继续处理下一个快照</b>（不允许沿用 v1「首个坏 txn 即停、其后全部丢弃」）。重建走只读解密路径；
+    读写模式不原地覆盖损坏字节，由 Rewrite / 新 FULL checkpoint 收敛。
+  </div>
+  <div class="callout warn"><div class="t">⚠️ 禁止整文件 ReadAll（R5）</div>
+    单文件同时包含数据块：索引重放必须按 IndexTxn 区段 <code>ReadAt</code>（或依赖 mmap 按需分页），
+    否则 Open 峰值内存会被放大到与数据同量级。
+  </div>
+
+  <h3 class="sub">Footer 尾部搜索验证项</h3>
+  <p class="sec-desc" style="margin-bottom:0">
+    从文件尾按 8 字节对齐向前搜索 <code>RPKSNAPF</code>，候选必须同时通过：固定长度与 CRC ／
+    <code>SnapshotEndOffset</code> 与候选位置一致 ／ <code>PreviousFooterOffset</code> 严格递减且对齐 ／
+    SnapshotID 单调 ／ 本事务全部 offset 落在合法范围。有限窗口找不到时扩大搜索或退化为顺序扫描，
+    不得把较大的未提交尾部误判为无有效快照。
+  </p>
+
+  <h3 class="sub">数据损坏</h3>
+  <p class="sec-desc" style="margin-bottom:0">
+    已提交范围内的 Block 块头 CRC、密文认证（GCM）、解压长度或 Raw CRC 失败 = 中间数据损坏，
+    必须返回错误，<b>不得</b>因索引可重建而跳过。
+  </p>
+</section>
+
+<!-- ============================ S8 加密 ============================ -->
+<section id="s8">
+  <div class="sec-head"><span class="no">08</span><h2>加密设计（AES-256-GCM）</h2></div>
+  <p class="sec-desc">
+    加密在 Create 时一次性定死（头部不可变），算法 <code>1 = AES-256-GCM</code>，Nonce 方案 <code>1 = CounterV1</code>。
+    管道顺序：<b>Payload → Zstd → Seal</b>（读取逆序）。Tag 固定 16 B、Nonce 固定 96 bit，均不逐块存储。
+    KeyID（≤ 31 B ASCII）存于 FileHeader；密钥材料只存在于 <code>KeyProvider</code>，按 (KeyID, KeyEpoch) 提供 32 B 密钥。
+  </p>
+  <h3 class="sub">Nonce 布局（域分离，R11）</h3>
+  <div class="tbl-scroll"><table class="tbl">
+    <thead><tr><th>对象</th><th>96-bit Nonce 布局</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">Block</td><td class="num">KeyEpoch(4B LE, &lt;2³¹) ‖ BlockID(8B LE)</td><td class="muted">BlockID 单调递增且载荷永不改写 ⇒ 唯一性</td></tr>
+      <tr><td class="fn">IndexTxn</td><td class="num">(KeyEpoch | 0x80000000)(4B LE) ‖ TxnSequence(8B LE)</td><td class="muted">bit31 为索引域标志，与块域永不冲突</td></tr>
+      <tr><td class="fn">IndexChunk</td><td class="num">Trunc₁₂( HMAC-SHA256(子密钥, "RowPackIdxChunkV1" ‖ BE(txnSeq) ‖ BE(chunkSeq)) )</td><td class="muted">NonceIndex 空间已被占满，分块 nonce 由数据密钥 HMAC 派生</td></tr>
+    </tbody>
+  </table></div>
+  <p class="struct-note">nonce 唯一性不依赖 AAD —— 域分离直接落在 nonce 字段内部（否则 TxnSequence 与 BlockID 数字相等即造成 nonce 复用，AES-GCM 灾难性失败）。</p>
+  <h3 class="sub">AAD 绑定（域分隔序列化）</h3>
+  <div class="tbl-scroll"><table class="tbl">
+    <thead><tr><th>对象</th><th class="num">长度</th><th>绑定字段</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">Block（68 B）</td><td class="num">68</td><td class="muted">Magic “RowPackBlockV1” ‖ StoreUUID ‖ BlockKind ‖ Compression ‖ BlockID ‖ SnapshotID ‖ TableID ‖ ItemCount ‖ RawSize ‖ StoredSize <span class="tag">排除 KeyEpoch 与 Encrypted 位</span></td></tr>
+      <tr><td class="fn">IndexTxn（60 B）</td><td class="num">60</td><td class="muted">Magic “RowPackIndexV1” ‖ StoreUUID ‖ SnapshotID ‖ IndexTxnStart/EndOffset ‖ KeyEpoch</td></tr>
+      <tr><td class="fn">IndexChunk（72 B）</td><td class="num">72</td><td class="muted">Magic “RowPackIChkV1” ‖ StoreUUID ‖ TxnSequence ‖ SnapshotID ‖ ChunkSequence ‖ FirstEntryOrdinal ‖ EntryKind ‖ RawBytes ‖ StoredBytes ‖ KeyEpoch <span class="tag">故意排除文件 offset（避免与 Footer 循环依赖）</span></td></tr>
+    </tbody>
+  </table></div>
+  <h3 class="sub">加密 Store 的明文 / 密文分界（M6）</h3>
+  <div class="grid2">
+    <div class="callout ok" style="margin:0"><div class="t">保持明文（无键可读）</div>
+      FileHeader · IndexTxnHeader · 每个 IndexChunkHeader · IndexChunkDirectory · SnapshotFooter。
+      ⇒ R1 物理扫描与 Footer 校验永不需要密钥。
+    </div>
+    <div class="callout warn" style="margin:0"><div class="t">密文（逐块封装）</div>
+      每个 IndexChunk 的载荷（压缩后再加 tag）；Footer 的 <code>IndexTxnCRC32C</code> 一律对<b>落盘字节（即密文）</b>计算（R12），
+      撕裂 / 位腐在无密钥路径即可检出，随后走 §07 的内存重建。
+    </div>
+  </div>
+</section>
+
+<!-- ============================ S9 不变量 ============================ -->
+<section id="s9">
+  <div class="sec-head"><span class="no">09</span><h2>不变量与安全上限</h2></div>
+  <h3 class="sub">SnapshotFooter 区间自洽（OffsetsAreConsistent）</h3>
+  <div class="card" style="font-size:13.5px; line-height:2.1">
+    <code>BlocksStartOffset = SnapshotStartOffset + 96</code><br>
+    <code>96+SnapshotStart ≤ BlocksStart ≤ BlocksEnd ≤ IndexTxnStart &lt; IndexTxnEnd &lt; SnapshotEnd</code><br>
+    <code>SnapshotEndOffset = IndexTxnEndOffset + 144</code><br>
+    <span style="color:var(--text-faint)">空事务（0 块）：BlocksEnd = IndexTxnStart = BlocksStart；FULL 允许 ParentSnapshotID = 0 且任意时刻重提；DELTA 父必须存在且 ID 更小。</span>
+  </div>
+  <h3 class="sub">安全上限（创建时的默认限制，读取前强制校验）</h3>
+  <div class="tbl-scroll"><table class="tbl">
+    <thead><tr><th>限制项</th><th class="num">值</th><th>限制项</th><th class="num">值</th></tr></thead>
+    <tbody>
+      <tr><td>单行编码上限 MaxRowBytes</td><td class="num">64 MiB</td><td>原始块上限 MaxRawBlockBytes</td><td class="num">128 MiB</td></tr>
+      <tr><td>存储块上限 MaxStoredBlockBytes</td><td class="num">128 MiB</td><td>最大列数 MaxColumns</td><td class="num">16 384</td></tr>
+      <tr><td>单值上限 MaxValueBytes</td><td class="num">64 MiB</td><td>快照链深 MaxSnapshotDepth</td><td class="num">4 096</td></tr>
+      <tr><td>默认目标块大小 BlockSize</td><td class="num">256 KiB</td><td>默认块缓存 CacheBytes</td><td class="num">64 MiB</td></tr>
+      <tr><td>索引分块目标（条目 / 字节）</td><td class="num">4 096 / 256 KiB</td><td>索引分块硬上限（条目 / Raw / Stored）</td><td class="num">2²⁰ / 16 / 16 MiB</td></tr>
+    </tbody>
+  </table></div>
+  <h3 class="sub">枚举值一览</h3>
+  <div class="tbl-scroll"><table class="tbl">
+    <thead><tr><th>枚举</th><th>取值</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">SnapshotType</td><td class="muted">1 = FULL · 2 = DELTA</td></tr>
+      <tr><td class="fn">BlockKind</td><td class="muted">1 = Rows · 2 = Metadata</td></tr>
+      <tr><td class="fn">Compression</td><td class="muted">0 = None · 1 = Zstd（默认 level 3）</td></tr>
+      <tr><td class="fn">ChangeType</td><td class="muted">1 = Insert · 2 = Update · 3 = Delete</td></tr>
+      <tr><td class="fn">RowEncoding</td><td class="muted">0 = None（DELETE 记录）· 1 = TypedTuple</td></tr>
+      <tr><td class="fn">Operation（元数据）</td><td class="muted">1 = Upsert · 2 = Delete</td></tr>
+      <tr><td class="fn">EncryptionAlgorithm</td><td class="muted">0 = None · 1 = AES-256-GCM</td></tr>
+      <tr><td class="fn">NonceScheme</td><td class="muted">0 = None · 1 = CounterV1</td></tr>
+      <tr><td class="fn">RequiredFeatures（能力位）</td><td class="muted">bit0 TypedTupleV1 · bit1 Zstd · bit2 MetadataBlock · bit3 DeltaSnapshot（掩码 0x0F，出现未知必置位 ⇒ Open 失败）</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============================ S10 读取路径 ============================ -->
+<section id="s10">
+  <div class="sec-head"><span class="no">10</span><h2>读取路径</h2></div>
+  <p class="sec-desc">三种读路径全部复用同一份 Row Index，不改变磁盘块格式：</p>
+  <h3 class="sub">Get —— 单行点查（并发入口）</h3>
+  <div class="flow">
+    <span class="step">SnapshotID + TableID + RowID</span><span class="arr">→</span>
+    <span class="step">index.View.ResolveRow</span><span class="arr">→</span>
+    <span class="step">BlockID + ItemOrdinal</span><span class="arr">→</span>
+    <span class="step">Block Cache / ReadAt</span><span class="arr">→</span>
+    <span class="step">解密 → 解压 → ParseRowAt</span>
+  </div>
+  <p class="struct-note">历史可见性沿父链解析，Tombstone（DELETE 记录）在链上覆盖旧版本。</p>
+  <h3 class="sub">Scan —— 顺序扫描</h3>
+  <div class="flow">
+    <span class="step">每层有序 Row Index 分片</span><span class="arr">→</span>
+    <span class="step">多路归并</span><span class="arr">→</span>
+    <span class="step">过滤覆盖记录与 Tombstone</span>
+  </div>
+  <p class="struct-note">单层 FULL 快照保留快路径。</p>
+  <h3 class="sub">批量读取 —— 每块只解压一次</h3>
+  <div class="flow">
+    <span class="step">RowIDs / Ranges</span><span class="arr">→</span>
+    <span class="step">ResolveRow</span><span class="arr">→</span>
+    <span class="step">按 BlockID 分组去重</span><span class="arr">→</span>
+    <span class="step">按物理 offset 排序</span><span class="arr">→</span>
+    <span class="step">每块读取·解密·解压·校验一次</span><span class="arr">→</span>
+    <span class="step">按 ItemOrdinal 解码多行</span><span class="arr">→</span>
+    <span class="step">恢复 RowID / 请求顺序</span>
+  </div>
+  <p class="struct-note">重复输入 ID 重复返回（与输入下标 1:1，R17）；缺失 / 不可见行跳过，差异通过 Stats 暴露。<code>Parallelism &gt; 1</code> 可并行块解码，发射顺序不变。只读调试工具 <code>cmd/rowpack-inspect</code> 提供 header / list / verify / dump 四个子命令。</p>
+
+  <footer class="foot">
+    <div>依据 <b>docs/BINARY_FORMAT_V2.md</b>（设计）与 <b>internal/fileformat</b>（字节级权威实现：constants.go · headers.go · snapshot.go · block.go · indextxn.go · idxchunk.go · rows_payload.go）、
+    <b>internal/seal</b>（nonce/AAD）、<b>internal/metadata/payload.go</b>、<b>writer.go</b> 整理。golden files 纳入 CI，任何字节级变化视为格式变更。</div>
+    <div class="src">
+      <span class="tag">ROWPACK2</span><span class="tag">Major 2 · Minor 0</span>
+      <span class="tag">SnapshotFooter 144 B 冻结</span><span class="tag">一次 fsync 原子提交</span>
+      <span class="tag">CRC-32C 自身置零规则</span><span class="tag">R1–R21 决议已合入</span>
+    </div>
+  </footer>
+</section>
+
+</main>
+</div>
+
+<script>
+/* ===================== 字节布局数据（与 internal/fileformat 一一对应） ===================== */
+const CAT = {
+  magic:{c:"var(--c-magic)",t:"var(--c-magic-t)",n:"Magic"},
+  ver:  {c:"var(--c-ver)",  t:"var(--c-ver-t)",  n:"版本/尺寸"},
+  id:   {c:"var(--c-id)",   t:"var(--c-id-t)",   n:"标识符"},
+  cnt:  {c:"var(--c-cnt)",  t:"var(--c-cnt-t)",  n:"计数/长度"},
+  off:  {c:"var(--c-off)",  t:"var(--c-off-t)",  n:"文件 offset"},
+  crc:  {c:"var(--c-crc)",  t:"var(--c-crc-t)",  n:"CRC"},
+  flg:  {c:"var(--c-flg)",  t:"var(--c-flg-t)",  n:"标志位"},
+  enum: {c:"var(--c-enum)", t:"var(--c-enum-t)", n:"枚举"},
+  ts:   {c:"var(--c-ts)",   t:"var(--c-ts-t)",   n:"时间戳"},
+  nnc:  {c:"var(--c-nnc)",  t:"var(--c-nnc-t)",  n:"加密"},
+  pay:  {c:"var(--c-pay)",  t:"var(--c-pay-t)",  n:"数据"},
+  rsv:  {c:"var(--c-rsv)",  t:"var(--c-rsv-t)",  n:"保留"}
+};
+const STRUCTS = [
+{ name:"FileHeader", size:128, magic:"ROWPACK2", note:"文件头。创建后不可变（append-only）；StoreUUID 仅作文件身份 / 缓存键 / 加密 AAD，不再用于文件配对。CheckVersion 以 0x0F 掩码校验 RequiredFeatures。",
+ f:[
+ [0,8,"bytes[8]","magic","固定 “ROWPACK2”，区别于 v1 的 “ROWPACKD”，首 8 字节即拒绝旧格式","magic"],
+ [8,2,"u16","VersionMajor","固定 = 2","ver"],
+ [10,2,"u16","VersionMinor","当前 = 0；更高 minor 仅当全部 required 能力位可识别时才可打开","ver"],
+ [12,4,"u32","HeaderSize","固定 = 128","ver"],
+ [16,16,"bytes[16]","StoreUUID","文件身份；加密时进入 Block/索引 AAD","id"],
+ [32,8,"i64","CreatedUnixNano","创建时间（纳秒）","ts"],
+ [40,8,"u64","RequiredFeatures","能力位图（bit0 TypedTupleV1 · bit1 Zstd · bit2 MetadataBlock · bit3 Delta），未知置位 ⇒ Open 失败","flg"],
+ [48,8,"u64","OptionalFeatures","可选能力位图","flg"],
+ [56,4,"u32","DefaultBlockSize","默认目标块大小（默认 256 KiB）","cnt"],
+ [60,1,"u8","DefaultCompression","0=None · 1=Zstd","enum"],
+ [61,1,"u8","DefaultRowEncoding","0=None · 1=TypedTuple","enum"],
+ [62,2,"u16","Flags","通用标志","flg"],
+ [64,1,"u8","EncryptionAlgorithm","0=None · 1=AES-256-GCM（非加密 Store 恒 0）","enum"],
+ [65,1,"u8","NonceScheme","0=None · 1=CounterV1","enum"],
+ [66,1,"u8","KeyIDLen","密钥 ID 长度 0..31","cnt"],
+ [67,31,"bytes[31]","KeyID","ASCII 密钥 ID，按 KeyIDLen 取用","pay"],
+ [98,22,"—","Reserved","必须为 0","rsv"],
+ [120,4,"u32","HeaderCRC32C","覆盖整个头部（自身字段置零）","crc"],
+ [124,4,"u32","ReservedCRC","保留 CRC 位，恒 0","rsv"]
+]},
+{ name:"SnapshotHeader", size:96, magic:"RPKSNAPH", note:"快照头。本身不是提交标志 —— 只有 CRC 有效的 SnapshotFooter 才是。",
+ f:[
+ [0,8,"bytes[8]","magic","“RPKSNAPH”","magic"],
+ [8,4,"u32","HeaderSize","固定 = 96","ver"],
+ [12,1,"u8","SnapshotType","1=FULL · 2=DELTA","enum"],
+ [13,1,"u8","Flags","bit0 = AllowEmpty（允许空快照）","flg"],
+ [14,2,"—","Reserved","必须为 0","rsv"],
+ [16,8,"u64","SnapshotID","全局递增；FULL 可任意时刻重提（取消 v1 id=1 强制，R7）","id"],
+ [24,8,"u64","ParentSnapshotID","FULL=0；DELTA 必须已存在且小于当前 ID","id"],
+ [32,8,"i64","CreatedUnixNano","快照创建时间","ts"],
+ [40,8,"u64","FirstBlockID","本快照首个 BlockID","id"],
+ [48,8,"u64","WriterNonce","写者随机数（诊断）","nnc"],
+ [56,32,"—","Reserved","必须为 0","rsv"],
+ [88,4,"u32","HeaderCRC32C","覆盖整个头部（自身字段置零）","crc"],
+ [92,4,"—","Reserved","必须为 0","rsv"]
+]},
+{ name:"BlockHeader", size:64, magic:"RPKBLOCK", note:"块头。一 Block 只属一个快照；Rows Block 只属一个表。管道：Payload → Zstd → (可选) AES-GCM。加密时 StoredSize = 明文压缩长 + 16B tag。",
+ f:[
+ [0,8,"bytes[8]","magic","“RPKBLOCK”","magic"],
+ [8,4,"u32","HeaderSize","固定 = 64","ver"],
+ [12,1,"u8","BlockKind","1=Rows · 2=Metadata","enum"],
+ [13,1,"u8","Compression","0=None · 1=Zstd","enum"],
+ [14,2,"u16","Flags","bit0 = Encrypted","flg"],
+ [16,8,"u64","BlockID","Store 内单调递增；参与 nonce 与 AAD","id"],
+ [24,8,"u64","SnapshotID","所属快照","id"],
+ [32,4,"u32","TableID","所属表（Metadata Block 时为 0 语义）","id"],
+ [36,4,"u32","ItemCount","块内记录条数","cnt"],
+ [40,4,"u32","RawSize","解压后（加密时为明文压缩前）长度","cnt"],
+ [44,4,"u32","StoredSize","落盘载荷长度（压缩态 / 密文态）","cnt"],
+ [48,4,"u32","RawCRC32C","未压缩载荷 CRC","crc"],
+ [52,4,"u32","HeaderCRC32C","覆盖整个块头（自身置零）；Footer 的 BlocksCRC32C 按物理写序拼接各块此值","crc"],
+ [56,4,"u32","KeyEpoch","密钥轮次（取密钥用；同时参与 nonce）","nnc"],
+ [60,4,"—","Reserved","必须为 0","rsv"]
+]},
+{ name:"RowsPayloadHeader", size:32, magic:"RPKROWPL", note:"Rows Block 解压后载荷的 32 B 头；随后是行目录与记录区。",
+ f:[
+ [0,8,"bytes[8]","magic","“RPKROWPL”","magic"],
+ [8,4,"u32","PayloadVersion","固定 = 1","ver"],
+ [12,4,"u32","DirEntrySize","固定 = 24","ver"],
+ [16,4,"u32","ItemCount","记录条数","cnt"],
+ [20,4,"u32","DirectoryBytes","必须 = ItemCount × 24","cnt"],
+ [24,8,"u64","RecordsBytes","记录区总字节数","cnt"]
+]},
+{ name:"RowDirectoryEntry", size:24, magic:"—", note:"行目录项，按调用（写入）顺序排列，无独立 CRC（由块头 RawCRC32C 覆盖）。",
+ f:[
+ [0,8,"u64","RowID","表内稳定逻辑行标识","id"],
+ [8,4,"u32","RecordOffset","记录在记录区内的偏移","off"],
+ [12,4,"u32","RecordLength","记录总长（含 24 B 记录头）","cnt"],
+ [16,1,"u8","ChangeType","1=Insert · 2=Update · 3=Delete","enum"],
+ [17,3,"—","Reserved","必须为 0","rsv"],
+ [20,4,"u32","SchemaVersion","编码所用 Schema 版本","ver"]
+]},
+{ name:"RowRecordHeader", size:24, magic:"—", note:"行记录头，紧跟记录体；DELETE 记录 RowEncoding=0、RowLength=0、RowCRC=0、无记录体。",
+ f:[
+ [0,8,"u64","RowID","与目录项一致","id"],
+ [8,4,"u32","SchemaVersion","同目录项","ver"],
+ [12,1,"u8","ChangeType","1/2/3","enum"],
+ [13,1,"u8","RowEncoding","0=None · 1=TypedTuple v1","enum"],
+ [14,2,"—","Reserved","必须为 0","rsv"],
+ [16,4,"u32","RowLength","记录体长度","cnt"],
+ [20,4,"u32","RowCRC32C","记录体 CRC","crc"]
+]},
+{ name:"MetaPayloadHeader", size:32, magic:"RPKMETAP", note:"Metadata Block 解压后载荷的 32 B 头；随后是 32 B 目录项 × N 与 TLV 记录体区。",
+ f:[
+ [0,8,"bytes[8]","magic","“RPKMETAP”","magic"],
+ [8,4,"u32","PayloadVersion","固定 = 1","ver"],
+ [12,4,"u32","DirEntrySize","固定 = 32","ver"],
+ [16,4,"u32","ItemCount","记录条数","cnt"],
+ [20,4,"u32","DirectoryBytes","必须 = ItemCount × 32","cnt"],
+ [24,8,"u64","RecordsBytes","记录区总字节数","cnt"]
+]},
+{ name:"MetadataDirectoryEntry", size:32, magic:"—", note:"元数据目录项；DELETE 项必须 RecordOffset/Length/CRC 全 0。",
+ f:[
+ [0,8,"u64","ObjectID","元数据对象 ID","id"],
+ [8,4,"u32","Revision","对象修订号","ver"],
+ [12,4,"u32","RecordType","引擎冻结：2=Table · 3=Column","enum"],
+ [16,4,"u32","RecordOffset","记录体在记录区的偏移","off"],
+ [20,4,"u32","RecordLength","记录体长度","cnt"],
+ [24,1,"u8","Operation","1=Upsert · 2=Delete","enum"],
+ [25,1,"u8","Flags","bit0 = Critical（未知 Critical 记录必须报错）","flg"],
+ [26,2,"—","Reserved","必须为 0","rsv"],
+ [28,4,"u32","RecordCRC32C","记录体 CRC","crc"]
+]},
+{ name:"IndexTxnHeader", size:80, magic:"RPITXNBH", note:"索引事务头，恒为明文（R1 扫描无需密钥）。BodyBytes 计 Header 与 Footer 之间的存储态字节（分块 + 目录，加密含 tag）。",
+ f:[
+ [0,8,"bytes[8]","magic","“RPITXNBH”","magic"],
+ [8,4,"u32","HeaderSize","固定 = 80","ver"],
+ [12,4,"—","Reserved","必须为 0","rsv"],
+ [16,8,"u64","TxnSequence","事务序号（加密时参与 nonce/AAD）","id"],
+ [24,8,"u64","SnapshotID","对应快照","id"],
+ [32,8,"u64","DataSnapshotStart","快照数据区起点（SnapshotHeader 处）","off"],
+ [40,8,"u64","DataSnapshotEnd","沿用 v1 语义：SnapshotFooter 之后（整个 Txn 结束，IndexTxn 属于该范围）","off"],
+ [48,4,"u32","MetadataEntryCount","元数据条目数","cnt"],
+ [52,4,"u32","BlockEntryCount","块条目数","cnt"],
+ [56,8,"u64","RowEntryCount","行条目数","cnt"],
+ [64,8,"u64","BodyBytes","Header→Footer 之间存储态字节数；权威校验 IndexTxnEnd = Start+80+BodyBytes+80","cnt"],
+ [72,4,"u32","HeaderCRC32C","覆盖整个头部（自身置零）","crc"],
+ [76,4,"u32","KeyEpoch","加密 Store 的分块密钥轮次；明文 Store 恒 0","nnc"]
+]},
+{ name:"IndexChunkHeader", size:64, magic:"RPICHNK1", note:"索引分块头，恒为明文。加密 Store 下每块载荷单独 AES-GCM 封装（HMAC 派生 nonce，块身份 AAD）。",
+ f:[
+ [0,8,"bytes[8]","magic","“RPICHNK1”","magic"],
+ [8,2,"u16","HeaderSize","固定 = 64","ver"],
+ [10,1,"u8","EntryKind","1=Snapshot · 2=Metadata · 3=Block · 4=Row","enum"],
+ [11,1,"u8","Compression","0=None · 1=Zstd","enum"],
+ [12,1,"u8","Encryption","0=None · 1=AES-256-GCM","enum"],
+ [13,1,"u8","Flags","必须 = 0（未知值解析失败）","flg"],
+ [14,2,"—","Reserved","必须为 0","rsv"],
+ [16,4,"u32","ChunkSequence","事务内 0 起编号","id"],
+ [20,4,"u32","EntryCount","解码后条目数（1..2²⁰）","cnt"],
+ [24,4,"u32","FirstEntryOrdinal","首个条目在本 Kind 流内的序数","id"],
+ [28,4,"u32","RawBytes","压缩前编码字节数（1..16 MiB）","cnt"],
+ [32,4,"u32","StoredBytes","落盘载荷字节数（加密时含 16 B tag）","cnt"],
+ [36,4,"u32","KeyEpoch","本块密钥轮次","nnc"],
+ [40,4,"u32","PayloadCRC32C","对存储态载荷的 CRC（诊断）","crc"],
+ [44,4,"u32","HeaderCRC32C","覆盖 0..44（自身置零）","crc"],
+ [48,16,"—","Reserved","必须为 0","rsv"]
+]},
+{ name:"IndexChunkDirEntry", size:32, magic:"—", note:"分块目录项。即使加密 Store 也保持明文，使读者无键即可定位分块；仅暴露大小与条目数。无独立 CRC（由 Footer 区域 CRC 与各块头 CRC 覆盖）。",
+ f:[
+ [0,4,"u32","ChunkSequence","对应分块编号","id"],
+ [4,4,"u32","EntryCount","该块条目数","cnt"],
+ [8,4,"u32","FirstEntryOrdinal","首条目序数","id"],
+ [12,4,"u32","RawBytes","压缩前字节数","cnt"],
+ [16,4,"u32","StoredBytes","载荷字节数（不含固定 64 B 块头）","cnt"],
+ [20,1,"u8","EntryKind","1..4","enum"],
+ [21,3,"—","Reserved","必须为 0","rsv"],
+ [24,8,"u64","RegionOffset","分块头相对 IndexTxn 体起点的偏移","off"]
+]},
+{ name:"SnapshotIndexEntry", size:72, magic:"—", note:"快照摘要条目，每个 IndexTxn 恰好 1 条。",
+ f:[
+ [0,8,"u64","SnapshotID","","id"],
+ [8,8,"u64","ParentSnapshotID","","id"],
+ [16,1,"u8","SnapshotType","1=FULL · 2=DELTA","enum"],
+ [17,3,"—","Reserved","必须为 0","rsv"],
+ [20,4,"u32","BlockCount","块总数","cnt"],
+ [24,8,"u64","RowRecordCount","行记录总数","cnt"],
+ [32,8,"u64","DataStart","快照数据区起点","off"],
+ [40,8,"u64","DataEnd","SnapshotFooter 之后；重放校验取 footer = DataEnd − 144","off"],
+ [48,8,"i64","CreatedUnixNano","创建时间","ts"],
+ [56,4,"u32","DataFooterCRC32C","对应 SnapshotFooter 的 FooterCRC32C（交叉校验）","crc"],
+ [60,4,"u32","EntryCRC32C","覆盖整个条目（自身置零）","crc"],
+ [64,8,"—","Reserved","必须为 0","rsv"]
+]},
+{ name:"MetadataIndexEntry", size:48, magic:"—", note:"元数据对象定位条目 × N。",
+ f:[
+ [0,8,"u64","SnapshotID","","id"],
+ [8,8,"u64","ObjectID","","id"],
+ [16,4,"u32","Revision","","ver"],
+ [20,4,"u32","RecordType","2=Table · 3=Column","enum"],
+ [24,8,"u64","BlockID","","id"],
+ [32,4,"u32","ItemOrdinal","块内条目序数","id"],
+ [36,1,"u8","Operation","1=Upsert · 2=Delete","enum"],
+ [37,1,"u8","Flags","bit0 = Critical","flg"],
+ [38,2,"—","Reserved","必须为 0","rsv"],
+ [40,4,"u32","EntryCRC32C","覆盖整个条目（自身置零）","crc"],
+ [44,4,"—","Reserved","必须为 0","rsv"]
+]},
+{ name:"BlockIndexEntry", size:56, magic:"—", note:"块定位条目 × B。",
+ f:[
+ [0,8,"u64","BlockID","","id"],
+ [8,8,"u64","SnapshotID","","id"],
+ [16,4,"u32","TableID","","id"],
+ [20,1,"u8","BlockKind","1=Rows · 2=Metadata","enum"],
+ [21,1,"u8","Compression","0=None · 1=Zstd","enum"],
+ [22,2,"—","Reserved","必须为 0","rsv"],
+ [24,8,"u64","DataOffset","块头在文件中的 offset","off"],
+ [32,4,"u32","RawSize","","cnt"],
+ [36,4,"u32","StoredSize","","cnt"],
+ [40,4,"u32","ItemCount","","cnt"],
+ [44,4,"u32","RawCRC32C","","crc"],
+ [48,4,"u32","EntryCRC32C","覆盖整个条目（自身置零）","crc"],
+ [52,4,"—","Reserved","必须为 0","rsv"]
+]},
+{ name:"RowIndexEntry", size:40, magic:"—", note:"行定位条目 × R，提供 (SnapshotID, TableID, RowID) → BlockID, ItemOrdinal；每层内按 RowID 有序分片。",
+ f:[
+ [0,8,"u64","SnapshotID","","id"],
+ [8,4,"u32","TableID","","id"],
+ [12,1,"u8","ChangeType","1/2/3","enum"],
+ [13,3,"—","Reserved","必须为 0","rsv"],
+ [16,8,"u64","RowID","","id"],
+ [24,8,"u64","BlockID","","id"],
+ [32,4,"u32","ItemOrdinal","块内条目序数","id"],
+ [36,4,"u32","EntryCRC32C","覆盖整个条目（自身置零）","crc"]
+]},
+{ name:"IndexTxnFooter", size:80, magic:"RPITXNEF", note:"索引事务尾。R8 之后不再承担最终提交语义（提交权威是 SnapshotFooter）；与头部、条目、数据 Footer 交叉校验。",
+ f:[
+ [0,8,"bytes[8]","magic","“RPITXNEF”","magic"],
+ [8,4,"u32","FooterSize","固定 = 80","ver"],
+ [12,4,"—","Reserved","必须为 0","rsv"],
+ [16,8,"u64","TxnSequence","与头部一致","id"],
+ [24,8,"u64","SnapshotID","与头部一致","id"],
+ [32,8,"u64","TxnStartOffset","IndexTxnHeader 起始 offset","off"],
+ [40,8,"u64","TxnEndOffset","IndexTxnFooter 之后","off"],
+ [48,8,"u64","DataSnapshotEnd","与头部一致","off"],
+ [56,4,"u32","BodyCRC32C","事务体 CRC","crc"],
+ [60,4,"u32","DataFooterCRC32C","对应 SnapshotFooter 的 FooterCRC32C","crc"],
+ [64,4,"u32","FooterCRC32C","覆盖整个 Footer（自身置零）","crc"],
+ [68,12,"—","Reserved","必须为 0","rsv"]
+]},
+{ name:"SnapshotFooter", size:144, magic:"RPKSNAPF", note:"★ 唯一提交权威（R3）：FooterCRC32C 有效且 offset 自洽即在文件范围内 ⇒ 快照已提交。同时是结构绑定记录：打开时块区间与索引区间都从本 Footer 读取。",
+ f:[
+ [0,8,"bytes[8]","magic","“RPKSNAPF”","magic"],
+ [8,4,"u32","FooterSize","固定 = 144（M0 冻结）","ver"],
+ [12,1,"u8","SnapshotType","1=FULL · 2=DELTA","enum"],
+ [13,3,"—","Reserved","必须为 0","rsv"],
+ [16,8,"u64","SnapshotID","","id"],
+ [24,8,"u64","ParentSnapshotID","FULL=0","id"],
+ [32,8,"u64","PreviousFooterOffset","严格指向前一个已提交 Footer（构成 Footer 链）","off"],
+ [40,8,"u64","SnapshotStartOffset","本 Txn 起点（SnapshotHeader 处）","off"],
+ [48,8,"u64","BlocksStartOffset","= SnapshotStartOffset + 96","off"],
+ [56,8,"u64","BlocksEndOffset","数据块区结束（空 DELTA 时 = BlocksStart）","off"],
+ [64,8,"u64","IndexTxnStartOffset","索引事务起点","off"],
+ [72,8,"u64","IndexTxnEndOffset","索引事务结束；权威校验 +144 必须等于 SnapshotEndOffset","off"],
+ [80,8,"u64","SnapshotEndOffset","= IndexTxnEndOffset + 144（Footer 后对齐位置）","off"],
+ [88,8,"u64","FirstBlockID","本事务首个 BlockID","id"],
+ [96,4,"u32","BlockCount","Rows 块数","cnt"],
+ [100,4,"u32","MetadataBlockCount","Metadata 块数","cnt"],
+ [104,8,"u64","RowRecordCount","行记录总数","cnt"],
+ [112,8,"u64","RawBytes","原始字节（诊断；权威值由索引条目重算）","cnt"],
+ [120,8,"u64","StoredBytes","= SnapshotEnd − SnapshotStart（诊断）","cnt"],
+ [128,4,"u32","BlocksCRC32C","按物理写序拼接各块 HeaderCRC32C（4B×N）的 CRC；绑定失败 ⇒ 索引重建而非否决提交","crc"],
+ [132,4,"u32","IndexTxnCRC32C","整个 IndexTxn 落盘字节（加密时为密文）的 CRC；无键即可检出撕裂（R12）","crc"],
+ [136,4,"u32","FooterCRC32C","覆盖整个 Footer（自身置零）—— 提交判定核心","crc"],
+ [140,4,"—","Reserved","必须为 0","rsv"]
+]}
+];
+
+const hex = n => "0x" + n.toString(16).toUpperCase().padStart(2, "0");
+function renderStructs() {
+  const root = document.getElementById("structs");
+  root.innerHTML = STRUCTS.map(s => {
+    const strip = s.f.map(f => {
+      const c = CAT[f[5]];
+      const label = f[3] && f[1] >= 10 ? `<span style="--seg-t:${c.t}">${f[3]}</span>` : "";
+      const tip = `${hex(f[0])} · ${f[3] || "(保留)"} · ${f[1]} B`;
+      return `<div class="f" style="flex:${f[1]};background:${c.c}" title="${tip}">${label}</div>`;
+    }).join("");
+    const rows = s.f.map((f, i) => {
+      const c = CAT[f[5]];
+      return `<tr class="hl" data-i="${i}">
+        <td class="off">${hex(f[0])}</td>
+        <td class="sz">${f[1]} B</td>
+        <td class="ty"><span class="tag">${f[2] || "—"}</span></td>
+        <td class="fn"><span class="dotc" style="background:${c.c}"></span>${f[3] || "<span style='color:var(--text-faint)'>(reserved)</span>"}</td>
+        <td class="ds">${f[4] || ""}</td></tr>`;
+    }).join("");
+    const magicChip = s.magic !== "—" ? `<span class="chip magic">✦ ${s.magic}</span>` : "";
+    return `<article class="struct">
+      <div class="struct-head">
+        <span class="name">${s.name}</span>
+        ${magicChip}
+        <div class="meta">
+          <span class="chip size">FixedSize ${s.size} B</span>
+          <span class="chip note">Little-Endian · 8B 对齐</span>
+        </div>
+      </div>
+      <div class="struct-body">
+        <div class="bmap">${strip}</div>
+        <div class="tbl-scroll" style="box-shadow:none"><table class="bytes">
+          <thead><tr><th>Offset</th><th>Size</th><th>Type</th><th>Field</th><th>Description</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+        ${s.note ? `<p class="struct-note">※ ${s.note}</p>` : ""}
+      </div>
+    </article>`;
+  }).join("");
+
+  /* 行悬停 ↔ 字节图联动 */
+  root.querySelectorAll(".struct").forEach(card => {
+    const segs = card.querySelectorAll(".bmap .f");
+    const rows = card.querySelectorAll("table.bytes tbody tr");
+    rows.forEach((r, i) => {
+      r.addEventListener("mouseenter", () => segs[i] && (segs[i].style.outline = "2px solid var(--accent-2)"));
+      r.addEventListener("mouseleave", () => segs[i] && (segs[i].style.outline = "none"));
+    });
+  });
+}
+renderStructs();
+
+/* ===================== 主题切换 ===================== */
+const btn = document.getElementById("themeBtn");
+btn.addEventListener("click", () => {
+  const cur = document.documentElement.getAttribute("data-theme");
+  document.documentElement.setAttribute("data-theme", cur === "dark" ? "light" : "dark");
+});
+
+/* ===================== TOC scrollspy ===================== */
+const links = [...document.querySelectorAll("#tocNav a")];
+const secs = links.map(a => document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es => {
+  es.forEach(e => {
+    if (e.isIntersecting) {
+      links.forEach(l => l.classList.remove("active"));
+      const i = secs.indexOf(e.target);
+      if (i >= 0) links[i].classList.add("active");
+    }
+  });
+}, { rootMargin: "-15% 0px -70% 0px" });
+secs.forEach(s => s && spy.observe(s));
+</script>
+</body>
+</html>

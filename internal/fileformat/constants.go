@@ -82,9 +82,6 @@ const (
 	SnapshotFooterReservedOffset = 140
 )
 
-// Alignment used for top-level structures and snapshot end offsets.
-const Align = 8
-
 // SnapshotType identifies FULL and DELTA snapshots.
 type SnapshotType uint8
 
@@ -141,10 +138,10 @@ const (
 // Encryption layout constants. The store-level fields live in the FileHeader
 // reserved region (offset 64..120); non-encrypted stores leave them zero.
 const (
-	FileHeaderEncAlgoOffset  = 64  // 1B EncryptionAlgorithm
-	FileHeaderNonceSchemeOff = 65  // 1B NonceScheme
-	FileHeaderKeyIDLenOffset = 66  // 1B key id length (0..KeyIDMaxLen)
-	FileHeaderKeyIDOffset    = 67  // KeyIDMaxLen bytes of key id
+	FileHeaderEncAlgoOffset  = 64 // 1B EncryptionAlgorithm
+	FileHeaderNonceSchemeOff = 65 // 1B NonceScheme
+	FileHeaderKeyIDLenOffset = 66 // 1B key id length (0..KeyIDMaxLen)
+	FileHeaderKeyIDOffset    = 67 // KeyIDMaxLen bytes of key id
 	FileHeaderKeyIDMaxLen    = 31
 
 	// BlockHeaderKeyEpochOffset is the first 4 reserved bytes of BlockHeader,

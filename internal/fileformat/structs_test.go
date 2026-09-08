@@ -8,13 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// decodeFunc unmarshals src; encodeFunc marshals v into a fresh buffer.
-type roundTripCase struct {
-	name      string
-	marshal   func(dst []byte) error
-	unmarshal func(src []byte) error
-}
-
 // roundTrip verifies marshal -> unmarshal succeeds and that the CRC field
 // makes the serialized form self-consistent.
 func roundTrip(t *testing.T, name string, m func(dst []byte) error, u func(src []byte) error) {

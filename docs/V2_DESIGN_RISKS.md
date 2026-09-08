@@ -73,7 +73,7 @@ SnapshotFooter (RPKSNAPF)  → 结束当前 snapshot
 
 ### R2（P0）重放架构：从"尾部截断"变成"逐 snapshot 重建并继续"
 
-**现状**：`index.Replay`（internal/index/replay.go）一旦某个 txn 校验失败，就
+**现状（v1 已移除）**：v1 的 `index.Replay`（internal/index/replay.go，已随 v2 删除）一旦某个 txn 校验失败，就
 `TailIgnored = len(remaining)` 停止，把其后的所有 txn 视为尾部丢弃。这在 v1 成立，因为
 `.rpi` 是纯派生文件，坏一点即可整体丢弃重建。
 
@@ -85,6 +85,9 @@ SnapshotFooter (RPKSNAPF)  → 结束当前 snapshot
   用 Blocks 内存重建，然后**继续处理下一个**；
 - 因此 §9 的"重放到现有 index.View"与 v1 `Replay()` 不是一个算法，需要新实现（不可复用作
   原样函数），并有配套崩溃/位腐注入测试。
+
+**落地（v2）**：上述新实现即 `Store.recover`（recovery.go）的逐 snapshot 重建/继续逻辑
+与 `View.Apply`；v1 的 `index.Replay`/`DataFooterReader` 实现已删除，不再存在。
 
 **边界强制（防跨 txn 消费垃圾）**：对每个 IndexTxn 必须成立：
 

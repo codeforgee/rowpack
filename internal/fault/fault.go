@@ -8,7 +8,6 @@ import "sync"
 var (
 	mu      sync.Mutex
 	actions = map[string][]func(){}
-	points  = map[string]int{} // counters per point
 )
 
 // Inject registers fn to run when Check(point) is called. Multiple actions at
@@ -19,20 +18,18 @@ func Inject(point string, fn func()) {
 	actions[point] = append(actions[point], fn)
 }
 
-// Clear removes all injections and resets counters.
+// Clear removes all injections.
 func Clear() {
 	mu.Lock()
 	defer mu.Unlock()
 	actions = map[string][]func(){}
-	points = map[string]int{}
 }
 
-// Check runs the injected action at point, if any, exactly once per count.
-// It is a no-op when nothing is injected.
+// Check runs the injected action at point, if any. It is a no-op when nothing
+// is injected.
 func Check(point string) {
 	mu.Lock()
 	defer mu.Unlock()
-	actions[point] = actions[point] // ensure key exists
 	for _, fn := range actions[point] {
 		fn()
 	}

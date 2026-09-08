@@ -103,8 +103,7 @@ type SnapshotWriter struct {
 	// metadata records written in this snapshot (for schema index build)
 	metaRecords []*metadata.Record
 
-	nextMetaBlockSeq int
-	allocator        *metadata.ObjectIDAllocator
+	allocator *metadata.ObjectIDAllocator
 
 	rowRecordCount uint64
 	rawBytes       uint64

@@ -2,7 +2,6 @@ package index
 
 import (
 	"bytes"
-	"fmt"
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -97,105 +96,6 @@ func TestDuplicateRowRejected(t *testing.T) {
 	r1 := fileformat.RowIndexEntry{SnapshotID: 1, TableID: 1, ChangeType: fileformat.ChangeInsert, RowID: 5, BlockID: 1, ItemOrdinal: 0}
 	require.NoError(t, b.AddRow(r1))
 	require.Error(t, b.AddRow(r1), "duplicate (table,row) accepted")
-}
-
-type fakeFooterReader struct {
-	crcs map[uint64]uint32
-}
-
-func (f *fakeFooterReader) DataFooterCRC(snapshotID uint64, _, _ uint64) (uint32, error) {
-	if c, ok := f.crcs[snapshotID]; ok {
-		return c, nil
-	}
-	return 0, fmt.Errorf("no footer for %d", snapshotID)
-}
-
-func TestReplay(t *testing.T) {
-	// FULL S1, DELTA S2 <- S1.
-	t1 := buildTxn(t, 1, fullSnap(1, 128, 4096), nil, []fileformat.BlockIndexEntry{
-		{BlockID: 1, SnapshotID: 1, TableID: 1, BlockKind: fileformat.BlockKindRows, Compression: fileformat.CompressionZstd, DataOffset: 224, RawSize: 1000, StoredSize: 500, ItemCount: 2, RawCRC32C: 1},
-	}, []fileformat.RowIndexEntry{
-		{SnapshotID: 1, TableID: 1, ChangeType: fileformat.ChangeInsert, RowID: 10, BlockID: 1, ItemOrdinal: 0},
-	}, 4096, 0xAA)
-	t2 := buildTxn(t, 2, deltaSnap(2, 1, 4192, 8192), nil, []fileformat.BlockIndexEntry{
-		{BlockID: 2, SnapshotID: 2, TableID: 1, BlockKind: fileformat.BlockKindRows, Compression: fileformat.CompressionZstd, DataOffset: 4288, RawSize: 500, StoredSize: 200, ItemCount: 1, RawCRC32C: 2},
-	}, []fileformat.RowIndexEntry{
-		{SnapshotID: 2, TableID: 1, ChangeType: fileformat.ChangeUpdate, RowID: 10, BlockID: 2, ItemOrdinal: 0},
-	}, 8192, 0xBB)
-
-	hdr := make([]byte, 128)
-	data := append(append(append([]byte(nil), hdr...), t1...), t2...)
-	data = append(data, make([]byte, 7)...) // trailing partial
-
-	res, err := Replay(data, 128, 4096, &fakeFooterReader{crcs: map[uint64]uint32{1: 0xAA, 2: 0xBB}})
-	require.NoError(t, err)
-	require.Equal(t, 2, res.Txns, "replayed %d txns", res.Txns)
-	require.Equal(t, int64(7), res.TailIgnored, "tail ignored %d, want 7", res.TailIgnored)
-	v := res.View
-	require.NotNil(t, v.Snapshot(1), "snapshots missing")
-	require.NotNil(t, v.Snapshot(2), "snapshots missing")
-	require.Equal(t, uint32(2), v.Snapshot(2).Depth, "depth = %d, want 2", v.Snapshot(2).Depth)
-	if r := v.Row(2, 1, 10); r == nil || r.ChangeType != fileformat.ChangeUpdate {
-		require.Fail(t, "row resolution failed")
-	}
-	if r := v.Row(1, 1, 10); r == nil || r.ChangeType != fileformat.ChangeInsert {
-		require.Fail(t, "snapshot 1 row wrong")
-	}
-	if b := v.Block(1); b == nil || b.DataOffset != 224 {
-		require.Fail(t, "block resolution failed")
-	}
-	if got := v.RowKeys(1, 1); len(got) != 1 || got[0].RowID != 10 {
-		require.Fail(t, "row keys failed")
-	}
-	require.NotZero(t, v.MemoryBytes(), "memory stats not tracked")
-}
-
-func TestReplayParentChainValidation(t *testing.T) {
-	// DELTA without its parent must stop replay.
-	t1 := buildTxn(t, 1, deltaSnap(2, 1, 128, 4096), nil, nil, nil, 4096, 0)
-	hdr := make([]byte, 128)
-	data := append(hdr, t1...)
-	res, err := Replay(data, 128, 4096, nil)
-	require.NoError(t, err)
-	require.Zero(t, res.Txns, "orphan delta replayed %d txns", res.Txns)
-	require.Nil(t, res.View.LatestSnapshot(), "view should be empty")
-
-	// Depth limit.
-	depth := uint32(2)
-	view := EmptyView()
-	seq := uint64(1)
-	reached := false
-	for i := uint64(1); i <= 4; i++ {
-		var snap fileformat.SnapshotIndexEntry
-		if i == 1 {
-			snap = fullSnap(i, i*100, i*100+100)
-		} else {
-			snap = deltaSnap(i, i-1, i*100, i*100+100)
-		}
-		tx := buildTxn(t, seq, snap, nil, nil, nil, i*100+100, 0)
-		parsed, err := ParseTxn(tx)
-		require.NoError(t, err)
-		nv, err := view.Apply(parsed, depth)
-		if err != nil {
-			require.Equal(t, uint64(3), i, "depth limit hit at depth %d", i)
-			reached = true
-			break
-		}
-		view = nv
-		seq++
-	}
-	require.True(t, reached, "depth limit not enforced")
-}
-
-func TestReplayDuplicateSnapshotStops(t *testing.T) {
-	t1 := buildTxn(t, 1, fullSnap(1, 128, 4096), nil, nil, nil, 4096, 0)
-	t2 := buildTxn(t, 2, fullSnap(1, 8192, 12288), nil, nil, nil, 12288, 0) // duplicate snapshot 1
-	hdr := make([]byte, 128)
-	data := append(append(hdr, t1...), t2...)
-	res, err := Replay(data, 128, 4096, nil)
-	require.NoError(t, err)
-	require.Equal(t, 1, res.Txns, "replayed %d txns, want 1 (duplicate stops)", res.Txns)
-	require.NotNil(t, res.View.Snapshot(1), "first snapshot missing")
 }
 
 func TestViewImmutability(t *testing.T) {

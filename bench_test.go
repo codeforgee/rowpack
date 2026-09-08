@@ -48,6 +48,9 @@ func BenchmarkEnv(b *testing.B) {
 		goVer, zstdVer, runtime.GOOS, runtime.GOARCH, fileformat.DefaultCacheBytes,
 		fileformat.DefaultBlockSize, float64(st.DataFileBytes)/(1<<20), ratio, bytesPerRow,
 		float64(st.IndexMemoryBytes)/(1<<20))
+	// BenchmarkEnv is a logging-only fake benchmark: it emits the env line and
+	// runs zero iterations by design.
+	//lint:ignore SA3001 calibration: zero iterations for an env-log benchmark
 	b.N = 0
 }
 

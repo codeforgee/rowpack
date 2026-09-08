@@ -41,13 +41,13 @@ func TestBatchByIDsMatchesGet(t *testing.T) {
 	defer db.Close()
 
 	sets := [][]RowID{
-		{1, 2, 3, 4, 5},                            // clustered
-		{1, 500, 1000, 1500, 2000},                 // sparse
-		{2000, 1500, 1000, 500, 1},                 // reversed input
-		{1, 2000},                                  // boundary
-		{7, 7, 8},                                  // duplicates
-		{42},                                       // single
-		{2001, 5000},                               // all missing
+		{1, 2, 3, 4, 5},            // clustered
+		{1, 500, 1000, 1500, 2000}, // sparse
+		{2000, 1500, 1000, 500, 1}, // reversed input
+		{1, 2000},                  // boundary
+		{7, 7, 8},                  // duplicates
+		{42},                       // single
+		{2001, 5000},               // all missing
 	}
 	for _, ids := range sets {
 		for _, order := range []BatchOrder{BatchOrderRowID, BatchOrderInput} {
@@ -151,10 +151,10 @@ func TestBatchRanges(t *testing.T) {
 
 	// Overlapping ranges merge; hole at 10 (deleted); 2999..3999 empty.
 	ranges := []RowIDRange{
-		{Start: 8, End: 12},     // rows 8,9,11,12 (10 deleted)
-		{Start: 11, End: 15},    // overlaps: merged 8..15
-		{Start: 2000, End: 2004},// 2000..2003
-		{Start: 2999, End: 3999},// empty span
+		{Start: 8, End: 12},      // rows 8,9,11,12 (10 deleted)
+		{Start: 11, End: 15},     // overlaps: merged 8..15
+		{Start: 2000, End: 2004}, // 2000..2003
+		{Start: 2999, End: 3999}, // empty span
 	}
 	it, err := db.ReadRowRanges(context.Background(), delta.ID, 1, ranges, BatchReadOptions{})
 	require.NoError(t, err)
@@ -330,6 +330,7 @@ func TestBatchVsGetLoopCrossCheck(t *testing.T) {
 		require.Equal(t, want[id], gotVals[i], "ReadRowsByIDs row %d", id)
 	}
 }
+
 // TestBatchParallelMatchesSequential verifies Parallelism > 1 produces byte
 // identical output to the sequential path across ID sets and ranges.
 func TestBatchParallelMatchesSequential(t *testing.T) {

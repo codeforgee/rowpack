@@ -368,30 +368,6 @@ func (s *Store) initEncryption(dataHdr fileformat.DataFileHeader) error {
 	return nil
 }
 
-// dataFooterVerifier supplies the data footer CRC during index replay.
-type dataFooterVerifier struct {
-	store *Store
-}
-
-func (v *dataFooterVerifier) DataFooterCRC(snapshotID uint64, dataStart, dataEnd uint64) (uint32, error) {
-	if dataEnd < dataStart+fileformat.SnapshotFooterSize {
-		return 0, index.ErrDataFooterMismatch
-	}
-	footerOff := int64(dataEnd - fileformat.SnapshotFooterSize)
-	var fb [fileformat.SnapshotFooterSize]byte
-	if _, err := v.store.data.ReadAt(fb[:], footerOff); err != nil {
-		return 0, index.ErrDataFooterMismatch
-	}
-	var f fileformat.SnapshotFooter
-	if err := f.Unmarshal(fb[:]); err != nil {
-		return 0, index.ErrDataFooterMismatch
-	}
-	if f.SnapshotID != snapshotID {
-		return 0, index.ErrDataFooterMismatch
-	}
-	return le32(fb[fileformat.SnapshotFooterCRC32COffset:]), nil
-}
-
 func le32(b []byte) uint32 {
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 }

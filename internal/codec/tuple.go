@@ -191,13 +191,8 @@ func DecodeInto(dst []Value, data []byte, schema *Schema, limits Limits, sink St
 	return row, nil
 }
 
-// readValue decodes one value of column type col from b, returning the value
-// and the number of bytes consumed.
-func readValue(b []byte, col Column, limits Limits) (Value, int, error) {
-	return readValueInto(Value{}, b, col, limits, nil)
-}
-
-// readValueInto is readValue with a reuse slot: for Decimal columns the
+// readValueInto decodes one value of column type col from b into the reuse
+// slot: for Decimal columns the
 // existing *big.Int is kept and reused (colored by the caller decoding into
 // the same row slice across rows), avoiding a big.Int allocation per row. For
 // all other types the value is freshly built. When sink is non-nil, String

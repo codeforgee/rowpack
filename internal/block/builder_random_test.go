@@ -9,16 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// captureBuilder builds rows into a capture sink and returns the last flushed
-// raw payload.
-func captureBuilder(t *testing.T, compress fileformat.Compression, add func(b *RowsBlockBuilder) error) ([]capturedBlock, *RowsBlockBuilder) {
-	t.Helper()
-	var s captureSink
-	b := NewRowsBlockBuilder(1, 7, 64<<10, compress, 0, DefaultLimits(), s.flush)
-	require.NoError(t, add(b))
-	return s.blocks, b
-}
-
 func TestRowsBuilderDeletePendingRawPayload(t *testing.T) {
 	var s captureSink
 	b := NewRowsBlockBuilder(1, 7, 64<<10, fileformat.CompressionNone, 0, DefaultLimits(), s.flush)

@@ -66,10 +66,6 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 			return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: err.Error()}
 		}
 		if mode == VerifyFull {
-			blk, err = s.loader.Load(int64(bl.DataOffset), bl.BlockID)
-			if err != nil {
-				return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: err.Error()}
-			}
 			switch bl.Kind {
 			case fileformat.BlockKindRows:
 				rp, err := block.ParseRowsPayload(blk.Raw, bl.ItemCount)

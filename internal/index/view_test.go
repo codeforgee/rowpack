@@ -1,7 +1,6 @@
 package index
 
 import (
-	"errors"
 	"sort"
 	"testing"
 
@@ -331,6 +330,30 @@ func TestApplyBlockIDSorting(t *testing.T) {
 	require.NotZero(t, nv.MemoryBytes(), "memory bytes not accumulated")
 }
 
-func TestErrDataFooterMismatchIsDistinct(t *testing.T) {
-	require.True(t, errors.Is(ErrDataFooterMismatch, ErrDataFooterMismatch), "sentinel should match itself")
+// TestApplyDepthLimit verifies View.Apply enforces the chain depth cap the
+// store passes at replay (recovery.go): a DELTA that would exceed maxDepth is
+// rejected and the view is left untouched.
+func TestApplyDepthLimit(t *testing.T) {
+	view := EmptyView()
+	seq := uint64(1)
+	var err error
+	for i := uint64(1); i <= 4; i++ {
+		var snap fileformat.SnapshotIndexEntry
+		if i == 1 {
+			snap = fullSnap(i, i*100, i*100+100)
+		} else {
+			snap = deltaSnap(i, i-1, i*100, i*100+100)
+		}
+		var nv *View
+		nv, err = view.Apply(parseTxn(t, seq, snap, nil, nil, nil), 2)
+		if err != nil {
+			require.Equal(t, uint64(3), i, "depth limit hit at snapshot %d", i)
+			break
+		}
+		view = nv
+		seq++
+	}
+	require.Error(t, err, "depth limit not enforced")
+	// The rejected apply left the established chain intact.
+	require.NotNil(t, view.Snapshot(2), "view lost snapshots before the rejected apply")
 }

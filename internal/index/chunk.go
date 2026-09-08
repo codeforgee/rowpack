@@ -108,15 +108,6 @@ func (re *rowEncoder) encode(e *fileformat.RowIndexEntry) {
 	re.prev = *e
 }
 
-// encodeRowChunk encodes a whole entry slice (tests).
-func encodeRowChunk(entries []fileformat.RowIndexEntry, buf []byte) []byte {
-	re := rowEncoder{buf: buf}
-	for i := range entries {
-		re.encode(&entries[i])
-	}
-	return re.buf
-}
-
 // decodeRowChunk decodes count entries from the frozen delta layout into dst with
 // strict bounds checks: truncated or malformed input is an error, never a
 // panic. SnapshotID is txn-wide and stamped by the caller.

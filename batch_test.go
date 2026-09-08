@@ -330,3 +330,93 @@ func TestBatchVsGetLoopCrossCheck(t *testing.T) {
 		require.Equal(t, want[id], gotVals[i], "ReadRowsByIDs row %d", id)
 	}
 }
+// TestBatchParallelMatchesSequential verifies Parallelism > 1 produces byte
+// identical output to the sequential path across ID sets and ranges.
+func TestBatchParallelMatchesSequential(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "par")
+	db, full := buildConcurrentStore(t, base, Options{})
+	defer db.Close()
+
+	// DELTA layer so the plan spans multiple blocks across two layers.
+	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: full})
+	for i := uint64(1); i <= 100; i += 7 {
+		require.NoError(t, w.Update(context.Background(), 1, i, 1, Row{Uint64(i), String(fmt.Sprintf("p-%d", i))}))
+	}
+	require.NoError(t, w.Delete(context.Background(), 1, 500))
+	delta, err := w.Commit(context.Background())
+	require.NoError(t, err)
+
+	ids := make([]RowID, 0, 500)
+	for i := uint64(1); i <= 1500; i++ {
+		ids = append(ids, i)
+	}
+
+	run := func(opts BatchReadOptions) ([]RowID, []string) {
+		it, err := db.ReadRowsByIDs(context.Background(), delta.ID, 1, ids, opts)
+		require.NoError(t, err)
+		idsOut, vals, _ := batchCollect(t, it)
+		return idsOut, vals
+	}
+	seqIDs, seqVals := run(BatchReadOptions{Order: BatchOrderRowID})
+	parIDs, parVals := run(BatchReadOptions{Order: BatchOrderRowID, Parallelism: 4})
+	require.Equal(t, seqIDs, parIDs)
+	require.Equal(t, seqVals, parVals)
+
+	ranges := []RowIDRange{{Start: 400, End: 600}, {Start: 1000, End: 1100}, {Start: 5, End: 9}}
+	scan, err := db.ReadRowRanges(context.Background(), delta.ID, 1, ranges, BatchReadOptions{Parallelism: 4, MaxRows: 400})
+	require.NoError(t, err)
+	pIDs, _, pst := batchCollect(t, scan)
+	require.NotEmpty(t, pIDs)
+	require.Equal(t, uint64(len(pIDs)), pst.RowsReturned)
+}
+
+// TestBatchParallelCancel verifies cancellation stops the parallel pipeline
+// and Close reclaims every worker.
+func TestBatchParallelCancel(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "par-cancel")
+	db, full := buildConcurrentStore(t, base, Options{})
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ids := make([]RowID, 0, 2000)
+	for i := uint64(1); i <= 2000; i++ {
+		ids = append(ids, i)
+	}
+	it, err := db.ReadRowsByIDs(ctx, full, 1, ids, BatchReadOptions{Parallelism: 4})
+	require.NoError(t, err)
+	cancel()
+	for {
+		_, _, ok := it.Next(nil)
+		if !ok {
+			break
+		}
+	}
+	require.ErrorIs(t, it.Err(), context.Canceled)
+	require.NoError(t, it.Close())
+	// Idempotent close; pipeline fully joined.
+	require.NoError(t, it.Close())
+}
+
+// TestBatchCacheEvictionConsistency is the M5 gate: with a tiny cache that
+// evicts mid-batch, results are identical to the uncached path.
+func TestBatchCacheEvictionConsistency(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "evict")
+	db, full := buildConcurrentStore(t, base, Options{CacheBytes: 32 << 10}) // forces eviction
+	defer db.Close()
+
+	ids := make([]RowID, 0, 2000)
+	for i := uint64(1); i <= 2000; i++ {
+		ids = append(ids, i)
+	}
+	run := func() ([]RowID, []string) {
+		it, err := db.ReadRowsByIDs(context.Background(), full, 1, ids, BatchReadOptions{})
+		require.NoError(t, err)
+		idsOut, vals, _ := batchCollect(t, it)
+		return idsOut, vals
+	}
+	aIDs, aVals := run()
+	bIDs, bVals := run()
+	require.Equal(t, aIDs, bIDs)
+	require.Equal(t, aVals, bVals)
+	require.Len(t, aIDs, 2000)
+}

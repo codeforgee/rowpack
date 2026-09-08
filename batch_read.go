@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/codec"
@@ -94,10 +95,11 @@ type batchItem struct {
 
 // batchBlock groups items sharing one block, in physical file order.
 type batchBlock struct {
-	blockID uint64
-	offset  int64
-	itemIdx []int // indices into plan.items
-	rawSize uint32
+	blockID    uint64
+	offset     int64
+	itemIdx    []int // indices into plan.items
+	rawSize    uint32
+	storedSize uint32
 }
 
 // batchPlan is the fully-resolved read plan (index-only work).
@@ -111,10 +113,21 @@ type batchPlan struct {
 // owning block's raw buffer, kept alive by the block's scanRef until every
 // item of that block has been emitted (refIdx/refPending below).
 type batchBufItem struct {
+	emitPos int
 	payload []byte
 	schema  *codec.Schema
 	rowID   RowID
 	refIdx  int
+}
+
+// blockResult is one decoded block, produced by the sequential loop or a
+// parallel worker and assembled in block order by Next.
+type blockResult struct {
+	blockIdx int
+	items    []batchBufItem // emitPos-ordered payloads aliasing the block raw
+	ref      *scanRef
+	hit      bool
+	err      error
 }
 
 // BatchIterator streams the rows of one batch request. It is not safe for
@@ -138,10 +151,23 @@ type BatchIterator struct {
 	refs        []*scanRef
 	refPending  []int
 	scratch     []fileformat.RowDirectoryEntry
-	stats      BatchReadStats
-	err        error
-	closed     bool
-	buf        Row // iterator-owned row when Next(dst) passes nil
+	stats       BatchReadStats
+	err         error
+	closed      bool
+	buf         Row // iterator-owned row when Next(dst) passes nil
+
+	// parallel decode pipeline (Parallelism > 1, M5): workers decode blocks
+	// concurrently; Next assembles results strictly in block order so the
+	// emission semantics are identical to the sequential path.
+	nextBlockIdx int
+	resultBuf    map[int]blockResult
+	jobs         chan int
+	results      chan blockResult
+	stop         chan struct{}
+	pipelineDone chan struct{}
+	stopOnce     sync.Once
+	started      bool
+	wg           sync.WaitGroup
 }
 
 // ReadRowsByIDs resolves an explicit RowID set at a snapshot and returns an
@@ -170,7 +196,9 @@ func (s *Store) ReadRowsByIDs(
 	plan := &batchPlan{}
 	it := &BatchIterator{
 		store: s, st: st, ctx: ctx, opts: opts, plan: plan,
-		pending: make(map[int]batchBufItem),
+		pending:      make(map[int]batchBufItem),
+		resultBuf:    make(map[int]blockResult),
+		pipelineDone: make(chan struct{}),
 	}
 	it.stats.RequestedIDs = uint64(len(rowIDs))
 
@@ -236,7 +264,9 @@ func (s *Store) ReadRowRanges(
 	}
 	it := &BatchIterator{
 		store: s, st: st, ctx: ctx, opts: opts, plan: &batchPlan{},
-		pending: make(map[int]batchBufItem),
+		pending:      make(map[int]batchBufItem),
+		resultBuf:    make(map[int]blockResult),
+		pipelineDone: make(chan struct{}),
 	}
 	it.stats.RequestedRanges = uint64(len(ranges))
 
@@ -336,6 +366,9 @@ func validateBatchOptions(opts BatchReadOptions, allowInputOrder bool) error {
 	default:
 		return fmt.Errorf("%w: batch order %d", ErrInvalidArgument, opts.Order)
 	}
+	if opts.Parallelism < 0 {
+		return fmt.Errorf("%w: negative Parallelism %d", ErrInvalidArgument, opts.Parallelism)
+	}
 	return nil
 }
 
@@ -364,7 +397,7 @@ func (it *BatchIterator) finalizePlan(items []batchItem) error {
 			return it.err
 		}
 		sort.Slice(idxs, func(a, b int) bool { return items[idxs[a]].ordinal < items[idxs[b]].ordinal })
-		plan.blocks = append(plan.blocks, batchBlock{blockID: bid, offset: int64(bl.DataOffset), itemIdx: idxs, rawSize: bl.RawSize})
+		plan.blocks = append(plan.blocks, batchBlock{blockID: bid, offset: int64(bl.DataOffset), itemIdx: idxs, rawSize: bl.RawSize, storedSize: bl.StoredSize})
 	}
 	sort.Slice(plan.blocks, func(a, b int) bool { return plan.blocks[a].offset < plan.blocks[b].offset })
 	it.stats.CandidateBlocks = uint64(len(plan.blocks))
@@ -416,13 +449,13 @@ func (it *BatchIterator) Next(dst Row) (RowID, Row, bool) {
 		if it.nextEmit >= total {
 			return 0, nil, false // clean end
 		}
-		// Decode the next block in physical order and buffer its items.
+		// Need more decoded blocks: pull the next result in block order.
 		if it.blockIdx >= len(it.plan.blocks) {
 			it.err = fmt.Errorf("rowpack: batch plan exhausted at emit %d/%d", it.nextEmit, total)
 			it.releaseAll()
 			return 0, nil, false
 		}
-		if derr := it.decodeNextBlock(); derr != nil {
+		if derr := it.nextBlockResult(); derr != nil {
 			it.err = derr
 			it.releaseAll()
 			return 0, nil, false
@@ -430,58 +463,183 @@ func (it *BatchIterator) Next(dst Row) (RowID, Row, bool) {
 	}
 }
 
-// decodeNextBlock loads and parses the next planned block once and buffers
-// every requested item of that block.
-func (it *BatchIterator) decodeNextBlock() error {
-	pb := &it.plan.blocks[it.blockIdx]
+// nextBlockResult obtains the next block result in physical block order —
+// from the parallel pipeline (results assembled via resultBuf) or the
+// sequential loop — and buffers its items.
+func (it *BatchIterator) nextBlockResult() error {
+	if it.opts.Parallelism > 1 {
+		if !it.started {
+			it.startPipeline()
+		}
+		for {
+			if r, ok := it.resultBuf[it.nextBlockIdx]; ok {
+				delete(it.resultBuf, it.nextBlockIdx)
+				it.insertResult(r)
+				it.nextBlockIdx++
+				return nil
+			}
+			select {
+			case r, ok := <-it.results:
+				if !ok {
+					return fmt.Errorf("rowpack: batch pipeline stopped early")
+				}
+				if r.err != nil {
+					return r.err
+				}
+				if r.blockIdx == it.nextBlockIdx {
+					it.insertResult(r)
+					it.nextBlockIdx++
+					return nil
+				}
+				it.resultBuf[r.blockIdx] = r // out-of-order: buffer until in order
+			case <-it.stop:
+				return fmt.Errorf("rowpack: batch pipeline stopped")
+			}
+		}
+	}
+	r, err := it.decodeBlock(it.blockIdx)
+	if err != nil {
+		return err
+	}
 	it.blockIdx++
+	it.insertResult(r)
+	return nil
+}
+
+// decodeBlock loads, verifies and parses one planned block, producing the
+// buffered items for it. Safe for concurrent use (read-only plan/view +
+// concurrent-safe loader); workers never touch iterator mutable state.
+func (it *BatchIterator) decodeBlock(bidx int) (blockResult, error) {
+	pb := &it.plan.blocks[bidx]
 	bl := it.st.view.Block(pb.blockID)
 	if bl == nil {
-		return fmt.Errorf("rowpack: block %d missing from view", pb.blockID)
+		return blockResult{}, fmt.Errorf("rowpack: block %d missing from view", pb.blockID)
 	}
 	ref, hit, err := it.store.loadBatchBlock(int64(bl.DataOffset), pb.blockID)
 	if err != nil {
-		return err
+		return blockResult{}, err
 	}
-	if hit {
-		it.stats.CacheHits++
-	}
-	it.stats.BlocksRead++
-	it.stats.StoredBytesRead += uint64(bl.StoredSize)
-	it.stats.RawBytesDecoded += uint64(bl.RawSize)
-
-	rp, err := block.ParseRowsDirectory(ref.Raw(), bl.ItemCount, it.scratch)
-	if err != nil {
+	rp, perr := block.ParseRowsDirectory(ref.Raw(), bl.ItemCount, nil)
+	if perr != nil {
 		ref.Release()
-		return err
+		return blockResult{}, perr
 	}
-	it.scratch = rp.Entries
-
-	// Track the ref until all of this block's items are emitted.
-	pendingCount := 0
+	items := make([]batchBufItem, 0, len(pb.itemIdx))
 	for _, ii := range pb.itemIdx {
 		item := &it.plan.items[ii]
 		if int(item.ordinal) >= len(rp.Entries) {
 			ref.Release()
-			return fmt.Errorf("rowpack: row ordinal %d out of range in block %d", item.ordinal, pb.blockID)
+			return blockResult{}, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", item.ordinal, pb.blockID)
 		}
 		ent := &rp.Entries[item.ordinal]
 		schema := it.st.schemas.schema(bl.SnapshotID, bl.TableID, ent.SchemaVersion)
 		if schema == nil {
 			ref.Release()
-			return fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ent.SchemaVersion)
+			return blockResult{}, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ent.SchemaVersion)
 		}
-		it.pending[item.emitPos] = batchBufItem{
+		items = append(items, batchBufItem{
+			emitPos: item.emitPos,
 			payload: rp.RowBytes(int(item.ordinal)),
 			schema:  schema,
 			rowID:   item.rowID,
-			refIdx:  len(it.refs),
-		}
-		pendingCount++
+		})
 	}
-	it.refs = append(it.refs, ref)
-	it.refPending = append(it.refPending, pendingCount)
-	return nil
+	return blockResult{blockIdx: bidx, items: items, ref: ref, hit: hit}, nil
+}
+
+// insertResult buffers one block's items and records the ref until they are
+// all emitted. Single-goroutine (Next) only.
+func (it *BatchIterator) insertResult(r blockResult) {
+	refIdx := len(it.refs)
+	it.refs = append(it.refs, r.ref)
+	it.refPending = append(it.refPending, len(r.items))
+	for _, b := range r.items {
+		it.pending[b.emitPos] = batchBufItem{
+			payload: b.payload,
+			schema:  b.schema,
+			rowID:   b.rowID,
+			refIdx:  refIdx,
+		}
+	}
+	if r.hit {
+		it.stats.CacheHits++
+	}
+	it.stats.BlocksRead++
+	it.stats.StoredBytesRead += uint64(it.plan.blocks[r.blockIdx].storedSize)
+	it.stats.RawBytesDecoded += uint64(it.plan.blocks[r.blockIdx].rawSize)
+}
+
+// startPipeline launches the parallel decode workers (M5). Workers consume
+// block indices in plan order; Next assembles results in the same order, so
+// emission semantics match the sequential path exactly. shutdown() releases
+// everything.
+func (it *BatchIterator) startPipeline() {
+	it.started = true
+	it.resultBuf = make(map[int]blockResult)
+	n := it.opts.Parallelism
+	if n > len(it.plan.blocks) {
+		n = len(it.plan.blocks)
+	}
+	it.jobs = make(chan int)
+	it.results = make(chan blockResult, n*2)
+	it.stop = make(chan struct{})
+	it.wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer it.wg.Done()
+			for bidx := range it.jobs {
+				r, err := it.decodeBlock(bidx)
+				if err != nil {
+					r = blockResult{blockIdx: bidx, err: err}
+				}
+				select {
+				case it.results <- r:
+				case <-it.stop:
+					if r.ref != nil {
+						r.ref.Release()
+					}
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(it.jobs)
+		for i := range it.plan.blocks {
+			select {
+			case it.jobs <- i:
+			case <-it.stop:
+				return
+			}
+		}
+	}()
+	go func() {
+		it.wg.Wait()
+		close(it.results)
+		close(it.pipelineDone)
+	}()
+}
+
+// shutdownPipeline stops feeding, drains in-flight results (releasing their
+// refs) and waits for every pipeline goroutine to exit. Idempotent; safe
+// after errors, cancellation or Close.
+func (it *BatchIterator) shutdownPipeline() {
+	if it.stop == nil {
+		return
+	}
+	it.stopOnce.Do(func() { close(it.stop) })
+	for r := range it.results {
+		if r.ref != nil {
+			r.ref.Release()
+		}
+	}
+	for _, r := range it.resultBuf {
+		if r.ref != nil {
+			r.ref.Release()
+		}
+	}
+	it.resultBuf = nil
+	<-it.pipelineDone
 }
 
 // decodeInto decodes one buffered item into dst.
@@ -510,6 +668,7 @@ func (it *BatchIterator) releaseRefIfDone(refIdx int) {
 
 // releaseAll releases every held block reference and drops buffered items.
 func (it *BatchIterator) releaseAll() {
+	it.shutdownPipeline()
 	for _, r := range it.refs {
 		if r != nil {
 			r.Release()
@@ -526,7 +685,8 @@ func (it *BatchIterator) Err() error { return it.err }
 // Stats returns the cumulative request statistics; safe to call after Close.
 func (it *BatchIterator) Stats() BatchReadStats { return it.stats }
 
-// Close releases the iterator. It is idempotent.
+// Close releases the iterator and waits for any parallel decode workers to
+// exit. It is idempotent.
 func (it *BatchIterator) Close() error {
 	it.closed = true
 	it.releaseAll()

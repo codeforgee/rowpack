@@ -74,7 +74,9 @@ func runBatchGet(b *testing.B, db *Store, snap SnapshotID, ids []RowID) {
 	var dst Row
 	for _, id := range ids {
 		row, err := db.Get(context.Background(), snap, 1, id, dst)
-		require.NoError(b, err)
+		if err != nil {
+			require.NoError(b, err)
+		}
 		dst = row
 	}
 }

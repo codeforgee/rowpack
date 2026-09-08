@@ -141,3 +141,48 @@ seq/hot 档较“复用 dst 的逐行 Get”慢 ~22% 是物化语义成本（Rea
 - zstd 池：确定性输出测试 + 8 goroutine 并发 round-trip 测试。
 - `TestPerfEndToEnd`：200k 行写→随机读逐值校验→全表 Scan 校验→Close/Reopen
   再校验，作为性能回归闸门。
+
+## 8. 复测记录：2026-09-07 晚（harness 缺陷定位与修复）
+
+> 本轮复测（18:29–19:00）经历了「疑似退化 → 定位 harness 测量缺陷 → 修复确认」
+> 三步，最终结论：**无生产代码回归，写基准曾因 harness 缺陷虚高 15–40%**。
+> 完整输出在 `docs/bench-results.txt`（`make bench` 规范产物，最终一轮已覆盖）。
+
+### 8.1 经过
+
+1. 首轮复测（机器负载/内存压力大：swap 3.5 GB、内存剩余 ~240 MB）发现写基准
+   慢 +15%~+47%，一时归因于环境；清理进程后写基准并无好转。
+2. 用 `git worktree` 在 cc34694/59cb5a5/2dc5d40 旧提交与 HEAD 上同参对拍，发现
+   旧提交矩阵与旧式 harness 都稳定跑出基线值（write_full 94–97 ms），唯独 HEAD
+   矩阵 harness 慢（111–113 ms）。CPU profile 显示差异集中在 `runtime.madvise`
+   （Go scavenger），应用热区（zstd/codec/crc32）完全一致。
+3. 逐步 overlay 排除 tmpdb/applyIO/opts 后，把矩阵写函数还原为 2dc5d40 风格
+   （普通 `if err != nil { b.Fatal }`）即恢复 95.9 ms → 根因是 `a82d857`「调整测试
+   框架」把计时热循环改成**无条件 `require.NoError(b, w.Insert(...))`**——每行 1 次、
+   100k 次/轮迭代，testify require 成功路径也要走 `t.Helper()`（runtime.Callers），
+   每调用 ~150 ns，累计 ~15 ms，恰好是虚高幅度。旧式 harness 与加密 harness
+   用的是「出错才 require」正确模式，所以历史基线与加密对拍数字不受影响。
+
+### 8.2 修复
+
+计时热循环统一改为 `if err := ...; err != nil { require.NoError(b, err) }`
+（bench_matrix_test.go 写/读/扫描、bench_batch_test.go 基线 Get、
+bench_encryption_test.go Get/Scan、bench_test.go 旧式基准）。错误语义不变。
+
+### 8.3 修复后验证（19:00 全矩阵）
+
+措施：先用 `git worktree` 同机对拍排除代码退化；修复后 `make bench` 全矩阵对照
+14:37 基线：
+
+- 写场景（6 cell 全档）：**全部回到基线 ±5% 内**（write_full 256K sync +0.9%，
+  iso +4.5%；64K sync +3.8%；其余 <±3%）。
+- 读/扫描/重建：scan/scan1m ✓ ±3%、get_cold ✓ ±5%、open_replay/rebuild ✓ ±12%
+  （多为改善）、scan_deepchain +1~4%。
+- 热读（3s benchtime 复核）：get_hot 375 ns（基线 458–527 ns，更快）、
+  get_deepchain 2.04 µs（基线 3.4 µs，更快）、conc_get g8 5.3 µs（基线 6.6–9 µs）。
+- 同步验收门槛：加密 vs 未加密 get_hot 241.8/241.8 ns（0%）、get_cold +5.2%
+  （≤10% ✓）、scan +0.2%、write +0.1%；批量读 vs 逐行 Get rand 4.9×/10.1×、
+  seq/cold ~530×、seq/hot 1.35×。
+
+结论：`make bench` 现在测量的是引擎真实行为；14:37 基线（§1）继续有效，作为
+默认对照基线。

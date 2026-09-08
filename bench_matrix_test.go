@@ -126,7 +126,9 @@ func benchWriteFull(b *testing.B, c benchCtx) {
 		require.NoError(b, w.DefineSchema(benchSchema()))
 		b.StartTimer()
 		for j := uint64(0); j < rows; j++ {
-			require.NoError(b, w.Insert(context.Background(), 1, j+1, 1, benchRow(j)))
+			if err := w.Insert(context.Background(), 1, j+1, 1, benchRow(j)); err != nil {
+				require.NoError(b, err)
+			}
 		}
 		if _, err := w.Commit(context.Background()); err != nil {
 			require.NoError(b, err)
@@ -155,7 +157,9 @@ func benchWriteIsolated(b *testing.B, c benchCtx) {
 		require.NoError(b, w.DefineSchema(benchSchema()))
 		b.StartTimer()
 		for j := uint64(0); j < rows; j++ {
-			require.NoError(b, w.Insert(context.Background(), 1, j+1, 1, r))
+			if err := w.Insert(context.Background(), 1, j+1, 1, r); err != nil {
+				require.NoError(b, err)
+			}
 		}
 		if _, err := w.Commit(context.Background()); err != nil {
 			require.NoError(b, err)

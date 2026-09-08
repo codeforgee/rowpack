@@ -58,7 +58,9 @@ func benchEncGet(b *testing.B, enc, cold bool) {
 			rowID = uint64(i%100) + 1
 		}
 		row, err := db.Get(context.Background(), fullID, 1, rowID, dst)
-		require.NoError(b, err)
+		if err != nil {
+			require.NoError(b, err)
+		}
 		dst = row
 	}
 	b.StopTimer()
@@ -71,7 +73,9 @@ func benchEncScan(b *testing.B, enc bool) {
 	defer db.Close()
 	for i := 0; i < 2; i++ { // burn-in
 		it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
-		require.NoError(b, err)
+		if err != nil {
+			require.NoError(b, err)
+		}
 		for {
 			if _, ok := it.Next(); !ok {
 				break
@@ -85,7 +89,9 @@ func benchEncScan(b *testing.B, enc bool) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
-		require.NoError(b, err)
+		if err != nil {
+			require.NoError(b, err)
+		}
 		n := 0
 		for {
 			if _, ok := it.Next(); !ok {

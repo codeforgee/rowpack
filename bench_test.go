@@ -115,7 +115,9 @@ func BenchmarkFullSequentialWrite(b *testing.B) {
 		require.NoError(b, w.DefineSchema(benchSchema()))
 		b.StartTimer()
 		for j := uint64(0); j < rows; j++ {
-			require.NoError(b, w.Insert(context.Background(), 1, j+1, 1, benchRow(j)))
+			if err := w.Insert(context.Background(), 1, j+1, 1, benchRow(j)); err != nil {
+				require.NoError(b, err)
+			}
 		}
 		if _, err := w.Commit(context.Background()); err != nil {
 			require.NoError(b, err)
@@ -269,7 +271,9 @@ func buildBenchStoreN(b *testing.B, base string, nRows uint64) (*Store, Snapshot
 	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
 	require.NoError(b, w.DefineSchema(benchSchema()))
 	for i := uint64(0); i < nRows; i++ {
-		require.NoError(b, w.Insert(context.Background(), 1, i+1, 1, benchRow(i)))
+		if err := w.Insert(context.Background(), 1, i+1, 1, benchRow(i)); err != nil {
+			require.NoError(b, err)
+		}
 	}
 	full, err := w.Commit(context.Background())
 	require.NoError(b, err)

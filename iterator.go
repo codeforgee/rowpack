@@ -20,8 +20,36 @@ type ScanOptions struct {
 
 // IterArenaChunkSize bounds the per-iterator string arena chunks; chunks are
 // append-only and swapped (never grown in place) so previously handed-out
-// string views stay valid even when the iterator's current chunk rotates.
+// string views stay valid even when the arena's current chunk rotates.
 const iterArenaChunkSize = 32 << 10
+
+// strArena is the append-only string arena shared by the Scan and batch
+// iterators: materialized String payloads become zero-copy views into the
+// current chunk. Views keep the chunk alive via GC, so a string handed out
+// earlier stays valid even after the arena rotates to a fresh chunk (chunks
+// are never overwritten, only dropped).
+type strArena struct {
+	chunk []byte
+}
+
+// materialize copies payload into the arena and returns a view into it.
+func (a *strArena) materialize(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	if len(a.chunk)+len(payload) > cap(a.chunk) {
+		// Rotate to a fresh chunk with at least enough room; never grow in
+		// place, because views into the old chunk may still be referenced.
+		c := iterArenaChunkSize
+		if len(payload) > c {
+			c = len(payload)
+		}
+		a.chunk = make([]byte, 0, c)
+	}
+	off := len(a.chunk)
+	a.chunk = append(a.chunk, payload...)
+	return unsafe.String(&a.chunk[off], len(payload))
+}
 
 // Iterator streams the logically visible rows of a table at a snapshot in
 // strictly ascending RowID order. Rows overridden by descendants and
@@ -46,11 +74,10 @@ type Iterator struct {
 	buf Row
 
 	// sink materializes decoded String payloads as append-only views into
-	// strChunk, eliminating the per-row string copy allocation. Views remain
-	// valid while a reference to them exists: chunks are never overwritten
-	// and only dropped (becoming garbage when no view references them).
-	sink     codec.StringSink
-	strChunk []byte
+	// the arena (strArena), eliminating the per-row string copy allocation.
+	// See strArena for the view-lifetime guarantee.
+	sink  codec.StringSink
+	arena strArena
 
 	// Block cursor: reuses the parsed rows directory while consecutive rows
 	// fall in the same block, avoiding a per-row full-block parse. The
@@ -72,25 +99,9 @@ type Iterator struct {
 }
 
 // strSink copies payload into the iterator's append-only string arena and
-// returns a zero-copy view backed by the arena chunk. Views keep the chunk
-// alive via GC, so a string handed out by a previous Next stays valid even
-// after the arena rotates to a new chunk.
+// returns a zero-copy view backed by an arena chunk.
 func (it *Iterator) strSink(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	if len(it.strChunk)+len(payload) > cap(it.strChunk) {
-		// Rotate to a fresh chunk with at least enough room; never grow in
-		// place, because views into the old chunk may still be referenced.
-		c := iterArenaChunkSize
-		if len(payload) > c {
-			c = len(payload)
-		}
-		it.strChunk = make([]byte, 0, c)
-	}
-	off := len(it.strChunk)
-	it.strChunk = append(it.strChunk, payload...)
-	return unsafe.String(&it.strChunk[off], len(payload))
+	return it.arena.materialize(payload)
 }
 
 // layerIter walks one snapshot layer's sorted incremental row index.

@@ -94,7 +94,7 @@ func (r *scanRef) Release() {
 	}
 }
 
-// LoadScan serves streaming reads (Scan, batch windows). Lookup order is the
+// LoadScan serves streaming reads (Scan). Lookup order is the
 // random-read cache, then the scan window; a miss is decompressed into a
 // pooled scratch. The block is promoted into the scan window only while the
 // window has room, so large scans neither evict the random-read hot set nor

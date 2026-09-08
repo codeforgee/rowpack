@@ -26,12 +26,24 @@ type Builder struct {
 	blocks   []fileformat.BlockIndexEntry
 	rows     []fileformat.RowIndexEntry
 	seen     map[[2]uint64]struct{} // (tableID, rowID) uniqueness
+	// dedupRows rejects duplicate (table, row) pairs in AddRow. On by
+	// default; callers that already guarantee uniqueness (the commit path
+	// rejects duplicates at Insert time and View.Apply re-validates the
+	// built shards) disable it to skip the per-row dedup map.
+	dedupRows bool
 }
 
 // NewBuilder creates a txn builder with the next sequence number.
 func NewBuilder(sequence uint64) *Builder {
-	return &Builder{sequence: sequence, seen: make(map[[2]uint64]struct{})}
+	return &Builder{sequence: sequence, dedupRows: true, seen: make(map[[2]uint64]struct{})}
 }
+
+// SetRowDedup enables or disables duplicate (table, row) rejection in AddRow.
+// Dedup is on by default. Disabling it drops the per-row dedup map, which
+// removes ~100 B of map overhead per row from the commit peak; correctness is
+// preserved by the caller's own uniqueness guarantee plus View.Apply's shard
+// duplicate check. Must be called before the first AddRow.
+func (b *Builder) SetRowDedup(enabled bool) { b.dedupRows = enabled }
 
 // SetSnapshot sets the snapshot summary entry.
 func (b *Builder) SetSnapshot(e fileformat.SnapshotIndexEntry) error {
@@ -81,11 +93,13 @@ func (b *Builder) AddRow(e fileformat.RowIndexEntry) error {
 	if e.SnapshotID != b.snapshot.SnapshotID {
 		return errors.New("rowpack: row entry snapshot mismatch")
 	}
-	key := [2]uint64{uint64(e.TableID), e.RowID}
-	if _, dup := b.seen[key]; dup {
-		return fmt.Errorf("rowpack: duplicate (table %d, row %d) in snapshot %d", e.TableID, e.RowID, b.snapshot.SnapshotID)
+	if b.dedupRows {
+		key := [2]uint64{uint64(e.TableID), e.RowID}
+		if _, dup := b.seen[key]; dup {
+			return fmt.Errorf("rowpack: duplicate (table %d, row %d) in snapshot %d", e.TableID, e.RowID, b.snapshot.SnapshotID)
+		}
+		b.seen[key] = struct{}{}
 	}
-	b.seen[key] = struct{}{}
 	b.rows = append(b.rows, e)
 	return nil
 }
@@ -109,7 +123,7 @@ func (b *Builder) Reserve(meta, blocks, rows int) {
 	if len(b.rows) == 0 && b.rows == nil {
 		b.rows = make([]fileformat.RowIndexEntry, 0, rows)
 	}
-	if len(b.seen) == 0 {
+	if b.dedupRows && len(b.seen) == 0 {
 		b.seen = make(map[[2]uint64]struct{}, rows)
 	}
 }
@@ -123,18 +137,26 @@ func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC
 	if b.snapshot == nil {
 		return nil, nil, errors.New("rowpack: no snapshot entry to build")
 	}
-	// Pre-allocate the body: counts are known, so append never reallocates.
-	// Entries are marshaled directly into the pre-reserved body regions,
-	// avoiding a per-entry scratch array that escape analysis would allocate
-	// on the heap (MarshalTo is not inlinable due to its error path).
-	body := make([]byte, 0, fileformat.SnapshotIndexEntrySize+
-		len(b.metadata)*fileformat.MetadataIndexEntrySize+
-		len(b.blocks)*fileformat.BlockIndexEntrySize+
-		len(b.rows)*fileformat.RowIndexEntrySize)
+	// Allocate the exact output once and marshal the header, body entries and
+	// footer directly into their final regions: counts are known, so neither
+	// the body nor the output is ever reallocated or copied (the previous
+	// body-then-copy construction materialized the txn twice, ~80 B per row
+	// at commit peak). MarshalTo is not inlinable due to its error path, but
+	// writing through region slices keeps even the per-entry scratch off the
+	// heap.
+	bodyLen := fileformat.SnapshotIndexEntrySize +
+		len(b.metadata)*fileformat.MetadataIndexEntrySize +
+		len(b.blocks)*fileformat.BlockIndexEntrySize +
+		len(b.rows)*fileformat.RowIndexEntrySize
+	out := make([]byte, fileformat.IndexTxnHeaderSize+bodyLen+fileformat.IndexTxnFooterSize)
+	bodyStart := fileformat.IndexTxnHeaderSize
+	pos := bodyStart
 	appendTo := func(n int, f func(dst []byte) error) error {
-		pos := len(body)
-		body = body[:pos+n]
-		return f(body[pos:])
+		if err := f(out[pos : pos+n]); err != nil {
+			return err
+		}
+		pos += n
+		return nil
 	}
 	if err := appendTo(fileformat.SnapshotIndexEntrySize, b.snapshot.MarshalTo); err != nil {
 		return nil, nil, err
@@ -154,6 +176,10 @@ func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC
 			return nil, nil, err
 		}
 	}
+	if pos != bodyStart+bodyLen {
+		return nil, nil, fmt.Errorf("rowpack: index txn body %d bytes, want %d", pos-bodyStart, bodyLen)
+	}
+	body := out[bodyStart : bodyStart+bodyLen]
 	bodyCRC := fileformat.CRC32C(body)
 
 	h := fileformat.IndexTxnHeader{
@@ -166,10 +192,6 @@ func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC
 		RowEntryCount:      uint64(len(b.rows)),
 		BodyBytes:          uint64(len(body)),
 	}
-	var hdr [fileformat.IndexTxnHeaderSize]byte
-	if err := h.MarshalTo(hdr[:]); err != nil {
-		return nil, nil, err
-	}
 	f := fileformat.IndexTxnFooter{
 		TxnSequence:      b.sequence,
 		SnapshotID:       b.snapshot.SnapshotID,
@@ -179,14 +201,12 @@ func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC
 		BodyCRC32C:       bodyCRC,
 		DataFooterCRC32C: dataFooterCRC,
 	}
-	var ftr [fileformat.IndexTxnFooterSize]byte
-	if err := f.MarshalTo(ftr[:]); err != nil {
+	if err := h.MarshalTo(out[:fileformat.IndexTxnHeaderSize]); err != nil {
 		return nil, nil, err
 	}
-	out := make([]byte, 0, len(hdr)+len(body)+len(ftr))
-	out = append(out, hdr[:]...)
-	out = append(out, body...)
-	out = append(out, ftr[:]...)
+	if err := f.MarshalTo(out[len(out)-fileformat.IndexTxnFooterSize:]); err != nil {
+		return nil, nil, err
+	}
 	txn := &Txn{Header: h, Snapshot: *b.snapshot, Footer: f}
 	txn.Metadata = b.metadata
 	txn.Blocks = b.blocks

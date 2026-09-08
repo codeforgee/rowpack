@@ -198,7 +198,7 @@ type Block struct {
 // header starts at offset, decompressing into a pooled scratch buffer. The
 // returned BlockScratch aliases the scratch; callers must call Release once
 // they are done with Raw (and any slices of it). Transient reads never enter
-// a cache: they are meant for streaming paths (Scan, batch windows) where
+// a cache: they are meant for streaming paths (Scan) where
 // each block is consumed once and must not pollute the hot cache.
 func (r *Reader) ReadAtBlockTransient(offset int64) (*BlockScratch, error) {
 	if v, ok := r.ra.(viewer); ok {
@@ -222,6 +222,12 @@ func (s *BlockScratch) Release() {
 		s.buf = nil
 	}
 }
+
+// Detach clears the scratch association so Release becomes a no-op,
+// transferring buffer ownership to the caller (used to hand an exact-fit
+// buffer to a cache without a copy). The detached buffer never returns to
+// the pool; the pool replenishes itself on demand.
+func (s *BlockScratch) Detach() { s.buf = nil }
 
 // decompressIntoScratch decompresses stored into buf, ensuring the result
 // never aliases a file mapping (None copies into the scratch).

@@ -14,6 +14,12 @@ import (
 // is the validated uncompressed payload; Rows/Meta carry the already-built
 // directory entries so callers never need to re-parse the payload to extract
 // index information.
+//
+// Ownership: Rows (rows blocks) transfer to the callback — the builder
+// allocates a fresh directory slice for its next block, so the callback may
+// retain Rows beyond the call at no copy cost. Raw and Meta (metadata
+// blocks) are builder-owned scratch: they alias reused buffers and are only
+// valid during the call, so a callback that needs them later must copy.
 type FlushedBlock struct {
 	Header fileformat.BlockHeader
 	Stored []byte
@@ -165,7 +171,11 @@ func (b *RowsBlockBuilder) Flush() error {
 	if err := b.onFlush(&FlushedBlock{Header: h, Stored: compressed, Raw: raw, Rows: b.entries}); err != nil {
 		return err
 	}
-	b.entries = b.entries[:0]
+	// Ownership of the directory slice transferred to the callback (it backs
+	// the pending block's row index); allocate a fresh one for the next block
+	// instead of resetting in place. One allocation per flushed block, not
+	// per row.
+	b.entries = make([]fileformat.RowDirectoryEntry, 0, cap(b.entries))
 	b.records = b.records[:0]
 	b.count = 0
 	return nil

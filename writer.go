@@ -94,8 +94,10 @@ type SnapshotWriter struct {
 
 	// encBuf is reused across row encodes to cut per-row allocation.
 	encBuf []byte
-	// seen row keys to reject duplicates
-	seenRows map[rowKey]struct{}
+	// seenRows rejects duplicate (table, row) pairs within the snapshot:
+	// one packed rowIDSet per table (see rowset.go; ~11 B/row vs ~90 B/row
+	// for a Go map).
+	seenRows map[TableID]*rowIDSet
 
 	// pending blocks in flush order (rows and metadata interleaved)
 	pending []*pendingBlock
@@ -115,18 +117,17 @@ type schemaKey struct {
 	Version SchemaVersion
 }
 
-// rowKey identifies a row within a table.
-type rowKey struct {
-	Table TableID
-	Row   RowID
-}
-
 // pendingBlock is one buffered block awaiting commit-time write.
 type pendingBlock struct {
 	header  fileformat.BlockHeader
 	payload []byte
 	offset  int64 // .rpk offset assigned at commit
-	rows    []fileformat.RowIndexEntry
+	// rowsDir is the rows-block directory in record order (rows blocks
+	// only, nil otherwise). The block builder transfers ownership of the
+	// slice at flush time, so no per-row copy exists on the commit path;
+	// RowIndexEntries are built straight into the pre-reserved txn builder
+	// at commit.
+	rowsDir []fileformat.RowDirectoryEntry
 	meta    []fileformat.MetadataIndexEntry
 }
 
@@ -177,7 +178,7 @@ func (s *Store) BeginSnapshot(ctx context.Context, typ SnapshotType, opts Snapsh
 		state:       writerOpen,
 		rowBuilders: make(map[TableID]*block.RowsBlockBuilder),
 		schemas:     make(map[schemaKey]*codec.Schema),
-		seenRows:    make(map[rowKey]struct{}),
+		seenRows:    make(map[TableID]*rowIDSet),
 		allocator:   metadata.NewObjectIDAllocator(),
 	}
 	w.allocator = s.seedAllocator()
@@ -366,20 +367,13 @@ func (w *SnapshotWriter) metaFlush(fb *block.FlushedBlock) error {
 	return nil
 }
 
-// rowsFlush captures one completed rows block and its row index entries.
+// rowsFlush captures one completed rows block. The builder hands over
+// ownership of its directory slice (it allocates a fresh one for its next
+// block), so the pending block references it without a per-row copy;
+// ItemOrdinal is the directory position.
 func (w *SnapshotWriter) rowsFlush(table TableID) func(*block.FlushedBlock) error {
 	return func(fb *block.FlushedBlock) error {
-		blk := &pendingBlock{header: fb.Header, payload: fb.Stored}
-		blk.rows = make([]fileformat.RowIndexEntry, 0, len(fb.Rows))
-		for i := range fb.Rows {
-			blk.rows = append(blk.rows, fileformat.RowIndexEntry{
-				SnapshotID:  w.id,
-				TableID:     table,
-				ChangeType:  fb.Rows[i].ChangeType,
-				RowID:       fb.Rows[i].RowID,
-				ItemOrdinal: uint32(i),
-			})
-		}
+		blk := &pendingBlock{header: fb.Header, payload: fb.Stored, rowsDir: fb.Rows}
 		w.pending = append(w.pending, blk)
 		return nil
 	}
@@ -439,8 +433,7 @@ func (w *SnapshotWriter) put(ctx context.Context, typ ChangeType, table TableID,
 	if rowID == 0 {
 		return fmt.Errorf("%w: row id is zero", ErrInvalidArgument)
 	}
-	key := rowKey{Table: table, Row: rowID}
-	if _, dup := w.seenRows[key]; dup {
+	if w.rowSeen(table, rowID) {
 		return fmt.Errorf("%w: duplicate (table %d, row %d) in snapshot %d", ErrAlreadyExists, table, rowID, w.id)
 	}
 	if w.typ == SnapshotFull && typ != ChangeInsert {
@@ -466,10 +459,28 @@ func (w *SnapshotWriter) put(ctx context.Context, typ ChangeType, table TableID,
 	if err := w.rowBuilder(table).Add(rowID, schemaVersion, fileformat.ChangeType(typ), encoded); err != nil {
 		return err
 	}
-	w.seenRows[key] = struct{}{}
+	w.rememberRow(table, rowID)
 	w.rowRecordCount++
 	w.rawBytes += uint64(fileformat.RowRecordHeaderSize + len(encoded))
 	return nil
+}
+
+// rowSeen reports whether (table, rowID) was already written to this
+// snapshot.
+func (w *SnapshotWriter) rowSeen(table TableID, rowID RowID) bool {
+	return w.seenRows[table].Contains(rowID)
+}
+
+// rememberRow records (table, rowID) as written. put() calls it only after
+// the row builder accepted the record, so failed inserts never pollute the
+// set. Nil sets are created lazily: most writers touch few tables.
+func (w *SnapshotWriter) rememberRow(table TableID, rowID RowID) {
+	set := w.seenRows[table]
+	if set == nil {
+		set = &rowIDSet{}
+		w.seenRows[table] = set
+	}
+	set.Insert(rowID)
 }
 
 func (w *SnapshotWriter) resolveSchema(table TableID, version SchemaVersion) (*codec.Schema, error) {
@@ -666,7 +677,7 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	txnLen += fileformat.IndexTxnHeaderSize + fileformat.SnapshotIndexEntrySize + fileformat.IndexTxnFooterSize
 	for _, blk := range w.pending {
 		txnLen += int64(len(blk.meta))*fileformat.MetadataIndexEntrySize +
-			fileformat.BlockIndexEntrySize + int64(len(blk.rows))*fileformat.RowIndexEntrySize
+			fileformat.BlockIndexEntrySize + int64(len(blk.rowsDir))*fileformat.RowIndexEntrySize
 	}
 	if w.store.encCipher != nil {
 		txnLen += fileformat.AESGCMTagLen
@@ -681,7 +692,18 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	// IndexTxnCRC32C and the binding direction is footer -> txn.
 	unknown := false
 	txnBuilder := index.NewBuilder(w.store.txnSeq.Add(1))
-	txnBuilder.Reserve(0, len(w.pending), 0)
+	// Entry totals are known from the flushed blocks: pre-reserving removes
+	// the slice-growth copies from the commit peak. Row dedup is skipped on
+	// this path: put() already rejects duplicate (table, row) pairs via the
+	// writer's packed seen-row set, and View.Apply re-validates the built
+	// shards, so the builder's ~100 B/row dedup map is pure overhead here.
+	totalMeta, totalRows := 0, 0
+	for _, blk := range w.pending {
+		totalMeta += len(blk.meta)
+		totalRows += len(blk.rowsDir)
+	}
+	txnBuilder.SetRowDedup(false)
+	txnBuilder.Reserve(totalMeta, len(w.pending), totalRows)
 	snapEntry := fileformat.SnapshotIndexEntry{
 		SnapshotID:       w.id,
 		ParentSnapshotID: w.parent,
@@ -716,9 +738,16 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 				return SnapshotInfo{}, err
 			}
 		}
-		for i := range blk.rows {
-			blk.rows[i].BlockID = blk.header.BlockID
-			if err := txnBuilder.AddRow(blk.rows[i]); err != nil {
+		for i := range blk.rowsDir {
+			de := &blk.rowsDir[i]
+			if err := txnBuilder.AddRow(fileformat.RowIndexEntry{
+				SnapshotID:  w.id,
+				TableID:     blk.header.TableID,
+				ChangeType:  de.ChangeType,
+				RowID:       de.RowID,
+				BlockID:     blk.header.BlockID,
+				ItemOrdinal: uint32(i),
+			}); err != nil {
 				return SnapshotInfo{}, err
 			}
 		}
@@ -839,7 +868,7 @@ func (w *SnapshotWriter) buildNewSchemas(newView *index.View) (*schemaIndex, err
 			si.bySnapshot[snap] = tables
 		}
 	}
-	tables, err := w.store.deriveTables(newView, w.id)
+	tables, err := w.store.deriveTables(newView, w.id, nil)
 	if err != nil {
 		return nil, err
 	}

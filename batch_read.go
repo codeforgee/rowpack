@@ -27,7 +27,8 @@ import (
 //   - the reorder buffer is bounded by the plan itself, so a batch never
 //     materializes more than its own row count;
 //   - PrefetchBlocks/Parallelism are accepted for API stability; M4 decodes
-//     sequentially (one block at a time through the bounded scan window).
+//     sequentially through the bounded scan window, M5 adds parallel workers
+//     that feed the same ordered emission pipeline.
 
 // ErrInvalidRange is returned by ReadRowRanges for malformed ranges.
 var ErrInvalidRange = errors.New("rowpack: invalid row id range")
@@ -87,7 +88,7 @@ type BatchReadStats struct {
 
 // batchItem is one resolved row: where it lives and where it must be emitted.
 type batchItem struct {
-	emitPos int    // position in the requested output order (a permutation)
+	emitPos int // position in the requested output order (a permutation)
 	rowID   RowID
 	blockID uint64
 	ordinal uint32
@@ -139,8 +140,8 @@ type BatchIterator struct {
 	ctx   context.Context
 	opts  BatchReadOptions
 
-	plan    *batchPlan
-	pending map[int]batchBufItem // emitPos -> decoded item awaiting emission
+	plan     *batchPlan
+	pending  map[int]batchBufItem // emitPos -> decoded item awaiting emission
 	nextEmit int
 
 	// block decode cursor
@@ -148,13 +149,19 @@ type BatchIterator struct {
 	// refs hold scan windows alive while any of their items are buffered;
 	// refPending[i] counts buffered items owned by refs[i] and the ref is
 	// released when it reaches zero.
-	refs        []*scanRef
-	refPending  []int
-	scratch     []fileformat.RowDirectoryEntry
-	stats       BatchReadStats
-	err         error
-	closed      bool
-	buf         Row // iterator-owned row when Next(dst) passes nil
+	refs       []*scanRef
+	refPending []int
+	scratch    []fileformat.RowDirectoryEntry
+	stats      BatchReadStats
+	err        error
+	closed     bool
+	buf        Row // iterator-owned row when Next(dst) passes nil
+
+	// sink materializes decoded String payloads into an append-only arena
+	// (see iterator.go), removing the per-row string allocation. Pre-bound
+	// once so decodeInto does not allocate a method value per row.
+	sink  codec.StringSink
+	arena strArena
 
 	// parallel decode pipeline (Parallelism > 1, M5): workers decode blocks
 	// concurrently; Next assembles results strictly in block order so the
@@ -200,6 +207,7 @@ func (s *Store) ReadRowsByIDs(
 		resultBuf:    make(map[int]blockResult),
 		pipelineDone: make(chan struct{}),
 	}
+	it.sink = it.strSink
 	it.stats.RequestedIDs = uint64(len(rowIDs))
 
 	// Resolve every input position; winners keep their input index.
@@ -268,6 +276,7 @@ func (s *Store) ReadRowRanges(
 		resultBuf:    make(map[int]blockResult),
 		pipelineDone: make(chan struct{}),
 	}
+	it.sink = it.strSink
 	it.stats.RequestedRanges = uint64(len(ranges))
 
 	merged, err := normalizeRanges(ranges)
@@ -506,6 +515,12 @@ func (it *BatchIterator) nextBlockResult() error {
 	return nil
 }
 
+// strSink copies payload into the iterator's append-only string arena and
+// returns a zero-copy view backed by an arena chunk (see iterator.go).
+func (it *BatchIterator) strSink(payload []byte) string {
+	return it.arena.materialize(payload)
+}
+
 // decodeBlock loads, verifies and parses one planned block, producing the
 // buffered items for it. Safe for concurrent use (read-only plan/view +
 // concurrent-safe loader); workers never touch iterator mutable state.
@@ -519,10 +534,20 @@ func (it *BatchIterator) decodeBlock(bidx int) (blockResult, error) {
 	if err != nil {
 		return blockResult{}, err
 	}
-	rp, perr := block.ParseRowsDirectory(ref.Raw(), bl.ItemCount, nil)
+	// Sequential decodes (Parallelism <= 1, single Next goroutine) reuse the
+	// iterator's directory slice across blocks (each parse fully overwrites
+	// it); parallel workers each pass nil — a shared slice would race.
+	var dir []fileformat.RowDirectoryEntry
+	if it.opts.Parallelism <= 1 {
+		dir = it.scratch
+	}
+	rp, perr := block.ParseRowsDirectory(ref.Raw(), bl.ItemCount, dir)
 	if perr != nil {
 		ref.Release()
 		return blockResult{}, perr
+	}
+	if it.opts.Parallelism <= 1 {
+		it.scratch = rp.Entries
 	}
 	items := make([]batchBufItem, 0, len(pb.itemIdx))
 	for _, ii := range pb.itemIdx {
@@ -650,7 +675,7 @@ func (it *BatchIterator) decodeInto(item batchBufItem, dst Row) (Row, error) {
 		}
 		dst = it.buf
 	}
-	return codec.DecodeInto(dst, item.payload, item.schema, it.store.opts.codecLimits(), nil)
+	return codec.DecodeInto(dst, item.payload, item.schema, it.store.opts.codecLimits(), it.sink)
 }
 
 // releaseRefIfDone releases the block reference once every buffered item it
@@ -694,8 +719,11 @@ func (it *BatchIterator) Close() error {
 }
 
 // loadBatchBlock loads a block for batch decoding: random-read cache first,
-// then the bounded scan window; a miss decompresses into a pooled scratch.
-// The second return value reports a cache/window hit.
+// then the streaming scan window; a miss decompresses into a pooled transient
+// scratch and is promoted into the scan window while it has room (reusing the
+// scratch buffer itself when it is exact-fit, so promotion costs no copy in
+// the common uniform-block case; oversized scratch is copied so window
+// accounting stays tight).
 func (s *Store) loadBatchBlock(offset int64, blockID uint64) (*scanRef, bool, error) {
 	if s.loader.cache != nil {
 		if v, ok := s.loader.cache.Get(blockID); ok {
@@ -710,6 +738,13 @@ func (s *Store) loadBatchBlock(offset int64, blockID uint64) (*scanRef, bool, er
 		return nil, false, err
 	}
 	if s.loader.scan != nil && uint64(len(sc.Raw)) <= s.loader.scan.Remaining() {
+		if cap(sc.Raw) == len(sc.Raw) {
+			// Exact-fit scratch: transfer ownership into the window.
+			blk := sc.Block
+			sc.Detach()
+			s.loader.scan.Put(blockID, int64(len(blk.Raw)), &blk)
+			return &scanRef{blk: &blk}, false, nil
+		}
 		blk := &block.Block{Header: sc.Header, Raw: make([]byte, len(sc.Raw))}
 		copy(blk.Raw, sc.Raw)
 		s.loader.scan.Put(blockID, int64(len(blk.Raw)), blk)

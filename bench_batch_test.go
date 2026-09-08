@@ -168,3 +168,43 @@ func BenchmarkReadBatch(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkBatchVsGetLoop quantifies the M4 gate: with the block cache
+// disabled, a clustered batch decodes each touched block once while a per-row
+// Get loop re-decompresses the block for every row — the planned >=3x win.
+func BenchmarkBatchVsGetLoop(b *testing.B) {
+	base := filepath.Join(tmpdb(b), "bvl")
+	db, full := buildBenchStoreOpts(b, base, 50000, Options{CacheBytes: -1})
+	defer db.Close()
+
+	ids := make([]RowID, 0, 1000)
+	for i := uint64(1); i <= 1000; i++ { // one contiguous span: ~1 block
+		ids = append(ids, i)
+	}
+
+	b.Run("get_loop", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			for _, id := range ids {
+				if _, err := db.Get(context.Background(), full, 1, id, nil); err != nil {
+					require.NoError(b, err)
+				}
+			}
+		}
+	})
+	b.Run("batch_iterator", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			it, err := db.ReadRowsByIDs(context.Background(), full, 1, ids, BatchReadOptions{})
+			require.NoError(b, err)
+			for {
+				_, _, ok := it.Next(nil)
+				if !ok {
+					break
+				}
+			}
+			require.NoError(b, it.Err())
+			require.NoError(b, it.Close())
+		}
+	})
+}

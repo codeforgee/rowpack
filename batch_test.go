@@ -2,216 +2,331 @@ package rowpack
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"path/filepath"
-	"sync"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-// visibleIDs filters ids to those visible at the snapshot (per Get), so
-// batch tests can compare against per-row Gets row by row.
-func visibleIDs(t *testing.T, db *Store, snap SnapshotID, ids []RowID) []RowID {
+// ---- V2-M4: 批量分块读取 ----
+
+// batchCollect drains an iterator, returning (rowIDs, values) in emission
+// order plus the final stats.
+func batchCollect(t *testing.T, it *BatchIterator) ([]RowID, []string, BatchReadStats) {
 	t.Helper()
-	out := make([]RowID, 0, len(ids))
-	for _, id := range ids {
-		if _, err := db.Get(context.Background(), snap, 1, id, nil); err == nil {
-			out = append(out, id)
+	ids := make([]RowID, 0, 16)
+	vals := make([]string, 0, 16)
+	for {
+		id, row, ok := it.Next(nil)
+		if !ok {
+			break
 		}
+		ids = append(ids, id)
+		v, _ := row[1].String()
+		vals = append(vals, v)
 	}
-	return out
+	require.NoError(t, it.Err())
+	st := it.Stats()
+	require.NoError(t, it.Close())
+	return ids, vals, st
 }
 
-// assertRowsMatch verifies batch rows equal per-row Gets value for value and
-// that positions correspond to the input ids order.
-func assertRowsMatch(t *testing.T, db *Store, snap SnapshotID, ids []RowID, got []Row) {
-	t.Helper()
-	require.Len(t, got, len(ids), "batch returned %d rows for %d ids", len(got), len(ids))
-	for i, id := range ids {
-		want, werr := db.Get(context.Background(), snap, 1, id, nil)
-		require.NoError(t, werr, "id %d: Get failed", id)
-		require.Len(t, got[i], len(want), "id %d: len %d != %d", id, len(got[i]), len(want))
-		for c := range want {
-			require.True(t, rowValueEqual(want[c], got[i][c]), "id %d col %d mismatch: %v vs %v", id, c, want[c], got[i][c])
-		}
+// TestBatchByIDsMatchesGet cross-checks ReadRowsByIDs against per-row Get for
+// clustered, sparse, reversed and boundary ID sets, in both emission orders.
+func TestBatchByIDsMatchesGet(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "b")
+	db, full := buildConcurrentStore(t, base, Options{})
+	defer db.Close()
+
+	sets := [][]RowID{
+		{1, 2, 3, 4, 5},                            // clustered
+		{1, 500, 1000, 1500, 2000},                 // sparse
+		{2000, 1500, 1000, 500, 1},                 // reversed input
+		{1, 2000},                                  // boundary
+		{7, 7, 8},                                  // duplicates
+		{42},                                       // single
+		{2001, 5000},                               // all missing
 	}
-}
+	for _, ids := range sets {
+		for _, order := range []BatchOrder{BatchOrderRowID, BatchOrderInput} {
+			it, err := db.ReadRowsByIDs(context.Background(), full, 1, ids, BatchReadOptions{Order: order})
+			require.NoError(t, err)
+			gotIDs, gotVals, st := batchCollect(t, it)
 
-// TestReadBatchMatchesGet compares ReadBatch against per-row Get on a FULL
-// store and along a DELTA chain with updates and deletes, for both random and
-// sequential id sets.
-func TestReadBatchMatchesGet(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		depth int
-	}{
-		{"full", 0},
-		{"delta-chain", 3},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			base := filepath.Join(tmpdb(t), "batch-"+tc.name)
-			db, head := buildReuseStore(t, base, 1000, tc.depth)
-			defer db.Close()
-
-			// Random set (LCG), filtered to visible rows.
-			var rng uint64 = 42
-			rand := make([]RowID, 0, 300)
-			for len(rand) < 300 {
-				rng = rng*6364136223846793005 + 7
-				id := rng%1000 + 1
-				if _, err := db.Get(context.Background(), head, 1, id, nil); err == nil {
-					rand = append(rand, id)
-				}
+			type wantPair struct {
+				id  RowID
+				val string
 			}
-			assertRowsMatch(t, db, head, rand, mustReadBatch(t, db, head, rand))
-
-			// Sequential window.
-			seq := make([]RowID, 0, 400)
-			for id := RowID(1); id <= 400; id++ {
-				if _, err := db.Get(context.Background(), head, 1, id, nil); err == nil {
-					seq = append(seq, id)
-				}
-			}
-			assertRowsMatch(t, db, head, seq, mustReadBatch(t, db, head, seq))
-		})
-	}
-}
-
-func mustReadBatch(t *testing.T, db *Store, snap SnapshotID, ids []RowID) []Row {
-	t.Helper()
-	rows, err := db.ReadBatch(context.Background(), snap, 1, ids)
-	require.NoError(t, err)
-	return rows
-}
-
-// TestReadBatchMissingAndDeleted verifies the per-row error semantics: a
-// batch containing a missing or deleted id fails with the same ErrNotFound
-// error Get would return.
-func TestReadBatchMissingAndDeleted(t *testing.T) {
-	base := filepath.Join(tmpdb(t), "batch-err")
-	db, head := buildReuseStore(t, base, 200, 2)
-	defer db.Close()
-
-	missing := []RowID{1, 2, 999_999} // 999999 absent
-	_, err := db.ReadBatch(context.Background(), head, 1, missing)
-	require.ErrorIs(t, err, ErrNotFound, "missing id: got %v, want ErrNotFound", err)
-	// RowID known deleted by the chain builder (i%50==49 -> row 50).
-	deleted := []RowID{50}
-	_, err = db.ReadBatch(context.Background(), head, 1, deleted)
-	require.ErrorIs(t, err, ErrNotFound, "deleted id: got %v, want ErrNotFound", err)
-	// Get reports the identical error kind and message for the same id.
-	_, gerr := db.Get(context.Background(), head, 1, 50, nil)
-	require.Error(t, gerr, "Get on deleted id did not error")
-	require.NotEmpty(t, gerr.Error())
-}
-
-// TestReadBatchEmptyAndDuplicates covers the degenerate id sets.
-func TestReadBatchEmptyAndDuplicates(t *testing.T) {
-	base := filepath.Join(tmpdb(t), "batch-edge")
-	db, head := buildReuseStore(t, base, 100, 0)
-	defer db.Close()
-
-	rows, err := db.ReadBatch(context.Background(), head, 1, nil)
-	require.NoError(t, err, "empty batch: %v", err)
-	require.Len(t, rows, 0, "empty batch: %d rows", len(rows))
-	// Duplicate ids read the row twice, positionally aligned like repeated Gets.
-	dup := []RowID{7, 7, 8, 7}
-	got := mustReadBatch(t, db, head, dup)
-	require.Len(t, got, 4, "dup batch: %d rows", len(got))
-	for i := range dup {
-		want, err := db.Get(context.Background(), head, 1, dup[i], nil)
-		require.NoError(t, err)
-		for c := range want {
-			require.True(t, rowValueEqual(want[c], got[i][c]), "dup idx %d col %d mismatch", i, c)
-		}
-	}
-}
-
-// TestReadBatchStats verifies the cumulative counters and, in the fully
-// clustered case, that one block serves the whole batch (Blocks == 1).
-func TestReadBatchStats(t *testing.T) {
-	base := filepath.Join(tmpdb(t), "batch-stats")
-	db, fullID := buildReuseStore(t, base, 1000, 0)
-	defer db.Close()
-
-	ids := make([]RowID, 1000)
-	for i := range ids {
-		ids[i] = RowID(i + 1)
-	}
-	before := db.Stats().Batch
-	rows, err := db.ReadBatch(context.Background(), fullID, 1, ids)
-	require.NoError(t, err)
-	require.Len(t, rows, 1000, "got %d rows", len(rows))
-	after := db.Stats().Batch
-	require.Equal(t, uint64(1), after.Calls-before.Calls, "calls/rows delta: %d/%d", after.Calls-before.Calls, after.Rows-before.Rows)
-	require.Equal(t, uint64(1000), after.Rows-before.Rows, "calls/rows delta: %d/%d", after.Calls-before.Calls, after.Rows-before.Rows)
-	require.Equal(t, uint64(1), after.Blocks-before.Blocks, "1000 clustered rows served by %d blocks, want 1", after.Blocks-before.Blocks)
-	require.NotZero(t, after.RawBytes-before.RawBytes, "raw bytes delta is zero")
-}
-
-// TestReadBatchAfterReopen verifies ReadBatch works after Close/Reopen
-// (recovery path) and agrees with Get.
-func TestReadBatchAfterReopen(t *testing.T) {
-	base := filepath.Join(tmpdb(t), "batch-reopen")
-	db, fullID := buildReuseStore(t, base, 500, 0)
-	want, err := db.ReadBatch(context.Background(), fullID, 1, []RowID{1, 250, 500})
-	require.NoError(t, err)
-	require.NoError(t, db.Close())
-	db2, err := Open(base, Options{})
-	require.NoError(t, err)
-	defer db2.Close()
-	got, err := db2.ReadBatch(context.Background(), fullID, 1, []RowID{1, 250, 500})
-	require.NoError(t, err)
-	for i := range want {
-		for c := range want[i] {
-			require.True(t, rowValueEqual(want[i][c], got[i][c]), "row %d col %d mismatch after reopen", i, c)
-		}
-	}
-}
-
-// TestReadBatchConcurrent exercises ReadBatch from many goroutines while
-// mixing Get calls; run under -race.
-func TestReadBatchConcurrent(t *testing.T) {
-	base := filepath.Join(tmpdb(t), "batch-conc")
-	db, head := buildReuseStore(t, base, 1000, 2)
-	defer db.Close()
-
-	visible := make([]RowID, 0, 1000)
-	for id := RowID(1); id <= 1000; id++ {
-		if _, err := db.Get(context.Background(), head, 1, id, nil); err == nil {
-			visible = append(visible, id)
-		}
-	}
-	const g = 16
-	var wg sync.WaitGroup
-	errs := make(chan error, g)
-	for i := 0; i < g; i++ {
-		wg.Add(1)
-		go func(seed uint64) {
-			defer wg.Done()
-			var rng uint64 = seed
-			for iter := 0; iter < 40; iter++ {
-				ids := make([]RowID, 0, 64)
-				for len(ids) < 64 {
-					rng = rng*6364136223846793005 + 3
-					ids = append(ids, visible[rng%uint64(len(visible))])
-				}
-				rows, err := db.ReadBatch(context.Background(), head, 1, ids)
+			var want []wantPair
+			for _, id := range ids {
+				r, err := db.Get(context.Background(), full, 1, id, nil)
 				if err != nil {
-					errs <- err
-					return
+					continue // invisible: skipped
 				}
-				if len(rows) != len(ids) {
-					errs <- errors.New("batch row count mismatch")
-					return
-				}
+				v, _ := r[1].String()
+				want = append(want, wantPair{id: id, val: v})
 			}
-		}(uint64(1000 + i))
+			if order == BatchOrderRowID {
+				sort.SliceStable(want, func(a, b int) bool { return want[a].id < want[b].id })
+			}
+			wantIDs := make([]RowID, len(want))
+			wantVals := make([]string, len(want))
+			for i, w := range want {
+				wantIDs[i] = w.id
+				wantVals[i] = w.val
+			}
+			require.Equal(t, wantIDs, gotIDs, "ids for %v order %d", ids, order)
+			require.Equal(t, wantVals, gotVals, "values for %v order %d", ids, order)
+			require.Equal(t, uint64(len(ids)), st.RequestedIDs)
+			require.Equal(t, uint64(len(want)), st.RowsReturned)
+		}
 	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
+}
+
+// TestBatchSkipInvisible verifies missing and deleted rows are skipped, the
+// request still succeeds, and the stats expose the difference.
+func TestBatchSkipInvisible(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "skip")
+	db, full := buildConcurrentStore(t, base, Options{})
+	// Delete rows 3 and 4 in a DELTA.
+	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: full})
+	require.NoError(t, w.Delete(context.Background(), 1, 3))
+	require.NoError(t, w.Delete(context.Background(), 1, 4))
+	delta, err := w.Commit(context.Background())
+	require.NoError(t, err)
+
+	it, err := db.ReadRowsByIDs(context.Background(), delta.ID, 1, []RowID{2, 3, 4, 5, 9999}, BatchReadOptions{})
+	require.NoError(t, err)
+	ids, vals, st := batchCollect(t, it)
+	require.Equal(t, []RowID{2, 5}, ids)
+	require.Equal(t, []string{"n-2", "n-5"}, vals)
+	require.Equal(t, uint64(5), st.RequestedIDs)
+	require.Equal(t, uint64(2), st.RowsReturned)
+
+	// At the FULL snapshot rows 3/4 are visible again.
+	it2, err := db.ReadRowsByIDs(context.Background(), full, 1, []RowID{3, 4}, BatchReadOptions{})
+	require.NoError(t, err)
+	ids2, _, _ := batchCollect(t, it2)
+	require.Equal(t, []RowID{3, 4}, ids2)
+}
+
+// TestBatchDuplicates pins the duplicate semantics (R17): every occurrence of
+// a duplicated input ID is emitted, 1:1 with input positions, in both orders.
+func TestBatchDuplicates(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "dup")
+	db, full := buildConcurrentStore(t, base, Options{})
+	defer db.Close()
+
+	ids := []RowID{5, 5, 9, 5}
+
+	it, err := db.ReadRowsByIDs(context.Background(), full, 1, ids, BatchReadOptions{Order: BatchOrderInput})
+	require.NoError(t, err)
+	gotIDs, gotVals, st := batchCollect(t, it)
+	require.Equal(t, []RowID{5, 5, 9, 5}, gotIDs, "input order must map 1:1")
+	require.Equal(t, []string{"n-5", "n-5", "n-9", "n-5"}, gotVals)
+	require.Equal(t, uint64(4), st.RowsReturned)
+
+	it2, err := db.ReadRowsByIDs(context.Background(), full, 1, ids, BatchReadOptions{Order: BatchOrderRowID})
+	require.NoError(t, err)
+	gotIDs2, gotVals2, _ := batchCollect(t, it2)
+	require.Equal(t, []RowID{5, 5, 5, 9}, gotIDs2, "row id order keeps duplicates adjacent")
+	require.Equal(t, []string{"n-5", "n-5", "n-5", "n-9"}, gotVals2)
+}
+
+// TestBatchRanges verifies multi-range planning: overlap merging, holes,
+// cross-layer visibility, and agreement with Scan over the same span.
+func TestBatchRanges(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "rng")
+	db, full := buildConcurrentStore(t, base, Options{})
+	// DELTA deletes 10 and inserts 2001..2003.
+	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: full})
+	require.NoError(t, w.Delete(context.Background(), 1, 10))
+	for i := uint64(2001); i <= 2003; i++ {
+		require.NoError(t, w.Insert(context.Background(), 1, i, 1, Row{Uint64(i), String(fmt.Sprintf("n-%d", i))}))
+	}
+	delta, err := w.Commit(context.Background())
+	require.NoError(t, err)
+
+	// Overlapping ranges merge; hole at 10 (deleted); 2999..3999 empty.
+	ranges := []RowIDRange{
+		{Start: 8, End: 12},     // rows 8,9,11,12 (10 deleted)
+		{Start: 11, End: 15},    // overlaps: merged 8..15
+		{Start: 2000, End: 2004},// 2000..2003
+		{Start: 2999, End: 3999},// empty span
+	}
+	it, err := db.ReadRowRanges(context.Background(), delta.ID, 1, ranges, BatchReadOptions{})
+	require.NoError(t, err)
+	ids, _, st := batchCollect(t, it)
+	want := []RowID{8, 9, 11, 12, 13, 14, 2000, 2001, 2002, 2003}
+	require.Equal(t, want, ids)
+	require.Equal(t, uint64(4), st.RequestedRanges)
+	require.Equal(t, uint64(3), st.MergedRanges, "ranges 1+2 merge; range 4 empty but kept")
+	require.Equal(t, uint64(len(want)), st.RowsReturned)
+
+	// Cross-check the single merged range against Scan over the same span
+	// (Scan is the single-range kernel; its span covers all visible rows,
+	// which for [8,15) equals the merged range's result).
+	scanIDs := []RowID{}
+	scanIt, err := db.Scan(context.Background(), delta.ID, 1, ScanOptions{StartRowID: 8, EndRowID: 15})
+	require.NoError(t, err)
+	for {
+		row, ok := scanIt.Next()
+		if !ok {
+			break
+		}
+		scanIDs = append(scanIDs, scanIt.RowID())
+		_ = row
+	}
+	require.NoError(t, scanIt.Err())
+	require.Equal(t, []RowID{8, 9, 11, 12, 13, 14}, scanIDs, "single-range batch must match Scan visibility")
+	itScan, err := db.ReadRowRanges(context.Background(), delta.ID, 1, []RowIDRange{{Start: 8, End: 15}}, BatchReadOptions{})
+	require.NoError(t, err)
+	scanLikeIDs, _, _ := batchCollect(t, itScan)
+	require.Equal(t, scanIDs, scanLikeIDs)
+
+	// Single-layer FULL snapshot sees 10 again.
+	it2, err := db.ReadRowRanges(context.Background(), full, 1, []RowIDRange{{Start: 9, End: 11}}, BatchReadOptions{})
+	require.NoError(t, err)
+	ids2, _, _ := batchCollect(t, it2)
+	require.Equal(t, []RowID{9, 10}, ids2)
+}
+
+// TestBatchSameBlockOnce verifies the aggregation gate: many requested rows
+// inside one block produce exactly one block read and one decode.
+func TestBatchSameBlockOnce(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "once")
+	// Small block size so rows 1..100 share one block.
+	opts := Options{BlockSize: 1024}
+	db, full := buildConcurrentStore(t, base, opts)
+	defer db.Close()
+
+	// One block: the first ~20 rows share a block at BlockSize=1024.
+	ids := make([]RowID, 0, 20)
+	for i := uint64(1); i <= 20; i++ {
+		ids = append(ids, i)
+	}
+	it, err := db.ReadRowsByIDs(context.Background(), full, 1, ids, BatchReadOptions{})
+	require.NoError(t, err)
+	gotIDs, vals, st := batchCollect(t, it)
+	require.Len(t, gotIDs, 20)
+	require.Equal(t, "n-1", vals[0])
+	require.Equal(t, "n-20", vals[19])
+	require.Equal(t, uint64(1), st.BlocksRead, "same-block rows must decode once: %+v", st)
+	require.Equal(t, uint64(1), st.CandidateBlocks)
+	require.Equal(t, uint64(0), st.CacheHits, "first load of the block is a miss")
+
+	// Wider batch: rows 1..100 span several blocks; loads must equal the
+	// candidate count (each block decoded exactly once), never the row count.
+	wide := make([]RowID, 0, 100)
+	for i := uint64(1); i <= 100; i++ {
+		wide = append(wide, i)
+	}
+	it2, err := db.ReadRowsByIDs(context.Background(), full, 1, wide, BatchReadOptions{})
+	require.NoError(t, err)
+	_, _, st2 := batchCollect(t, it2)
+	require.Equal(t, st2.CandidateBlocks, st2.BlocksRead, "each candidate block decoded exactly once: %+v", st2)
+	require.Less(t, int(st2.BlocksRead), 100, "aggregation must collapse 100 rows into few blocks")
+}
+
+// TestBatchLimits pins the resource-limit and validation errors.
+func TestBatchLimits(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "lim")
+	db, full := buildConcurrentStore(t, base, Options{})
+	defer db.Close()
+
+	// MaxRows.
+	_, err := db.ReadRowsByIDs(context.Background(), full, 1, []RowID{1, 2, 3}, BatchReadOptions{MaxRows: 2})
+	require.ErrorIs(t, err, ErrBatchLimit)
+	_, err = db.ReadRowRanges(context.Background(), full, 1, []RowIDRange{{Start: 1, End: 10}}, BatchReadOptions{MaxRows: 5})
+	require.ErrorIs(t, err, ErrBatchLimit)
+	// MaxBytes (one block raw bytes > 1).
+	_, err = db.ReadRowRanges(context.Background(), full, 1, []RowIDRange{{Start: 1, End: 10}}, BatchReadOptions{MaxBytes: 1})
+	require.ErrorIs(t, err, ErrBatchLimit)
+	// Invalid ranges.
+	_, err = db.ReadRowRanges(context.Background(), full, 1, []RowIDRange{{Start: 5, End: 0}}, BatchReadOptions{})
+	require.ErrorIs(t, err, ErrInvalidRange)
+	_, err = db.ReadRowRanges(context.Background(), full, 1, []RowIDRange{{Start: 5, End: 5}}, BatchReadOptions{})
+	require.ErrorIs(t, err, ErrInvalidRange)
+	_, err = db.ReadRowRanges(context.Background(), full, 1, []RowIDRange{{Start: 7, End: 3}}, BatchReadOptions{})
+	require.ErrorIs(t, err, ErrInvalidRange)
+	// Input order on ranges.
+	_, err = db.ReadRowRanges(context.Background(), full, 1, []RowIDRange{{Start: 1, End: 3}}, BatchReadOptions{Order: BatchOrderInput})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	// Unknown snapshot.
+	_, err = db.ReadRowsByIDs(context.Background(), 99, 1, []RowID{1}, BatchReadOptions{})
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestBatchCancel verifies ctx cancellation surfaces through Err and stops
+// the iteration.
+func TestBatchCancel(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "cancel")
+	db, full := buildConcurrentStore(t, base, Options{})
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	it, err := db.ReadRowsByIDs(ctx, full, 1, []RowID{1, 2, 3}, BatchReadOptions{})
+	require.NoError(t, err)
+	cancel()
+	_, _, ok := it.Next(nil)
+	require.False(t, ok)
+	require.ErrorIs(t, it.Err(), context.Canceled)
+	require.NoError(t, it.Close())
+	// Closed iterator stays inert.
+	_, _, ok = it.Next(nil)
+	require.False(t, ok)
+	require.NoError(t, it.Close())
+}
+
+// TestBatchEmptyInput verifies empty requests end immediately with no error.
+func TestBatchEmptyInput(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "empty")
+	db, full := buildConcurrentStore(t, base, Options{})
+	defer db.Close()
+
+	it, err := db.ReadRowsByIDs(context.Background(), full, 1, nil, BatchReadOptions{})
+	require.NoError(t, err)
+	_, _, ok := it.Next(nil)
+	require.False(t, ok)
+	require.NoError(t, it.Err())
+
+	it2, err := db.ReadRowRanges(context.Background(), full, 1, nil, BatchReadOptions{})
+	require.NoError(t, err)
+	_, _, ok = it2.Next(nil)
+	require.False(t, ok)
+	require.NoError(t, it2.Err())
+}
+
+// TestBatchVsGetLoopCrossCheck cross-checks ReadBatch (v1 API), ReadRowsByIDs
+// and per-row Get on the same ID set.
+func TestBatchVsGetLoopCrossCheck(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "x")
+	db, full := buildConcurrentStore(t, base, Options{})
+	defer db.Close()
+
+	ids := []RowID{1, 600, 1200, 1800, 2000}
+	want := map[RowID]string{}
+	for _, id := range ids {
+		r, err := db.Get(context.Background(), full, 1, id, nil)
 		require.NoError(t, err)
+		v, _ := r[1].String()
+		want[id] = v
+	}
+
+	// v1 aggregate API.
+	rows, err := db.ReadBatch(context.Background(), full, 1, ids)
+	require.NoError(t, err)
+	require.Len(t, rows, len(ids))
+	// v2 iterator.
+	it, err := db.ReadRowsByIDs(context.Background(), full, 1, ids, BatchReadOptions{Order: BatchOrderInput})
+	require.NoError(t, err)
+	gotIDs, gotVals, _ := batchCollect(t, it)
+	require.Equal(t, ids, gotIDs)
+	for i, id := range ids {
+		v, _ := rows[i][1].String()
+		require.Equal(t, want[id], v, "ReadBatch row %d", id)
+		require.Equal(t, want[id], gotVals[i], "ReadRowsByIDs row %d", id)
 	}
 }

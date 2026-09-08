@@ -98,10 +98,11 @@ type Iterator struct {
 	closed bool
 }
 
-// strSink copies payload into the iterator's append-only string arena and
-// returns a zero-copy view backed by an arena chunk.
-func (it *Iterator) strSink(payload []byte) string {
-	return it.arena.materialize(payload)
+// strArenaSink binds a StringSink to an append-only arena; shared by the
+// Scan and batch iterators and pre-bound once at iterator creation so
+// per-row decodes never allocate a method value.
+func strArenaSink(a *strArena) codec.StringSink {
+	return func(payload []byte) string { return a.materialize(payload) }
 }
 
 // layerIter walks one snapshot layer's sorted incremental row index.
@@ -157,7 +158,7 @@ func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table TableID, op
 	}
 	// Pre-bind the string-arena sink once (a method value allocated per
 	// expression evaluation would otherwise cost one allocation per Next).
-	it.sink = it.strSink
+	it.sink = strArenaSink(&it.arena)
 	if len(it.layers) > 1 {
 		heap.Init(&it.heap)
 		for _, l := range it.layers {
@@ -286,7 +287,7 @@ func (it *Iterator) locateBlock(loc *index.RowLoc) error {
 	if bl == nil {
 		return fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)
 	}
-	ref, err := it.store.loader.LoadScan(int64(bl.DataOffset), bl.BlockID)
+	ref, _, err := it.store.loader.LoadScan(int64(bl.DataOffset), bl.BlockID)
 	if err != nil {
 		return err
 	}

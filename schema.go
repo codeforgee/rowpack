@@ -52,6 +52,17 @@ func (si *schemaIndex) latest(snapshot uint64, table uint32) uint32 {
 	return ts.versions[len(ts.versions)-1]
 }
 
+// schemaFor resolves the codec schema for one block's version, reporting
+// ErrSchemaMismatch when the metadata layer has no such schema version.
+// Shared by the Get/Scan/batch decode paths.
+func (si *schemaIndex) schemaFor(bl *index.BlockLoc, version uint32) (*codec.Schema, error) {
+	schema := si.schema(bl.SnapshotID, bl.TableID, version)
+	if schema == nil {
+		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, version)
+	}
+	return schema, nil
+}
+
 // buildSchemaIndex derives schemas for every snapshot in the view by reading
 // its Table and Column metadata records (resolved along the parent chain).
 // One decode memo is shared across all snapshots: deriveTables for snapshot

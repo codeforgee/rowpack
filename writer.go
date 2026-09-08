@@ -3,7 +3,6 @@ package rowpack
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -915,6 +914,3 @@ func schemaEqual(a, b *codec.Schema) bool {
 	}
 	return true
 }
-
-var _ = errors.New
-var _ = context.Canceled

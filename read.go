@@ -163,18 +163,18 @@ func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc 
 		return nil, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", loc.ItemOrdinal, loc.BlockID)
 	}
 	ent := &rp.Entries[loc.ItemOrdinal]
-	schema := si.schema(bl.SnapshotID, bl.TableID, ent.SchemaVersion)
-	if schema == nil {
-		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ent.SchemaVersion)
+	schema, err := si.schemaFor(bl, ent.SchemaVersion)
+	if err != nil {
+		return nil, err
 	}
 	return codec.DecodeInto(dst, rp.RowBytes(int(loc.ItemOrdinal)), schema, s.opts.codecLimits(), sink)
 }
 
 // decodeRowInto decodes a located row into dst against its schema.
 func (s *Store) decodeRowInto(ref *block.RowRef, bl *index.BlockLoc, si *schemaIndex, dst Row) (Row, error) {
-	schema := si.schema(bl.SnapshotID, bl.TableID, ref.Entry.SchemaVersion)
-	if schema == nil {
-		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ref.Entry.SchemaVersion)
+	schema, err := si.schemaFor(bl, ref.Entry.SchemaVersion)
+	if err != nil {
+		return nil, err
 	}
 	return codec.DecodeInto(dst, ref.Row, schema, s.opts.codecLimits(), nil)
 }

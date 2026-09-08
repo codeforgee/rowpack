@@ -200,14 +200,7 @@ func (s *Store) ReadRowsByIDs(
 		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
 
-	plan := &batchPlan{}
-	it := &BatchIterator{
-		store: s, st: st, ctx: ctx, opts: opts, plan: plan,
-		pending:      make(map[int]batchBufItem),
-		resultBuf:    make(map[int]blockResult),
-		pipelineDone: make(chan struct{}),
-	}
-	it.sink = it.strSink
+	it := s.newBatchIterator(st, ctx, opts)
 	it.stats.RequestedIDs = uint64(len(rowIDs))
 
 	// Resolve every input position; winners keep their input index.
@@ -270,13 +263,7 @@ func (s *Store) ReadRowRanges(
 	if view.Snapshot(snapshot) == nil {
 		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	it := &BatchIterator{
-		store: s, st: st, ctx: ctx, opts: opts, plan: &batchPlan{},
-		pending:      make(map[int]batchBufItem),
-		resultBuf:    make(map[int]blockResult),
-		pipelineDone: make(chan struct{}),
-	}
-	it.sink = it.strSink
+	it := s.newBatchIterator(st, ctx, opts)
 	it.stats.RequestedRanges = uint64(len(ranges))
 
 	merged, err := normalizeRanges(ranges)
@@ -338,6 +325,21 @@ func (s *Store) ReadRowRanges(
 		return nil, err
 	}
 	return it, nil
+}
+
+// newBatchIterator builds the iterator shell shared by ReadRowsByIDs and
+// ReadRowRanges; each entry point resolves its request into the plan via
+// finalizePlan. The string-arena sink is pre-bound once (a per-expression
+// method value would allocate once per row decode).
+func (s *Store) newBatchIterator(st *publishedState, ctx context.Context, opts BatchReadOptions) *BatchIterator {
+	it := &BatchIterator{
+		store: s, st: st, ctx: ctx, opts: opts, plan: &batchPlan{},
+		pending:      make(map[int]batchBufItem),
+		resultBuf:    make(map[int]blockResult),
+		pipelineDone: make(chan struct{}),
+	}
+	it.sink = strArenaSink(&it.arena)
+	return it
 }
 
 // normalizeRanges validates and merges overlapping or adjacent ranges.
@@ -515,12 +517,6 @@ func (it *BatchIterator) nextBlockResult() error {
 	return nil
 }
 
-// strSink copies payload into the iterator's append-only string arena and
-// returns a zero-copy view backed by an arena chunk (see iterator.go).
-func (it *BatchIterator) strSink(payload []byte) string {
-	return it.arena.materialize(payload)
-}
-
 // decodeBlock loads, verifies and parses one planned block, producing the
 // buffered items for it. Safe for concurrent use (read-only plan/view +
 // concurrent-safe loader); workers never touch iterator mutable state.
@@ -530,7 +526,7 @@ func (it *BatchIterator) decodeBlock(bidx int) (blockResult, error) {
 	if bl == nil {
 		return blockResult{}, fmt.Errorf("rowpack: block %d missing from view", pb.blockID)
 	}
-	ref, hit, err := it.store.loadBatchBlock(int64(bl.DataOffset), pb.blockID)
+	ref, hit, err := it.store.loader.LoadScan(int64(bl.DataOffset), pb.blockID)
 	if err != nil {
 		return blockResult{}, err
 	}
@@ -557,10 +553,10 @@ func (it *BatchIterator) decodeBlock(bidx int) (blockResult, error) {
 			return blockResult{}, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", item.ordinal, pb.blockID)
 		}
 		ent := &rp.Entries[item.ordinal]
-		schema := it.st.schemas.schema(bl.SnapshotID, bl.TableID, ent.SchemaVersion)
-		if schema == nil {
+		schema, err := it.st.schemas.schemaFor(bl, ent.SchemaVersion)
+		if err != nil {
 			ref.Release()
-			return blockResult{}, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, ent.SchemaVersion)
+			return blockResult{}, err
 		}
 		items = append(items, batchBufItem{
 			emitPos: item.emitPos,
@@ -716,40 +712,4 @@ func (it *BatchIterator) Close() error {
 	it.closed = true
 	it.releaseAll()
 	return nil
-}
-
-// loadBatchBlock loads a block for batch decoding: random-read cache first,
-// then the streaming scan window; a miss decompresses into a pooled transient
-// scratch and is promoted into the scan window while it has room (reusing the
-// scratch buffer itself when it is exact-fit, so promotion costs no copy in
-// the common uniform-block case; oversized scratch is copied so window
-// accounting stays tight).
-func (s *Store) loadBatchBlock(offset int64, blockID uint64) (*scanRef, bool, error) {
-	if s.loader.cache != nil {
-		if v, ok := s.loader.cache.Get(blockID); ok {
-			return &scanRef{blk: v.(*block.Block)}, true, nil
-		}
-		if v, ok := s.loader.scan.Get(blockID); ok {
-			return &scanRef{blk: v.(*block.Block)}, true, nil
-		}
-	}
-	sc, err := s.loader.reader.ReadAtBlockTransient(offset)
-	if err != nil {
-		return nil, false, err
-	}
-	if s.loader.scan != nil && uint64(len(sc.Raw)) <= s.loader.scan.Remaining() {
-		if cap(sc.Raw) == len(sc.Raw) {
-			// Exact-fit scratch: transfer ownership into the window.
-			blk := sc.Block
-			sc.Detach()
-			s.loader.scan.Put(blockID, int64(len(blk.Raw)), &blk)
-			return &scanRef{blk: &blk}, false, nil
-		}
-		blk := &block.Block{Header: sc.Header, Raw: make([]byte, len(sc.Raw))}
-		copy(blk.Raw, sc.Raw)
-		s.loader.scan.Put(blockID, int64(len(blk.Raw)), blk)
-		sc.Release()
-		return &scanRef{blk: blk}, false, nil
-	}
-	return &scanRef{blk: &sc.Block, sc: sc}, false, nil
 }

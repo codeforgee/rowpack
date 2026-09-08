@@ -94,32 +94,41 @@ func (r *scanRef) Release() {
 	}
 }
 
-// LoadScan serves streaming reads (Scan). Lookup order is the
+// LoadScan serves streaming reads (Scan and batch reads). Lookup order is the
 // random-read cache, then the scan window; a miss is decompressed into a
-// pooled scratch. The block is promoted into the scan window only while the
-// window has room, so large scans neither evict the random-read hot set nor
-// allocate per block.
-func (l *blockLoader) LoadScan(offset int64, blockID uint64) (*scanRef, error) {
+// pooled scratch. A block with room in the window is promoted into it: an
+// exact-fit scratch transfers its buffer without a copy (the pool
+// replenishes itself on demand); an oversized scratch is copied so window
+// accounting stays tight. The returned hit reports a cache/scan-window hit
+// (used for batch cache statistics; scans ignore it).
+func (l *blockLoader) LoadScan(offset int64, blockID uint64) (*scanRef, bool, error) {
 	if l.cache != nil {
 		if v, ok := l.cache.Get(blockID); ok {
-			return &scanRef{blk: v.(*block.Block)}, nil
+			return &scanRef{blk: v.(*block.Block)}, true, nil
 		}
 		if v, ok := l.scan.Get(blockID); ok {
-			return &scanRef{blk: v.(*block.Block)}, nil
+			return &scanRef{blk: v.(*block.Block)}, true, nil
 		}
 	}
 	sc, err := l.reader.ReadAtBlockTransient(offset)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if l.scan != nil && uint64(len(sc.Raw)) <= l.scan.Remaining() {
+		if cap(sc.Raw) == len(sc.Raw) {
+			// Exact-fit scratch: transfer ownership into the window.
+			blk := sc.Block
+			sc.Detach()
+			l.scan.Put(blockID, int64(len(blk.Raw)), &blk)
+			return &scanRef{blk: &blk}, false, nil
+		}
 		blk := &block.Block{Header: sc.Header, Raw: make([]byte, len(sc.Raw))}
 		copy(blk.Raw, sc.Raw)
 		l.scan.Put(blockID, int64(len(blk.Raw)), blk)
 		sc.Release()
-		return &scanRef{blk: blk}, nil
+		return &scanRef{blk: blk}, false, nil
 	}
-	return &scanRef{blk: &sc.Block, sc: sc}, nil
+	return &scanRef{blk: &sc.Block, sc: sc}, false, nil
 }
 
 // cacheStats returns the cache counters (nil-safe).

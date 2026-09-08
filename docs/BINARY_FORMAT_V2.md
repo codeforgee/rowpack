@@ -440,4 +440,11 @@ v2 直接替代旧格式：
 - **R7**：§7 允许后续 FULL checkpoint（取消 v1 id=1 强制）；
 - **R8**：§6 DataEnd 沿用 v1 语义 + IndexTxn offset 权威化；
 - **R11/R12**：§13 nonce 位内域分离 + 索引 CRC 覆盖落盘字节；
-- **R14**：Block RowID envelope 由内存索引派生，不进磁盘块头（待 M4 前由 M0 正式确认）。
+- **R14**：Block RowID envelope 由内存索引派生，不进磁盘块头。实现决议
+  （V2-M4）：无需独立 envelope 结构——每层 Row Index 本身是按 RowID 有序分片，
+  范围查询对分片二分定位 span 即等价于 envelope 过滤，且零额外内存。
+- **R17**（V2-M4 落地）：批量重复输入 ID 重复返回（与输入下标 1:1），不静默去重；
+  不可见行跳过，Stats 暴露差异。
+- **M6 落地补充**：加密 store 的 IndexTxn 只密封 body，Header/Footer 保持明文
+  （§10.1 扫描协议因此永不需要密钥）；Footer 的 IndexTxnCRC32C 覆盖落盘密文
+  （R12）；nonce 域分离落在 nonce 位内（R11）。

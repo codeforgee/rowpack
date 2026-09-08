@@ -18,15 +18,15 @@
 
 ## 2. 里程碑
 
-| 里程碑 | 结果 |
-| --- | --- |
-| V2-M0 | 精确布局、ADR、测试矩阵冻结 |
-| V2-M1 | 单文件 Header、Block、IndexTxn、Footer 编解码 |
-| V2-M2 | FULL Snapshot 写入、打开、Get/Scan |
-| V2-M3 | DELTA、历史读取、尾部恢复 |
-| V2-M4 | 批量 Block planner 与范围读取 |
-| V2-M5 | Block Cache、批量规划和缓存预算 |
-| V2-M6 | AES-256-GCM、故障注入和发布基准 |
+| 里程碑 | 结果 | 状态 |
+| --- | --- | --- |
+| V2-M0 | 精确布局、ADR、测试矩阵冻结 | ✅ 已冻结（Footer 144B / ROWPACK2 / 备份单文件语义） |
+| V2-M1 | 单文件 Header、Block、IndexTxn、Footer 编解码 | ✅ v2-single-file `25d9a5e` |
+| V2-M2 | FULL Snapshot 写入、打开、Get/Scan | ✅ v2-single-file `ee9a6d8` |
+| V2-M3 | DELTA、历史读取、尾部恢复 | ✅ v2-single-file `e5e4151` |
+| V2-M4 | 批量 Block planner 与范围读取 | ✅ v2-single-file `ddd89ca`（冷缓存 1000 行 ~417× vs Get 循环） |
+| V2-M5 | Block Cache、批量规划和缓存预算 | ✅ v2-single-file `1384067`（Parallelism 并行解码 + 淘汰一致性） |
+| V2-M6 | AES-256-GCM、故障注入和发布基准 | ✅ v2-single-file `303b738`（IndexTxn 域加密 + 篡改恢复）；发布基准见 perf-report-v2 |
 
 ## 3. V2-M0：冻结设计输入
 

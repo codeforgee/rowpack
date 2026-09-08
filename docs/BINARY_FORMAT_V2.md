@@ -26,6 +26,7 @@ v2 将原 `.rpk` 数据流和 `.rpi` IndexTxn 流交错写入一个 `<base>.rpk`
 | v1 问题 | v2 改进 |
 | --- | --- |
 | `.rpk`、`.rpi` 两个文件 | 单个 `.rpk` |
+| 备份需同时拷贝 `.rpk`+`.rpi` 且保持配对 | 备份/迁移/复制 = 单个 `.rpk`，不产生第二个数据块 |
 | 两次 fsync | 数据、IndexTxn、Footer 后一次 fsync |
 | 数据领先索引的跨文件窗口 | IndexTxn 位于 Footer 前，同一事务提交 |
 | UUID 配对和文件缺失 | 不再需要文件配对 |
@@ -87,6 +88,12 @@ HeaderCRC32C
 
 Header 创建后不更新，保持 append-only。
 
+**M0 决议（R15）**：v2 FileHeader 字节布局沿用 v1（含加密字段预留区 offset 64..120，
+HeaderCRC32C@120，ReservedCRC@124），仅 Magic=`ROWPACK2`、Major=2 不同。
+`RequiredFeatures` 位图沿用 v1 的四能力位（TypedTupleV1/Zstd/MetadataBlock/Delta，即
+0x0F），不重定义：单文件化是载体变化，能力语义不变，CheckVersion 的 0x0F 掩码检查原样
+保留。v1 的 `RequiredFeaturesV1` 常量语义可直接复用。
+
 ## 5. SnapshotHeader 与 Block
 
 SnapshotHeader、BlockHeader、Rows Payload、Metadata Payload 和 TypedTuple 优先保持现有
@@ -101,6 +108,11 @@ Block 仍满足：
 - Row Directory 保存 RowID、ChangeType、SchemaVersion 和记录位置。
 
 保持 Block 格式可以最大程度复用 writer、reader、cache、golden 构造逻辑和性能优化。
+
+**M0 决议（R14）**：BlockHeader 保持 v1 的 64 字节布局（含 KeyEpoch@56），**不增加
+disk RowID envelope 字段**；批量 planner 的 MinRowID/MaxRowIDExclusive 由内存索引在
+`Apply` 时按 RowIndexEntry 集合派生 per-(Snapshot, Table, Block)，MaxRowIDExclusive 在
+MaxRowID=MaxUint64 时用 0（无上界）表达，metadata block 无 envelope。
 
 ## 6. 内嵌 IndexTxn
 
@@ -136,28 +148,38 @@ Block 重建内存索引；是否允许正常 Open 自动修复写回，应留�
 
 ## 7. SnapshotFooter
 
-SnapshotFooter 是整个 SnapshotTxn 的最终提交标志，建议扩展为至少包含：
+SnapshotFooter 是整个 SnapshotTxn 的最终提交标志，**固定 144 字节**（M0 冻结布局）：
 
 ```text
-SnapshotID
-ParentSnapshotID
-PreviousFooterOffset
-SnapshotStartOffset
-BlocksStartOffset
-BlocksEndOffset
-IndexTxnStartOffset
-IndexTxnEndOffset
-SnapshotEndOffset
-FirstBlockID
-BlockCount
-MetadataBlockCount
-RowRecordCount
-RawBytes
-StoredBytes
-BlocksCRC32C
-IndexTxnCRC32C
-FooterCRC32C
+offset  size  field
+0       8     MagicSnapshotFtr ("RPKSNAPF")
+8       4     size = 144
+12      1     SnapshotType
+13      3     reserved (0)
+16      8     SnapshotID
+24      8     ParentSnapshotID
+32      8     PreviousFooterOffset
+40      8     SnapshotStartOffset
+48      8     BlocksStartOffset
+56      8     BlocksEndOffset
+64      8     IndexTxnStartOffset
+72      8     IndexTxnEndOffset
+80      8     SnapshotEndOffset
+88      8     FirstBlockID
+96      4     BlockCount
+100     4     MetadataBlockCount
+104     8     RowRecordCount
+112     8     RawBytes
+120     8     StoredBytes
+128     4     BlocksCRC32C
+132     4     IndexTxnCRC32C
+136     4     FooterCRC32C
+140     4     reserved (0)
 ```
+
+约束：`BlocksStartOffset = SnapshotStartOffset + SnapshotHeaderSize`；当快照没有任何块时
+（空 DELTA），`BlocksEndOffset = IndexTxnStartOffset = SnapshotHeader 之后`；
+`SnapshotEndOffset = IndexTxnEndOffset + SnapshotFooterSize`。
 
 关键约束：
 

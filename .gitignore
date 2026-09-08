@@ -17,3 +17,7 @@ coverage.out
 docs/bench-results.txt
 **/testdata/tmpdb/
 .codegraph/
+
+# V1/V2 baseline raw outputs (see docs/perf-baseline-v1-vs-v2.md)
+docs/bench-results-v1-*.txt
+docs/bench-results-v2-*.txt

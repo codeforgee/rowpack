@@ -70,27 +70,41 @@ func (h *SnapshotHeader) Unmarshal(src []byte) error {
 	return nil
 }
 
-// SnapshotFooter is the fixed 96-byte snapshot commit marker and the
-// authoritative proof that a snapshot is committed. SnapshotEndOffset is the
-// 8-byte aligned position just after the footer.
+// SnapshotFooter is the fixed 144-byte snapshot commit marker. It is the
+// only authoritative commit flag of a snapshot AND the binding record for the
+// transaction's structure offsets: the block range and the embedded IndexTxn
+// range are read from this footer during open (BINARY_FORMAT_V2.md §6/§7, R8).
+//
+// Commit authority (R3): a snapshot is committed iff FooterCRC32C validates
+// and the recorded offsets are self-consistent and inside the file. The
+// BlocksCRC32C/IndexTxnCRC32C bindings are integrity hints: a mismatch only
+// triggers an in-memory index rebuild (§10.2), never a commit-status change.
 type SnapshotFooter struct {
-	SnapshotType        SnapshotType
-	SnapshotID          uint64
-	ParentSnapshotID    uint64
-	SnapshotStartOffset uint64
-	SnapshotEndOffset   uint64
-	FirstBlockID        uint64
-	BlockCount          uint32
-	MetadataBlockCount  uint32
-	RowRecordCount      uint64
-	RawBytes            uint64
-	BlocksCRC32C        uint32 // CRC of the block header CRC value string
+	SnapshotType         SnapshotType
+	SnapshotID           uint64
+	ParentSnapshotID     uint64
+	PreviousFooterOffset uint64
+	SnapshotStartOffset  uint64
+	BlocksStartOffset    uint64
+	BlocksEndOffset      uint64
+	IndexTxnStartOffset  uint64
+	IndexTxnEndOffset    uint64
+	SnapshotEndOffset    uint64
+	FirstBlockID         uint64
+	BlockCount           uint32
+	MetadataBlockCount   uint32
+	RowRecordCount       uint64
+	RawBytes             uint64
+	StoredBytes          uint64
+	BlocksCRC32C         uint32
+	IndexTxnCRC32C       uint32
 }
 
 // Size returns the serialized size.
 func (f *SnapshotFooter) Size() int { return SnapshotFooterSize }
 
-// MarshalTo writes f into dst.
+// MarshalTo writes f into dst. FooterCRC32C is computed and stored; the
+// trailing 4 reserved bytes stay zero.
 func (f *SnapshotFooter) MarshalTo(dst []byte) error {
 	if len(dst) < SnapshotFooterSize {
 		return formatError("SnapshotFooter", -1, "destination too short: have %d want %d", len(dst), SnapshotFooterSize)
@@ -101,18 +115,27 @@ func (f *SnapshotFooter) MarshalTo(dst []byte) error {
 	copy(dst[0:8], MagicSnapshotFtr)
 	putU32(dst[8:], SnapshotFooterSize)
 	dst[12] = byte(f.SnapshotType)
+	// offset 13..16 reserved (zeroed above)
 	putU64(dst[16:], f.SnapshotID)
 	putU64(dst[24:], f.ParentSnapshotID)
-	putU64(dst[32:], f.SnapshotStartOffset)
-	putU64(dst[40:], f.SnapshotEndOffset)
-	putU64(dst[48:], f.FirstBlockID)
-	putU32(dst[56:], f.BlockCount)
-	putU32(dst[60:], f.MetadataBlockCount)
-	putU64(dst[64:], f.RowRecordCount)
-	putU64(dst[72:], f.RawBytes)
-	putU32(dst[80:], f.BlocksCRC32C)
-	// offset 88..96 reserved (zeroed above)
-	finalizeCRC(dst[:SnapshotFooterSize], 84)
+	putU64(dst[32:], f.PreviousFooterOffset)
+	putU64(dst[40:], f.SnapshotStartOffset)
+	putU64(dst[48:], f.BlocksStartOffset)
+	putU64(dst[56:], f.BlocksEndOffset)
+	putU64(dst[64:], f.IndexTxnStartOffset)
+	putU64(dst[72:], f.IndexTxnEndOffset)
+	putU64(dst[80:], f.SnapshotEndOffset)
+	putU64(dst[88:], f.FirstBlockID)
+	putU32(dst[96:], f.BlockCount)
+	putU32(dst[100:], f.MetadataBlockCount)
+	putU64(dst[104:], f.RowRecordCount)
+	putU64(dst[112:], f.RawBytes)
+	putU64(dst[120:], f.StoredBytes)
+	putU32(dst[128:], f.BlocksCRC32C)
+	putU32(dst[132:], f.IndexTxnCRC32C)
+	// offset 136..140 FooterCRC32C
+	finalizeCRC(dst[:SnapshotFooterSize], SnapshotFooterCRC32COffset)
+	// offset 140..144 reserved (zeroed above)
 	return nil
 }
 
@@ -127,19 +150,59 @@ func (f *SnapshotFooter) Unmarshal(src []byte) error {
 	if sz := binary.LittleEndian.Uint32(src[8:]); sz != SnapshotFooterSize {
 		return formatError("SnapshotFooter", 8, "%s: size=%d want %d", errBadSize, sz, SnapshotFooterSize)
 	}
-	if _, err := verifyCRC(src[:SnapshotFooterSize], 84); err != nil {
-		return formatError("SnapshotFooter", 84, "%v", err)
+	if _, err := verifyCRC(src[:SnapshotFooterSize], SnapshotFooterCRC32COffset); err != nil {
+		return formatError("SnapshotFooter", SnapshotFooterCRC32COffset, "%v", err)
 	}
 	f.SnapshotType = SnapshotType(src[12])
 	f.SnapshotID = binary.LittleEndian.Uint64(src[16:])
 	f.ParentSnapshotID = binary.LittleEndian.Uint64(src[24:])
-	f.SnapshotStartOffset = binary.LittleEndian.Uint64(src[32:])
-	f.SnapshotEndOffset = binary.LittleEndian.Uint64(src[40:])
-	f.FirstBlockID = binary.LittleEndian.Uint64(src[48:])
-	f.BlockCount = binary.LittleEndian.Uint32(src[56:])
-	f.MetadataBlockCount = binary.LittleEndian.Uint32(src[60:])
-	f.RowRecordCount = binary.LittleEndian.Uint64(src[64:])
-	f.RawBytes = binary.LittleEndian.Uint64(src[72:])
-	f.BlocksCRC32C = binary.LittleEndian.Uint32(src[80:])
+	f.PreviousFooterOffset = binary.LittleEndian.Uint64(src[32:])
+	f.SnapshotStartOffset = binary.LittleEndian.Uint64(src[40:])
+	f.BlocksStartOffset = binary.LittleEndian.Uint64(src[48:])
+	f.BlocksEndOffset = binary.LittleEndian.Uint64(src[56:])
+	f.IndexTxnStartOffset = binary.LittleEndian.Uint64(src[64:])
+	f.IndexTxnEndOffset = binary.LittleEndian.Uint64(src[72:])
+	f.SnapshotEndOffset = binary.LittleEndian.Uint64(src[80:])
+	f.FirstBlockID = binary.LittleEndian.Uint64(src[88:])
+	f.BlockCount = binary.LittleEndian.Uint32(src[96:])
+	f.MetadataBlockCount = binary.LittleEndian.Uint32(src[100:])
+	f.RowRecordCount = binary.LittleEndian.Uint64(src[104:])
+	f.RawBytes = binary.LittleEndian.Uint64(src[112:])
+	f.StoredBytes = binary.LittleEndian.Uint64(src[120:])
+	f.BlocksCRC32C = binary.LittleEndian.Uint32(src[128:])
+	f.IndexTxnCRC32C = binary.LittleEndian.Uint32(src[132:])
 	return nil
+}
+
+// OffsetsAreConsistent reports whether the footer's recorded structure
+// offsets respect the transaction invariants (BINARY_FORMAT_V2.md §6/§7):
+//
+//	BlocksStartOffset == SnapshotStartOffset + SnapshotHeaderSize
+//	SnapshotHeaderSize <= BlocksStartOffset <= BlocksEndOffset <= IndexTxnStartOffset
+//	IndexTxnStartOffset <= IndexTxnEndOffset < SnapshotEndOffset
+//	SnapshotEndOffset == IndexTxnEndOffset + SnapshotFooterSize
+//
+// An empty transaction (no blocks) has BlocksEndOffset == IndexTxnStartOffset
+// == BlocksStartOffset. Callers additionally bound the minimum offset by the
+// file header size; this method validates relative consistency only.
+func (f *SnapshotFooter) OffsetsAreConsistent() bool {
+	if f.SnapshotStartOffset == 0 {
+		return false
+	}
+	if f.BlocksStartOffset != f.SnapshotStartOffset+SnapshotHeaderSize {
+		return false
+	}
+	if f.BlocksStartOffset > f.BlocksEndOffset || f.BlocksEndOffset > f.IndexTxnStartOffset {
+		return false
+	}
+	if f.IndexTxnStartOffset > f.IndexTxnEndOffset {
+		return false
+	}
+	if f.SnapshotEndOffset <= f.IndexTxnEndOffset {
+		return false
+	}
+	if f.SnapshotEndOffset != f.IndexTxnEndOffset+SnapshotFooterSize {
+		return false
+	}
+	return true
 }

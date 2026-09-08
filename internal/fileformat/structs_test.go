@@ -178,20 +178,37 @@ func TestSnapshotHeader(t *testing.T) {
 
 func TestSnapshotFooter(t *testing.T) {
 	f := &SnapshotFooter{
-		SnapshotType:        SnapshotFull,
-		SnapshotID:          42,
-		ParentSnapshotID:    0,
-		SnapshotStartOffset: 128,
-		SnapshotEndOffset:   128 + 96 + 4096 + 96,
-		FirstBlockID:        100,
-		BlockCount:          4,
-		MetadataBlockCount:  1,
-		RowRecordCount:      10000,
-		RawBytes:            1 << 20,
-		BlocksCRC32C:        0xC0FFEE,
+		SnapshotType:         SnapshotFull,
+		SnapshotID:           42,
+		ParentSnapshotID:     0,
+		PreviousFooterOffset: 0,
+		SnapshotStartOffset:  128,
+		BlocksStartOffset:    128 + SnapshotHeaderSize,
+		BlocksEndOffset:      128 + SnapshotHeaderSize + 4096,
+		IndexTxnStartOffset:  128 + SnapshotHeaderSize + 4096,
+		IndexTxnEndOffset:    128 + SnapshotHeaderSize + 4096 + IndexTxnHeaderSize + SnapshotIndexEntrySize + IndexTxnFooterSize,
+		SnapshotEndOffset:    128 + SnapshotHeaderSize + 4096 + IndexTxnHeaderSize + SnapshotIndexEntrySize + IndexTxnFooterSize + SnapshotFooterSize,
+		FirstBlockID:         100,
+		BlockCount:           4,
+		MetadataBlockCount:   1,
+		RowRecordCount:       10000,
+		RawBytes:             1 << 20,
+		StoredBytes:          1 << 19,
+		BlocksCRC32C:         0xC0FFEE,
+		IndexTxnCRC32C:       0xBADF00D,
 	}
 	roundTrip(t, "SnapshotFooter", f.MarshalTo, f.Unmarshal)
 	testFixedStructure(t, "SnapshotFooter", f.MarshalTo, f.Unmarshal, true, SnapshotFooterSize)
+
+	var got SnapshotFooter
+	require.NoError(t, got.Unmarshal(mustMarshal(t, f)))
+	require.Equal(t, *f, got)
+
+	require.True(t, f.OffsetsAreConsistent())
+	require.False(t, (&SnapshotFooter{SnapshotType: SnapshotDelta, SnapshotID: 2,
+		SnapshotStartOffset: 128, BlocksStartOffset: 128 + SnapshotHeaderSize,
+		BlocksEndOffset: 128 + SnapshotHeaderSize, IndexTxnStartOffset: 128 + SnapshotHeaderSize,
+		IndexTxnEndOffset: 128 + SnapshotHeaderSize, SnapshotEndOffset: 0}).OffsetsAreConsistent())
 }
 
 func TestBlockHeader(t *testing.T) {

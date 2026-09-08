@@ -1,6 +1,11 @@
 // Package fileformat implements the fixed on-disk structures, CRC and boundary
-// validation of the RowPack v1 binary format. It is the single source of truth
+// validation of the RowPack binary format. It is the single source of truth
 // for every frozen disk constant, magic, enum value and structure size.
+//
+// The v1 prerelease line was never shipped; the current format line (Major=2)
+// is the single-file store: data blocks and the per-snapshot IndexTxn stream
+// share one `.rpk` file and are committed by the extended SnapshotFooter
+// (BINARY_FORMAT_V2.md).
 //
 // The package must never reflect over Go structs to encode or decode: all
 // multi-byte integers are hand-written Little Endian, all top-level structures
@@ -8,9 +13,9 @@
 // layout.
 package fileformat
 
-// Format version. Version is frozen as Major=1, Minor=0 for the v1 line.
+// Format version. VersionMajor=2 is the single-file line; minor starts at 0.
 const (
-	VersionMajor = 1
+	VersionMajor = 2
 	VersionMinor = 0
 )
 
@@ -27,9 +32,13 @@ const (
 // RequiredFeaturesV1 is the feature bit set of a v1 store.
 const RequiredFeaturesV1 = FeatureTypedTupleV1 | FeatureZstd | FeatureMetadataBlock | FeatureDeltaSnapshot
 
-// ASCII magics. All are exactly 8 bytes.
+// ASCII magics. All are exactly 8 bytes. MagicDataFile identifies the v2
+// single-file store; it deliberately differs from the prerelease v1 data
+// magic (`ROWPACKD`) so v2 openers reject v1 files at the first 8 bytes
+// without probing anything else. MagicIndexFile remains defined until the
+// index file removal lands (M2: single-file FULL path), then is deleted.
 const (
-	MagicDataFile    = "ROWPACKD"
+	MagicDataFile    = "ROWPACK2"
 	MagicIndexFile   = "ROWPACKI"
 	MagicSnapshotHdr = "RPKSNAPH"
 	MagicSnapshotFtr = "RPKSNAPF"
@@ -47,7 +56,7 @@ const (
 	DataFileHeaderSize     = 128
 	IndexFileHeaderSize    = 128
 	SnapshotHeaderSize     = 96
-	SnapshotFooterSize     = 96
+	SnapshotFooterSize     = 144
 	BlockHeaderSize        = 64
 	RowsPayloadHeaderSize  = 32
 	RowDirectoryEntrySize  = 24
@@ -66,6 +75,16 @@ const (
 const (
 	DataFileHeaderCRC32COffset  = 120
 	IndexFileHeaderCRC32COffset = 120
+)
+
+// SnapshotFooterV2 marker offsets (BINARY_FORMAT_V2.md §7). The footer is
+// 144 bytes; FooterCRC32C at 136 covers the whole structure with its own
+// field zeroed, per the shared fixed-structure CRC rule.
+const (
+	// SnapshotFooterCRC32COffset is the 4-byte FooterCRC32C field.
+	SnapshotFooterCRC32COffset = 136
+	// SnapshotFooterReservedOffset is the trailing 4 reserved bytes.
+	SnapshotFooterReservedOffset = 140
 )
 
 // Alignment used for top-level structures and snapshot end offsets.

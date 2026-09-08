@@ -16,7 +16,7 @@ func TestFrozenEnums(t *testing.T) {
 		got  any
 		want any
 	}{
-		{"VersionMajor", VersionMajor, 1},
+		{"VersionMajor", VersionMajor, 2},
 		{"VersionMinor", VersionMinor, 0},
 		{"SnapshotFull", SnapshotFull, SnapshotType(1)},
 		{"SnapshotDelta", SnapshotDelta, SnapshotType(2)},
@@ -89,7 +89,7 @@ func TestFrozenMagicsAndSizes(t *testing.T) {
 		{"DataFileHeaderSize", DataFileHeaderSize, 128},
 		{"IndexFileHeaderSize", IndexFileHeaderSize, 128},
 		{"SnapshotHeaderSize", SnapshotHeaderSize, 96},
-		{"SnapshotFooterSize", SnapshotFooterSize, 96},
+		{"SnapshotFooterSize", SnapshotFooterSize, 144},
 		{"BlockHeaderSize", BlockHeaderSize, 64},
 		{"RowsPayloadHeaderSize", RowsPayloadHeaderSize, 32},
 		{"RowDirectoryEntrySize", RowDirectoryEntrySize, 24},

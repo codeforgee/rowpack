@@ -425,15 +425,15 @@ func (v *dataFooterVerifier) DataFooterCRC(snapshotID uint64, dataStart, dataEnd
 	if f.SnapshotID != snapshotID {
 		return 0, index.ErrDataFooterMismatch
 	}
-	return le32(fb[84:]), nil
+	return le32(fb[fileformat.SnapshotFooterCRC32COffset:]), nil
 }
 
 func le32(b []byte) uint32 {
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 }
 
-// footerCRCValue returns the stored SnapshotFooter FooterCRC32C (offset 84).
-func footerCRCValue(fb []byte) uint32 { return le32(fb[84:]) }
+// footerCRCValue returns the stored SnapshotFooter FooterCRC32C.
+func footerCRCValue(fb []byte) uint32 { return le32(fb[fileformat.SnapshotFooterCRC32COffset:]) }
 
 func pairPaths(basePath string) (string, string, error) {
 	if strings.HasSuffix(basePath, ".rpk") || strings.HasSuffix(basePath, ".rpi") {

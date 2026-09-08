@@ -224,7 +224,8 @@ func appendFile(t *testing.T, path string, raw []byte) {
 
 func craftedSnapshotPair(t *testing.T, id uint64) []byte {
 	t.Helper()
-	var hdr, ftr [fileformat.SnapshotHeaderSize]byte
+	var hdr [fileformat.SnapshotHeaderSize]byte
+	var ftr [fileformat.SnapshotFooterSize]byte
 	sh := fileformat.SnapshotHeader{SnapshotType: fileformat.SnapshotFull, SnapshotID: id}
 	require.NoError(t, sh.MarshalTo(hdr[:]))
 	sf := fileformat.SnapshotFooter{SnapshotType: fileformat.SnapshotFull, SnapshotID: id}

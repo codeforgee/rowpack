@@ -96,6 +96,24 @@ func (d *storeDecrypter) Decrypt(h fileformat.BlockHeader, ciphertext []byte) ([
 	return pt, nil
 }
 
+// DecryptIndex opens one index-domain sealed transaction body (R11): the
+// nonce is (epoch | IndexDomainBit) ‖ txn sequence and the AAD binds the
+// store, snapshot and stored extent. The returned plaintext is the raw
+// body+footer bytes.
+func (d *storeDecrypter) DecryptIndex(epoch uint32, txnSeq, snapshotID, txnStart, txnEnd uint64, ciphertext []byte) ([]byte, error) {
+	c, err := d.cipherFor(epoch)
+	if err != nil {
+		return nil, err
+	}
+	nonce := seal.NonceIndex(epoch, txnSeq)
+	aad := seal.BuildAADIndex(&d.uuid, snapshotID, txnStart, txnEnd, epoch)
+	pt, err := c.OpenWith(nonce, aad[:], ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("%w: index txn (snapshot %d): %v", ErrAuthFailed, snapshotID, err)
+	}
+	return pt, nil
+}
+
 // cipherFor checks out (creating on first use) the cipher for one epoch.
 func (d *storeDecrypter) cipherFor(epoch uint32) (*seal.Cipher, error) {
 	d.mu.Lock()

@@ -15,6 +15,7 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/rowpack/rowpack/internal/index"
 	"github.com/rowpack/rowpack/internal/metadata"
+	"github.com/rowpack/rowpack/internal/seal"
 )
 
 // SnapshotType identifies FULL and DELTA snapshots.
@@ -658,12 +659,17 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 
 	// The IndexTxn byte length is fully determined by the entry counts, so the
 	// txn and footer offsets can be computed before serialization; the footer
-	// binds the txn by exact byte extent plus CRC over the stored bytes.
+	// binds the txn by exact byte extent plus CRC over the stored bytes. An
+	// encrypted store seals the body+footer as one unit (plaintext header
+	// stays scannable), adding exactly one AEAD tag to the stored extent.
 	txnLen := int64(0)
 	txnLen += fileformat.IndexTxnHeaderSize + fileformat.SnapshotIndexEntrySize + fileformat.IndexTxnFooterSize
 	for _, blk := range w.pending {
 		txnLen += int64(len(blk.meta))*fileformat.MetadataIndexEntrySize +
 			fileformat.BlockIndexEntrySize + int64(len(blk.rows))*fileformat.RowIndexEntrySize
+	}
+	if w.store.encCipher != nil {
+		txnLen += fileformat.AESGCMTagLen
 	}
 	txnStart := blocksEnd
 	txnEnd := txnStart + txnLen
@@ -722,12 +728,33 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	if err != nil {
 		return SnapshotInfo{}, err
 	}
-	if int64(len(txnBytes)) != txnLen {
-		// Internal invariant: the boundary hop must match the precomputed
-		// extent, otherwise the footer's extent binding would be wrong.
-		return SnapshotInfo{}, fmt.Errorf("rowpack: index txn length %d != precomputed %d", len(txnBytes), txnLen)
+	stored := txnBytes
+	if w.store.encCipher != nil {
+		// Index-domain sealing (R11): nonce = (epoch | domain bit) ‖ txn
+		// sequence, never overlapping the block nonce space; AAD binds store,
+		// snapshot and the exact stored extent (R8). Header and footer stay
+		// plaintext — the scanner walks the txn by magic + BodyBytes + footer
+		// magic without a key (R1) — so only the body is sealed, with
+		// BodyBytes re-stamped to the ciphertext length (R12).
+		const epoch = uint32(0)
+		bodyLen := len(txnBytes) - fileformat.IndexTxnHeaderSize - fileformat.IndexTxnFooterSize
+		nonce := seal.NonceIndex(epoch, txn.Header.TxnSequence)
+		aad := seal.BuildAADIndex(&w.store.uuid, uint64(w.id), uint64(txnStart), uint64(txnEnd), epoch)
+		ct := w.store.encCipher.SealWith(nonce, aad[:], txnBytes[fileformat.IndexTxnHeaderSize:fileformat.IndexTxnHeaderSize+bodyLen])
+		stored = make([]byte, 0, fileformat.IndexTxnHeaderSize+len(ct)+fileformat.IndexTxnFooterSize)
+		stored = append(stored, txnBytes[:fileformat.IndexTxnHeaderSize]...)
+		stored = append(stored, ct...)
+		stored = append(stored, txnBytes[len(txnBytes)-fileformat.IndexTxnFooterSize:]...)
+		if err := fileformat.PatchIndexTxnHeaderForStorage(stored[:fileformat.IndexTxnHeaderSize], uint64(len(ct)), epoch); err != nil {
+			return SnapshotInfo{}, err
+		}
 	}
-	if _, err := w.store.data.Append(txnBytes); err != nil {
+	if int64(len(stored)) != txnLen {
+		// Internal invariant: the stored extent must match the precomputed
+		// boundary hop, otherwise the footer's extent binding would be wrong.
+		return SnapshotInfo{}, fmt.Errorf("rowpack: index txn length %d != precomputed %d", len(stored), txnLen)
+	}
+	if _, err := w.store.data.Append(stored); err != nil {
 		return SnapshotInfo{}, err
 	}
 
@@ -750,7 +777,7 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	ftr.RawBytes = rawBytes
 	ftr.StoredBytes = uint64(snapEnd - snapStart)
 	ftr.BlocksCRC32C = fileformat.CRC32C(blockCRCs)
-	ftr.IndexTxnCRC32C = fileformat.CRC32C(txnBytes)
+	ftr.IndexTxnCRC32C = fileformat.CRC32C(stored)
 	var fb [fileformat.SnapshotFooterSize]byte
 	if err := ftr.MarshalTo(fb[:]); err != nil {
 		return SnapshotInfo{}, err

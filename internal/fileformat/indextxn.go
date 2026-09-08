@@ -5,6 +5,39 @@ import (
 	"encoding/binary"
 )
 
+// IndexTxn encryption layout (v2): when the store is encrypted, the txn
+// body+footer are sealed as one ciphertext unit and the plaintext header
+// stays readable for scanning. BodyBytes then counts the stored (ciphertext)
+// body bytes, and the first reserved word carries the KeyEpoch.
+const (
+	// IndexTxnKeyEpochOffset is the 4-byte KeyEpoch in the header reserved
+	// region (offset 76..80). Zero for plain stores.
+	IndexTxnKeyEpochOffset = 76
+)
+
+// PatchIndexTxnHeaderForStorage re-stamps BodyBytes (the stored body byte
+// count, i.e. the ciphertext length when encrypted) and KeyEpoch on an
+// already-marshaled 80-byte header, recomputing its CRC. Used by the writer
+// before appending an encrypted txn and by the read path after decryption.
+func PatchIndexTxnHeaderForStorage(hdr []byte, storedBodyBytes uint64, keyEpoch uint32) error {
+	if len(hdr) < IndexTxnHeaderSize {
+		return formatError("IndexTxnHeader", -1, errShortInput)
+	}
+	putU64(hdr[64:], storedBodyBytes)
+	putU32(hdr[IndexTxnKeyEpochOffset:], keyEpoch)
+	finalizeCRC(hdr[:IndexTxnHeaderSize], 72)
+	return nil
+}
+
+// IndexTxnHeaderKeyEpoch reads the KeyEpoch from a marshaled header.
+func IndexTxnHeaderKeyEpoch(hdr []byte) uint32 {
+	if len(hdr) < IndexTxnHeaderSize {
+		return 0
+	}
+	epoch, _ := getU32(hdr[IndexTxnKeyEpochOffset:])
+	return epoch
+}
+
 // IndexTxnHeader is the fixed 80-byte header of one index transaction. Each
 // committed snapshot has exactly one index transaction, embedded in the
 // single store file between the blocks and the SnapshotFooter.

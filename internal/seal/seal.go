@@ -85,6 +85,63 @@ func BuildAAD(uuid *[16]byte, h *fileformat.BlockHeader) [AADSize]byte {
 	return aad
 }
 
+// IndexDomainBit is the nonce-domain flag (R11): index nonces set bit 31 of
+// the epoch word while block nonces always carry an epoch below 2^31, so a
+// block nonce and an index nonce can never collide regardless of counter
+// values. Nonce uniqueness never relies on the AAD.
+const IndexDomainBit = uint32(0x80000000)
+
+// NonceIndex returns the deterministic 96-bit nonce for one encrypted index
+// transaction: (epoch | IndexDomainBit)(4B, LE) ‖ txnSequence(8B, LE).
+func NonceIndex(epoch uint32, txnSequence uint64) [fileformat.EncNonceLen]byte {
+	return Nonce(epoch|IndexDomainBit, txnSequence)
+}
+
+// aadMagicIndex domain-separates the index AAD layout from the block AAD.
+var aadMagicIndex = [16]byte{'R', 'o', 'w', 'P', 'a', 'c', 'k', 'I', 'n', 'd', 'e', 'x', 'V', '1', 0, 0}
+
+// AADIndexSize is the fixed serialized index AAD length.
+const AADIndexSize = 60
+
+// BuildAADIndex serializes the domain-separated AAD for one encrypted index
+// transaction:
+//
+//	 0..15  aadMagicIndex
+//	16..31  store UUID
+//	32..39  SnapshotID
+//	40..47  IndexTxnStartOffset
+//	48..55  IndexTxnEndOffset
+//	56..59  KeyEpoch
+//
+// A moved, resized or cross-store index transaction cannot authenticate.
+func BuildAADIndex(uuid *[16]byte, snapshotID, txnStart, txnEnd uint64, epoch uint32) [AADIndexSize]byte {
+	var aad [AADIndexSize]byte
+	copy(aad[0:16], aadMagicIndex[:])
+	copy(aad[16:32], uuid[:])
+	le64(aad[32:40], snapshotID)
+	le64(aad[40:48], txnStart)
+	le64(aad[48:56], txnEnd)
+	le32(aad[56:60], epoch)
+	return aad
+}
+
+// SealWith encrypts plaintext under an explicit nonce/AAD pair (index path;
+// the block path uses Seal which derives both from the header).
+func (c *Cipher) SealWith(nonce [fileformat.EncNonceLen]byte, aad []byte, plaintext []byte) []byte {
+	out := make([]byte, 0, len(plaintext)+fileformat.AESGCMTagLen)
+	return c.aead.Seal(out, nonce[:], plaintext, aad)
+}
+
+// OpenWith authenticates and opens ciphertext under an explicit nonce/AAD
+// pair. On failure it returns ErrAuth wrapped with context.
+func (c *Cipher) OpenWith(nonce [fileformat.EncNonceLen]byte, aad []byte, ciphertext []byte) ([]byte, error) {
+	pt, err := c.aead.Open(nil, nonce[:], ciphertext, aad)
+	if err != nil {
+		return nil, fmt.Errorf("%w: nonce domain index", ErrAuth)
+	}
+	return pt, nil
+}
+
 // Cipher encrypts/decrypts blocks with one fixed AES-256 key. It wraps a
 // cipher.AEAD so repeated block operations skip key schedule and GHASH setup.
 // Cipher is safe for concurrent use (cipher.AEAD is).

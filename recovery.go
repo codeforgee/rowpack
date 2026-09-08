@@ -158,14 +158,63 @@ func (s *Store) readIndexTxn(c *committedSnapshot) (txn *index.Txn, seq uint64, 
 	if _, rerr := s.data.ReadAt(buf, c.txnStart); rerr != nil {
 		return nil, 0, false, fmt.Errorf("rowpack: read IndexTxn of snapshot %d: %w", c.snapshotID, rerr)
 	}
+	// The footer binds the STORED bytes (ciphertext when encrypted), so a
+	// torn or bit-rotted txn is detected before any key is needed (R12).
 	if fileformat.CRC32C(buf) != c.ftrTxnCRC {
 		return nil, 0, false, nil
 	}
-	txn, perr := index.ParseTxn(buf)
+	data := buf
+	if s.header.EncryptionAlgorithm != fileformat.EncNone {
+		pt, derr := s.decryptIndexTxn(buf)
+		if derr != nil {
+			// Authentication failure means the txn body is corrupt (its
+			// stored extent already passed the footer CRC): rebuild in memory.
+			return nil, 0, false, nil
+		}
+		data = pt
+	}
+	txn, perr := index.ParseTxn(data)
 	if perr != nil {
 		return nil, 0, false, nil
 	}
 	return txn, txn.Header.TxnSequence, true, nil
+}
+
+// decryptIndexTxn decrypts one stored (plaintext header + sealed body +
+// plaintext footer) index transaction into ParseTxn-ready plaintext: header
+// re-stamped with the plaintext BodyBytes. Authentication is index-domain
+// (R11): nonce from (epoch | domain bit) ‖ txn sequence, AAD binding
+// store/snapshot/extent taken from the plaintext footer.
+func (s *Store) decryptIndexTxn(stored []byte) ([]byte, error) {
+	const hs, fs = fileformat.IndexTxnHeaderSize, fileformat.IndexTxnFooterSize
+	if len(stored) < hs+fs {
+		return nil, fmt.Errorf("rowpack: encrypted index txn too short: %d", len(stored))
+	}
+	var h fileformat.IndexTxnHeader
+	if err := h.Unmarshal(stored[:hs]); err != nil {
+		return nil, err
+	}
+	if int(h.BodyBytes) > len(stored)-hs-fs {
+		return nil, fmt.Errorf("rowpack: index txn body %d exceeds stored %d", h.BodyBytes, len(stored)-hs-fs)
+	}
+	ct := stored[hs : hs+int(h.BodyBytes)]
+	var f fileformat.IndexTxnFooter
+	if err := f.Unmarshal(stored[len(stored)-fs:]); err != nil {
+		return nil, err
+	}
+	epoch := fileformat.IndexTxnHeaderKeyEpoch(stored[:hs])
+	pt, err := s.decrypter.DecryptIndex(epoch, h.TxnSequence, h.SnapshotID, f.TxnStartOffset, f.TxnEndOffset, ct)
+	if err != nil {
+		return nil, err
+	}
+	plain := make([]byte, 0, hs+len(pt)+fs)
+	plain = append(plain, stored[:hs]...)
+	plain = append(plain, pt...)
+	plain = append(plain, stored[len(stored)-fs:]...)
+	if err := fileformat.PatchIndexTxnHeaderForStorage(plain[:hs], uint64(len(pt)), 0); err != nil {
+		return nil, err
+	}
+	return plain, nil
 }
 
 // scanDataFile walks the single file from after the header, collecting

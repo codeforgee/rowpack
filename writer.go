@@ -158,10 +158,10 @@ func (s *Store) BeginSnapshot(ctx context.Context, typ SnapshotType, opts Snapsh
 		}
 	}
 	id := s.lastSnapshotID.Add(1)
-	if typ == SnapshotFull {
-		id = 1 // first snapshot is FULL and its ID is 1
-		s.lastSnapshotID.Store(1)
-	}
+	// v2 checkpoint semantics (R7): every FULL takes the next global ID — the
+	// first snapshot of an empty store is a FULL with id 1 naturally, and a
+	// later FULL checkpoint continues the counter (Depth resets to 1 in
+	// View.Apply; its visibility no longer follows any ancestor chain).
 	created := opts.CreatedAt
 	if created.IsZero() {
 		created = time.Unix(0, effectiveNow()).UTC()
@@ -239,18 +239,22 @@ func (w *SnapshotWriter) DefineSchema(schema codec.Schema) error {
 		}
 		return nil
 	}
-	// Check parent chain monotonicity.
-	st := w.store.state.Load()
-	if st != nil {
-		if existing := st.schemas.schema(w.parentSnapshotFor(), schema.TableID, schema.Version); existing != nil {
-			if !schemaEqual(existing, &schema) {
-				return fmt.Errorf("%w: schema %d v%d conflicts with committed definition", ErrSchemaConflict, schema.TableID, schema.Version)
+	// Check parent chain monotonicity. Only DELTAs extend an existing chain:
+	// a FULL checkpoint (parent 0) always writes its own metadata layer, even
+	// when the definition matches an ancestor's (R7 checkpoint semantics).
+	if w.typ == SnapshotDelta {
+		st := w.store.state.Load()
+		if st != nil {
+			if existing := st.schemas.schema(w.parentSnapshotFor(), schema.TableID, schema.Version); existing != nil {
+				if !schemaEqual(existing, &schema) {
+					return fmt.Errorf("%w: schema %d v%d conflicts with committed definition", ErrSchemaConflict, schema.TableID, schema.Version)
+				}
+				return nil
 			}
-			return nil
-		}
-		latest := st.schemas.latest(w.parentSnapshotFor(), schema.TableID)
-		if schema.Version <= latest {
-			return fmt.Errorf("%w: schema %d version %d not greater than latest %d", ErrSchemaConflict, schema.TableID, schema.Version, latest)
+			latest := st.schemas.latest(w.parentSnapshotFor(), schema.TableID)
+			if schema.Version <= latest {
+				return fmt.Errorf("%w: schema %d version %d not greater than latest %d", ErrSchemaConflict, schema.TableID, schema.Version, latest)
+			}
 		}
 	}
 

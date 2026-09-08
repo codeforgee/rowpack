@@ -11,11 +11,9 @@ package rowpack
 //     ~525× 达标（2026-09-07 基线档）。
 //   - 相同 Block 集合只发生一次读取/解压/校验：blocks/batch 恒等于本批
 //     唯一块数（rand 389、seq 3），rawKB/batch 等于这些块 raw 总和。
-//   - seq/hot 档（缓存全热、行全挤在 3 块）批量比“复用 dst 的 Get”慢
-//     ~22%（0.78×）：这是物化语义成本——ReadBatch 返回独立行，无法像
-//     逐行 Get 那样借用调用者缓冲（allocs/批 16429 vs 8195）。与等语义的
-//     无复用 Get（~600ns/行 ≈ 1660 krows/s）对比，批量约 1.9× 快；Scan
-//     顺序读路径未改动，不构成“顺序读取吞吐下降”回归。
+//   - seq/hot 档（缓存全热、行全挤在 3 块）与“复用 dst 的 Get”基本持平：
+//     ReadBatch 通过每个 Block 的 Value slab 避免逐行分配，仍保持每个返回
+//     Row 独立可持有（allocs/批约 12346 vs 8205）。Scan 顺序读路径未改动。
 //
 // 若未来需要消除 seq/hot 档差距，应提供行缓冲复用形态的批量 API
 // （ReadBatchInto 之类），本版本不引入。

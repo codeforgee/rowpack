@@ -109,8 +109,31 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table TableI
 			return nil, err
 		}
 		dirScratch = rp.Entries
+		// ReadBatch returns independently owned Row slices. Allocate one
+		// contiguous Value slab for this block instead of one backing slice per
+		// requested row; the rows still have distinct non-overlapping views and
+		// preserve the public ownership semantics.
+		maxCols := 0
 		for _, req := range reqs {
-			row, err := s.rowFromPayloadInto(rp, bl, &index.RowLoc{BlockID: bid, ItemOrdinal: req.ordinal}, st.schemas, nil, nil)
+			if int(req.ordinal) >= len(rp.Entries) {
+				return nil, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", req.ordinal, bid)
+			}
+			entry := &rp.Entries[req.ordinal]
+			schema := st.schemas.schema(bl.SnapshotID, bl.TableID, entry.SchemaVersion)
+			if schema == nil {
+				return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, entry.SchemaVersion)
+			}
+			if len(schema.Columns) > maxCols {
+				maxCols = len(schema.Columns)
+			}
+		}
+		values := make([]Value, len(reqs)*maxCols)
+		for i, req := range reqs {
+			var dst Row
+			if maxCols != 0 {
+				dst = values[i*maxCols : (i+1)*maxCols]
+			}
+			row, err := s.rowFromPayloadInto(rp, bl, &index.RowLoc{BlockID: bid, ItemOrdinal: req.ordinal}, st.schemas, dst, nil)
 			if err != nil {
 				return nil, err
 			}

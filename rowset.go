@@ -3,7 +3,7 @@ package rowpack
 // rowIDSet is a packed open-addressing set of RowIDs used by the snapshot
 // writer to reject duplicate (table, row) pairs. It replaces a Go map to cut
 // the per-row footprint of large FULL loads by ~4x (~90 B/row -> ~11 B/row
-// at the 0.7 load factor): RowID 0 is the empty-slot sentinel (the writer
+// at the 0.8 load factor): RowID 0 is the empty-slot sentinel (the writer
 // rejects zero RowIDs up front), slots are raw uint64s in one slice, and the
 // table dimension is a small outer map held by the writer.
 type rowIDSet struct {
@@ -13,7 +13,7 @@ type rowIDSet struct {
 
 const (
 	rowIDSetInitialCap = 64 // first allocation; keeps small writes tiny
-	rowIDSetLoadNum    = 7  // grow when count/slots exceeds 7/10
+	rowIDSetLoadNum    = 8  // grow when count/slots exceeds 8/10
 	rowIDSetLoadDen    = 10
 )
 

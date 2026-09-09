@@ -220,26 +220,28 @@ func encodeRowIndexPage(entries []fileformat.RowIndexEntry, pageSize int) (page 
 	return page, len(entries), minRowID, maxRowID, nil
 }
 
-// decodeRowIndexPage 严格解码一个 Row Index Page。任何截断/伪造长度/CRC 失败/非法
-// changeType/排序破坏都返回错误，绝不 panic、绝不做无界分配。输出保证 (TableID, RowID)
-// 升序，与 encodeRowIndexPage 输入一致。
-func decodeRowIndexPage(raw []byte) ([]fileformat.RowIndexEntry, error) {
+// walkRowIndexPage 严格解码一个 Row Index Page，把每条目通过 emit 流式吐出。
+// 任何截断/伪造长度/CRC 失败/非法 changeType/排序破坏都返回错误，绝不 panic、绝不做
+// 无界分配。输出顺序保证 (TableID, RowID) 升序，与 encodeRowIndexPage 输入一致。
+// 与 decodeRowIndexPage 相比，它不物化整页 []RowIndexEntry，也不分配中间列数组，
+// 因此 Eager 建 shard 时把条目直接喂给 rowShard 构建器（S3-⑦ 落盘② Open 峰值优化）。
+func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) error {
 	n := len(raw)
 	if n < fileformat.IndexPageHeaderSize {
-		return nil, errIndexPageCorrupt
+		return errIndexPageCorrupt
 	}
 	var h fileformat.RowIndexPageHeader
 	if err := h.Unmarshal(raw, n); err != nil {
-		return nil, err
+		return err
 	}
 	count := int(h.EntryCount)
 	start := fileformat.IndexPageHeaderSize
 	if fileformat.CRC32C(raw[start:]) != h.CRC32C {
-		return nil, fmt.Errorf("rowpack: index page CRC mismatch")
+		return fmt.Errorf("rowpack: index page CRC mismatch")
 	}
 	wantBits := (uint64(count) + 3) / 4
 	if uint64(h.ChangeBitsBytes) != wantBits {
-		return nil, fmt.Errorf("rowpack: index page change bits %d, want %d for %d entries", h.ChangeBitsBytes, wantBits, count)
+		return fmt.Errorf("rowpack: index page change bits %d, want %d for %d entries", h.ChangeBitsBytes, wantBits, count)
 	}
 
 	// 切流（严格边界）。
@@ -254,31 +256,31 @@ func decodeRowIndexPage(raw []byte) ([]fileformat.RowIndexEntry, error) {
 	}
 	tableRun, err := take(h.TableRunBytes)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	rowIDStream, err := take(h.RowIDBytes)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	blockRun, err := take(h.BlockRunBytes)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	ordinalStream, err := take(h.OrdinalBytes)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	changeBits, err := take(h.ChangeBitsBytes)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if off != n {
-		return nil, fmt.Errorf("rowpack: index page has %d trailing bytes", n-off)
+		return fmt.Errorf("rowpack: index page has %d trailing bytes", n-off)
 	}
 	// 安全边界：每条目在 RowID 流至少占 1 字节，故条目数不得超过 RowID 流长度，
 	// 防止伪造 EntryCount 触发无界分配。
 	if uint64(count) > uint64(len(rowIDStream)) {
-		return nil, fmt.Errorf("rowpack: index page entry count %d exceeds row id stream %d", count, len(rowIDStream))
+		return fmt.Errorf("rowpack: index page entry count %d exceeds row id stream %d", count, len(rowIDStream))
 	}
 
 	readVar := func(s []byte, pos *int) (uint64, error) {
@@ -290,158 +292,189 @@ func decodeRowIndexPage(raw []byte) ([]fileformat.RowIndexEntry, error) {
 		return v, nil
 	}
 
-	// Tables（逐 run 记录每条目的 tableID，并按 run 长度还原 run 边界）。
-	tableIDs := make([]uint32, count)
-	runLens := make([]int, 0, 8)
-	tp, ti := 0, 0
+	// 五路流在同一条目下标 i 上锁步推进：tableRun/rowIDStream 共享 run 分段，
+	// blockRun/ordinalStream/changeBits 各自独立。
+	var (
+		tp, rp, bp, op, ti   int
+		currentTable         uint32
+		tableRunLeft         int
+		rowRunFirst          bool
+		prevRowID            uint64
+		curBlock             uint64
+		curBlockLeft         int
+		firstOrdinal         bool
+		prevOrdinal          uint32
+		lastTable            uint32
+		lastRowID            uint64
+		haveFirst            bool
+		globalMin, globalMax uint64
+		firstRowID           uint64
+	)
+	firstOrdinal = true
 	for ti < count {
-		tv, err := readVar(tableRun, &tp)
-		if err != nil {
-			return nil, err
+		// 表 run：边界处读取下一段 (tableID, runLen)。
+		if tableRunLeft == 0 {
+			tv, err := readVar(tableRun, &tp)
+			if err != nil {
+				return err
+			}
+			if tv > maxUint32 {
+				return fmt.Errorf("rowpack: index page table id %d exceeds uint32", tv)
+			}
+			rl, err := readVar(tableRun, &tp)
+			if err != nil {
+				return err
+			}
+			if rl == 0 || rl > uint64(count-ti) {
+				return fmt.Errorf("rowpack: index page table run len %d, want 1..%d", rl, count-ti)
+			}
+			currentTable = uint32(tv)
+			tableRunLeft = int(rl)
+			rowRunFirst = true
 		}
-		if tv > maxUint32 {
-			return nil, fmt.Errorf("rowpack: index page table id %d exceeds uint32", tv)
-		}
-		rl, err := readVar(tableRun, &tp)
-		if err != nil {
-			return nil, err
-		}
-		if rl == 0 || rl > uint64(count-ti) {
-			return nil, fmt.Errorf("rowpack: index page table run len %d, want 1..%d", rl, count-ti)
-		}
-		runLens = append(runLens, int(rl))
-		for k := 0; k < int(rl); k++ {
-			tableIDs[ti] = uint32(tv)
-			ti++
-		}
-	}
-	if tp != len(tableRun) {
-		return nil, fmt.Errorf("rowpack: index page table run has %d trailing bytes", len(tableRun)-tp)
-	}
-	if ti != count {
-		return nil, fmt.Errorf("rowpack: index page table runs cover %d entries, want %d", ti, count)
-	}
-
-	// RowIDs：按 table run 分段还原。
-	rowIDs := make([]uint64, count)
-	rp, runIdx, ri := 0, 0, 0
-	for runIdx < len(runLens) {
-		abs, err := readVar(rowIDStream, &rp)
-		if err != nil {
-			return nil, err
-		}
-		rowIDs[ri] = abs
-		ri++
-		for k := 1; k < runLens[runIdx]; k++ {
+		// RowID：run 首条绝对、其后非负 uvarint 增量。
+		var rowID uint64
+		if rowRunFirst {
+			abs, err := readVar(rowIDStream, &rp)
+			if err != nil {
+				return err
+			}
+			rowID = abs
+			rowRunFirst = false
+		} else {
 			d, err := readVar(rowIDStream, &rp)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			rowIDs[ri] = rowIDs[ri-1] + d
-			ri++
+			rowID = prevRowID + d
 		}
-		runIdx++
-	}
-	if rp != len(rowIDStream) {
-		return nil, fmt.Errorf("rowpack: index page row id stream has %d trailing bytes", len(rowIDStream)-rp)
-	}
-
-	// BlockIDs（run）。
-	blockIDs := make([]uint64, count)
-	bp, bi := 0, 0
-	for bi < count {
-		bid, err := readVar(blockRun, &bp)
-		if err != nil {
-			return nil, err
+		prevRowID = rowID
+		// BlockID：run 边界处读取下一段 (blockID, runLen)。
+		if curBlockLeft == 0 {
+			bid, err := readVar(blockRun, &bp)
+			if err != nil {
+				return err
+			}
+			rl, err := readVar(blockRun, &bp)
+			if err != nil {
+				return err
+			}
+			if rl == 0 || rl > uint64(count-ti) {
+				return fmt.Errorf("rowpack: index page block run len %d, want 1..%d", rl, count-ti)
+			}
+			curBlock = bid
+			curBlockLeft = int(rl)
 		}
-		rl, err := readVar(blockRun, &bp)
-		if err != nil {
-			return nil, err
+		curBlockLeft--
+		// ItemOrdinal：首条绝对、其后 zigzag delta。
+		var ordinal uint32
+		if firstOrdinal {
+			ov, err := readVar(ordinalStream, &op)
+			if err != nil {
+				return err
+			}
+			if ov > maxUint32 {
+				return fmt.Errorf("rowpack: index page record ordinal %d exceeds uint32", ov)
+			}
+			prevOrdinal = uint32(ov)
+			firstOrdinal = false
+		} else {
+			d, err := readVar(ordinalStream, &op)
+			if err != nil {
+				return err
+			}
+			v := int64(prevOrdinal) + unzigzag(d)
+			if v < 0 || uint64(v) > maxUint32 {
+				return fmt.Errorf("rowpack: index page record ordinal %d out of range", v)
+			}
+			prevOrdinal = uint32(v)
 		}
-		if rl == 0 || rl > uint64(count-bi) {
-			return nil, fmt.Errorf("rowpack: index page block run len %d, want 1..%d", rl, count-bi)
-		}
-		for k := 0; k < int(rl); k++ {
-			blockIDs[bi] = bid
-			bi++
-		}
-	}
-	if bp != len(blockRun) {
-		return nil, fmt.Errorf("rowpack: index page block run has %d trailing bytes", len(blockRun)-bp)
-	}
-
-	// ItemOrdinals（zigzag delta）。
-	ordinals := make([]uint32, count)
-	op := 0
-	ov, err := readVar(ordinalStream, &op)
-	if err != nil {
-		return nil, err
-	}
-	if ov > maxUint32 {
-		return nil, fmt.Errorf("rowpack: index page record ordinal %d exceeds uint32", ov)
-	}
-	ordinals[0] = uint32(ov)
-	for i := 1; i < count; i++ {
-		d, err := readVar(ordinalStream, &op)
-		if err != nil {
-			return nil, err
-		}
-		v := int64(ordinals[i-1]) + unzigzag(d)
-		if v < 0 || uint64(v) > maxUint32 {
-			return nil, fmt.Errorf("rowpack: index page record ordinal %d out of range", v)
-		}
-		ordinals[i] = uint32(v)
-	}
-	if op != len(ordinalStream) {
-		return nil, fmt.Errorf("rowpack: index page record ordinal stream has %d trailing bytes", len(ordinalStream)-op)
-	}
-
-	// ChangeType（2bit）。
-	changes := make([]fileformat.ChangeType, count)
-	for i := 0; i < count; i++ {
-		packed := (changeBits[i/4] >> ((i % 4) * 2)) & 3
+		ordinal = prevOrdinal
+		// ChangeType（2bit）。
+		packed := (changeBits[ti/4] >> ((ti % 4) * 2)) & 3
 		ct, err := fileformat.UnpackChangeType(packed)
 		if err != nil {
-			return nil, fmt.Errorf("rowpack: index page entry %d: %w", i, err)
+			return fmt.Errorf("rowpack: index page entry %d: %w", ti, err)
 		}
-		changes[i] = ct
+		// 排序一致性。
+		if ti > 0 {
+			if currentTable < lastTable {
+				return fmt.Errorf("rowpack: index page table ids not sorted at %d", ti)
+			}
+			if currentTable == lastTable && rowID <= lastRowID {
+				return fmt.Errorf("rowpack: index page row ids not strictly ascending at %d", ti)
+			}
+		}
+		lastTable = currentTable
+		lastRowID = rowID
+		// 全局 Min/Max RowID（跨表非单调）。
+		if !haveFirst {
+			globalMin, globalMax, firstRowID = rowID, rowID, rowID
+			haveFirst = true
+		} else {
+			if rowID < globalMin {
+				globalMin = rowID
+			}
+			if rowID > globalMax {
+				globalMax = rowID
+			}
+		}
+		if err := emit(fileformat.RowIndexEntry{
+			TableID:     currentTable,
+			RowID:       rowID,
+			BlockID:     curBlock,
+			ItemOrdinal: ordinal,
+			ChangeType:  ct,
+		}); err != nil {
+			return err
+		}
+		tableRunLeft--
+		ti++
 	}
-
-	// 排序一致性 + 组装。
-	out := make([]fileformat.RowIndexEntry, count)
-	var globalMin, globalMax uint64 = rowIDs[0], rowIDs[0]
-	for i := 0; i < count; i++ {
-		if i > 0 {
-			if tableIDs[i] < tableIDs[i-1] {
-				return nil, fmt.Errorf("rowpack: index page table ids not sorted at %d", i)
-			}
-			if tableIDs[i] == tableIDs[i-1] && rowIDs[i] <= rowIDs[i-1] {
-				return nil, fmt.Errorf("rowpack: index page row ids not strictly ascending at %d", i)
-			}
-		}
-		if rowIDs[i] < globalMin {
-			globalMin = rowIDs[i]
-		}
-		if rowIDs[i] > globalMax {
-			globalMax = rowIDs[i]
-		}
-		out[i] = fileformat.RowIndexEntry{
-			TableID:     tableIDs[i],
-			RowID:       rowIDs[i],
-			BlockID:     blockIDs[i],
-			ItemOrdinal: ordinals[i],
-			ChangeType:  changes[i],
-		}
+	// 各流必须恰好耗尽（防伪造长度）。
+	if tp != len(tableRun) {
+		return fmt.Errorf("rowpack: index page table run has %d trailing bytes", len(tableRun)-tp)
+	}
+	if rp != len(rowIDStream) {
+		return fmt.Errorf("rowpack: index page row id stream has %d trailing bytes", len(rowIDStream)-rp)
+	}
+	if bp != len(blockRun) {
+		return fmt.Errorf("rowpack: index page block run has %d trailing bytes", len(blockRun)-bp)
+	}
+	if op != len(ordinalStream) {
+		return fmt.Errorf("rowpack: index page record ordinal stream has %d trailing bytes", len(ordinalStream)-op)
 	}
 	// 交叉校验 header 导出的锚点值与解码结果一致（防单 bit 翻转构造伪页）。
-	if h.FirstRowID != out[0].RowID {
-		return nil, fmt.Errorf("rowpack: index page first row id %d, want %d", h.FirstRowID, out[0].RowID)
+	if h.FirstRowID != firstRowID {
+		return fmt.Errorf("rowpack: index page first row id %d, want %d", h.FirstRowID, firstRowID)
 	}
 	if h.MinRowID != globalMin {
-		return nil, fmt.Errorf("rowpack: index page min row id %d, want %d", h.MinRowID, globalMin)
+		return fmt.Errorf("rowpack: index page min row id %d, want %d", h.MinRowID, globalMin)
 	}
 	if h.MaxRowID != globalMax {
-		return nil, fmt.Errorf("rowpack: index page max row id %d, want %d", h.MaxRowID, globalMax)
+		return fmt.Errorf("rowpack: index page max row id %d, want %d", h.MaxRowID, globalMax)
+	}
+	return nil
+}
+
+// decodeRowIndexPage 严格解码一个 Row Index Page，物化整页 []RowIndexEntry。
+// 大多数生产路径应当使用 walkRowIndexPage 流式吐出；本函数保留给需要整页切片的
+// 调用方（单元测试 / 非流式读取），并在结尾做全部 header 锚点交叉校验。
+func decodeRowIndexPage(raw []byte) ([]fileformat.RowIndexEntry, error) {
+	count := 0
+	if len(raw) >= fileformat.IndexPageHeaderSize {
+		var h fileformat.RowIndexPageHeader
+		// 仅在大致可读时用 header 预分配；任何解析错误交给 walker 报告。
+		if err := h.Unmarshal(raw, len(raw)); err == nil {
+			count = int(h.EntryCount)
+		}
+	}
+	out := make([]fileformat.RowIndexEntry, 0, count)
+	if err := walkRowIndexPage(raw, func(e fileformat.RowIndexEntry) error {
+		out = append(out, e)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

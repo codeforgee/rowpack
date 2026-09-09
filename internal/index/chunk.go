@@ -566,6 +566,17 @@ type RowHintSink interface {
 	ReserveRows(hint int)
 }
 
+// RowEntrySink is an optional TxnSink extension for row entries: instead of
+// handing the parser bounded []RowIndexEntry batches via AddRows, the sink
+// receives each decoded entry individually via AddRowEntry. The page decoder
+// (walkRowIndexPage) feeds entries straight to this sink — one at a time, in
+// (TableID, RowID) sorted order — so the Eager rowShard builder appends into
+// its columnar arrays without materializing a []RowIndexEntry page or a
+// []RowKeyLoc intermediate (S3-⑦ 落盘② Open 峰值优化).
+type RowEntrySink interface {
+	AddRowEntry(e fileformat.RowIndexEntry) error
+}
+
 // bufferedSink is the default TxnSink collecting into storedBody slices
 // (historical behavior).
 type bufferedSink struct{ sb *storedBody }
@@ -837,6 +848,27 @@ func parseRowIndexPages(region []byte, pageStart int, pageCount uint32, snapshot
 		if fileformat.CRC32C(pageRaw[fileformat.IndexPageHeaderSize:]) != f.PageCRC32C {
 			return fmt.Errorf("rowpack: row index page %d CRC mismatch", i)
 		}
+		// The page encodes (TableID, RowID, BlockID, ItemOrdinal, ChangeType)
+		// without SnapshotID (txn-wide); stamp it before handing to the sink.
+		// A RowEntrySink receives entries one at a time via walkRowIndexPage —
+		// no []RowIndexEntry page materialization, no []RowKeyLoc intermediate
+		// (S3-⑦ 落盘② Open 峰值优化). Older sinks fall back to the batched path.
+		if es, ok := sink.(RowEntrySink); ok {
+			emitted := 0
+			if err := walkRowIndexPage(pageRaw, func(e fileformat.RowIndexEntry) error {
+				e.SnapshotID = snapshotID
+				emitted++
+				return es.AddRowEntry(e)
+			}); err != nil {
+				return fmt.Errorf("rowpack: row index page %d: %w", i, err)
+			}
+			if emitted != int(f.EntryCount) {
+				return fmt.Errorf("rowpack: row index page %d %d entries, fence says %d", i, emitted, f.EntryCount)
+			}
+			*rowCount += uint64(emitted)
+			*plainCRC = crcConcat(*plainCRC, pageRaw)
+			continue
+		}
 		entries, err := decodeRowIndexPage(pageRaw)
 		if err != nil {
 			return fmt.Errorf("rowpack: row index page %d: %w", i, err)
@@ -844,8 +876,6 @@ func parseRowIndexPages(region []byte, pageStart int, pageCount uint32, snapshot
 		if uint32(len(entries)) != f.EntryCount {
 			return fmt.Errorf("rowpack: row index page %d %d entries, fence says %d", i, len(entries), f.EntryCount)
 		}
-		// The page encodes (TableID, RowID, BlockID, ItemOrdinal, ChangeType)
-		// without SnapshotID (txn-wide); stamp it before handing to the sink.
 		for j := range entries {
 			entries[j].SnapshotID = snapshotID
 		}

@@ -516,9 +516,9 @@ func (v *View) ApplyStreaming(data []byte, crypto *ChunkCrypto, maxDepth uint32)
 
 // streamApply is the TxnSink behind ApplyStreaming. Blocks and metadata are
 // few (per flushed block), so they buffer; rows — the per-row bulk — append
-// directly into per-table shard slices. The first table preallocates exactly
-// from the header's row count (the overwhelmingly common single-table case);
-// multi-table shards trim to exact size in finish.
+// directly into an incremental rowShardBuilder, so no []RowKeyLoc intermediate
+// and no fully materialized []RowIndexEntry page exists on the Open path. The
+// first (single-table) shard preallocates exactly from the header's row count.
 type streamApply struct {
 	old      *View
 	nv       *View
@@ -530,7 +530,7 @@ type streamApply struct {
 	blocks   []fileformat.BlockIndexEntry
 	metadata []fileformat.MetadataIndexEntry
 
-	shards   map[uint32][]RowKeyLoc
+	shards   *rowShardBuilder
 	hint     int
 	rowCount uint64
 }
@@ -567,49 +567,32 @@ func (a *streamApply) AddMetadata(e fileformat.MetadataIndexEntry) error {
 	return nil
 }
 
-func (a *streamApply) AddRows(batch []fileformat.RowIndexEntry) error {
+// AddRowEntry implements RowEntrySink: the page parser (via walkRowIndexPage)
+// hands each decoded entry straight to the shard builder, one at a time, so
+// no per-page []RowIndexEntry is materialized.
+func (a *streamApply) AddRowEntry(e fileformat.RowIndexEntry) error {
 	if a.meta == nil {
 		return fmt.Errorf("rowpack: row entry before snapshot")
 	}
 	if a.shards == nil {
-		a.shards = make(map[uint32][]RowKeyLoc)
+		a.shards = newRowShardBuilder(a.snapID, a.hint)
 	}
-	// The batch is delta-encoded, so entries are usually same-table: keep the
-	// current shard in a local and touch the map only on table switches.
-	var (
-		cur     []RowKeyLoc
-		curTID  uint32
-		haveCur bool
-	)
+	if err := a.shards.AddRowEntry(e); err != nil {
+		return err
+	}
+	a.rowCount++
+	return nil
+}
+
+// AddRows implements TxnSink. On the Open path the parser uses AddRowEntry
+// directly; AddRows remains as the batch fallback (buffered / non-streaming
+// sinks) and delegates to AddRowEntry.
+func (a *streamApply) AddRows(batch []fileformat.RowIndexEntry) error {
 	for i := range batch {
-		e := &batch[i]
-		if e.SnapshotID != a.snapID {
-			return fmt.Errorf("rowpack: row entry wrong snapshot")
+		if err := a.AddRowEntry(batch[i]); err != nil {
+			return err
 		}
-		if !haveCur || e.TableID != curTID {
-			if haveCur {
-				a.shards[curTID] = cur
-			}
-			curTID = e.TableID
-			var known bool
-			cur, known = a.shards[curTID]
-			if !known {
-				if len(a.shards) == 0 && a.hint > 0 {
-					cur = make([]RowKeyLoc, 0, a.hint) // single-table: exact prealloc
-				}
-				a.shards[curTID] = cur
-			}
-			haveCur = true
-		}
-		cur = append(cur, RowKeyLoc{
-			RowID: e.RowID,
-			Loc:   RowLoc{BlockID: e.BlockID, ItemOrdinal: e.ItemOrdinal, ChangeType: e.ChangeType},
-		})
 	}
-	if haveCur {
-		a.shards[curTID] = cur
-	}
-	a.rowCount += uint64(len(batch))
 	return nil
 }
 
@@ -627,21 +610,12 @@ func (a *streamApply) finish(t *Txn) error {
 		return err
 	}
 	var rowMap map[uint32]*rowShard
-	if len(a.shards) > 0 {
-		rowMap = make(map[uint32]*rowShard, len(a.shards))
-	}
-	for tid, entries := range a.shards {
-		if len(a.shards) > 1 && cap(entries) > len(entries) {
-			// Multi-table: trim the hint-sized first slice to exact length.
-			exact := make([]RowKeyLoc, len(entries))
-			copy(exact, entries)
-			entries = exact
-		}
-		sh := &rowShard{}
-		if err := sh.prepare(entries); err != nil {
+	if a.shards != nil {
+		var err error
+		rowMap, err = a.shards.finish()
+		if err != nil {
 			return err
 		}
-		rowMap[tid] = sh
 	}
 	a.nv.rows[a.snapID] = rowMap
 	finishApplyMemory(a.old, a.nv, len(a.metadata), len(a.blocks), rowMap)

@@ -4,9 +4,8 @@
 > 日期：2026-09-08（当前基线）
 > 环境：Go 1.27.0 / darwin arm64 (Apple Silicon M1 Pro) / klauspost/compress v1.20.0 (zstd)
 > 说明：**本报告 §1 只有一组当前基线**——由统一矩阵 `make bench` 生成，完整输出
-> 落在 `docs/bench-results.txt`（gitignore，机器相关，可随时复现）。v1（双文件
-> 预发布格式）的对照数据见 §2 与 docs/perf-report-v2.md；历史批次保留在
-> docs/benchmarks-v1.md，仅用于回溯，不作为对比基线。
+> 落在 `docs/bench-results.txt`（gitignore，机器相关，可随时复现）。历史 v1 对照
+> 批次已随 v1 格式废弃移除。
 
 ## 1. 当前统一基线（v2 Tier 0，2026-09-08）
 
@@ -43,10 +42,9 @@ make bench   # => go test -bench 'Benchmark(Env|MainMatrix|Latency)' -benchmem -
 | 点读延迟 p50/p95/p99（热） | 250 / 292 / 584 ns |
 | 点读延迟 p50/p95/p99（冷） | 281 / 360 / 593 µs |
 
-## 2. 与 v1（双文件）基线的对照
+## 2. 与 v1（双文件）基线的对照（历史记录，v1 已废弃）
 
-同机双分支顺序执行（v1 = main，v2 = 本分支，`-benchtime=10x`，见
-docs/perf-report-v2.md 方法）：
+同机双分支顺序执行（v1 = main，v2 = 本分支，`-benchtime=10x`，小样本看趋势）：
 
 | 维度 | v1 | v2 | 变化 |
 | --- | --- | --- | --- |

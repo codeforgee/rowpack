@@ -1,7 +1,7 @@
 # RowPack 元数据格式 v1
 
 > 状态：设计基线  
-> 配套格式：[BINARY_FORMAT_V1.md](BINARY_FORMAT_V1.md)
+> 配套格式：[BINARY_FORMAT_V2.md](BINARY_FORMAT_V2.md)（原配套 BINARY_FORMAT_V1.md 已随 v1 历史文档移除）
 
 ## 1. 目标
 

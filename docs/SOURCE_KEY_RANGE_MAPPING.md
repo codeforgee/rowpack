@@ -236,14 +236,14 @@ Block 读取内核应做到：
 
 后续 v1.2 若确认范围读取是主要访问模式，应优先实现按 RowID 集合聚合 Block 的内部能力，再决定是否提供通用 Key Index API。
 
-> 注：按 RowID 集合聚合 Block 的能力已随 `Store.ReadBatch` 于 v1.2 完成
-> （plan-v12.md §3.1）；是否提供通用 Key Index API 的最终决策见 §9。
+> 注：按 RowID 集合聚合 Block 的能力已随 `Store.ReadBatch` 于 v1.2 完成；
+> 是否提供通用 Key Index API 的最终决策见 §9。
 
 ## 9. 决策记录（v1.2）
 
 > 日期：2026-09-09
-> 关联：ADR-002（引擎解耦方言语义）、plan-v12.md §3.1（批量分块读取已完成）、
-> GO_API_DESIGN.md §8（ReadBatch 公开契约）
+> 关联：ADR-002（引擎解耦方言语义）；批量分块读取（`Store.ReadBatch`）已于
+> v1.2 完成，公开契约见 [GO_API_DESIGN_V2.md](GO_API_DESIGN_V2.md)
 
 ### 9.1 采用外层适配方案（§8 路线），不内建 Key Index
 
@@ -283,5 +283,5 @@ Block 读取内核应做到：
 2. 目标源库收敛到单一/少数方言，且能完整复制其排序规则（复合键、NULL、字符串排序）。
 
 在此之前，`ReadRowsByKeyRange` 定义为适配器接口；需要批量读取性能优化时，
-引擎侧优先补 `ReadBatchInto`（行缓冲复用，消除 plan-v12 §3.1 seq/hot 档回退），
+引擎侧优先补 `ReadBatchInto`（行缓冲复用，消除 v1.2 基线 seq/hot 档回退），
 而不是引入 Key Index。

@@ -161,15 +161,11 @@ st := it.Stats() // 块数、解压字节、命中与跳过差异
 ## 文档
 
 - [需求规格](docs/REQUIREMENTS.md)
-- [二进制格式（v2 单文件）](docs/BINARY_FORMAT_V2.md) · [v2 风险清单](docs/V2_DESIGN_RISKS.md)
+- [二进制格式（v2 单文件）](docs/BINARY_FORMAT_V2.md) · [格式参考 HTML 版](docs/file-format-v2.html)
 - [v2 Go API 设计](docs/GO_API_DESIGN_V2.md)
-- [v2 单文件开发计划](docs/DEVELOPMENT_PLAN_V2.md)
-- [二进制格式 v1（预发布史）](docs/BINARY_FORMAT_V1.md)
-- [元数据格式 v1](docs/METADATA_FORMAT_V1.md)
-- [Go API 设计](docs/GO_API_DESIGN.md)
-- [开发计划](docs/DEVELOPMENT_PLAN.md)
-- [v1.1 优化计划](docs/plan-v11.md)
-- [v1.2 优化计划](docs/plan-v12.md)
+- [元数据格式（TLV）](docs/METADATA_FORMAT_V1.md)
+- [IndexTxn 分 Chunk 压缩与加密](docs/INDEX_TXN_CHUNK_COMPRESSION.md)
+- [数据分块加密可行性与决策](docs/DATA_BLOCK_ENCRYPTION_FEASIBILITY.md)
 - [性能测试报告](docs/perf-report.md)
 - [源库 Key Range 映射](docs/SOURCE_KEY_RANGE_MAPPING.md)
 - [ADR-001：.rpk 是提交权威](docs/adr/ADR-001.md)
@@ -207,8 +203,7 @@ klauspost zstd v1.20 / BlockSize 256 KiB / Zstd / SyncCommit，数据集 100k �
 | Open 索引重放 | ~5.7 ms |
 
 > 注意：热读真实吞吐 ~2M get/s。README 早期版本的 7–12 µs、300 µs 等数值受到低
-> `-benchtime` 一次性开销稀释，已由统一矩阵的预热逻辑消除；历史数据见
-> docs/benchmarks-v1.md。
+> `-benchtime` 一次性开销稀释，已由统一矩阵的预热逻辑消除。
 
 ## 兼容性
 

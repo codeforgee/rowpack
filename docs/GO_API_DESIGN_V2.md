@@ -3,7 +3,7 @@
 > 状态：设计草案
 > 日期：2026-09-08
 > 格式基线：[BINARY_FORMAT_V2.md](BINARY_FORMAT_V2.md)
-> 风险清单：[V2_DESIGN_RISKS.md](V2_DESIGN_RISKS.md)（API 相关 R17–R21 已按本文档核定）
+> 评审：API 相关 R17–R21 风险已核定并吸收进本文档（原风险清单文档已移除）
 
 ## 1. API 原则
 

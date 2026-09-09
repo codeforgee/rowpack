@@ -1,8 +1,10 @@
 # RowPack 数据分块加密可行性
 
-> 状态：已进入实现（v1 格式未发布，加密作为创建时可选能力直接进入 v1 格式，无老格式兼容约束）；
-> 决策见 §10，分步计划见 ENCRYPTION_DEVELOPMENT_PLAN.md
+> 状态：已实现并冻结（加密作为创建时可选能力直接进入 v1 格式，无老格式兼容约束）
+> 决策见 §10
 > 日期：2026-09-07（§10 决策记录 2026-09-09，2026-09-09 修订解除兼容约束）
+> 性能：加密开销仅随机冷读回退 ~13%（无缓存解压+解密，记为已知基线；
+> 热读/扫描/批量均 ≤1%，详见 docs/perf-report.md 基准矩阵），后续可按需优化
 
 ## 1. 结论
 
@@ -124,8 +126,8 @@ type KeyProvider interface {
 ## 10. 决策记录（v1.3 规划）
 
 > 日期：2026-09-09
-> 关联：BINARY_FORMAT_V1.md §2/§3、ADR-001（.rpk 提交权威 / .rpi 可重建）、
-> GO_API_DESIGN.md §5（Options）、plan-v12.md（v1.2 不含本能力）
+> 关联：BINARY_FORMAT_V2.md、ADR-001（.rpk 提交权威）、ADR-003（v2 单文件）。
+> 规划期原引用 BINARY_FORMAT_V1.md §2/§3、GO_API_DESIGN.md §5、plan-v12.md 已随 v1 历史文档一并移除。
 
 ### 10.1 格式落位（修正 §3）
 
@@ -201,7 +203,7 @@ Snapshot/Table/Block）：
   RebuildIndex 全链路 + 与未加密 Store 对拍测试。
 - P1 完整：KeyEpoch 轮换测试、AAD 任一位篡改必须认证失败、密钥丢失/
   轮换测试、.rpi 敏感字段加密评估（v1 不实现）。
-- 分步实现计划见 ENCRYPTION_DEVELOPMENT_PLAN.md。
+- 分步实现计划（S1–S8）已执行完毕，过程文档已移除。
 
 ### 10.8 验收门槛
 

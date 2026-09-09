@@ -172,7 +172,25 @@ S1 可与 S0 并行┘   (提交2,3)        (提交4,5,6)        (提交7,8)    
 决策点落实：**#1 PageSize = 32 KiB 已冻结**（ADR-004）；**#7 页目录保留 Min/Max RowID**
 （页目录 56 B，Min/Max RowID 用于批量读取规划，实测无目录膨胀压力）；**#5 metadata
 stream 的 RLE/delta（SchemaVersion RLE + offset delta）已实现**，Zstd 之外未再叠加；
-#2/#3/#6 待 S3 用原型数据再定；#4 待 S4 深链实验。
+#3 见 §9.1.2；#2/#6 待 S3 Index Page 原型再定；#4 待 S4 深链实验。
+
+### 9.1.2 S3 Eager 紧凑索引测量（提交⑧，2026-09-09，Open 1M 行）
+
+把 rowShard 从 `[]RowKeyLoc`（Go struct，24.02 B/row）改为 **列式 SoA + BlockID
+run-length 编码**（rowIDs/ordinals/changes + runStart/blockIDs）：
+
+| 指标 | 旧（[]RowKeyLoc） | 新（SoA/block-run） | 门槛 | 结论 |
+| --- | --- | --- | --- | --- |
+| idxB/row（Eager 常驻） | 24.02 | **13.02** | ≤16 | ✅ |
+| idxMB @1M 行 | 22.91 | **12.42** | — | 降 46% |
+| Open 1M 峰值临时分配 | 68.7 MB | 65.9 MB | 最终索引+2页 | 改善 |
+| 热点读 | 256 ns | 256 ns | ≤125% | ✅ 不变 |
+| Scan 100k | 134 allocs | 65 allocs | 0 alloc/row | ✅ |
+
+决策 #3（Eager shard 编码）：**选定 columnar SoA + BlockID run-length**（约 13 B/row）；
+packed-struct 仍有 padding ~21 B/row 不可达 ≤16，block-run 把 BlockID 摊薄到随行数
+可忽略。已知权衡：Scan/计数物化 []RowKeyLoc 是瞬态 ~24 B/row；Open 期间临时
+RowKeyLoc+SoA 并存——后续用直接遍历 SoA 的 row iterator 去除。对应设计 §7.3。
 
 > 项目排期：执行计划 §5 的 S2（提交④⑤⑥）已完成，`go test ./...` 与 `-race` 全绿，
 > golden 已按新格式重新生成并人工核对。

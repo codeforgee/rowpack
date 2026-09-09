@@ -57,6 +57,11 @@ O(1) 记录索引。实测（`BenchmarkGetHot / GetCold / GetColdUnpooled / Writ
 （metadata 块仍整容器密封）。逐页 nonce 域分离与篡改/跨上下文拒绝测试见
 `internal/seal/seal_page_test.go`。
 
+**S3-⑧ Eager 索引内存压缩（SoA/block-run）**：Open 1M 行 `idxB/row` 24.02 → **13.02**
+（idxMB 22.91 → 12.42 MiB），满足 Eager ≤16 B/row；Open 1M 峰值分配 68.7 → 65.9 MB。
+热点读 256ns 不变，Scan 100k 65 allocs（0 alloc/row）。详细决策见
+`REFACTOR_EXECUTION_PLAN.md` §9.1.2。
+
 ## 1. 基准套件与指标口径
 
 `make bench` 一条命令复现全部基线（默认 `-benchtime=1s -count=1`，可用 `BENCHTIME`/

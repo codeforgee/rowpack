@@ -195,6 +195,51 @@ RowKeyLoc+SoA 并存——后续用直接遍历 SoA 的 row iterator 去除。�
 > 项目排期：执行计划 §5 的 S2（提交④⑤⑥）已完成，`go test ./...` 与 `-race` 全绿，
 > golden 已按新格式重新生成并人工核对。
 
+### 9.1.3 S3 Index Page 原型测量（前置，2026-09-09，200k 行，纯内存不落盘）
+
+**仅原型**（`internal/index/page_proto.go` + 单测 + 基准），不落盘、不接入 writer/
+reader/recovery、不改 `internal/fileformat` 目录结构、golden 不变（前后 `shasum`
+一致）。复现：`go test ./... -run '^$' -bench 'BenchmarkIndexPage' -benchmem
+-count=1 ./internal/index/...`；原始输出：`docs/baseline/bench-index-page-proto.txt`。
+
+定长 64B 页头 + 五流（TableID run / 表内非负 uvarint RowID 增量、表切换重采绝对值 /
+BlockID run / RecordOrdinal zigzag delta / ChangeType 2bit）；Fence packed 52B。
+布局细节见 ADR-005。
+
+三负载 × PageSize（zstd level=3）：
+
+| load | ps | entries/page | rawB/entry | storedB/entry | encNS/entry | decNS/entry | fenceB/row | pages/1M |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| seq | 2048 | 2041 | 2.285 | 0.0483 | 12.25 | 13.54 | 0.0255 | 98 |
+| seq | 4096 | 4082 | 2.268 | **0.0242** | 10.87 | 13.16 | 0.0127 | 49 |
+| rand | 2048 | 2041 | 5.211 | 3.214 | 45.29 | 21.43 | 0.0255 | 98 |
+| rand | 4096 | 4082 | 5.195 | 3.120 | 43.43 | 21.16 | 0.0127 | 49 |
+| delta | 2048 | 2041 | 2.290 | 0.9752 | 27.65 | 13.68 | 0.0255 | 98 |
+| delta | 4096 | 4082 | 2.272 | 0.9228 | 26.97 | 13.20 | 0.0127 | 49 |
+
+**决策 #2（Index Page 条目数）= 4096**：三负载 storedB/entry 一致更低（seq 0.048→0.024
+减半、rand 3.214→3.120、delta 0.975→0.923）；`fenceB/row` 与 `pages/1M` 减半，Open
+常驻 Fence 内存与页抓取直接减半；encNS 不升反降、decNS 持平。不做 8192：stored 更低但
+单页 21KB raw 的随机解压/缓存污染及「每页恰为一块/一表」粒度更差，收益趋缓。
+
+**决策 #6（Index Page 压缩级别）= 复用数据级别 `DefaultCompressionLvl=3`**：level 3
+storedB/entry 最低（3.120）；level 6（3.134）无存储收益反而 +18% 编码 CPU，level 1
+（3.258）省 ~24% 编码 CPU 却多 4.4% 存储。Index Page 每 Snapshot 只写一次且体量极小，
+编码 CPU 相对数据提交可忽略，故带副作用的是存储大小——level 3 最优且是数据默认，一处
+复用。
+
+与现状 chunk delta（`rowEncoder`）对照 rawB/entry：seq/delta 设计 ~2.27 vs chunk ~4.00
+（ratio 0.57，省 ~43%）；rand ~5.20 vs ~5.95（ratio 0.87，省 ~13%）。设计编码相比现状
+chunk 更紧凑，写路径改用排序页更省，且天然支持新定位 `(BlockID, PageOrdinal,
+RecordOrdinal, ChangeType)`。
+
+> 说明：decode 口径不含 zstd 解压（页级独立），且原型 decode 物化 `[]ProtoRowEntry`
+> （≈11.4 MB/op @200k，真实 Eager 路径直接流式写 SoA shard 不会物化），故 decNS/entry
+> 为原型上界。
+
+**本提交不含**：把 Index Page 写入 IndexTxn / 新建落盘格式（S3-⑦ 落盘）、Fence 常驻化
+（S4）、接入 Eager/Lazy 读路径、PageOrdinal 编码、多表页 Fence 语义——均留给后续提交。
+
 | # | 决策 | 阶段 | 验证方法 | 记录位置 |
 | --- | --- | --- | --- | --- |
 | 1 | 默认 PageSize 16/32/64 KiB | S2 | 压缩率×冷读×写 CPU 矩阵 | ADR + S2 报告 |

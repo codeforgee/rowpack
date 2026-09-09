@@ -273,8 +273,8 @@ func TestCorruptBlockPayloadDamagesRead(t *testing.T) {
 	// varies, so address the block by the row's resolved location).
 	st, err := db.captureState()
 	require.NoError(t, err)
-	loc := st.view.ResolveRow(1, 1, 1)
-	require.NotNil(t, loc, "row 1 must resolve")
+	loc, ok := st.view.ResolveRow(1, 1, 1)
+	require.True(t, ok, "row 1 must resolve")
 	rowsBlk := st.view.Block(loc.BlockID)
 	require.NotNil(t, rowsBlk)
 	require.Equal(t, fileformat.BlockKindRows, rowsBlk.Kind)

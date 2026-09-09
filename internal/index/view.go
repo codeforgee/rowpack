@@ -76,20 +76,62 @@ type View struct {
 	memoryBytes uint64
 }
 
-// rowShard is the compact row index of one (snapshot, table): entries sorted
-// by RowID, tombstones included. Immutable once built.
+// rowShard is the compact per-(snapshot, table) row index: rows sorted by
+// RowID, stored columnar (RowIDs / ItemOrdinals / ChangeTypes) with the
+// BlockID run-length encoded so consecutive rows inside one physical block do
+// not repeat the block id. Residential cost ~13 B/row (vs 24 B/row for a
+// []RowKeyLoc), meeting the Eager index memory gate. Immutable once built.
 type rowShard struct {
-	entries []RowKeyLoc
+	rowIDs   []uint64  // sorted by RowID, len n
+	ordinals []uint32  // ItemOrdinal per row
+	changes  []uint8   // ChangeType per row
+	runStart []uint32  // runStart[r] = first row index of run r; runStart[len]=n
+	blockIDs []uint64  // BlockID of each run
 }
 
-// rowShardLookup binary-searches the shard for rowID and returns a pointer to
-// the entry (valid for the shard's lifetime), or nil.
-func (sh *rowShard) lookup(rowID uint64) *RowKeyLoc {
-	i := sort.Search(len(sh.entries), func(i int) bool { return sh.entries[i].RowID >= rowID })
-	if i >= len(sh.entries) || sh.entries[i].RowID != rowID {
-		return nil
+// len returns the number of rows.
+func (sh *rowShard) len() int { return len(sh.rowIDs) }
+
+// rowIDAt returns the RowID at index i (sorted order).
+func (sh *rowShard) rowIDAt(i int) uint64 { return sh.rowIDs[i] }
+
+// runFor finds the run index owning row index i via binary search.
+func (sh *rowShard) runFor(i int) int {
+	r := sort.Search(len(sh.blockIDs), func(r int) bool { return int(sh.runStart[r+1]) > i })
+	if r >= len(sh.blockIDs) {
+		r = len(sh.blockIDs) - 1
 	}
-	return &sh.entries[i]
+	return r
+}
+
+// rowLocAt returns the RowLoc of the row at index i.
+func (sh *rowShard) rowLocAt(i int) RowLoc {
+	r := sh.runFor(i)
+	return RowLoc{BlockID: sh.blockIDs[r], ItemOrdinal: sh.ordinals[i], ChangeType: fileformat.ChangeType(sh.changes[i])}
+}
+
+// lookup binary-searches the shard for rowID and returns its location.
+func (sh *rowShard) lookup(rowID uint64) (RowLoc, bool) {
+	if sh == nil {
+		return RowLoc{}, false
+	}
+	i := sort.Search(len(sh.rowIDs), func(i int) bool { return sh.rowIDs[i] >= rowID })
+	if i >= len(sh.rowIDs) || sh.rowIDs[i] != rowID {
+		return RowLoc{}, false
+	}
+	return sh.rowLocAt(i), true
+}
+
+// each walks the rows in sorted order, calling fn until it returns false.
+func (sh *rowShard) each(fn func(rowID uint64, loc RowLoc) bool) {
+	for r := range sh.blockIDs {
+		blk := sh.blockIDs[r]
+		for i := sh.runStart[r]; i < sh.runStart[r+1]; i++ {
+			if !fn(sh.rowIDs[i], RowLoc{BlockID: blk, ItemOrdinal: sh.ordinals[i], ChangeType: fileformat.ChangeType(sh.changes[i])}) {
+				return
+			}
+		}
+	}
 }
 
 // EmptyView returns an empty immutable view.
@@ -142,30 +184,32 @@ func (v *View) Blocks() []*BlockLoc {
 // Row returns the row location of (snapshot, table, rowID), or nil. The
 // returned pointer aliases the immutable row shard and must be treated as
 // read-only.
-func (v *View) Row(snapshot uint64, table uint32, rowID uint64) *RowLoc {
+func (v *View) Row(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool) {
 	sh := v.rows[snapshot][table]
 	if sh == nil {
-		return nil
+		return RowLoc{}, false
 	}
-	if e := sh.lookup(rowID); e != nil {
-		return &e.Loc
-	}
-	return nil
+	return sh.lookup(rowID)
 }
 
 // RowKeys returns the row locations of a (snapshot, table), sorted by RowID.
-// The returned slice aliases the immutable shard (no copy, no sort): callers
-// must treat it as read-only.
+// The slice is freshly materialized from the compact shard (callers must not
+// retain it; it is transient — the shard stays compact).
 func (v *View) RowKeys(snapshot uint64, table uint32) []RowKeyLoc {
 	sh := v.rows[snapshot][table]
 	if sh == nil {
 		return nil
 	}
-	return sh.entries
+	out := make([]RowKeyLoc, len(sh.rowIDs))
+	for i := range sh.rowIDs {
+		out[i] = RowKeyLoc{RowID: sh.rowIDs[i], Loc: sh.rowLocAt(i)}
+	}
+	return out
 }
 
 // RowKeyLoc pairs a RowID with its location, for sorted iteration. Loc is a
-// value: shards are packed, so a row costs 24 bytes of resident index memory.
+// value. This is the transient (materialized) view of a compact shard; the
+// resident index keeps the compressed SoA/block-run form.
 type RowKeyLoc struct {
 	RowID uint64
 	Loc   RowLoc
@@ -190,16 +234,15 @@ func (v *View) MemoryBytes() uint64 { return v.memoryBytes }
 
 // ResolveRow finds the row location for (snapshot, table, rowID) along the
 // parent chain. It returns nil when no record exists.
-func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) *RowLoc {
+func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool) {
 	cur := snapshot
 	for {
-		loc := v.Row(cur, table, rowID)
-		if loc != nil {
-			return loc
+		if loc, ok := v.Row(cur, table, rowID); ok {
+			return loc, true
 		}
 		sm := v.Snapshot(cur)
 		if sm == nil || sm.Parent == 0 {
-			return nil
+			return RowLoc{}, false
 		}
 		cur = sm.Parent
 	}
@@ -437,7 +480,14 @@ func finishApplyMemory(old, nv *View, nMeta, nBlocks int, rowMap map[uint32]*row
 	nv.memoryBytes = old.memoryBytes
 	nv.memoryBytes += 64 + uint64(nMeta)*56 + uint64(nBlocks)*72
 	for _, sh := range rowMap {
-		nv.memoryBytes += 48 + uint64(len(sh.entries))*24
+		// Columnar storage: RowID (8) + ItemOrdinal (4) + ChangeType (1) per row,
+		// plus the block-run directory (BlockID + runStart per run).
+		nv.memoryBytes += 48 +
+			uint64(len(sh.rowIDs))*8 +
+			uint64(len(sh.ordinals))*4 +
+			uint64(len(sh.changes))*1 +
+			uint64(len(sh.blockIDs))*8 +
+			uint64(len(sh.runStart))*4
 	}
 }
 
@@ -580,8 +630,8 @@ func (a *streamApply) finish(t *Txn) error {
 			copy(exact, entries)
 			entries = exact
 		}
-		sh := &rowShard{entries: entries}
-		if err := sh.prepare(); err != nil {
+		sh := &rowShard{}
+		if err := sh.prepare(entries); err != nil {
 			return err
 		}
 		rowMap[tid] = sh
@@ -625,8 +675,8 @@ func buildRowShards(t *Txn, snapshot uint64) (map[uint32]*rowShard, error) {
 				Loc:   RowLoc{BlockID: re.BlockID, ItemOrdinal: re.ItemOrdinal, ChangeType: re.ChangeType},
 			}
 		}
-		sh := &rowShard{entries: entries}
-		if err := sh.prepare(); err != nil {
+		sh := &rowShard{}
+		if err := sh.prepare(entries); err != nil {
 			return nil, err
 		}
 		return map[uint32]*rowShard{first: sh}, nil
@@ -657,8 +707,8 @@ func buildRowShards(t *Txn, snapshot uint64) (map[uint32]*rowShard, error) {
 	}
 	out := make(map[uint32]*rowShard, len(rowSets))
 	for tid, entries := range rowSets {
-		sh := &rowShard{entries: entries}
-		if err := sh.prepare(); err != nil {
+		sh := &rowShard{}
+		if err := sh.prepare(entries); err != nil {
 			return nil, err
 		}
 		out[tid] = sh
@@ -666,11 +716,11 @@ func buildRowShards(t *Txn, snapshot uint64) (map[uint32]*rowShard, error) {
 	return out, nil
 }
 
-// prepare sorts (when needed) and validates shard entries: strict ascending
-// order, which also rejects duplicates (v1 forbids duplicate RowKeys in one
-// snapshot).
-func (sh *rowShard) prepare() error {
-	entries := sh.entries
+// prepare sorts (when needed), validates, and converts shard entries into the
+// compact SoA/block-run form. It rejects strict duplicates (v1 forbids
+// duplicate RowKeys in one snapshot). After it returns, sh no longer holds the
+// temporary []RowKeyLoc, so the resident footprint is the columnar form.
+func (sh *rowShard) prepare(entries []RowKeyLoc) error {
 	sorted := true
 	for i := 1; i < len(entries); i++ {
 		if entries[i].RowID < entries[i-1].RowID {
@@ -681,11 +731,26 @@ func (sh *rowShard) prepare() error {
 	if !sorted {
 		sortRowKeyLocs(entries)
 	}
-	for i := 1; i < len(entries); i++ {
-		if entries[i].RowID == entries[i-1].RowID {
-			return fmt.Errorf("rowpack: duplicate row %d in snapshot", entries[i].RowID)
+	n := len(entries)
+	sh.rowIDs = make([]uint64, n)
+	sh.ordinals = make([]uint32, n)
+	sh.changes = make([]uint8, n)
+	sh.runStart = make([]uint32, 0, 8)
+	sh.blockIDs = make([]uint64, 0, 8)
+	for i := 0; i < n; i++ {
+		e := entries[i]
+		if i > 0 && e.RowID == entries[i-1].RowID {
+			return fmt.Errorf("rowpack: duplicate row %d in snapshot", e.RowID)
+		}
+		sh.rowIDs[i] = e.RowID
+		sh.ordinals[i] = e.Loc.ItemOrdinal
+		sh.changes[i] = uint8(e.Loc.ChangeType)
+		if i == 0 || e.Loc.BlockID != entries[i-1].Loc.BlockID {
+			sh.runStart = append(sh.runStart, uint32(i))
+			sh.blockIDs = append(sh.blockIDs, e.Loc.BlockID)
 		}
 	}
+	sh.runStart = append(sh.runStart, uint32(n))
 	return nil
 }
 

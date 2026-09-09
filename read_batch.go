@@ -59,8 +59,8 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 	groups := make(map[uint64][]batchReq, 8)
 	blockIDs := make([]uint64, 0, 8)
 	for i, id := range ids {
-		loc := view.ResolveRow(snapshot, uint32(tid), id)
-		if loc == nil {
+		loc, ok := view.ResolveRow(snapshot, uint32(tid), id)
+		if !ok {
 			return nil, fmt.Errorf("%w: (table %q, row %d) in snapshot %d", ErrNotFound, table, id, snapshot)
 		}
 		if loc.ChangeType == fileformat.ChangeDelete {

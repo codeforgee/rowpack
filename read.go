@@ -74,8 +74,8 @@ func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowI
 		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
 	}
 	view := st.view
-	loc := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
-	if loc == nil {
+	loc, ok := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
+	if !ok {
 		return nil, fmt.Errorf("%w: (table %d, row %d) in snapshot %d", ErrNotFound, tid, rowID, snapshot)
 	}
 	if loc.ChangeType == fileformat.ChangeDelete {
@@ -103,8 +103,8 @@ func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, r
 		return false, nil
 	}
 	view := st.view
-	loc := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
-	if loc == nil || loc.ChangeType == fileformat.ChangeDelete {
+	loc, ok := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
+	if !ok || loc.ChangeType == fileformat.ChangeDelete {
 		return false, nil
 	}
 	return true, nil
@@ -114,7 +114,7 @@ func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, r
 // page container: the block directory locates the page, only that page is
 // decompressed, and the record is decoded against its schema version. A
 // single-row read no longer decompresses the whole block.
-func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc *index.RowLoc, dst Row) (Row, SchemaVersion, error) {
+func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc index.RowLoc, dst Row) (Row, SchemaVersion, error) {
 	bl := view.Block(loc.BlockID)
 	if bl == nil {
 		return nil, 0, fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)

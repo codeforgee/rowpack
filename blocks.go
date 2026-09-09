@@ -57,14 +57,20 @@ func (s *Store) blocksByTable(view *index.View, snap uint64, tid TableID) ([]Blo
 		out = append(out, b)
 		byID[bl.BlockID] = &out[len(out)-1]
 	}
-	for _, ent := range view.RowKeys(snap, uint32(tid)) {
-		if b := byID[ent.Loc.BlockID]; b != nil {
-			if RowID(ent.RowID) < b.MinRowID {
-				b.MinRowID = RowID(ent.RowID)
+	it := view.RowIter(snap, uint32(tid))
+	if it != nil {
+		for !it.Done() {
+			rowID := it.RowID()
+			loc := it.Loc()
+			if b := byID[loc.BlockID]; b != nil {
+				if RowID(rowID) < b.MinRowID {
+					b.MinRowID = RowID(rowID)
+				}
+				if RowID(rowID)+1 > b.MaxRowID {
+					b.MaxRowID = RowID(rowID) + 1
+				}
 			}
-			if RowID(ent.RowID)+1 > b.MaxRowID {
-				b.MaxRowID = RowID(ent.RowID) + 1
-			}
+			it.Next()
 		}
 	}
 	for i := range out {

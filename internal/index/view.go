@@ -122,16 +122,38 @@ func (sh *rowShard) lookup(rowID uint64) (RowLoc, bool) {
 	return sh.rowLocAt(i), true
 }
 
-// each walks the rows in sorted order, calling fn until it returns false.
-func (sh *rowShard) each(fn func(rowID uint64, loc RowLoc) bool) {
-	for r := range sh.blockIDs {
-		blk := sh.blockIDs[r]
-		for i := sh.runStart[r]; i < sh.runStart[r+1]; i++ {
-			if !fn(sh.rowIDs[i], RowLoc{BlockID: blk, ItemOrdinal: sh.ordinals[i], ChangeType: fileformat.ChangeType(sh.changes[i])}) {
-				return
-			}
-		}
+// RowKeyIter is a forward iterator over a compact rowShard in sorted RowID
+// order. It exposes position-based random access (peek/advance) for a k-way
+// merge and sequential walks without materializing a 24 B/row []RowKeyLoc, so
+// a scan does not allocate a transient materialized copy of the shard.
+type RowKeyIter struct {
+	sh  *rowShard
+	pos int
+}
+
+// Len returns the number of rows.
+func (it *RowKeyIter) Len() int { return it.sh.len() }
+
+// Done reports whether the iterator is exhausted.
+func (it *RowKeyIter) Done() bool { return it.pos >= it.sh.len() }
+
+// RowID returns the RowID at the current position.
+func (it *RowKeyIter) RowID() uint64 { return it.sh.rowIDAt(it.pos) }
+
+// Loc returns the RowLoc at the current position.
+func (it *RowKeyIter) Loc() RowLoc { return it.sh.rowLocAt(it.pos) }
+
+// Next advances to the next position.
+func (it *RowKeyIter) Next() { it.pos++ }
+
+// RowIter returns a fresh iterator over the shard for (snapshot, table), or
+// nil when there are no rows.
+func (v *View) RowIter(snapshot uint64, table uint32) *RowKeyIter {
+	sh := v.rows[snapshot][table]
+	if sh == nil {
+		return nil
 	}
+	return &RowKeyIter{sh: sh}
 }
 
 // EmptyView returns an empty immutable view.
@@ -192,24 +214,10 @@ func (v *View) Row(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool) {
 	return sh.lookup(rowID)
 }
 
-// RowKeys returns the row locations of a (snapshot, table), sorted by RowID.
-// The slice is freshly materialized from the compact shard (callers must not
-// retain it; it is transient — the shard stays compact).
-func (v *View) RowKeys(snapshot uint64, table uint32) []RowKeyLoc {
-	sh := v.rows[snapshot][table]
-	if sh == nil {
-		return nil
-	}
-	out := make([]RowKeyLoc, len(sh.rowIDs))
-	for i := range sh.rowIDs {
-		out[i] = RowKeyLoc{RowID: sh.rowIDs[i], Loc: sh.rowLocAt(i)}
-	}
-	return out
-}
-
-// RowKeyLoc pairs a RowID with its location, for sorted iteration. Loc is a
-// value. This is the transient (materialized) view of a compact shard; the
-// resident index keeps the compressed SoA/block-run form.
+// RowKeyLoc pairs a RowID with its location. It is the intermediate form used
+// while building a rowShard from the decoded entry stream (the builders
+// materialize then compact it); the shard itself stores the columnar/block-run
+// form rather than a []RowKeyLoc.
 type RowKeyLoc struct {
 	RowID uint64
 	Loc   RowLoc
@@ -267,15 +275,14 @@ func (v *View) RowTables(snapshot uint64) []uint32 {
 // merges the per-layer sorted incremental indexes without reading blocks.
 func (v *View) LogicalRowCount(snapshot uint64, table uint32) uint64 {
 	type layer struct {
-		keys  []RowKeyLoc
-		pos   int
+		keys  *RowKeyIter
 		depth int
 	}
 	type rowHeap []*layer
 	less := func(h rowHeap, i, j int) bool {
-		a, b := h[i].keys[h[i].pos], h[j].keys[h[j].pos]
-		if a.RowID != b.RowID {
-			return a.RowID < b.RowID
+		a, b := h[i].keys.RowID(), h[j].keys.RowID()
+		if a != b {
+			return a < b
 		}
 		return h[i].depth < h[j].depth
 	}
@@ -315,16 +322,16 @@ func (v *View) LogicalRowCount(snapshot uint64, table uint32) uint64 {
 		return top
 	}
 	advance := func(h *rowHeap, l *layer) {
-		l.pos++
-		if l.pos < len(l.keys) {
+		l.keys.Next()
+		if !l.keys.Done() {
 			push(h, l)
 		}
 	}
 	var layers []*layer
 	cur := snapshot
 	for depth := 0; ; depth++ {
-		keys := v.RowKeys(cur, table)
-		if len(keys) > 0 {
+		keys := v.RowIter(cur, table)
+		if keys != nil && keys.Len() > 0 {
 			layers = append(layers, &layer{keys: keys, depth: depth})
 		}
 		sm := v.Snapshot(cur)
@@ -340,9 +347,9 @@ func (v *View) LogicalRowCount(snapshot uint64, table uint32) uint64 {
 	var count uint64
 	for len(h) > 0 {
 		winner := pop(&h)
-		rowID := winner.keys[winner.pos].RowID
-		loc := winner.keys[winner.pos].Loc
-		for len(h) > 0 && h[0].keys[h[0].pos].RowID == rowID {
+		rowID := winner.keys.RowID()
+		loc := winner.keys.Loc()
+		for len(h) > 0 && h[0].keys.RowID() == rowID {
 			advance(&h, pop(&h))
 		}
 		advance(&h, winner)

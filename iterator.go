@@ -76,7 +76,6 @@ type Iterator struct {
 	heap   rowHeap
 
 	curRowID RowID
-	curLoc   *index.RowLoc
 	curType  fileformat.ChangeType // current record's change kind
 
 	// buf is the iterator-managed reusable row used when Next is called with
@@ -138,10 +137,11 @@ func (a *strArena) materializeBytes(payload []byte) []byte {
 	return a.chunk[off:len(a.chunk):len(a.chunk)]
 }
 
-// layerIter walks one snapshot layer's sorted incremental row index.
+// layerIter walks one snapshot layer's sorted incremental row index. It holds
+// a RowKeyIter over the compact shard (no materialized []RowKeyLoc, so a scan
+// does not allocate a transient 24 B/row copy per layer).
 type layerIter struct {
-	keys  []index.RowKeyLoc
-	pos   int
+	keys  *index.RowKeyIter
 	depth int // 0 = target snapshot; larger = ancestor
 }
 
@@ -151,10 +151,8 @@ type rowHeap []*layerIter
 
 func (h rowHeap) Len() int { return len(h) }
 func (h rowHeap) Less(i, j int) bool {
-	a := &h[i].keys[h[i].pos]
-	b := &h[j].keys[h[j].pos]
-	if a.RowID != b.RowID {
-		return a.RowID < b.RowID
+	if h[i].keys.RowID() != h[j].keys.RowID() {
+		return h[i].keys.RowID() < h[j].keys.RowID()
 	}
 	return h[i].depth < h[j].depth
 }
@@ -184,8 +182,8 @@ func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opt
 	// Build the parent chain layers (target snapshot first).
 	cur := snapshot
 	for depth := 0; ; depth++ {
-		keys := view.RowKeys(cur, uint32(tid))
-		if len(keys) > 0 {
+		keys := view.RowIter(cur, uint32(tid))
+		if keys != nil && keys.Len() > 0 {
 			it.layers = append(it.layers, &layerIter{keys: keys, depth: depth})
 		}
 		sm := view.Snapshot(cur)
@@ -200,7 +198,7 @@ func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opt
 	if len(it.layers) > 1 {
 		heap.Init(&it.heap)
 		for _, l := range it.layers {
-			if l.pos < len(l.keys) {
+			if !l.keys.Done() {
 				heap.Push(&it.heap, l)
 			}
 		}
@@ -245,7 +243,6 @@ func (it *Iterator) Next() (Row, bool) {
 		return nil, false
 	}
 	it.curRowID = rowID
-	it.curLoc = loc
 	it.curType = loc.ChangeType
 	it.buf = row
 	return row, true
@@ -336,34 +333,33 @@ func (it *Iterator) loadBlock(bl *index.BlockLoc) error {
 // end of the scan or when the EndRowID bound is reached. The returned pointer
 // aliases the immutable row shard. A single-layer scan (the common FULL case)
 // walks the sorted shard linearly and skips the heap machinery.
-func (it *Iterator) nextLoc() (RowID, *index.RowLoc, bool) {
+func (it *Iterator) nextLoc() (RowID, index.RowLoc, bool) {
 	if len(it.layers) == 1 {
 		l := it.layers[0]
-		keys := l.keys
-		for l.pos < len(keys) {
-			ent := &keys[l.pos]
-			l.pos++
-			if it.opts.Start > 0 && ent.RowID < it.opts.Start {
+		for !l.keys.Done() {
+			rowID := l.keys.RowID()
+			loc := l.keys.Loc()
+			l.keys.Next()
+			if it.opts.Start > 0 && rowID < it.opts.Start {
 				continue
 			}
-			if it.opts.End > 0 && ent.RowID >= it.opts.End {
-				return 0, nil, false
+			if it.opts.End > 0 && rowID >= it.opts.End {
+				return 0, index.RowLoc{}, false
 			}
-			if ent.Loc.ChangeType == fileformat.ChangeDelete {
+			if loc.ChangeType == fileformat.ChangeDelete {
 				continue // tombstone: hide the row entirely
 			}
-			return ent.RowID, &ent.Loc, true
+			return rowID, loc, true
 		}
-		return 0, nil, false
+		return 0, index.RowLoc{}, false
 	}
 	for it.heap.Len() > 0 {
 		winner := heap.Pop(&it.heap).(*layerIter)
-		ent := &winner.keys[winner.pos]
-		rowID := ent.RowID
-		loc := &ent.Loc
+		rowID := winner.keys.RowID()
+		loc := winner.keys.Loc()
 		// All layers currently at rowID lose; pop them and advance. The heap
 		// tiebreak ensures the winner is the shallowest layer.
-		for it.heap.Len() > 0 && it.heap[0].keys[it.heap[0].pos].RowID == rowID {
+		for it.heap.Len() > 0 && it.heap[0].keys.RowID() == rowID {
 			l := heap.Pop(&it.heap).(*layerIter)
 			l.advance(&it.heap)
 		}
@@ -373,26 +369,26 @@ func (it *Iterator) nextLoc() (RowID, *index.RowLoc, bool) {
 			continue
 		}
 		if it.opts.End > 0 && rowID >= it.opts.End {
-			return 0, nil, false
+			return 0, index.RowLoc{}, false
 		}
 		if loc.ChangeType == fileformat.ChangeDelete {
 			continue // tombstone: hide the row entirely
 		}
 		return rowID, loc, true
 	}
-	return 0, nil, false
+	return 0, index.RowLoc{}, false
 }
 
 func (l *layerIter) advance(h *rowHeap) {
-	l.pos++
-	if l.pos < len(l.keys) {
+	l.keys.Next()
+	if !l.keys.Done() {
 		heap.Push(h, l)
 	}
 }
 
 // rowAt resolves one row into dst, reusing the current block's page container
 // and the currently decompressed page when the location is inside it.
-func (it *Iterator) rowAt(loc *index.RowLoc, dst Row) (Row, error) {
+func (it *Iterator) rowAt(loc index.RowLoc, dst Row) (Row, error) {
 	if err := it.locateBlock(loc); err != nil {
 		return nil, err
 	}
@@ -419,7 +415,7 @@ func (it *Iterator) rowAt(loc *index.RowLoc, dst Row) (Row, error) {
 
 // locateBlock loads the page container of loc's block, reusing the current
 // block when consecutive rows fall inside it.
-func (it *Iterator) locateBlock(loc *index.RowLoc) error {
+func (it *Iterator) locateBlock(loc index.RowLoc) error {
 	if it.curBlockID == loc.BlockID {
 		return nil
 	}

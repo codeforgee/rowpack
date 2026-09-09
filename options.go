@@ -50,7 +50,18 @@ type Options struct {
 	BlockSize        int
 	Compression      Compression
 	CompressionLevel int
-	CacheBytes       int64
+
+	// CacheBytes is the total budget for decoded data held in memory:
+	// DataCache + ScanWindow (and, once lazy indexes exist, IndexPageCache)
+	// never exceed it. Negative disables all caching.
+	CacheBytes int64
+	// ScanCacheBytes bounds the scan window explicitly. 0 selects the
+	// default split (half of CacheBytes, capped at 64 MiB); negative
+	// disables the scan window while keeping the random-read cache. The
+	// random-read cache gets whatever the scan window leaves unused, so
+	// DataCache + ScanCacheBytes == CacheBytes always holds.
+	ScanCacheBytes int64
+
 	Durability       Durability
 	Validation       ValidationMode
 	Limits           Limits
@@ -101,6 +112,9 @@ func (o Options) applyDefaults() Options {
 func (o Options) validate() error {
 	if o.Compression != CompressionNone && o.Compression != CompressionZstd {
 		return fmt.Errorf("%w: compression %d", ErrInvalidArgument, o.Compression)
+	}
+	if o.CacheBytes > 0 && o.ScanCacheBytes >= o.CacheBytes {
+		return fmt.Errorf("%w: scan cache %d leaves no random-read budget in %d", ErrInvalidArgument, o.ScanCacheBytes, o.CacheBytes)
 	}
 	if o.BlockSize < 64 {
 		return fmt.Errorf("%w: block size %d too small", ErrInvalidArgument, o.BlockSize)

@@ -192,3 +192,19 @@ func (c *LRU) Len() int {
 	defer c.mu.Unlock()
 	return c.ll.Len()
 }
+
+// overheadPerEntry estimates the management memory of one cached entry: the
+// map slot (~16 B with bucket sharing), the list.Element (~56 B), the
+// lruEntry struct (~32 B) and GC pointer overhead. Reported separately in
+// Stats so CacheBytes stays a value-bytes budget while total resident cost
+// remains visible (FILE_FORMAT_REFACTOR_PLAN.md §8.1).
+const overheadPerEntry = 128
+
+// OverheadBytes returns the estimated management memory (map/list nodes),
+// distinct from the value bytes counted against the capacity.
+func (c *LRU) OverheadBytes() uint64 {
+	if c == nil {
+		return 0
+	}
+	return uint64(c.Len() * overheadPerEntry)
+}

@@ -1,9 +1,13 @@
 package rowpack
 
-// CacheStats summarizes block cache activity.
+// CacheStats summarizes one decoded-block cache: value bytes against the
+// configured capacity, plus the estimated management overhead (LRU list and
+// map nodes) which is NOT counted against the capacity but reported so the
+// total resident cost stays visible.
 type CacheStats struct {
 	CapacityBytes uint64
 	UsedBytes     uint64
+	OverheadBytes uint64 // estimated LRU list/map management memory
 	Hits          uint64
 	Misses        uint64
 	Evictions     uint64
@@ -90,6 +94,8 @@ func (s *Store) Stats() Stats {
 	if l := s.loader; l != nil {
 		stt.Cache.CapacityBytes, stt.Cache.UsedBytes, stt.Cache.Hits, stt.Cache.Misses, stt.Cache.Evictions, stt.Cache.Loads = l.cacheStats()
 		stt.ScanCache.CapacityBytes, stt.ScanCache.UsedBytes, stt.ScanCache.Hits, stt.ScanCache.Misses, stt.ScanCache.Evictions, stt.ScanCache.Loads = l.scanStats()
+		stt.Cache.OverheadBytes = l.cacheOverhead()
+		stt.ScanCache.OverheadBytes = l.scanOverhead()
 		io := l.readIOStats()
 		stt.Read.ReadBytes = io.ReadBytes
 		stt.Read.DecompressedBytes = io.DecompressedBytes

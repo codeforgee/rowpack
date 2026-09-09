@@ -32,27 +32,46 @@ type blockLoader struct {
 	sf     cache.Group
 }
 
-// scanBudgetFor bounds the scan window to a share of the cache budget: half
-// of it, floored at 1 MiB and capped at 64 MiB so huge explicit cache sizes
-// do not let scans squat on the random-read hot set. Small and layered scan
-// sets (deep chains) fit the window and are reused across iterations; very
-// large scans fill it and then stream through the pool without allocating.
+// scanBudgetFor splits the total cache budget between the scan window and
+// the random-read cache. The scan window gets half of the total, capped at
+// 64 MiB so huge explicit cache sizes do not let scans squat on the
+// random-read hot set. Unlike the historical heuristic there is no 1 MiB
+// floor: DataCache + ScanWindow must never exceed the total (Options.CacheBytes
+// is a hard budget, FILE_FORMAT_REFACTOR_PLAN.md §8.1). Large scan sets
+// (deep chains) fit the window and are reused across iterations; very large
+// scans fill it and then stream through the pool without allocating.
 func scanBudgetFor(cacheBytes int64) int64 {
 	b := cacheBytes / 2
-	if b < 1<<20 {
-		return 1 << 20
-	}
 	if b > 64<<20 {
 		return 64 << 20
 	}
 	return b
 }
 
-func newBlockLoader(reader *block.Reader, file string, cacheBytes int64) *blockLoader {
+// splitCacheBudget resolves the (data, scan) pair for a store. total <= 0
+// disables caching entirely; scan < 0 keeps the data cache but disables the
+// scan window; scan == 0 selects the default split. The two capacities always
+// sum to exactly total.
+func splitCacheBudget(total, scan int64) (dataCap, scanCap int64) {
+	if total <= 0 {
+		return 0, 0
+	}
+	if scan < 0 {
+		scan = 0
+	} else if scan == 0 {
+		scan = scanBudgetFor(total)
+	}
+	return total - scan, scan
+}
+
+func newBlockLoader(reader *block.Reader, file string, cacheBytes, scanCacheBytes int64) *blockLoader {
+	dataCap, scanCap := splitCacheBudget(cacheBytes, scanCacheBytes)
 	var lru, scn *cache.LRU
-	if cacheBytes > 0 {
-		lru = cache.NewLRU(cacheBytes)
-		scn = cache.NewLRU(scanBudgetFor(cacheBytes))
+	if dataCap > 0 {
+		lru = cache.NewLRU(dataCap)
+	}
+	if scanCap > 0 {
+		scn = cache.NewLRU(scanCap)
 	}
 	return &blockLoader{reader: reader, file: file, cache: lru, scan: scn}
 }
@@ -177,3 +196,11 @@ func (l *blockLoader) scanStats() (capBytes, used, hits, misses, evictions, load
 // readStats returns the cumulative physical I/O counters of the underlying
 // reader (bytes pulled from the file, bytes produced by decompression).
 func (l *blockLoader) readIOStats() block.IOStats { return l.reader.Stats() }
+
+// cacheOverhead returns the estimated management memory of the random-read
+// cache (nil-safe).
+func (l *blockLoader) cacheOverhead() uint64 { return l.cache.OverheadBytes() }
+
+// scanOverhead returns the estimated management memory of the scan window
+// (nil-safe).
+func (l *blockLoader) scanOverhead() uint64 { return l.scan.OverheadBytes() }

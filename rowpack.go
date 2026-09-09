@@ -210,7 +210,7 @@ func openStore(basePath, dataPath string, opts Options, uuid [16]byte, header fi
 		MaxRawBytes:    opts.Limits.MaxRawBlockBytes,
 		MaxStoredBytes: opts.Limits.MaxStoredBlockBytes,
 	})
-	s.loader = newBlockLoader(s.reader, dataPath, opts.CacheBytes)
+	s.loader = newBlockLoader(s.reader, dataPath, opts.CacheBytes, opts.ScanCacheBytes)
 	s.uuid = uuid
 	s.header = header
 	// Cross-process single-writer lock for read-write opens.

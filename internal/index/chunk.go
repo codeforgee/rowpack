@@ -108,10 +108,11 @@ func (re *rowEncoder) encode(e *fileformat.RowIndexEntry) {
 	re.prev = *e
 }
 
-// decodeRowChunk decodes count entries from the frozen delta layout into dst with
-// strict bounds checks: truncated or malformed input is an error, never a
-// panic. SnapshotID is txn-wide and stamped by the caller.
-func decodeRowChunk(dst []fileformat.RowIndexEntry, raw []byte, count uint32, snapshotID uint64) ([]fileformat.RowIndexEntry, error) {
+// decodeRowChunk decodes count entries from the frozen delta layout, passing
+// each entry to add with strict bounds checks: truncated or malformed input
+// is an error, never a panic. SnapshotID is txn-wide and stamped by the
+// caller. add may return an error to abort decoding (streaming sinks).
+func decodeRowChunk(raw []byte, count uint32, snapshotID uint64, add func(fileformat.RowIndexEntry) error) error {
 	pos := 0
 	readUvarint := func() (uint64, error) {
 		v, n := binary.Uvarint(raw[pos:])
@@ -135,23 +136,23 @@ func decodeRowChunk(dst []fileformat.RowIndexEntry, raw []byte, count uint32, sn
 		if i == 0 {
 			table, err := readUvarint()
 			if err != nil {
-				return nil, err
+				return err
 			}
 			rowID, err := readUvarint()
 			if err != nil {
-				return nil, err
+				return err
 			}
 			blockID, err := readUvarint()
 			if err != nil {
-				return nil, err
+				return err
 			}
 			ordinal, err := readUvarint()
 			if err != nil {
-				return nil, err
+				return err
 			}
 			change, err := readByte()
 			if err != nil {
-				return nil, err
+				return err
 			}
 			prevTable, prevRowID, prevBlockID, prevOrdinal = table, rowID, blockID, ordinal
 			e.TableID, e.RowID, e.BlockID, e.ItemOrdinal = uint32(table), rowID, blockID, uint32(ordinal)
@@ -159,55 +160,57 @@ func decodeRowChunk(dst []fileformat.RowIndexEntry, raw []byte, count uint32, sn
 		} else {
 			tag, err := readByte()
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if tag&^byte(3) != 0 {
-				return nil, fmt.Errorf("rowpack: row chunk entry %d: unknown tag bits %#x", i, tag)
+				return fmt.Errorf("rowpack: row chunk entry %d: unknown tag bits %#x", i, tag)
 			}
 			if tag&1 == 0 {
 				d, err := readUvarint()
 				if err != nil {
-					return nil, err
+					return err
 				}
 				prevTable = uint64(int64(prevTable) + unzigzag(d))
 				if prevTable > 0xFFFFFFFF {
-					return nil, fmt.Errorf("rowpack: row chunk entry %d: table id overflow", i)
+					return fmt.Errorf("rowpack: row chunk entry %d: table id overflow", i)
 				}
 			}
 			if tag&2 == 0 {
 				d, err := readUvarint()
 				if err != nil {
-					return nil, err
+					return err
 				}
 				prevBlockID = uint64(int64(prevBlockID) + unzigzag(d))
 			}
 			d, err := readUvarint()
 			if err != nil {
-				return nil, err
+				return err
 			}
 			prevRowID = uint64(int64(prevRowID) + unzigzag(d))
 			d, err = readUvarint()
 			if err != nil {
-				return nil, err
+				return err
 			}
 			prevOrdinal = uint64(int64(prevOrdinal) + unzigzag(d))
 			change, err := readByte()
 			if err != nil {
-				return nil, err
+				return err
 			}
 			e.TableID, e.RowID, e.BlockID, e.ItemOrdinal = uint32(prevTable), prevRowID, prevBlockID, uint32(prevOrdinal)
 			e.ChangeType = fileformat.ChangeType(change)
 		}
 		if e.ChangeType != fileformat.ChangeInsert && e.ChangeType != fileformat.ChangeUpdate && e.ChangeType != fileformat.ChangeDelete {
-			return nil, fmt.Errorf("rowpack: row chunk entry %d: bad change type %d", i, e.ChangeType)
+			return fmt.Errorf("rowpack: row chunk entry %d: bad change type %d", i, e.ChangeType)
 		}
 		e.SnapshotID = snapshotID
-		dst = append(dst, e)
+		if err := add(e); err != nil {
+			return err
+		}
 	}
 	if pos != len(raw) {
-		return nil, fmt.Errorf("rowpack: row chunk has %d trailing bytes", len(raw)-pos)
+		return fmt.Errorf("rowpack: row chunk has %d trailing bytes", len(raw)-pos)
 	}
-	return dst, nil
+	return nil
 }
 
 // ---- chunk body assembly (write path) ----
@@ -510,23 +513,98 @@ func AssembleIndexTxn(h fileformat.IndexTxnHeader, keyEpoch uint32, body []byte,
 
 // storedBody is the decoded content of one chunked txn body.
 type storedBody struct {
-	metadata []fileformat.MetadataIndexEntry
-	blocks   []fileformat.BlockIndexEntry
-	rows     []fileformat.RowIndexEntry
-	snapshot fileformat.SnapshotIndexEntry
-	hasSnap  bool
-	dir      []fileformat.IndexChunkDirEntry
-	plainCRC uint32
+	metadata   []fileformat.MetadataIndexEntry
+	blocks     []fileformat.BlockIndexEntry
+	rows       []fileformat.RowIndexEntry // buffered mode only; nil when streaming
+	snapshot   fileformat.SnapshotIndexEntry
+	hasSnap    bool
+	dir        []fileformat.IndexChunkDirEntry
+	plainCRC   uint32
+	metaCount  uint32
+	blockCount uint32
+	rowCount   uint64
+}
+
+// rowBatchSize bounds the streaming row batch handed to TxnSink.AddRows: a
+// fixed ~20 KiB scratch (40 B x 512), so streaming stays O(1) memory while
+// keeping per-row work inside a tight, devirtualized loop.
+const rowBatchSize = 512
+
+// TxnSink receives index-txn entries as they are decoded, instead of letting
+// the parser materialize the full []RowIndexEntry. Methods are called in
+// chunk order; SetSnapshot always arrives before the Add* methods.
+// AddRows receives bounded batches (never larger than rowBatchSize) that are
+// only valid for the duration of the call; implementors must copy what they
+// keep. This builds final structures directly (View streaming apply) and
+// skips the ~40 B/row intermediate slice without per-entry virtual calls.
+type TxnSink interface {
+	SetSnapshot(e fileformat.SnapshotIndexEntry) error
+	AddMetadata(e fileformat.MetadataIndexEntry) error
+	AddBlock(e fileformat.BlockIndexEntry) error
+	AddRows(batch []fileformat.RowIndexEntry) error
+}
+
+// RowHintSink is an optional TxnSink extension: the parser reports the
+// header's row entry count (bounded to the prealloc guard) before the first
+// row so the sink can preallocate exactly.
+type RowHintSink interface {
+	ReserveRows(hint int)
+}
+
+// bufferedSink is the default TxnSink collecting into storedBody slices
+// (historical behavior).
+type bufferedSink struct{ sb *storedBody }
+
+func (s bufferedSink) SetSnapshot(e fileformat.SnapshotIndexEntry) error {
+	if s.sb.hasSnap {
+		return fmt.Errorf("rowpack: duplicate snapshot chunk")
+	}
+	s.sb.snapshot = e
+	s.sb.hasSnap = true
+	return nil
+}
+
+func (s bufferedSink) AddMetadata(e fileformat.MetadataIndexEntry) error {
+	s.sb.metadata = append(s.sb.metadata, e)
+	return nil
+}
+
+func (s bufferedSink) AddBlock(e fileformat.BlockIndexEntry) error {
+	s.sb.blocks = append(s.sb.blocks, e)
+	return nil
+}
+
+func (s bufferedSink) AddRows(batch []fileformat.RowIndexEntry) error {
+	s.sb.rows = append(s.sb.rows, batch...)
+	return nil
 }
 
 // parseStoredBody walks the chunk sequence and directory, authenticating and
 // decoding every chunk. crypto must be non-nil iff the chunks are encrypted.
-func parseStoredBody(region []byte, snapshotID uint64, metadataCount, blockCount, rowCount int, crypto *ChunkCrypto) (*storedBody, error) {
+// A non-nil sink receives every entry as it is decoded (streaming mode; rows
+// are never buffered); nil collects everything into the returned storedBody.
+func parseStoredBody(region []byte, snapshotID uint64, metadataCount, blockCount, rowCount int, crypto *ChunkCrypto, sink TxnSink) (*storedBody, error) {
 	sb := &storedBody{
-		metadata: make([]fileformat.MetadataIndexEntry, 0, metadataCount),
-		blocks:   make([]fileformat.BlockIndexEntry, 0, blockCount),
-		rows:     make([]fileformat.RowIndexEntry, 0, rowCount),
 		plainCRC: fileformat.CRC32C(nil),
+	}
+	if sink == nil {
+		sb.metadata = make([]fileformat.MetadataIndexEntry, 0, metadataCount)
+		sb.blocks = make([]fileformat.BlockIndexEntry, 0, blockCount)
+		sb.rows = make([]fileformat.RowIndexEntry, 0, rowCount)
+		sink = bufferedSink{sb: sb}
+	}
+	// Fixed streaming scratch: decoded rows batch here before AddRows hands
+	// them to the sink. Constant size, allocated once per txn.
+	batch := make([]fileformat.RowIndexEntry, 0, rowBatchSize)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if err := sink.AddRows(batch); err != nil {
+			return err
+		}
+		batch = batch[:0]
+		return nil
 	}
 	pos := 0
 	seq := uint32(0)
@@ -595,6 +673,9 @@ func parseStoredBody(region []byte, snapshotID uint64, metadataCount, blockCount
 			if err := sb.snapshot.Unmarshal(raw); err != nil {
 				return nil, fmt.Errorf("rowpack: snapshot chunk %d: %w", seq, err)
 			}
+			if err := sink.SetSnapshot(sb.snapshot); err != nil {
+				return nil, fmt.Errorf("rowpack: snapshot chunk %d: %w", seq, err)
+			}
 			sb.hasSnap = true
 		case fileformat.IndexChunkKindMetadata:
 			if len(raw) != int(h.EntryCount)*fileformat.MetadataIndexEntrySize {
@@ -606,8 +687,11 @@ func parseStoredBody(region []byte, snapshotID uint64, metadataCount, blockCount
 				if err := e.Unmarshal(raw[off : off+fileformat.MetadataIndexEntrySize]); err != nil {
 					return nil, fmt.Errorf("rowpack: metadata chunk %d entry %d: %w", seq, i, err)
 				}
-				sb.metadata = append(sb.metadata, e)
+				if err := sink.AddMetadata(e); err != nil {
+					return nil, fmt.Errorf("rowpack: metadata chunk %d entry %d: %w", seq, i, err)
+				}
 			}
+			sb.metaCount += h.EntryCount
 		case fileformat.IndexChunkKindBlock:
 			if len(raw) != int(h.EntryCount)*fileformat.BlockIndexEntrySize {
 				return nil, fmt.Errorf("rowpack: block chunk %d: %d bytes for %d entries", seq, len(raw), h.EntryCount)
@@ -618,14 +702,29 @@ func parseStoredBody(region []byte, snapshotID uint64, metadataCount, blockCount
 				if err := e.Unmarshal(raw[off : off+fileformat.BlockIndexEntrySize]); err != nil {
 					return nil, fmt.Errorf("rowpack: block chunk %d entry %d: %w", seq, i, err)
 				}
-				sb.blocks = append(sb.blocks, e)
+				if err := sink.AddBlock(e); err != nil {
+					return nil, fmt.Errorf("rowpack: block chunk %d entry %d: %w", seq, i, err)
+				}
 			}
+			sb.blockCount += h.EntryCount
 		case fileformat.IndexChunkKindRow:
-			rows, err := decodeRowChunk(sb.rows, raw, h.EntryCount, snapshotID)
-			if err != nil {
+			add := func(e fileformat.RowIndexEntry) error {
+				batch = append(batch, e)
+				if len(batch) == cap(batch) {
+					if err := sink.AddRows(batch); err != nil {
+						return err
+					}
+					batch = batch[:0]
+				}
+				return nil
+			}
+			if err := decodeRowChunk(raw, h.EntryCount, snapshotID, add); err != nil {
 				return nil, fmt.Errorf("rowpack: row chunk %d: %w", seq, err)
 			}
-			sb.rows = rows
+			if err := flush(); err != nil {
+				return nil, fmt.Errorf("rowpack: row chunk %d: %w", seq, err)
+			}
+			sb.rowCount += uint64(h.EntryCount)
 		default:
 			return nil, fmt.Errorf("rowpack: chunk %d unknown kind %d", seq, h.EntryKind)
 		}

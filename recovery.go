@@ -82,7 +82,7 @@ func (s *Store) recover() error {
 	// 2. Per-snapshot IndexTxn replay with in-memory rebuild fallback.
 	view := index.EmptyView()
 	for _, c := range committed {
-		txn, seq, ok, err := s.readIndexTxn(&c)
+		data, crypto, seq, ok, err := s.readIndexTxn(&c)
 		if err != nil {
 			return err
 		}
@@ -90,14 +90,16 @@ func (s *Store) recover() error {
 			if seq > lastSeq {
 				lastSeq = seq
 			}
-			nv, aerr := view.Apply(txn, s.opts.Limits.MaxSnapshotDepth)
+			// Streaming apply: entries decode straight into the new view's
+			// shards (no []RowIndexEntry intermediate). A parse/apply failure
+			// means the txn is corrupt or inconsistent: fall through to the
+			// rebuild path; a rebuilt txn that also fails to apply is
+			// mid-file corruption.
+			nv, aerr := view.ApplyStreaming(data, crypto, s.opts.Limits.MaxSnapshotDepth)
 			if aerr == nil {
 				view = nv
 				continue
 			}
-			// A valid-looking txn that does not apply (e.g. parent missing):
-			// fall through to the rebuild path; a rebuilt txn that also fails
-			// to apply is mid-file corruption.
 		}
 		// IndexTxn missing/corrupt: rebuild from this snapshot's blocks.
 		rtxn, err := s.buildIndexTxnFromData(&c)
@@ -145,30 +147,33 @@ func (s *Store) recover() error {
 }
 
 // readIndexTxn reads and validates one committed snapshot's IndexTxn range.
-// It returns ok=false when the txn is missing, length-inconsistent with the
-// footer range, fails the footer-bound IndexTxnCRC32C check, or fails
-// parsing; the caller then rebuilds from blocks. A range that cannot even be
-// read (I/O error) is a hard error.
-func (s *Store) readIndexTxn(c *committedSnapshot) (txn *index.Txn, seq uint64, ok bool, err error) {
+// It returns the raw stored bytes (footer-CRC verified) plus the chunk-crypto
+// context; no entries are decoded here. It returns ok=false when the txn is
+// missing, length-inconsistent with the footer range, fails the footer-bound
+// IndexTxnCRC32C check, or fails to parse; the caller then rebuilds from
+// blocks. A range that cannot even be read (I/O error) is a hard error.
+//
+// S1: decoding is fused with application via View.ApplyStreaming, so the
+// per-row ~40 B intermediate slice never exists on the Open path.
+func (s *Store) readIndexTxn(c *committedSnapshot) (data []byte, crypto *index.ChunkCrypto, seq uint64, ok bool, err error) {
 	span := c.txnEnd - c.txnStart
 	if span <= 0 || span > int64(^uint32(0)) {
-		return nil, 0, false, nil // implausible range: rebuild
+		return nil, nil, 0, false, nil // implausible range: rebuild
 	}
 	// The footer binds the STORED bytes (ciphertext when encrypted), so a
 	// torn or bit-rotted txn is detected before any key is needed (R12).
 	buf := make([]byte, span)
 	if _, rerr := s.data.ReadAt(buf, c.txnStart); rerr != nil {
-		return nil, 0, false, fmt.Errorf("rowpack: read IndexTxn of snapshot %d: %w", c.snapshotID, rerr)
+		return nil, nil, 0, false, fmt.Errorf("rowpack: read IndexTxn of snapshot %d: %w", c.snapshotID, rerr)
 	}
 	if fileformat.CRC32C(buf) != c.ftrTxnCRC {
-		return nil, 0, false, nil
+		return nil, nil, 0, false, nil
 	}
-	var crypto *index.ChunkCrypto
 	var h fileformat.IndexTxnHeader
+	if herr := h.Unmarshal(buf); herr != nil {
+		return nil, nil, 0, false, nil // unreadable header: rebuild
+	}
 	if s.header.EncryptionAlgorithm != fileformat.EncNone {
-		if herr := h.Unmarshal(buf); herr != nil {
-			return nil, 0, false, nil // unreadable header: rebuild
-		}
 		epoch := fileformat.IndexTxnHeaderKeyEpoch(buf)
 		crypto = &index.ChunkCrypto{
 			TxnSequence: h.TxnSequence,
@@ -179,14 +184,7 @@ func (s *Store) readIndexTxn(c *committedSnapshot) (txn *index.Txn, seq uint64, 
 			},
 		}
 	}
-	txn, perr := index.ParseTxnChunked(buf, crypto)
-	if perr != nil {
-		// Per-chunk authentication/parse failure means the txn is corrupt
-		// (its stored extent already passed the footer CRC): rebuild in
-		// memory (R2).
-		return nil, 0, false, nil
-	}
-	return txn, txn.Header.TxnSequence, true, nil
+	return buf, crypto, h.TxnSequence, true, nil
 }
 
 // scanDataFile walks the single file from after the header, collecting

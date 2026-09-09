@@ -312,40 +312,59 @@ func (v *View) LogicalRowCount(snapshot uint64, table uint32) uint64 {
 
 // Apply returns a NEW immutable view that adds the committed txn's entries.
 // It validates the snapshot parent chain, uniqueness, and limits before
-// returning. The receiver is not modified.
+// returning. The receiver is not modified. This is the buffered form, used by
+// the recovery rebuild path; the Open replay path uses ApplyStreaming to skip
+// the intermediate []RowIndexEntry.
 func (v *View) Apply(t *Txn, maxDepth uint32) (*View, error) {
 	if t == nil {
 		return nil, fmt.Errorf("rowpack: nil txn")
 	}
+	nv, meta, err := v.beginApply(t.Snapshot, maxDepth)
+	if err != nil {
+		return nil, err
+	}
+	if err := applyBlocks(v, nv, meta, t.Snapshot.SnapshotID, t.Blocks); err != nil {
+		return nil, err
+	}
+	if err := applyMetadata(nv, t.Snapshot.SnapshotID, t.Metadata); err != nil {
+		return nil, err
+	}
+	rowMap, err := buildRowShards(t, t.Snapshot.SnapshotID)
+	if err != nil {
+		return nil, err
+	}
+	nv.rows[t.Snapshot.SnapshotID] = rowMap
+	finishApplyMemory(v, nv, len(t.Metadata), len(t.Blocks), rowMap)
+	return nv, nil
+}
+
+// beginApply validates the snapshot entry against v (chain, uniqueness,
+// depth) and installs it into the new view copy, returning the copy and its
+// meta. Shared by Apply and the streaming sink.
+func (v *View) beginApply(se fileformat.SnapshotIndexEntry, maxDepth uint32) (*View, *SnapshotMeta, error) {
 	nv := v.shallowCopy()
-	// Snapshot entry.
-	se := &t.Snapshot
 	if _, dup := v.snapshots[se.SnapshotID]; dup {
-		return nil, fmt.Errorf("rowpack: snapshot %d already committed", se.SnapshotID)
+		return nil, nil, fmt.Errorf("rowpack: snapshot %d already committed", se.SnapshotID)
 	}
 	depth := uint32(1)
 	if se.SnapshotType == fileformat.SnapshotDelta {
 		parent := v.snapshots[se.ParentSnapshotID]
 		if parent == nil {
-			return nil, fmt.Errorf("rowpack: DELTA snapshot %d parent %d not committed", se.SnapshotID, se.ParentSnapshotID)
+			return nil, nil, fmt.Errorf("rowpack: DELTA snapshot %d parent %d not committed", se.SnapshotID, se.ParentSnapshotID)
 		}
 		if se.ParentSnapshotID >= se.SnapshotID {
-			return nil, fmt.Errorf("rowpack: DELTA snapshot %d parent %d not smaller", se.SnapshotID, se.ParentSnapshotID)
-		}
-		if se.SnapshotType != fileformat.SnapshotDelta && se.SnapshotType != fileformat.SnapshotFull {
-			return nil, fmt.Errorf("rowpack: snapshot %d bad type %d", se.SnapshotID, se.SnapshotType)
+			return nil, nil, fmt.Errorf("rowpack: DELTA snapshot %d parent %d not smaller", se.SnapshotID, se.ParentSnapshotID)
 		}
 		depth = parent.Depth + 1
 		if depth > maxDepth {
-			return nil, fmt.Errorf("rowpack: snapshot %d depth %d exceeds limit %d", se.SnapshotID, depth, maxDepth)
+			return nil, nil, fmt.Errorf("rowpack: snapshot %d depth %d exceeds limit %d", se.SnapshotID, depth, maxDepth)
 		}
 	} else if se.SnapshotType != fileformat.SnapshotFull {
-		return nil, fmt.Errorf("rowpack: snapshot %d bad type %d", se.SnapshotID, se.SnapshotType)
+		return nil, nil, fmt.Errorf("rowpack: snapshot %d bad type %d", se.SnapshotID, se.SnapshotType)
 	}
 	if se.ParentSnapshotID != 0 && se.SnapshotType == fileformat.SnapshotFull {
-		return nil, fmt.Errorf("rowpack: FULL snapshot %d has parent %d", se.SnapshotID, se.ParentSnapshotID)
+		return nil, nil, fmt.Errorf("rowpack: FULL snapshot %d has parent %d", se.SnapshotID, se.ParentSnapshotID)
 	}
-
 	meta := &SnapshotMeta{
 		ID:                se.SnapshotID,
 		Parent:            se.ParentSnapshotID,
@@ -359,15 +378,19 @@ func (v *View) Apply(t *Txn, maxDepth uint32) (*View, error) {
 		Depth:             depth,
 	}
 	nv.snapshots[se.SnapshotID] = meta
+	return nv, meta, nil
+}
 
-	// Blocks.
-	for i := range t.Blocks {
-		be := &t.Blocks[i]
-		if be.SnapshotID != se.SnapshotID {
-			return nil, fmt.Errorf("rowpack: block %d belongs to snapshot %d, want %d", be.BlockID, be.SnapshotID, se.SnapshotID)
+// applyBlocks validates and installs the txn's block entries into nv,
+// accumulating stored bytes into meta. Shared by Apply and the streaming sink.
+func applyBlocks(old, nv *View, meta *SnapshotMeta, snapshotID uint64, blocks []fileformat.BlockIndexEntry) error {
+	for i := range blocks {
+		be := &blocks[i]
+		if be.SnapshotID != snapshotID {
+			return fmt.Errorf("rowpack: block %d belongs to snapshot %d, want %d", be.BlockID, be.SnapshotID, snapshotID)
 		}
-		if _, dup := v.blocks[be.BlockID]; dup {
-			return nil, fmt.Errorf("rowpack: block %d already exists", be.BlockID)
+		if _, dup := old.blocks[be.BlockID]; dup {
+			return fmt.Errorf("rowpack: block %d already exists", be.BlockID)
 		}
 		bl := &BlockLoc{
 			BlockID: be.BlockID, SnapshotID: be.SnapshotID, TableID: be.TableID,
@@ -378,17 +401,21 @@ func (v *View) Apply(t *Txn, maxDepth uint32) (*View, error) {
 		nv.blocks[be.BlockID] = bl
 		meta.StoredBytes += uint64(be.StoredSize)
 	}
+	return nil
+}
 
-	// Metadata.
+// applyMetadata builds and installs the metadata location maps for one
+// snapshot. Shared by Apply and the streaming sink.
+func applyMetadata(nv *View, snapshotID uint64, metadata []fileformat.MetadataIndexEntry) error {
 	metaMap := make(map[uint64]*MetadataLoc)
 	typeMap := make(map[uint32][]uint64)
-	for i := range t.Metadata {
-		me := &t.Metadata[i]
-		if me.SnapshotID != se.SnapshotID {
-			return nil, fmt.Errorf("rowpack: metadata entry %d wrong snapshot", me.ObjectID)
+	for i := range metadata {
+		me := &metadata[i]
+		if me.SnapshotID != snapshotID {
+			return fmt.Errorf("rowpack: metadata entry %d wrong snapshot", me.ObjectID)
 		}
 		if _, dup := metaMap[me.ObjectID]; dup {
-			return nil, fmt.Errorf("rowpack: metadata object %d duplicated in snapshot %d", me.ObjectID, se.SnapshotID)
+			return fmt.Errorf("rowpack: metadata object %d duplicated in snapshot %d", me.ObjectID, snapshotID)
 		}
 		metaMap[me.ObjectID] = &MetadataLoc{
 			ObjectID: me.ObjectID, Revision: me.Revision, RecordType: me.RecordType,
@@ -399,29 +426,169 @@ func (v *View) Apply(t *Txn, maxDepth uint32) (*View, error) {
 	for k := range typeMap {
 		sortU64s(typeMap[k])
 	}
-	nv.metadata[se.SnapshotID] = metaMap
-	nv.metadataByType[se.SnapshotID] = typeMap
+	nv.metadata[snapshotID] = metaMap
+	nv.metadataByType[snapshotID] = typeMap
+	return nil
+}
 
-	// Rows: build one compact sorted shard per table. Tombstones are kept
-	// (readers filter them), duplicates within (snapshot, table) are rejected.
-	// The overwhelmingly common case is a single table; fill a preallocated
-	// shard directly. Appending through a map (capacity doubling) would
-	// transiently allocate ~5x the shard bytes and per-row map lookups would
-	// dominate the fill for large snapshots.
-	rowMap, err := buildRowShards(t, se.SnapshotID)
-	if err != nil {
-		return nil, err
-	}
-	nv.rows[se.SnapshotID] = rowMap
-
-	// Memory estimate: rough per-entry overhead plus map cells and packed
-	// row-shard entries (24 B per row).
-	nv.memoryBytes = v.memoryBytes
-	nv.memoryBytes += 64 + uint64(len(t.Metadata))*56 + uint64(len(t.Blocks))*72
+// finishApplyMemory applies the per-txn memory estimate to nv: rough
+// per-entry overhead plus map cells and packed row-shard entries (24 B/row).
+func finishApplyMemory(old, nv *View, nMeta, nBlocks int, rowMap map[uint32]*rowShard) {
+	nv.memoryBytes = old.memoryBytes
+	nv.memoryBytes += 64 + uint64(nMeta)*56 + uint64(nBlocks)*72
 	for _, sh := range rowMap {
 		nv.memoryBytes += 48 + uint64(len(sh.entries))*24
 	}
-	return nv, nil
+}
+
+// ApplyStreaming parses the serialized IndexTxn at data and applies it in one
+// fused pass: entries stream from the parser straight into the new view's
+// compact shard slices, never materializing Txn.Rows (~40 B/row off the Open
+// peak). Validation semantics are identical to Apply(ParseTxnChunked(data)).
+func (v *View) ApplyStreaming(data []byte, crypto *ChunkCrypto, maxDepth uint32) (*View, error) {
+	ap := &streamApply{old: v, maxDepth: maxDepth}
+	t, err := ParseTxnChunkedStreaming(data, crypto, ap)
+	if err != nil {
+		return nil, err
+	}
+	if err := ap.finish(t); err != nil {
+		return nil, err
+	}
+	return ap.nv, nil
+}
+
+// streamApply is the TxnSink behind ApplyStreaming. Blocks and metadata are
+// few (per flushed block), so they buffer; rows — the per-row bulk — append
+// directly into per-table shard slices. The first table preallocates exactly
+// from the header's row count (the overwhelmingly common single-table case);
+// multi-table shards trim to exact size in finish.
+type streamApply struct {
+	old      *View
+	nv       *View
+	maxDepth uint32
+
+	meta   *SnapshotMeta
+	snapID uint64
+
+	blocks   []fileformat.BlockIndexEntry
+	metadata []fileformat.MetadataIndexEntry
+
+	shards   map[uint32][]RowKeyLoc
+	hint     int
+	rowCount uint64
+}
+
+func (a *streamApply) ReserveRows(hint int) { a.hint = hint }
+
+func (a *streamApply) SetSnapshot(e fileformat.SnapshotIndexEntry) error {
+	if a.meta != nil {
+		return fmt.Errorf("rowpack: duplicate snapshot chunk")
+	}
+	nv, meta, err := a.old.beginApply(e, a.maxDepth)
+	if err != nil {
+		return err
+	}
+	a.nv = nv
+	a.meta = meta
+	a.snapID = e.SnapshotID
+	return nil
+}
+
+func (a *streamApply) AddBlock(e fileformat.BlockIndexEntry) error {
+	if a.meta == nil {
+		return fmt.Errorf("rowpack: block entry before snapshot")
+	}
+	a.blocks = append(a.blocks, e)
+	return nil
+}
+
+func (a *streamApply) AddMetadata(e fileformat.MetadataIndexEntry) error {
+	if a.meta == nil {
+		return fmt.Errorf("rowpack: metadata entry before snapshot")
+	}
+	a.metadata = append(a.metadata, e)
+	return nil
+}
+
+func (a *streamApply) AddRows(batch []fileformat.RowIndexEntry) error {
+	if a.meta == nil {
+		return fmt.Errorf("rowpack: row entry before snapshot")
+	}
+	if a.shards == nil {
+		a.shards = make(map[uint32][]RowKeyLoc)
+	}
+	// The batch is delta-encoded, so entries are usually same-table: keep the
+	// current shard in a local and touch the map only on table switches.
+	var (
+		cur     []RowKeyLoc
+		curTID  uint32
+		haveCur bool
+	)
+	for i := range batch {
+		e := &batch[i]
+		if e.SnapshotID != a.snapID {
+			return fmt.Errorf("rowpack: row entry wrong snapshot")
+		}
+		if !haveCur || e.TableID != curTID {
+			if haveCur {
+				a.shards[curTID] = cur
+			}
+			curTID = e.TableID
+			var known bool
+			cur, known = a.shards[curTID]
+			if !known {
+				if len(a.shards) == 0 && a.hint > 0 {
+					cur = make([]RowKeyLoc, 0, a.hint) // single-table: exact prealloc
+				}
+				a.shards[curTID] = cur
+			}
+			haveCur = true
+		}
+		cur = append(cur, RowKeyLoc{
+			RowID: e.RowID,
+			Loc:   RowLoc{BlockID: e.BlockID, ItemOrdinal: e.ItemOrdinal, ChangeType: e.ChangeType},
+		})
+	}
+	if haveCur {
+		a.shards[curTID] = cur
+	}
+	a.rowCount += uint64(len(batch))
+	return nil
+}
+
+// finish installs the buffered blocks/metadata and the accumulated shards
+// into the new view. Called after the parser validated header/footer CRCs
+// and all entry counts.
+func (a *streamApply) finish(t *Txn) error {
+	if a.meta == nil {
+		return fmt.Errorf("rowpack: index txn has no snapshot chunk")
+	}
+	if err := applyBlocks(a.old, a.nv, a.meta, a.snapID, a.blocks); err != nil {
+		return err
+	}
+	if err := applyMetadata(a.nv, a.snapID, a.metadata); err != nil {
+		return err
+	}
+	var rowMap map[uint32]*rowShard
+	if len(a.shards) > 0 {
+		rowMap = make(map[uint32]*rowShard, len(a.shards))
+	}
+	for tid, entries := range a.shards {
+		if len(a.shards) > 1 && cap(entries) > len(entries) {
+			// Multi-table: trim the hint-sized first slice to exact length.
+			exact := make([]RowKeyLoc, len(entries))
+			copy(exact, entries)
+			entries = exact
+		}
+		sh := &rowShard{entries: entries}
+		if err := sh.prepare(); err != nil {
+			return err
+		}
+		rowMap[tid] = sh
+	}
+	a.nv.rows[a.snapID] = rowMap
+	finishApplyMemory(a.old, a.nv, len(a.metadata), len(a.blocks), rowMap)
+	return nil
 }
 
 // buildRowShards converts t.Rows into one sorted rowShard per table. It

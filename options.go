@@ -62,10 +62,10 @@ type Options struct {
 	// DataCache + ScanCacheBytes == CacheBytes always holds.
 	ScanCacheBytes int64
 
-	Durability       Durability
-	Validation       ValidationMode
-	Limits           Limits
-	Encryption       *EncryptionConfig // nil = plain store; set only at Create
+	Durability Durability
+	Validation ValidationMode
+	Limits     Limits
+	Encryption *EncryptionConfig // nil = plain store; set only at Create
 }
 
 // resolved returns an Options copy with defaults applied.

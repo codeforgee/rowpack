@@ -217,10 +217,23 @@ func ParseTxn(data []byte) (*Txn, error) {
 	return ParseTxnChunked(data, nil)
 }
 
-// ParseTxnChunked is ParseTxn with an optional chunk-crypto context. crypto
-// must be non-nil iff the txn's chunks are encrypted; it authenticates and
-// decrypts each chunk payload in place of the caller.
+// ParseTxnChunked parses and validates one chunked index transaction from
+// data (header + chunked body + footer), materializing all entries into the
+// returned Txn. crypto must be non-nil iff the txn's chunks are encrypted.
 func ParseTxnChunked(data []byte, crypto *ChunkCrypto) (*Txn, error) {
+	return parseTxnChunked(data, crypto, nil)
+}
+
+// ParseTxnChunkedStreaming parses like ParseTxnChunked but hands every entry
+// to sink as it is decoded instead of buffering them in Txn.Rows. Row-count
+// validation still runs against the header, so a sink that drops entries
+// cannot forge a valid txn. Use this on the Open path to build final
+// structures directly and skip the ~40 B/row intermediate slice.
+func ParseTxnChunkedStreaming(data []byte, crypto *ChunkCrypto, sink TxnSink) (*Txn, error) {
+	return parseTxnChunked(data, crypto, sink)
+}
+
+func parseTxnChunked(data []byte, crypto *ChunkCrypto, sink TxnSink) (*Txn, error) {
 	if len(data) < fileformat.IndexTxnHeaderSize+fileformat.IndexTxnFooterSize {
 		return nil, errors.New("rowpack: index txn too short")
 	}
@@ -260,10 +273,15 @@ func ParseTxnChunked(data []byte, crypto *ChunkCrypto) (*Txn, error) {
 		}
 		return int(count)
 	}
+	if sink != nil {
+		if hs, ok := sink.(RowHintSink); ok {
+			hs.ReserveRows(boundedCap(h.RowEntryCount, fileformat.RowIndexEntrySize))
+		}
+	}
 	sb, err := parseStoredBody(region, h.SnapshotID,
 		boundedCap(uint64(h.MetadataEntryCount), fileformat.MetadataIndexEntrySize),
 		boundedCap(uint64(h.BlockEntryCount), fileformat.BlockIndexEntrySize),
-		boundedCap(h.RowEntryCount, fileformat.RowIndexEntrySize), crypto)
+		boundedCap(h.RowEntryCount, fileformat.RowIndexEntrySize), crypto, sink)
 	if err != nil {
 		return nil, err
 	}
@@ -276,14 +294,14 @@ func ParseTxnChunked(data []byte, crypto *ChunkCrypto) (*Txn, error) {
 	if sb.snapshot.SnapshotID != h.SnapshotID {
 		return nil, errors.New("rowpack: index txn snapshot id mismatch")
 	}
-	if uint32(len(sb.metadata)) != h.MetadataEntryCount {
-		return nil, fmt.Errorf("rowpack: index txn %d metadata entries, header says %d", len(sb.metadata), h.MetadataEntryCount)
+	if sb.metaCount != h.MetadataEntryCount {
+		return nil, fmt.Errorf("rowpack: index txn %d metadata entries, header says %d", sb.metaCount, h.MetadataEntryCount)
 	}
-	if uint32(len(sb.blocks)) != h.BlockEntryCount {
-		return nil, fmt.Errorf("rowpack: index txn %d block entries, header says %d", len(sb.blocks), h.BlockEntryCount)
+	if sb.blockCount != h.BlockEntryCount {
+		return nil, fmt.Errorf("rowpack: index txn %d block entries, header says %d", sb.blockCount, h.BlockEntryCount)
 	}
-	if uint64(len(sb.rows)) != h.RowEntryCount {
-		return nil, fmt.Errorf("rowpack: index txn %d row entries, header says %d", len(sb.rows), h.RowEntryCount)
+	if sb.rowCount != h.RowEntryCount {
+		return nil, fmt.Errorf("rowpack: index txn %d row entries, header says %d", sb.rowCount, h.RowEntryCount)
 	}
 	return &Txn{Header: h, Footer: f, Snapshot: sb.snapshot, Metadata: sb.metadata, Blocks: sb.blocks, Rows: sb.rows}, nil
 }

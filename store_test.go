@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -445,4 +446,60 @@ func TestTimeValues(t *testing.T) {
 	v := DateTime(now)
 	got, _ := v.DateTimeValue()
 	require.True(t, got.Equal(now.UTC()), "datetime value keeps precision")
+}
+
+// TestConcurrentGetSharedPage reads the same block/page from many goroutines
+// at once. The loader caches a shared RowsContainer per block whose pages are
+// memoized lazily; concurrent first access to one page must not race on the
+// memoization map. Run under -race (make race).
+func TestConcurrentGetSharedPage(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "conc")
+	// One block: the default 256 KiB block easily holds a few thousand rows,
+	// so many concurrent Gets land on the same page container.
+	db, err := Create(base, Options{})
+	require.NoError(t, err)
+	ctx := context.Background()
+	w, err := db.BeginFull(ctx)
+	require.NoError(t, err)
+	require.NoError(t, w.CreateTable("users", usersSchema()))
+	insertUsers(t, w, 2000)
+	full, err := w.Commit(ctx)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	db, err = Open(base, Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+
+	// Warm the cache so the single container is shared from the start.
+	if _, err := db.Get(ctx, full, "users", 1, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	const g = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, g)
+	wg.Add(g)
+	for i := 0; i < g; i++ {
+		go func(seed RowID) {
+			defer wg.Done()
+			for r := 0; r < 400; r++ {
+				id := RowID((int(seed)+r)%2000) + 1
+				row, err := db.Get(ctx, full, "users", id, nil)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if n, _ := row[1].String(); n == "" {
+					errs <- fmt.Errorf("row %d empty name", id)
+					return
+				}
+			}
+		}(RowID(i*7 + 1))
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
 }

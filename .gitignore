@@ -17,3 +17,6 @@ coverage.out
 docs/bench-results.txt
 **/testdata/tmpdb/
 .codegraph/
+
+# Quick benchmark output (make bench-quick)
+docs/bench-results-quick.txt

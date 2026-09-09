@@ -1,48 +1,88 @@
 # RowPack 性能测试报告
 
-> 文档状态：**统一基线（v2 单文件格式 Tier 0）**
-> 日期：2026-09-08（当前基线）
+> 文档状态：**统一基线（v2 单文件格式 Tier 0，矩阵恢复版）**
+> 日期：2026-09-09（当前基线）
 > 环境：Go 1.27.0 / darwin arm64 (Apple Silicon M1 Pro) / klauspost/compress v1.20.0 (zstd)
-> 说明：**本报告 §1 只有一组当前基线**——由统一矩阵 `make bench` 生成，完整输出
-> 落在 `docs/bench-results.txt`（gitignore，机器相关，可随时复现）。历史 v1 对照
-> 批次已随 v1 格式废弃移除。
+> 说明：本报告 §1–§2 由统一套件 `make bench` 生成，完整输出落在 `docs/bench-results.txt`
+> （gitignore，机器相关，可随时复现）。历史 v1 对照批次见 §3。
 
-## 1. 当前统一基线（v2 Tier 0，2026-09-08）
+## 1. 基准套件与指标口径
 
-单条命令复现全部基线（`make bench`，默认 `-benchtime=3x -count=1`；可用
-`BENCHTIME`/`BENCHCOUNT` 覆盖）：
+`make bench` 一条命令复现全部基线（默认 `-benchtime=1s -count=1`，可用 `BENCHTIME`/
+`BENCHCOUNT` 覆盖），包含四组入口：
 
-```sh
-make bench   # => go test -bench 'Benchmark(Env|MainMatrix|Latency)' -benchmem -count=1
-```
-
-- `BenchmarkEnv`：运行时自描述环境 + 真实数据集几何（100k × 7 列，bs=256K：
-  ratio=0.168，单文件 5.8 MB——**v2 口径含内嵌 IndexTxn**；v1 同口径为
-  data 2.0 MB + .rpi ≈4.1 MB ≈ 6.1 MB，v2 总落盘更小）。
-- `BenchmarkMainMatrix`：64 个子测试覆盖 写/读/扫描/链/打开/索引重建 场景 ×
+- **`BenchmarkEnv`**：运行环境自描述 + 标准数据集几何（100k 行 × 7 列 @ 256 KiB：
+  单文件 2.20 MB、压缩比 0.190、单行落盘 23.0 B、38 个块、索引常驻内存 2.29 MB）。
+- **`BenchmarkMainMatrix`**：64 个子测试覆盖 写/读/扫描/深链/打开/索引重建 场景 ×
   BlockSize (64K/256K/1M) × 缓存(hot/cold) × 持久化(sync/async) × I/O
-  (mmap/readat)，读场景带预热。`index_rebuild` 场景为 v2 语义：IndexTxn 位腐
-  后重开的内存重建（文件永不改写）。
-- `BenchmarkLatency`：固定 4096 样本点读 p50/p95/p99（此子测试只看延迟列）。
+  (mmap/readat)，读场景带预热。剪枝规则见 `bench_matrix_test.go` 文件头。
+- **`BenchmarkLatency`**：固定 4096 样本的点读延迟分位数（热 / 全范围热 / 冷 / 深链）。
+- **直读档**：`BenchmarkWriteFull / GetHot / GetCold / Scan / ReadBatch1000 /
+  GetLoop1000 / OpenReplay / DeepChainGet / EncryptedWrite / EncryptedGetHot`，
+  与历史 `bench-results.txt` 同口径，逐日可比。
 
-以下为 256K / mmap / sync / 热缓存档位的参考值（完整矩阵见
-`docs/bench-results.txt`）：
+### 指标中文对照（矩阵自定义指标）
 
-| 基准（256K/mmap/sync 档） | 结果 |
+| 输出指标 | 中文含义 |
 | --- | --- |
-| FULL 顺序写 | 1033 krows/s · 96.9 ms/op |
-| 隔离写（单行事务） | 1939 krows/s · ratio 0.041 |
-| Get 热读 | 819 ns/op · 1221 kget/s · 99.03% 命中 · 2 allocs |
-| Get 热读（复用 dst） | 2.93 µs/op（含一次首块解压的摊销） |
-| Get 冷读 | 250 µs/op · 328 KB/op（整块解压） |
-| Scan 100k（热/冷） | 13.7 ms / 24.0 ms · 7312 / 4173 krows/s |
-| Get / Scan DeepChain（32 层） | 4.9 µs / 32.3 ms |
-| Open 索引重放 | 5.46 ms |
-| IndexTxn 损坏重开（内存重建） | 21.97 ms（文件不改写） |
-| 点读延迟 p50/p95/p99（热） | 250 / 292 / 584 ns |
-| 点读延迟 p50/p95/p99（冷） | 281 / 360 / 593 µs |
+| krows/s | **行吞吐量**（每秒写入或扫描的行数） |
+| kget/s | **点读吞吐量**（每秒随机单行读取次数） |
+| dataMB | `.rpk` 单文件落盘大小（v2 含内嵌 IndexTxn） |
+| ratio | 压缩比（落盘字节 / 原始字节，越小越好） |
+| bytePerRow | 单行落盘字节 |
+| idxMB | 索引常驻内存 |
+| hitpct / scanhitpct | 块缓存 / 扫描窗口命中率（%） |
+| rssdMB | 进程峰值 RSS 增量（本子测试归属，近似） |
+| p50ns / p95ns / p99ns | 点读延迟分位数（纳秒） |
 
-## 2. 与 v1（双文件）基线的对照（历史记录，v1 已废弃）
+快速档 `make bench-quick`（20k 行 / 200k 大场景 + 固定 3 次迭代，约 15 秒）用于
+结构与覆盖冒烟，ns/op 不与 100k 基线可比，量级参考见 §4。
+
+## 2. 当前基线要点（256 KiB / mmap / sync 档，2026-09-09）
+
+吞吐量统一用中文口径表述（行吞吐量 = 万行/秒，点读吞吐量 = 万次/秒）：
+
+| 场景 | 吞吐量 / 延迟 |
+| --- | --- |
+| FULL 顺序写**行吞吐量** | ~99.8 万行/秒（sync · 100.2 ms/次提交）· ~104.3 万行/秒（async）|
+| 同构行写**行吞吐量** | ~186.3 万行/秒（sync）· ~203.7 万行/秒（async）· 压缩比 0.044 |
+| Get 热**点读吞吐量**（100 键工作集，复用 dst） | ~242.2 万次/秒 · 413 ns/op · 命中率 100% · 3 allocs |
+| Get 热**点读吞吐量**（全键域 + dst 复用） | ~234.8 万次/秒 · 426 ns/op |
+| Get 冷**点读吞吐量** | ~3,091 次/秒 · 323.5 µs/op（整块加载 + 解压 + 校验）|
+| 并发 Get **点读吞吐量**（64 goroutine） | ~169.8 万次/秒 · 589 ns/op（8 goroutine 为 165.3 万次/秒）|
+| Scan 100k **行吞吐量**（热 / 冷） | ~728.9 / ~376.7 万行/秒（13.72 / 26.55 ms）|
+| Scan 1M **行吞吐量** | ~418.2 万行/秒（239.1 ms）|
+| 随机点读**吞吐量**（1M 键域） | ~6,309 次/秒 · 命中率 53.9%（64 MiB 缓存有界）|
+| 深链（32 层 DELTA）Get **点读吞吐量** | ~45.2 万次/秒 · 2.21 µs/op |
+| 深链 Scan **行吞吐量**（13.2 万行） | ~477.9 万行/秒 · 27.6 ms |
+| Open 索引重放 | 1.64 ms |
+| IndexTxn 损坏重开（内存重建，文件不改写） | 19.6 ms |
+| 点读延迟 p50/p95/p99（热） | 417 / 500 / 667 ns |
+| 点读延迟 p50/p95/p99（冷） | 336 / 400 / 591 µs |
+| 点读延迟 p50/p95/p99（深链） | 2.08 / 4.88 / 6.38 µs |
+| 加密档（AES-256-GCM）顺序写**行吞吐量** | ~46.2 万行/秒（216.4 ms/次提交）|
+
+### BlockSize 梯度（sync / mmap 档）
+
+| 维度 | 64K | 256K | 1M |
+| --- | --- | --- | --- |
+| 顺序写**行吞吐量** | 98.8 万行/秒 | 99.8 万行/秒 | 101.1 万行/秒 |
+| 冷点读延迟 | 85.6 µs | 323.5 µs | 1.35 ms |
+| 扫描**行吞吐量**（热） | 728.3 万行/秒 | 728.9 万行/秒 | 729.8 万行/秒 |
+| 单文件落盘 | 2.25 MB | 2.20 MB | 2.22 MB |
+
+### 维度结论
+
+- **BlockSize**：写吞吐量与扫描吞吐量对块大小不敏感；块越小冷点读越快
+  （64K 冷读 85.6 µs vs 1M 冷读 1.35 ms，整块解压成本随块大小线性），但小块
+  增加索引条目与元数据开销（64K 单文件 2.25 MB 略大）。
+- **I/O 路径**（mmap vs readat）：热读与扫描差异在噪声内（±1%）；冷读 readat
+  略慢 3–5%。
+- **持久化**（sync vs async）：async 写吞吐量 +4~9%（省一次 fsync）。
+- **并发**：读路径多核扩展良好，64 goroutine 点读吞吐量 169.8 万次/秒，
+  与单线程（242.2 万次/秒，1 核口径）折算基本线性；无锁竞争悬崖。
+
+## 3. 与 v1（双文件）基线的对照（历史记录，v1 已废弃）
 
 同机双分支顺序执行（v1 = main，v2 = 本分支，`-benchtime=10x`，小样本看趋势）：
 
@@ -55,12 +95,28 @@ make bench   # => go test -bench 'Benchmark(Env|MainMatrix|Latency)' -benchmem -
 | 落盘总量（2000 行样本） | 108,673 B / 2 文件 | 108,593 B / **1 文件** | 备份 = 拷贝单文件 |
 | 批量冷读（1000 连续行） | 260 ms（Get 循环） | 0.62 ms（迭代器） | **~417×** |
 
-## 3. 阅读注意
+## 4. 快速档（bench-quick）量级参考
 
-- `-benchtime=3x` 样本量小：ns/op 看量级与相对变化，不看绝对值；写场景首迭代
-  含建库成本，矩阵已用 `b.ResetTimer` 前置预热读路径。
-- `dataMB`/`bytePerRow` 在 v2 是**单文件口径**（含内嵌 IndexTxn），与 v1 的
+`make bench-quick`（20k 行 / 200k 大场景 / 3 次迭代 / ~15 秒）2026-09-09 快照，
+仅验证套件结构与吞吐量量级，不与上表基线比数值：
+
+- 顺序写**行吞吐量** ~76–83 万行/秒；同构行写 ~134–197 万行/秒（压缩比 0.044）。
+- 扫描**行吞吐量**（热/冷）~700 / ~360 万行/秒；深链点读 3.2–4.4 µs。
+- 延迟分位数（4096 固定样本，可信）：热 p50 = 417 ns；冷 p50 = 334 µs；深链 p50 = 1.8 µs。
+- 注意：直读档（`BenchmarkGetHot` 等）在 3 次迭代下无预热收敛，ns/op 噪声大，
+  以矩阵格子和延迟分位数为准。
+
+## 5. 阅读注意
+
+- 矩阵读场景在计时前有预热/烧入（热档 100 次、冷档 10 次），首迭代一次性开销
+  （GC、页缓存）已剔除；`-benchtime=1s` 下 ns/op 可比。
+- `dataMB`/`bytePerRow` 是**单文件口径**（v2 含内嵌 IndexTxn），与 v1 的
   data/index 分列不可直接相加比较。
-- 峰值 RSS（rssdMB）为本子测试归属的进程增量；mmap 页不计入 RSS 属预期。
-- `index_rebuild` 与 v1 的 RebuildIndex 不同：v2 无独立索引文件，重建只发生在
-  打开时且仅在 IndexTxn 校验失败的那一个快照上，结果只进内存。
+- `rssdMB` 为 getrusage 峰值 RSS 的子测试增量，属近似归因；mmap 页不计入 RSS
+  属预期。
+- `index_rebuild` 是 v2 语义：IndexTxn 位腐后重开的内存重建（文件永不改写），
+  仅影响该快照、只进内存；与 v1 的 RebuildIndex 不同。
+- `BenchmarkGetHot / GetCold / DeepChainGet / Encrypted*` 直读档使用 20k 行数据集
+  （历史口径），与矩阵 100k 档的绝对值不可直接互比；矩阵与直读档各自纵向可比。
+- `make bench-batch`（10s 每场景）单独量化批量读聚合效应：冷缓存连续 1000 行
+  场景较逐行 Get 提升数百倍。

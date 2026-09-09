@@ -3,7 +3,9 @@ package rowpack
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -11,10 +13,27 @@ import (
 // Benchmarks are deliberately single-configuration: one dataset shape and
 // one default option set per metric, so `make bench` completes in seconds
 // while still covering every hot path (write, hot/cold read, scan, batch,
-// open/replay, deep chain, encryption). For matrix sweeps see the historical
-// bench_matrix_test.go in git history.
+// open/replay, deep chain, encryption). For matrix sweeps see
+// bench_matrix_test.go.
+//
+// Dataset sizes are tunable for quick runs without touching code:
+// ROWPACK_BENCH_ROWS / ROWPACK_BENCH_ROWS1M override the row counts (see the
+// bench-quick Makefile target). Quick-run ns/op is NOT comparable to the
+// documented 100k baseline; use it for structure/coverage smoke checks and
+// order-of-magnitude sanity only.
+var (
+	benchRows   = envInt("ROWPACK_BENCH_ROWS", 100_000)
+	benchRows1M = envInt("ROWPACK_BENCH_ROWS1M", 1_000_000)
+)
 
-const benchRows = 100_000
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
 
 // benchCols is a 7-column row similar to the README reference baseline.
 func benchCols() []Column {
@@ -95,7 +114,7 @@ func BenchmarkWriteFull(b *testing.B) {
 		b.StopTimer()
 		requireNilErr(b, db.Close())
 	}
-	b.SetBytes(benchRows * 64) // approximate row footprint for bytes/s reporting
+	b.SetBytes(int64(benchRows) * 64) // approximate row footprint for bytes/s reporting
 }
 
 // BenchmarkGetHot measures random reads served from the decoded-block cache
@@ -316,7 +335,7 @@ func BenchmarkEncryptedWrite(b *testing.B) {
 		b.StopTimer()
 		requireNilErr(b, db.Close())
 	}
-	b.SetBytes(benchRows * 64)
+	b.SetBytes(int64(benchRows) * 64)
 }
 
 // BenchmarkEncryptedGetHot measures cached random reads on an encrypted

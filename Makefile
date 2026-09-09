@@ -1,6 +1,6 @@
 GO ?= go
 
-.PHONY: all build test race vet lint fmt clean golden bench bench-batch
+.PHONY: all build test race vet lint fmt clean golden bench bench-quick bench-batch
 
 all: fmt vet test
 
@@ -30,9 +30,18 @@ BENCHCOUNT ?= 1
 bench:
 	mkdir -p docs
 	$(GO) test -run '^$$' \
-		-bench 'Benchmark(WriteFull|GetHot|GetCold|Scan|ReadBatch1000|GetLoop1000|OpenReplay|DeepChainGet|EncryptedWrite|EncryptedGetHot)$$' \
+		-bench 'Benchmark(Env|MainMatrix|Latency|WriteFull|GetHot|GetCold|Scan|ReadBatch1000|GetLoop1000|OpenReplay|DeepChainGet|EncryptedWrite|EncryptedGetHot)$$' \
 		-benchtime=$(BENCHTIME) -benchmem -count=$(BENCHCOUNT) . \
 		2>&1 | tee docs/bench-results.txt
+
+# 快速档：小数据集 + 固定迭代数，~30s 跑完全矩阵；只看结构/量级，不与 100k 基线比数值。
+bench-quick:
+	mkdir -p docs
+	ROWPACK_BENCH_ROWS=20000 ROWPACK_BENCH_ROWS1M=200000 \
+	$(GO) test -run '^$$' \
+		-bench 'Benchmark(Env|MainMatrix|Latency|WriteFull|GetHot|GetCold|Scan|ReadBatch1000|GetLoop1000|OpenReplay|DeepChainGet|EncryptedWrite|EncryptedGetHot)$$' \
+		-benchtime=3x -benchmem -count=1 . \
+		2>&1 | tee docs/bench-results-quick.txt
 
 bench-batch:
 	$(GO) test -run '^$$' -bench 'Benchmark(GetLoop1000|ReadBatch1000)$$' \
@@ -40,6 +49,14 @@ bench-batch:
 
 golden:
 	$(GO) test . -run 'TestGolden' -args -update-golden
+	@echo "== golden 样本 SHA-256（须与 testdata/golden/README.md 清单一致）=="
+	@shasum -a 256 testdata/golden/*.rpk testdata/golden/*.bin
+	@if git diff --quiet -- testdata/golden; then \
+		echo "== git: 无字节变化（格式未漂移，重写为相同字节）=="; \
+	else \
+		echo "== 警告：golden 字节变化，视为格式变更，须人工 diff 审查 + 提升版本 =="; \
+		git diff --stat -- testdata/golden; \
+	fi
 
 clean:
 	rm -rf *.test coverage.out

@@ -172,33 +172,39 @@ make test        # go test ./...
 make race        # go test -race ./...
 make vet         # go vet ./...
 make staticcheck # staticcheck ./...
-make bench       # 单配置基准套件（写/热冷读/扫描/批量/Open/深链/加密），输出 docs/bench-results.txt
+make bench       # 统一基线套件（Env/矩阵/延迟 + 直读档），输出 docs/bench-results.txt
+make bench-quick # 快速档：20k 行 + 3 次迭代全矩阵冒烟（~15s），输出 docs/bench-results-quick.txt
 make bench-batch # 批量读对比：逐行 Get 基线 vs ReadBatch（10s 每场景）
 make golden      # 重新生成 golden files（格式变更时人工审查）
 ```
 
 ## 参考基准
 
-单配置基准套件由 `make bench` 复现（`BenchmarkWriteFull` + `BenchmarkGetHot` +
-`BenchmarkGetCold` + `BenchmarkScan` + `BenchmarkReadBatch1000`/`BenchmarkGetLoop1000`
-+ `BenchmarkOpenReplay` + `BenchmarkDeepChainGet` + 加密档），完整结果落盘
-`docs/bench-results.txt`，要点见 [docs/perf-report.md](docs/perf-report.md) §1。
+统一套件由 `make bench` 复现（`BenchmarkEnv` + `BenchmarkMainMatrix` 64 格矩阵 +
+`BenchmarkLatency` 延迟分位数 + 直读档），完整结果落盘 `docs/bench-results.txt`，
+要点与指标中文对照见 [docs/perf-report.md](docs/perf-report.md) §1–§2。
 环境：Go 1.27 / darwin/arm64 / klauspost zstd v1.20 / BlockSize 256 KiB / Zstd /
 SyncCommit（批量与缓存档另标注），数据集 100k 行 × 7 列。数值随磁盘与 CPU 变化，
-仅作相对参考。
+仅作相对参考。吞吐量以中文口径表述：行吞吐量 = 万行/秒，点读吞吐量 = 万次/秒。
 
-| 基准（256K/mmap 档） | 结果 |
+| 基准（256K/mmap/sync 档） | 吞吐量 / 延迟 |
 | --- | --- |
-| FULL 顺序写 / 隔离写 | ~1032 / 1996 krows/s |
-| Get 热读（复用 dst） | ~0.5 µs / 2 allocs |
-| Get 冷读 | ~255 µs / 6 allocs |
-| 并发 Get 64 goroutine | ~6.7 µs（LRU 锁主导） |
-| Scan 100k / Scan 1M | 13.7 ms / 243 ms |
-| Get / Scan DeepChain（32 层） | 3.4 µs / 31.9 ms |
-| Open 索引重放 | ~5.7 ms |
+| FULL 顺序写行吞吐量 | ~99.8 万行/秒（sync）· ~104.3 万行/秒（async）|
+| 同构行写行吞吐量 | ~186 万行/秒（sync）· ~204 万行/秒（async，压缩比 0.044）|
+| Get 热读点读吞吐量（复用 dst） | ~242 万次/秒 · ~0.41 µs · 3 allocs |
+| Get 冷读 | ~3,100 次/秒 · ~324 µs（整块解压）|
+| 并发 Get 点读吞吐量（64 goroutine） | ~170 万次/秒 · ~0.59 µs |
+| Scan 100k 扫描行吞吐量（热/冷） | ~729 / ~377 万行/秒（13.7 / 26.5 ms）|
+| Scan 1M 扫描行吞吐量 | ~418 万行/秒（239 ms）|
+| 深链（32 层）Get / Scan | ~45 万次/秒（2.2 µs）/ ~478 万行/秒（27.6 ms）|
+| Open 索引重放 | ~1.6 ms |
+| IndexTxn 损坏重开（内存重建） | ~19.6 ms（文件不改写）|
+| 点读延迟 p50/p95/p99（热） | 417 / 500 / 667 ns |
+| 点读延迟 p50/p95/p99（冷） | 336 / 400 / 591 µs |
 
-> 注意：热读真实吞吐 ~2M get/s。README 早期版本的 7–12 µs、300 µs 等数值受到低
-> `-benchtime` 一次性开销稀释，已由统一矩阵的预热逻辑消除。
+> 口径：以上为统一矩阵预热后的 100k 数值；直读档 `BenchmarkGetHot` 等使用 20k
+> 数据集（~272 ns ≈ 368 万次/秒），绝对值不可与矩阵互比。快速冒烟用
+> `make bench-quick`（~15 秒），其数值不与基线比。
 
 ## 兼容性
 

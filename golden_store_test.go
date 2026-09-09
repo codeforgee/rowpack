@@ -25,7 +25,7 @@ func TestGoldenManifest(t *testing.T) {
 		// this format switch (see docs/REFACTOR_EXECUTION_PLAN.md §5).
 		"empty-store.rpk":            "cd0a96b72ad858d8bceb946b4ae77b1667b6bf17b9d79d72c9b282a52ddc34f7",
 		"rows-payload-all-types.bin": "ae6f94f72c1b08f8c0a6727c97cb57cfad18b6f0ffc732a625db23be907b8769",
-		"full-delta-store.rpk":       "88f04ea38e6475bbffd804a95e503d424acb91b99bdceb0ca0bc49f83eb8f596",
+		"full-delta-store.rpk":       "411de6ebd82bdd228dfc721dc7fa5e97b6affa0132bfd1033c39467c358bc3ca",
 		"encrypted-store.rpk":        "c098a6ab6183ca6683d54455027bb3954d80157cc23770336cb65cf9a92b2349",
 	}
 	for name, digest := range want {

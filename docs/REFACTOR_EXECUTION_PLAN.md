@@ -275,6 +275,34 @@ WriteFull)$' -benchmem .`（默认 1M 行档），原始输出 `docs/baseline/`�
   **2035 B**（设计编码比 chunk delta 更紧凑，ADR-005：seq/delta 省 ~43%、rand 省 ~13%）。
 - 热点/冷读/写吞吐未变（块数据面未动）；只有 IndexTxn 正文与解码路径切换。
 
+### 9.1.5 S3-⑨ 峰值优化 + S4 Lazy 测量（提交⑪ / ⑫，2026-09-09，1M 行 Open）
+
+复现：`go test -run '^$' -bench 'Benchmark(OpenMemory|OpenMemoryLazy|DeepChainGetLazy)$'
+-benchmem .`
+
+| 场景 | S3-⑦ 落盘② | **S3-⑨（提交⑪，P1）** | **S4 Lazy（提交⑫，P2）** | 门槛 | 结论 |
+| --- | --- | --- | --- | --- | --- |
+| Open 1M `idxB/row`（Eager） | 13.02 | 13.02 | 13.02（Eager 不变） | ≤16 | ✅ |
+| Open 1M `B/op`（Eager 瞬态） | ~104.7 MB | **15.6 MB** | 15.6 MB | ≤65.9 MB | ✅ |
+| Open 1M `fenceB/row`（Lazy 常驻） | — | — | **0.0127** | ≤0.25（期望≤0.1） | ✅ |
+| Open 1M `B/op`（Lazy） | — | — | **0.23** | — | ✅ |
+
+**S3-⑨（P1）**：`walkRowIndexPage` 把 `decodeRowIndexPage` 从逐列物化改成五路流锁步推进、
+逐条目 emit；`rowShardBuilder` 直接把条目追加进 SoA/block-run。消除 `[]RowIndexEntry`
+整页物化 + `[]RowKeyLoc` 全量中间层，Open 瞬态装分配 104.7→15.6 MB，idxB/row 保持 13.02。
+
+**S4 Lazy（P2）**：`IndexMode=IndexLazy` 下 Open 只加载 Fence；页按需读。页**按表切页**
+（绝不跨表）使 Fence `(TableID, RowID)` 成为单调二叉索引（见 ADR-006，否则跨表页的
+`MinRowID` 非单调会破坏二叉搜索）。`CacheBytes = DataPageCache + ScanWindow +
+IndexPageCache` 守恒（`splitCacheBudget3`）。全 API 与 Eager 逐行一致
+（`TestLazyMatchesEager`，plain/encrypted 各一）。
+
+**决策点 #4（深链 Get I/O 放大）**：`BenchmarkDeepChainGetLazy`（FULL 1000 行 + N 层
+DELTA，每层 1 行，行落在快照 1）。warm（`IndexCacheBytes=8MiB`）ns/op 1→128 层 420→5019，
+readB/op 恒 772；cold（`IndexCacheBytes=-1`）1→128 层 ~21–30 µs。结论：**可接受、无需
+负查询缓存或 page bloom**。原因：`ResolveRow` 逐层调 `Row`，Fence `[Min,Max]` 边界检查把
+「行不在该层 RowID 范围」的层直接滤掉（不读页）；只有 Range 覆盖目标行的层才读一页。
+
 ## 10. 测试与质量门（贯穿所有阶段）
 
 - **每提交**：`go test ./...` + `go vet`；每阶段收尾加 `-race`。

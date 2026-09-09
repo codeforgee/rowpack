@@ -62,3 +62,43 @@ func openMemoryBench(b *testing.B, n int) {
 		b.ReportMetric(float64(rss-rssBefore)/(1<<20), "rssdMB")
 	}
 }
+
+// BenchmarkOpenMemoryLazy measures the S4 Lazy index Open: the resident row-index
+// footprint is the Row Index Fence Directory only (fenceB/row ≈ 52 B/page ÷ 4096
+// ≈ 0.013 B/row for the geomMixed single-table dataset); no row page is decoded
+// at Open. The default ROWPACK_BENCH_ROWS1M override matches BenchmarkOpenMemory.
+func BenchmarkOpenMemoryLazy(b *testing.B) {
+	n := benchRows1M
+	base := filepath.Join(tmpdb(b), "openmem-lazy")
+	db, _ := benchStoreAt(b, base, Options{}, n)
+	requireNilErr(b, db.Close())
+	runtime.GC()
+
+	// Report the Lazy Open RESIDENT index footprint (the fence directory).
+	// Stats() is deliberately not used: it runs LogicalRowCount, which for a
+	// Lazy view decodes every index page (measuring the read path, not Open).
+	b.ReportAllocs()
+	b.ResetTimer()
+	var fenceBytes, idx uint64
+	for i := 0; i < b.N; i++ {
+		d, err := Open(base, Options{IndexMode: IndexLazy, IndexCacheBytes: 1 << 20})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if st := d.state.Load(); st != nil && st.view != nil {
+			fenceBytes = uint64(st.view.IndexFenceBytes())
+			idx = uint64(st.view.MemoryBytes())
+		}
+		if err := d.Close(); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+
+	if fenceBytes == 0 {
+		b.Fatal("no fence bytes reported for lazy open")
+	}
+	b.ReportMetric(float64(fenceBytes)/(1<<20), "fenceMB")
+	b.ReportMetric(float64(fenceBytes)/float64(n), "fenceB/row")
+	b.ReportMetric(float64(idx)/(1<<20), "idxMB")
+}

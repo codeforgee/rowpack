@@ -81,6 +81,9 @@ func (s *Store) recover() error {
 
 	// 2. Per-snapshot IndexTxn replay with in-memory rebuild fallback.
 	view := index.EmptyView()
+	if s.opts.IndexMode == IndexLazy {
+		s.lazyPages = make(map[uint64]lazyPageInfo)
+	}
 	for _, c := range committed {
 		data, crypto, seq, ok, err := s.readIndexTxn(&c)
 		if err != nil {
@@ -90,18 +93,35 @@ func (s *Store) recover() error {
 			if seq > lastSeq {
 				lastSeq = seq
 			}
-			// Streaming apply: entries decode straight into the new view's
-			// shards (no []RowIndexEntry intermediate). A parse/apply failure
-			// means the txn is corrupt or inconsistent: fall through to the
-			// rebuild path; a rebuilt txn that also fails to apply is
-			// mid-file corruption.
-			nv, aerr := view.ApplyStreaming(data, crypto, s.opts.Limits.MaxSnapshotDepth)
-			if aerr == nil {
-				view = nv
-				continue
+			if s.opts.IndexMode == IndexLazy {
+				// Lazy apply: parse the txn, install the fence directory (no
+				// page decode), and record the per-snapshot page-load context.
+				lt, perr := index.ParseTxnLazy(data, crypto)
+				if perr == nil {
+					nv, aerr := view.ApplyLazy(lt, s.opts.Limits.MaxSnapshotDepth, s)
+					if aerr == nil {
+						view = nv
+						s.lazyPages[c.snapshotID] = lazyPageInfo{txnStart: c.txnStart, seq: lt.Seq, crypto: crypto}
+						continue
+					}
+				}
+			} else {
+				// Streaming apply: entries decode straight into the new view's
+				// shards (no []RowIndexEntry intermediate). A parse/apply failure
+				// means the txn is corrupt or inconsistent: fall through to the
+				// rebuild path; a rebuilt txn that also fails to apply is
+				// mid-file corruption.
+				nv, aerr := view.ApplyStreaming(data, crypto, s.opts.Limits.MaxSnapshotDepth)
+				if aerr == nil {
+					view = nv
+					continue
+				}
 			}
 		}
-		// IndexTxn missing/corrupt: rebuild from this snapshot's blocks.
+		// IndexTxn missing/corrupt: rebuild from this snapshot's blocks. The
+		// rebuilt txn is applied eagerly (its row shards are materialized) — in
+		// Lazy mode this snapshot becomes an eager island in an otherwise-lazy
+		// view, correct and only on rare mid-file corruption.
 		rtxn, err := s.buildIndexTxnFromData(&c)
 		if err != nil {
 			return fmt.Errorf("rowpack: rebuild snapshot %d: %w", c.snapshotID, err)

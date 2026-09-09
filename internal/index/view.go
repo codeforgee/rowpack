@@ -71,7 +71,12 @@ type View struct {
 	blocks         map[uint64]*BlockLoc
 	metadata       map[uint64]map[uint64]*MetadataLoc // SnapshotID -> ObjectID -> loc
 	metadataByType map[uint64]map[uint32][]uint64     // SnapshotID -> RecordType -> sorted ObjectIDs
-	rows           map[uint64]map[uint32]*rowShard    // SnapshotID -> TableID -> shard
+	rows           map[uint64]map[uint32]*rowShard    // SnapshotID -> TableID -> shard (Eager; nil in Lazy)
+
+	// lazy holds the per-snapshot Row Index Fence directories + a page source
+	// for on-demand page reads. It is non-nil only in Lazy mode, where rows is
+	// nil (the Eager rowShards are never materialized).
+	lazy *lazyIndex
 
 	memoryBytes uint64
 }
@@ -122,38 +127,64 @@ func (sh *rowShard) lookup(rowID uint64) (RowLoc, bool) {
 	return sh.rowLocAt(i), true
 }
 
-// RowKeyIter is a forward iterator over a compact rowShard in sorted RowID
-// order. It exposes position-based random access (peek/advance) for a k-way
-// merge and sequential walks without materializing a 24 B/row []RowKeyLoc, so
-// a scan does not allocate a transient materialized copy of the shard.
+// rowIter is the forward-iteration contract shared by the eager rowShard and
+// the lazy page iterator: a scan/merge can walk rows in sorted RowID order
+// without materializing a []RowKeyLoc or the whole table index.
+type rowIter interface {
+	Len() int
+	Done() bool
+	RowID() uint64
+	Loc() RowLoc
+	Next()
+}
+
+// RowKeyIter is a forward iterator over rows of one (snapshot, table) in
+// sorted RowID order. In Eager mode it walks a compact rowShard SoA without
+// allocating a transient []RowKeyLoc; in Lazy mode it streams sorted Row Index
+// Pages one at a time. Both expose the same position-based access for a k-way
+// merge (parent chains) and sequential scans.
 type RowKeyIter struct {
+	it rowIter
+}
+
+// Len returns the number of rows.
+func (it *RowKeyIter) Len() int { return it.it.Len() }
+
+// Done reports whether the iterator is exhausted.
+func (it *RowKeyIter) Done() bool { return it.it.Done() }
+
+// RowID returns the RowID at the current position.
+func (it *RowKeyIter) RowID() uint64 { return it.it.RowID() }
+
+// Loc returns the RowLoc at the current position.
+func (it *RowKeyIter) Loc() RowLoc { return it.it.Loc() }
+
+// Next advances to the next position.
+func (it *RowKeyIter) Next() { it.it.Next() }
+
+// rowShardIter is the Eager rowIter over a compact rowShard.
+type rowShardIter struct {
 	sh  *rowShard
 	pos int
 }
 
-// Len returns the number of rows.
-func (it *RowKeyIter) Len() int { return it.sh.len() }
+func (it *rowShardIter) Len() int      { return it.sh.len() }
+func (it *rowShardIter) Done() bool    { return it.pos >= it.sh.len() }
+func (it *rowShardIter) RowID() uint64 { return it.sh.rowIDAt(it.pos) }
+func (it *rowShardIter) Loc() RowLoc   { return it.sh.rowLocAt(it.pos) }
+func (it *rowShardIter) Next()         { it.pos++ }
 
-// Done reports whether the iterator is exhausted.
-func (it *RowKeyIter) Done() bool { return it.pos >= it.sh.len() }
-
-// RowID returns the RowID at the current position.
-func (it *RowKeyIter) RowID() uint64 { return it.sh.rowIDAt(it.pos) }
-
-// Loc returns the RowLoc at the current position.
-func (it *RowKeyIter) Loc() RowLoc { return it.sh.rowLocAt(it.pos) }
-
-// Next advances to the next position.
-func (it *RowKeyIter) Next() { it.pos++ }
-
-// RowIter returns a fresh iterator over the shard for (snapshot, table), or
-// nil when there are no rows.
+// RowIter returns a fresh iterator over rows for (snapshot, table), or nil
+// when there are no rows.
 func (v *View) RowIter(snapshot uint64, table uint32) *RowKeyIter {
+	if v.lazy != nil && v.lazy.snapshots[snapshot] != nil {
+		return v.lazy.rowIterFor(snapshot, table)
+	}
 	sh := v.rows[snapshot][table]
 	if sh == nil {
 		return nil
 	}
-	return &RowKeyIter{sh: sh}
+	return &RowKeyIter{it: &rowShardIter{sh: sh}}
 }
 
 // EmptyView returns an empty immutable view.
@@ -204,9 +235,14 @@ func (v *View) Blocks() []*BlockLoc {
 }
 
 // Row returns the row location of (snapshot, table, rowID), or nil. The
-// returned pointer aliases the immutable row shard and must be treated as
-// read-only.
+// returned pointer aliases immutable row-shard or cached page entries and must
+// be treated as read-only.
 func (v *View) Row(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool) {
+	// Per-snapshot: a lazy snapshot uses the fence+page source; a snapshot that
+	// was rebuilt eagerly (corrupt-txn recovery fallback) uses rowShards.
+	if v.lazy != nil && v.lazy.snapshots[snapshot] != nil {
+		return v.lazy.row(snapshot, table, rowID)
+	}
 	sh := v.rows[snapshot][table]
 	if sh == nil {
 		return RowLoc{}, false
@@ -237,8 +273,31 @@ func (v *View) MetadataByType(snapshot uint64, recordType uint32) []uint64 {
 	return v.metadataByType[snapshot][recordType]
 }
 
-// MemoryBytes estimates the in-memory footprint of the view.
+// MemoryBytes estimates the in-memory footprint of the view. In Lazy mode this
+// is the resident Fence Directory bytes (~52 B per page, ~0.013 B/row) plus the
+// block/metadata maps; the Eager rowShards are never materialized.
 func (v *View) MemoryBytes() uint64 { return v.memoryBytes }
+
+// LazyError returns the first Row Index Page load error encountered by a Lazy
+// view (nil in Eager mode or when no page failed to load). The store surfaces
+// it as a CorruptionError on the offending read.
+func (v *View) LazyError() error {
+	if v.lazy == nil {
+		return nil
+	}
+	v.lazy.errMu.Lock()
+	defer v.lazy.errMu.Unlock()
+	return v.lazy.err
+}
+
+// IndexFenceBytes returns the resident Row Index Fence Directory bytes (the
+// Lazy row-index footprint; 0 in Eager mode).
+func (v *View) IndexFenceBytes() uint64 {
+	if v.lazy == nil {
+		return 0
+	}
+	return v.lazy.fenceBytes
+}
 
 // ResolveRow finds the row location for (snapshot, table, rowID) along the
 // parent chain. It returns nil when no record exists.
@@ -258,6 +317,9 @@ func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, 
 
 // RowTables returns the table IDs that have row entries at the snapshot.
 func (v *View) RowTables(snapshot uint64) []uint32 {
+	if v.lazy != nil && v.lazy.snapshots[snapshot] != nil {
+		return v.lazy.tables(snapshot)
+	}
 	tbl := v.rows[snapshot]
 	if tbl == nil {
 		return nil
@@ -760,6 +822,7 @@ func (v *View) shallowCopy() *View {
 	for k, r := range v.rows {
 		nv.rows[k] = r
 	}
+	nv.lazy = v.lazy
 	nv.memoryBytes = v.memoryBytes
 	return nv
 }

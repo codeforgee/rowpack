@@ -32,7 +32,11 @@ type Builder struct {
 	metadata []fileformat.MetadataIndexEntry
 	blocks   []fileformat.BlockIndexEntry
 	rows     []fileformat.RowIndexEntry
-	seen     map[[2]uint64]struct{} // (tableID, rowID) uniqueness
+	// pageCount is the number of Row Index Pages produced by buildRowIndexPages
+	// (single-table pages; 0 when there are no rows). header() uses it so a
+	// multi-table snapshot's RowIndexPageCount matches the fence directory.
+	pageCount uint32
+	seen      map[[2]uint64]struct{} // (tableID, rowID) uniqueness
 	// dedupRows rejects duplicate (table, row) pairs in AddRow. On by
 	// default; callers that already guarantee uniqueness (the commit path
 	// rejects duplicates at Insert time and View.Apply re-validates the
@@ -160,15 +164,12 @@ func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC
 }
 
 // header assembles the IndexTxnHeader fields from the builder state.
-// RowIndexPageCount is the number of sorted Row Index Pages (0 when there are
-// no row entries); each page carries indexPageEntryCount entries except the
-// last, so the count is exactly ceil(n / indexPageEntryCount).
+// RowIndexPageCount is the count of sorted Row Index Pages produced by
+// buildRowIndexPages (single-table pages, so the count equals the fence
+// directory size; 0 when there are no row entries).
 func (b *Builder) header(dataSnapshotStart, dataSnapshotEnd uint64) fileformat.IndexTxnHeader {
 	n := len(b.rows)
-	pages := uint32(0)
-	if n > 0 {
-		pages = uint32((n + indexPageEntryCount - 1) / indexPageEntryCount)
-	}
+	pages := b.pageCount
 	return fileformat.IndexTxnHeader{
 		TxnSequence:        b.sequence,
 		SnapshotID:         b.snapshot.SnapshotID,

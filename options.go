@@ -17,6 +17,20 @@ const (
 	CompressionZstd
 )
 
+// IndexMode selects how the read-time row index is materialized.
+//
+//	IndexEager (zero value): the whole row index is decoded into compact
+//	    per-(snapshot, table) SoA shards at Open (idxB/row ≈ 13).
+//	IndexLazy: only the Row Index Fence directory is resident (~0.013 B/row);
+//	    each Row Index Page is OPENed + decompressed + decoded on first access
+//	    and held in a bounded IndexPageCache.
+type IndexMode uint8
+
+const (
+	IndexEager IndexMode = iota
+	IndexLazy
+)
+
 // Durability selects the commit durability mode.
 type Durability uint8
 
@@ -53,8 +67,8 @@ type Options struct {
 	CompressionLevel int
 
 	// CacheBytes is the total budget for decoded data held in memory:
-	// DataCache + ScanWindow (and, once lazy indexes exist, IndexPageCache)
-	// never exceed it. Negative disables all caching.
+	// DataCache + ScanWindow + IndexPageCache never exceed it. Negative
+	// disables all caching.
 	CacheBytes int64
 	// ScanCacheBytes bounds the scan window explicitly. 0 selects the
 	// default split (half of CacheBytes, capped at 64 MiB); negative
@@ -62,6 +76,16 @@ type Options struct {
 	// random-read cache gets whatever the scan window leaves unused, so
 	// DataCache + ScanCacheBytes == CacheBytes always holds.
 	ScanCacheBytes int64
+
+	// IndexMode selects Eager (default, zero value) or Lazy row index
+	// materialization. Only meaningful at Open; the writer always emits the
+	// sorted Row Index Pages + Fence Directory.
+	IndexMode IndexMode
+	// IndexCacheBytes bounds the decoded Row Index Page cache in Lazy mode.
+	// 0 selects the default allocation from the total cache budget; negative
+	// disables it (every lazy row read re-decompresses its page). Only
+	// meaningful with IndexMode == IndexLazy and must not exceed CacheBytes.
+	IndexCacheBytes int64
 
 	Durability Durability
 	Validation ValidationMode
@@ -122,8 +146,14 @@ func (o Options) validate() error {
 	if o.Compression != CompressionNone && o.Compression != CompressionZstd {
 		return fmt.Errorf("%w: compression %d", ErrInvalidArgument, o.Compression)
 	}
+	if o.IndexMode != IndexEager && o.IndexMode != IndexLazy {
+		return fmt.Errorf("%w: index mode %d", ErrInvalidArgument, o.IndexMode)
+	}
 	if o.CacheBytes > 0 && o.ScanCacheBytes >= o.CacheBytes {
 		return fmt.Errorf("%w: scan cache %d leaves no random-read budget in %d", ErrInvalidArgument, o.ScanCacheBytes, o.CacheBytes)
+	}
+	if o.IndexMode == IndexLazy && o.IndexCacheBytes > 0 && o.IndexCacheBytes >= o.CacheBytes {
+		return fmt.Errorf("%w: index cache %d leaves no data/scan budget in %d", ErrInvalidArgument, o.IndexCacheBytes, o.CacheBytes)
 	}
 	if o.BlockSize < 64 {
 		return fmt.Errorf("%w: block size %d too small", ErrInvalidArgument, o.BlockSize)

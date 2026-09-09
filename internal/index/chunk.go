@@ -538,6 +538,7 @@ type storedBody struct {
 	metaCount  uint32
 	blockCount uint32
 	rowCount   uint64
+	chunkCount uint32 // number of chunks (snapshot + metadata + block); page seal base
 }
 
 // rowBatchSize bounds the streaming row batch handed to TxnSink.AddRows: a
@@ -575,6 +576,16 @@ type RowHintSink interface {
 // []RowKeyLoc intermediate (S3-⑦ 落盘② Open 峰值优化).
 type RowEntrySink interface {
 	AddRowEntry(e fileformat.RowIndexEntry) error
+}
+
+// FenceCaptureSink is an optional TxnSink extension for the Lazy index mode:
+// the parser hands the sink the validated Row Index Fence Directory and then
+// stops WITHOUT decoding any page payload (no page is OPENed/decompressed).
+// Implementing it makes parseRowIndexPages skip page decoding, so a Lazy Open
+// never materializes a page and never touches the row bytes — only the 52 B
+// fence entries become resident. The sink must run count validation itself.
+type FenceCaptureSink interface {
+	SetRowIndexFences(fences []fileformat.RowIndexFenceEntry) error
 }
 
 // bufferedSink is the default TxnSink collecting into storedBody slices
@@ -768,6 +779,7 @@ func parseStoredBody(region []byte, snapshotID uint64, metadataCount, blockCount
 	}
 	sb.dir = dir
 	sb.plainCRC = crcConcat(sb.plainCRC, dirBytes)
+	sb.chunkCount = seq
 	if err := parseRowIndexPages(region, pos+dirLen, rowIndexPageCount, snapshotID, crypto, sink, seq, &sb.plainCRC, &sb.rowCount); err != nil {
 		return nil, err
 	}
@@ -783,24 +795,29 @@ func parseStoredBody(region []byte, snapshotID uint64, metadataCount, blockCount
 // plaintext-body CRC gains the raw page bytes and the fence bytes, and the
 // running row count is accumulated into rowCount. Forged page counts, offsets
 // or sizes are rejected before any attacker-sized allocation.
-func parseRowIndexPages(region []byte, pageStart int, pageCount uint32, snapshotID uint64, crypto *ChunkCrypto, sink TxnSink, seq uint32, plainCRC *uint32, rowCount *uint64) error {
+// parseRowIndexFences parses and validates the Row Index Fence Directory that
+// follows the pages region of a txn body (S3-⑦). It returns the fences and the
+// absolute offset (within region) where the fence directory begins = where the
+// pages region ends. Used by both the page-decoding path and the Lazy path
+// (which stops after the fence, never decoding a page payload).
+func parseRowIndexFences(region []byte, pageStart int, pageCount uint32, snapshotID uint64) (fences []fileformat.RowIndexFenceEntry, pageEnd int, err error) {
 	if pageCount == 0 {
-		return nil
+		return nil, pageStart, nil
 	}
 	fenceLen := int(pageCount) * fileformat.IndexFenceEntrySize
 	if pageStart < 0 || pageStart >= len(region) || fenceLen > len(region)-pageStart {
-		return fmt.Errorf("rowpack: row index fence directory %d bytes exceeds body %d", fenceLen, len(region)-pageStart)
+		return nil, 0, fmt.Errorf("rowpack: row index fence directory %d bytes exceeds body %d", fenceLen, len(region)-pageStart)
 	}
-	pageEnd := len(region) - fenceLen
+	pageEnd = len(region) - fenceLen
 	if pageEnd < pageStart {
-		return fmt.Errorf("rowpack: row index pages region %d..%d malformed", pageStart, pageEnd)
+		return nil, 0, fmt.Errorf("rowpack: row index pages region %d..%d malformed", pageStart, pageEnd)
 	}
 	fenceRegion := region[pageEnd:]
-	fences := make([]fileformat.RowIndexFenceEntry, int(pageCount))
+	fences = make([]fileformat.RowIndexFenceEntry, int(pageCount))
 	for i := range fences {
 		off := i * fileformat.IndexFenceEntrySize
 		if err := fences[i].Unmarshal(fenceRegion[off : off+fileformat.IndexFenceEntrySize]); err != nil {
-			return fmt.Errorf("rowpack: row index fence %d: %w", i, err)
+			return nil, 0, fmt.Errorf("rowpack: row index fence %d: %w", i, err)
 		}
 	}
 	// Fence cohesion: snapshot ownership, strictly ordered and contiguous
@@ -809,22 +826,58 @@ func parseRowIndexPages(region []byte, pageStart int, pageCount uint32, snapshot
 	for i := range fences {
 		f := &fences[i]
 		if f.SnapshotID != snapshotID {
-			return fmt.Errorf("rowpack: row index fence %d snapshot %d, want %d", i, f.SnapshotID, snapshotID)
+			return nil, 0, fmt.Errorf("rowpack: row index fence %d snapshot %d, want %d", i, f.SnapshotID, snapshotID)
 		}
 		if f.StoredSize == 0 || f.RawSize == 0 || f.EntryCount == 0 {
-			return fmt.Errorf("rowpack: row index fence %d zero size/entry", i)
+			return nil, 0, fmt.Errorf("rowpack: row index fence %d zero size/entry", i)
 		}
 		if f.StoredOffset < uint64(pageStart) || f.StoredOffset > uint64(pageEnd) ||
 			uint64(f.StoredSize) > uint64(pageEnd)-f.StoredOffset {
-			return fmt.Errorf("rowpack: row index fence %d page out of bounds", i)
+			return nil, 0, fmt.Errorf("rowpack: row index fence %d page out of bounds", i)
 		}
 		if f.StoredOffset != expectOff {
-			return fmt.Errorf("rowpack: row index fence %d offset %d, want %d", i, f.StoredOffset, expectOff)
+			return nil, 0, fmt.Errorf("rowpack: row index fence %d offset %d, want %d", i, f.StoredOffset, expectOff)
 		}
 		expectOff += uint64(f.StoredSize)
 	}
 	if expectOff != uint64(pageEnd) {
-		return fmt.Errorf("rowpack: row index pages span %d bytes, want %d", expectOff-uint64(pageStart), pageEnd-pageStart)
+		return nil, 0, fmt.Errorf("rowpack: row index pages span %d bytes, want %d", expectOff-uint64(pageStart), pageEnd-pageStart)
+	}
+	return fences, pageEnd, nil
+}
+
+// parseRowIndexPages decodes the Row Index Pages + Fence Directory that
+// follow the chunk directory in a txn body (S3-⑦). region is the full body;
+// pageStart is the absolute offset (within region) where the pages region
+// begins. crypto must be non-nil iff the pages are sealed (encrypted store);
+// pages seal under the chunk sequence continuing past seq (the chunk count).
+// Entries are handed to sink in RowID-sorted order in bounded batches, the
+// plaintext-body CRC gains the raw page bytes and the fence bytes, and the
+// running row count is accumulated into rowCount. Forged page counts, offsets
+// or sizes are rejected before any attacker-sized allocation.
+func parseRowIndexPages(region []byte, pageStart int, pageCount uint32, snapshotID uint64, crypto *ChunkCrypto, sink TxnSink, seq uint32, plainCRC *uint32, rowCount *uint64) error {
+	if pageCount == 0 {
+		return nil
+	}
+	// Fence directory parsed + validated first; pageEnd is where the fence
+	// directory begins (= where the pages region ends).
+	fences, pageEnd, err := parseRowIndexFences(region, pageStart, pageCount, snapshotID)
+	if err != nil {
+		return err
+	}
+	// Lazy mode: the sink captures the fence and stops without decoding any
+	// page payload. The running row count is derived from the fence; the
+	// plaintext-body CRC is left incomplete (the Lazy Open deliberately skips
+	// the full-body CRC — integrity comes from the stored-byte CRC plus each
+	// page's own PageCRC32C / AEAD).
+	if fs, ok := sink.(FenceCaptureSink); ok {
+		if err := fs.SetRowIndexFences(fences); err != nil {
+			return err
+		}
+		for i := range fences {
+			*rowCount += uint64(fences[i].EntryCount)
+		}
+		return nil
 	}
 	// Decode each page and hand its entries to the sink.
 	for i := range fences {
@@ -891,6 +944,6 @@ func parseRowIndexPages(region []byte, pageStart int, pageCount uint32, snapshot
 			}
 		}
 	}
-	*plainCRC = crcConcat(*plainCRC, fenceRegion)
+	*plainCRC = crcConcat(*plainCRC, region[pageEnd:])
 	return nil
 }

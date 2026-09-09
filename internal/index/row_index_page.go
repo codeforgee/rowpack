@@ -49,38 +49,52 @@ type rowIndexPageBuild struct {
 func (b *Builder) buildRowIndexPages(crypto *ChunkCrypto, level int, pageSeqBase uint32) ([]rowIndexPageBuild, error) {
 	n := len(b.rows)
 	if n == 0 {
+		b.pageCount = 0
 		return nil, nil
 	}
 	sortRowIndexEntries(b.rows)
 	out := make([]rowIndexPageBuild, 0, (n+indexPageEntryCount-1)/indexPageEntryCount)
-	for start := 0; start < n; start += indexPageEntryCount {
-		end := start + indexPageEntryCount
-		if end > n {
-			end = n
+	// Partition into SINGLE-TABLE pages: a page never splits a table run. This
+	// makes each RowIndexFenceEntry a per-table key (TableID + Min/Max RowID fall
+	// within one table), so the fence is a correct monotonic binary-search index
+	// over (TableID, RowID) for Lazy reads. A table longer than
+	// indexPageEntryCount still splits every page boundary.
+	for i := 0; i < n; {
+		j := i
+		for j < n && b.rows[j].TableID == b.rows[i].TableID {
+			j++
 		}
-		page, _, _, _, err := encodeRowIndexPage(b.rows[start:end], indexPageEntryCount)
-		if err != nil {
-			return nil, err
-		}
-		stored, err := block.Compress(fileformat.CompressionZstd, level, page)
-		if err != nil {
-			return nil, err
-		}
-		storedSize := uint32(len(stored))
-		if crypto != nil {
-			sealed, err := crypto.Seal(pageSeqBase+uint32(len(out)), rowIndexPageChunkKind, uint32(len(out)), len(page), stored)
+		for s := i; s < j; s += indexPageEntryCount {
+			e := s + indexPageEntryCount
+			if e > j {
+				e = j
+			}
+			page, _, _, _, err := encodeRowIndexPage(b.rows[s:e], indexPageEntryCount)
 			if err != nil {
 				return nil, err
 			}
-			stored = sealed
-			storedSize = uint32(len(sealed))
+			stored, err := block.Compress(fileformat.CompressionZstd, level, page)
+			if err != nil {
+				return nil, err
+			}
+			storedSize := uint32(len(stored))
+			if crypto != nil {
+				sealed, err := crypto.Seal(pageSeqBase+uint32(len(out)), rowIndexPageChunkKind, uint32(len(out)), len(page), stored)
+				if err != nil {
+					return nil, err
+				}
+				stored = sealed
+				storedSize = uint32(len(sealed))
+			}
+			fence, err := fenceForRowIndexPage(page, storedSize, b.snapshot.SnapshotID, 0)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, rowIndexPageBuild{raw: page, stored: stored, fence: fence})
 		}
-		fence, err := fenceForRowIndexPage(page, storedSize, b.snapshot.SnapshotID, 0)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, rowIndexPageBuild{raw: page, stored: stored, fence: fence})
+		i = j
 	}
+	b.pageCount = uint32(len(out))
 	return out, nil
 }
 
@@ -455,6 +469,13 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 		return fmt.Errorf("rowpack: index page max row id %d, want %d", h.MaxRowID, globalMax)
 	}
 	return nil
+}
+
+// DecodeIndexPage decodes a Row Index Page into a []RowIndexEntry. It is the
+// exported form of decodeRowIndexPage, used by the store's LazySource to
+// materialize a page on a lazy load and hand it to the IndexPageCache.
+func DecodeIndexPage(raw []byte) ([]fileformat.RowIndexEntry, error) {
+	return decodeRowIndexPage(raw)
 }
 
 // decodeRowIndexPage 严格解码一个 Row Index Page，物化整页 []RowIndexEntry。

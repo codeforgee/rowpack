@@ -80,6 +80,26 @@ Eager 读路径改为从 Index Page 解码直建 SoA/block-run shard（S3-⑧ �
 更紧凑（ADR-005：seq/delta 省 ~43%、rand 省 ~13%），golden 文件变小。加密 store 的
 Index Page 按 R11 走 Index 域 chunk-nonce/AAD 密封，冷读/热点加密档与 S2/S3-⑧ 一致。
 
+**S3-⑨ 峰值优化 + S4 Lazy 模式**（2026-09-09，同机同口径，1M 行 Open 档）。
+
+| 场景 | S3-⑧ → S3-⑦ 落盘② | **S3-⑨（P1）** | **S4 Lazy（P2）** | 门槛 | 结论 |
+| --- | --- | --- | --- | --- | --- |
+| Open 1M `idxB/row`（Eager） | 13.02 | **13.02** | 13.02（Eager 不变） | ≤16 | ✅ |
+| Open 1M `B/op`（Eager） | 65.9 MB | **15.6 MB** | 15.6 MB | ≤65.9 MB | ✅ 大幅下降 |
+| Open 1M `fenceB/row`（Lazy 常驻） | — | — | **0.0127** | ≤0.25（期望≤0.1） | ✅ |
+| Open 1M `B/op`（Lazy） | — | — | **0.23**（无页物化/shard 构建） | — | ✅ |
+| 热点读（Eager） | 250 ns | 不变 | **250 ns**（Lazy 分支不劣化 Eager） | ≤125% | ✅ |
+
+S3-⑨（P1）把 Open 的 `[]RowIndexEntry` 页物化 + `[]RowKeyLoc` 全量中间层去掉：
+`walkRowIndexPage` 流式吐条目，直喂 `rowShardBuilder`（SoA/block-run），Eager 常驻 13.02
+B/row 不变，但 Open 瞬态分配 65.9 → 15.6 MB。
+
+S4 Lazy（P2）在保留 Eager（零值默认）前提下新增 `IndexLazy`：Open 只加载 Row Index
+Fence（52 B/页），真实页按需 OPEN+decompress+decode 并在 bounded `IndexPageCache` 缓存。
+常驻 `fenceB/row` 0.0127（远低于 0.25），`CacheBytes = DataPageCache + ScanWindow +
+IndexPageCache` 守恒。深链 Get 的 I/O 放大可接受（Fence `[Min,Max]` 边界过滤 + 页缓存
+吸收），**不引入**负查询缓存或 page bloom filter（详见 ADR-006 决策点 #4）。
+
 ## 1. 基准套件与指标口径
 
 `make bench` 一条命令复现全部基线（默认 `-benchtime=1s -count=1`，可用 `BENCHTIME`/

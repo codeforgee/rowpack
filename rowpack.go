@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/rowpack/rowpack/internal/block"
+	"github.com/rowpack/rowpack/internal/cache"
 	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/rowpack/rowpack/internal/index"
 	"github.com/rowpack/rowpack/internal/iofile"
@@ -127,6 +128,24 @@ type Store struct {
 	zstdEnc   *block.ZstdEncoder
 
 	recoveryStats atomic.Value // holds recoveryReport
+
+	// lazyPages maps snapshot ID -> the per-txn context a Lazy view needs to
+	// decode an Index Page on demand (absolute file start of the txn body, the
+	// chunk count = page-seal base, and the chunk-crypto context). Populated
+	// during recover only when Options.IndexMode == IndexLazy.
+	lazyPages map[uint64]lazyPageInfo
+	// idxPageSF merges concurrent index page load misses (singleflight).
+	idxPageSF cache.Group
+}
+
+// lazyPageInfo is the per-snapshot context the store's LazySource uses to load
+// and decode a Row Index Page on demand: the absolute offset of the txn body in
+// the file, the chunk count (page i seals / opens as chunk Seq+i), and the
+// chunk-crypto context (non-nil for plain stores with a nil crypto).
+type lazyPageInfo struct {
+	txnStart int64
+	seq      uint32
+	crypto   *index.ChunkCrypto
 }
 
 // Create creates a new empty single-file store at basePath (no extension). It
@@ -210,7 +229,14 @@ func openStore(basePath, dataPath string, opts Options, uuid [16]byte, header fi
 		MaxRawBytes:    opts.Limits.MaxRawBlockBytes,
 		MaxStoredBytes: opts.Limits.MaxStoredBlockBytes,
 	})
-	s.loader = newBlockLoader(s.reader, dataPath, opts.CacheBytes, opts.ScanCacheBytes)
+	// Only the Lazy index mode keeps a bounded decoded Index Page cache; the
+	// Eager default (zero value) materializes the whole row index at Open and
+	// never re-reads a page.
+	indexBytes := int64(-1)
+	if opts.IndexMode == IndexLazy {
+		indexBytes = opts.IndexCacheBytes
+	}
+	s.loader = newBlockLoader(s.reader, dataPath, opts.CacheBytes, opts.ScanCacheBytes, indexBytes)
 	s.uuid = uuid
 	s.header = header
 	// Cross-process single-writer lock for read-write opens.

@@ -1,9 +1,5 @@
 package fileformat
 
-import (
-	"encoding/binary"
-)
-
 // Rows Block v2 page-container layout (the payload behind a BlockKindRows
 // block header):
 //
@@ -106,5 +102,3 @@ func (h *RowsBlockHeader) StoredDataBytes(dir []RowsPageDirEntry) uint32 {
 	}
 	return n
 }
-
-var _ = binary.LittleEndian

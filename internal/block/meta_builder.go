@@ -1,7 +1,6 @@
 package block
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -110,5 +109,3 @@ func (b *MetadataBlockBuilder) Flush() error {
 
 // Pending returns the number of buffered records.
 func (b *MetadataBlockBuilder) Pending() int { return int(b.count) }
-
-var _ = errors.New

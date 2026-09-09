@@ -41,5 +41,3 @@ func (g *Group) Do(key any, fn func() (any, error)) (any, error) {
 	g.mu.Unlock()
 	return c.val, c.err
 }
-
-var _ = sync.Mutex{}

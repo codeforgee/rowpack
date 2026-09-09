@@ -61,15 +61,47 @@ func EncodeInto(schema *Schema, row []Value, limits Limits, reuse []byte) ([]byt
 	}
 	buf = appendU32(buf, uint32(len(schema.Columns)))
 	buf = appendU32(buf, uint32(bitmapBytes))
-	bitmapOff := len(buf)
-	// Zero-fill the bitmap region from a stack array (bitmapBytes <= 2 KiB
-	// even at the 16384-column limit); appending via a make-free slice avoids
-	// a per-row allocation on the hot write path.
+	return encodeBodyInto(buf, schema, row, limits)
+}
+
+// EncodeBodyInto encodes the body of a TypedTuple — null bitmap + values,
+// without the 8-byte ColumnCount/NullBitmapBytes header — for page layouts
+// that carry the schema out of band (Rows Page v2). The returned slice may
+// alias reuse; per-value checks are identical to EncodeInto except that the
+// MaxRowBytes intermediate check counts body bytes only (8-byte header slack
+// is immaterial at the 64 MiB default limit).
+func EncodeBodyInto(schema *Schema, row []Value, limits Limits, reuse []byte) ([]byte, error) {
+	if schema == nil {
+		return nil, errors.New("rowpack: nil schema")
+	}
+	if len(schema.Columns) > int(limits.MaxColumns) {
+		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), limits.MaxColumns)
+	}
+	if len(row) != len(schema.Columns) {
+		return nil, fmt.Errorf("%w: row has %d values, schema has %d columns", ErrSchemaMismatch, len(row), len(schema.Columns))
+	}
+	bitmapBytes := (len(schema.Columns) + 7) / 8
+	need := bitmapBytes + 9*len(schema.Columns)
+	var buf []byte
+	if cap(reuse) >= need {
+		buf = reuse[:0]
+	} else {
+		buf = make([]byte, 0, need)
+	}
+	return encodeBodyInto(buf, schema, row, limits)
+}
+
+// encodeBodyInto appends the null bitmap and the per-column values to buf.
+// The bitmap region is zero-filled from a stack array (bitmapBytes <= 2 KiB
+// even at the 16384-column limit) so the hot write path stays allocation-free.
+func encodeBodyInto(buf []byte, schema *Schema, row []Value, limits Limits) ([]byte, error) {
+	bitmapBytes := (len(schema.Columns) + 7) / 8
 	if bitmapBytes <= len(bitmapScratch) {
 		buf = append(buf, bitmapScratch[:bitmapBytes]...)
 	} else {
 		buf = append(buf, make([]byte, bitmapBytes)...)
 	}
+	bitmapOff := len(buf) - bitmapBytes
 
 	for i, col := range schema.Columns {
 		v := row[i]
@@ -139,32 +171,45 @@ func DecodeInto(dst []Value, data []byte, schema *Schema, limits Limits, sink *S
 	if len(schema.Columns) > int(limits.MaxColumns) {
 		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), limits.MaxColumns)
 	}
-	pos := 0
-	readU32 := func() (uint32, bool) {
-		if len(data)-pos < 4 {
-			return 0, false
-		}
-		v := binary.LittleEndian.Uint32(data[pos:])
-		pos += 4
-		return v, true
-	}
-	colCount, ok := readU32()
-	if !ok {
+	if len(data) < 8 {
 		return nil, fmt.Errorf("rowpack: truncated tuple header")
 	}
+	colCount := binary.LittleEndian.Uint32(data[0:])
 	if int(colCount) != len(schema.Columns) {
 		return nil, fmt.Errorf("%w: tuple has %d columns, schema has %d", ErrSchemaMismatch, colCount, len(schema.Columns))
 	}
 	expectBitmap := (len(schema.Columns) + 7) / 8
-	bitmapBytes, ok := readU32()
-	if !ok || int(bitmapBytes) != expectBitmap {
+	bitmapBytes := binary.LittleEndian.Uint32(data[4:])
+	if int(bitmapBytes) != expectBitmap {
 		return nil, fmt.Errorf("rowpack: bitmap bytes = %d, want %d", bitmapBytes, expectBitmap)
 	}
-	if len(data)-pos < int(bitmapBytes) {
+	return decodeBodyInto(dst, data[8:], schema, limits, sink)
+}
+
+// DecodeBodyInto decodes a body-only TypedTuple — null bitmap + values,
+// without the 8-byte ColumnCount/NullBitmapBytes header — against schema.
+// Semantics (dst reuse, sink materialization, boundary checks) are identical
+// to DecodeInto; the bitmap size is derived from the schema rather than read
+// from the payload, and decoding must end exactly at the body boundary.
+func DecodeBodyInto(dst []Value, body []byte, schema *Schema, limits Limits, sink *Sink) ([]Value, error) {
+	if schema == nil {
+		return nil, errors.New("rowpack: nil schema")
+	}
+	if len(schema.Columns) > int(limits.MaxColumns) {
+		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), limits.MaxColumns)
+	}
+	return decodeBodyInto(dst, body, schema, limits, sink)
+}
+
+// decodeBodyInto is the shared bitmap+values decoder behind DecodeInto and
+// DecodeBodyInto.
+func decodeBodyInto(dst []Value, body []byte, schema *Schema, limits Limits, sink *Sink) ([]Value, error) {
+	expectBitmap := (len(schema.Columns) + 7) / 8
+	if len(body) < expectBitmap {
 		return nil, fmt.Errorf("rowpack: truncated null bitmap")
 	}
-	bitmap := data[pos : pos+int(bitmapBytes)]
-	pos += int(bitmapBytes)
+	bitmap := body[:expectBitmap]
+	pos := expectBitmap
 	// Unused high bits of the last byte must be zero.
 	if bits := len(schema.Columns) % 8; bits != 0 {
 		if last := bitmap[len(bitmap)-1]; last>>uint(bits) != 0 {
@@ -184,15 +229,15 @@ func DecodeInto(dst []Value, data []byte, schema *Schema, limits Limits, sink *S
 			row[i] = Null()
 			continue
 		}
-		v, n, err := readValueInto(row[i], data[pos:], col, limits, sink)
+		v, n, err := readValueInto(row[i], body[pos:], col, limits, sink)
 		if err != nil {
 			return nil, fmt.Errorf("rowpack: decode column %d (%q): %w", i, col.Name, err)
 		}
 		pos += n
 		row[i] = v
 	}
-	if pos != len(data) {
-		return nil, fmt.Errorf("rowpack: %d trailing bytes after tuple", len(data)-pos)
+	if pos != len(body) {
+		return nil, fmt.Errorf("rowpack: %d trailing bytes after tuple", len(body)-pos)
 	}
 	return row, nil
 }

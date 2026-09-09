@@ -136,9 +136,28 @@ S1 可与 S0 并行┘   (提交2,3)        (提交4,5,6)        (提交7,8)    
 
 ## 9. 决策检查点登记表（设计稿 §15）
 
+### 9.1 S2 原型测量数据（提交④）
+
+`BenchmarkRowsPageEncode`，200k 行 5 列混合（NULL/空字符串/变长 Bytes），rawB/row 恒定 115；zstd 压缩后：
+
+| PageSize | rows/page | rawB/row | storedB/row | ratio(stored/raw) | ratio vs 128K |
+| --- | --- | --- | --- | --- | --- |
+| 16 KiB | 143 | 115.6 | 14.78 | 0.128 | +17% |
+| 32 KiB | 285 | 115.3 | 13.50 | 0.117 | +7% |
+| 64 KiB | 570 | 115.2 | 12.80 | 0.111 | +2% |
+| 128 KiB | 1,136 | 115.2 | 12.52 | 0.109 | — |
+
+结论（不冻结，待落盘后与文件大小门槛复核）：32 KiB 相对 64 KiB 仅损失 ~7% 压缩率且
+读放大减半（单次冷读 32 KiB vs 64 KiB），符合设计 §6.1 初始建议。16 KiB 压缩率回归
++17%，过小。随机访问 `RecordAt` 463 ns/op（O(ordinal) 流遍历），顺序 `Records` 2.1 µs/页。
+
+> 注：这里是 5 列原型数据集，与 S0 7 列基线的 bytePerRow=23 不可直接比；落盘集成后
+> 用同一 7 列 benchCols 口径对比（提交⑥性能门槛验收）。
+
 | # | 决策 | 阶段 | 验证方法 | 记录位置 |
 | --- | --- | --- | --- | --- |
 | 1 | 默认 PageSize 16/32/64 KiB | S2 | 压缩率×冷读×写 CPU 矩阵 | ADR + S2 报告 |
+| 1 数据 | PageSize 原型（5 列混合 200k 行） | S2 ④ | 见下 | — |
 | 2 | Index Page 2048 vs 4096 条 | S3 | 顺序/乱序/小 DELTA 三负载 | ADR |
 | 3 | Eager shard：packed / SoA / block-run | S3 | 热点读 CPU + 内存对比 | ADR |
 | 4 | 深链是否要 Bloom filter | S4 | 深链负查询 benchmark，收益 > 内存+CPU 才引入 | ADR |

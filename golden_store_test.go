@@ -26,7 +26,7 @@ func TestGoldenManifest(t *testing.T) {
 		"empty-store.rpk":            "cd0a96b72ad858d8bceb946b4ae77b1667b6bf17b9d79d72c9b282a52ddc34f7",
 		"rows-payload-all-types.bin": "ae6f94f72c1b08f8c0a6727c97cb57cfad18b6f0ffc732a625db23be907b8769",
 		"full-delta-store.rpk":       "7a4b5a8ea2b1c77fd12d8d48850409007dc225f22e739055c3ef8537cccc8966",
-		"encrypted-store.rpk":        "3c6dd6adbec8550f53644c49c9e41c60f929b0c519d937a6d35e8a7aa395c003",
+		"encrypted-store.rpk":        "a0c816b103a2a42a65382582f1e67c7d4badfe51798ec95195d8c0b0fec25e1f",
 	}
 	for name, digest := range want {
 		data, err := os.ReadFile(goldenPath(name))

@@ -122,14 +122,12 @@ func (l *blockLoader) Load(offset int64, blockID uint64) (*block.Block, error) {
 }
 
 // loadRowsContext reads the validated Rows Block page container for a block.
-// For a plain store it reads only the block header + container header + page
-// directory (a lazy container that reads pages on demand, so a cold single-
-// row read pulls one page); for an encrypted store it reads the whole sealed
-// container (the directory is inside the ciphertext).
+// It reads only the block header + container header + page directory (a lazy
+// container that reads individual pages on demand), so a cold single-row read
+// pulls one page — for plain and (per-page-encrypted) encrypted stores alike:
+// the page directory is plaintext, and each page is OPENed and decompressed
+// only when accessed.
 func (l *blockLoader) loadRowsContext(offset int64) (*block.RowsContainer, error) {
-	if l.reader.Encrypted() {
-		return l.reader.ReadAtRowsContainer(offset)
-	}
 	return l.reader.ReadRowsDir(offset)
 }
 

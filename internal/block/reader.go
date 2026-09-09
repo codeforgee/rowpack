@@ -12,8 +12,14 @@ import (
 // Decrypter authenticates and decrypts one sealed block payload before
 // decompression. It is optional: a nil decrypter keeps the reader on the
 // plain path and fails closed on encrypted blocks.
+//
+// Decrypt opens a whole sealed block payload (metadata blocks, which remain
+// whole-sealed). OpenPage opens one sealed Rows Page stored bytes (per-page
+// encryption, BINARY_FORMAT_V2 §5.1); the page directory is plaintext, so a
+// reader OPENs only the page it needs.
 type Decrypter interface {
 	Decrypt(header fileformat.BlockHeader, ciphertext []byte) ([]byte, error)
+	OpenPage(header fileformat.BlockHeader, page fileformat.RowsPageDirEntry, ciphertext []byte) ([]byte, error)
 }
 
 // Reader reads blocks from a file via ReadAt (no shared seek cursor), so
@@ -73,11 +79,6 @@ func (r *Reader) SetDecrypter(d Decrypter) {
 	r.decrypter = d
 }
 
-// Encrypted reports whether a block decrypter is installed (an encrypted
-// store). The loader uses it to choose whole-container reads (encrypted)
-// versus page-level reads (plain).
-func (r *Reader) Encrypted() bool { return r.decrypter != nil }
-
 // viewer is an optional interface for handles that can expose direct views
 // into the file (mmap-backed appenders). Views are transient: valid only
 // until done is called.
@@ -85,10 +86,12 @@ type viewer interface {
 	View(offset, n int64) (b []byte, done func(), err error)
 }
 
-// ReadRowsDir reads a plain (non-encrypted) Rows block's header + container
-// header + page directory into a lazy RowsContainer that reads individual
-// pages on demand (R2 page-level I/O). It fails on encrypted blocks, which
-// must be read as a whole container (ReadAtRowsContainer).
+// ReadRowsDir reads a Rows block's header + container header + page directory
+// into a lazy RowsContainer that reads individual pages on demand (R2
+// page-level I/O). The block header, container header and page directory are
+// plaintext even for per-page-encrypted blocks, so this is the single read
+// entry point for plain and encrypted Rows blocks alike; each page is OPENed
+// (authenticated) and decompressed only when accessed.
 func (r *Reader) ReadRowsDir(offset int64) (*RowsContainer, error) {
 	var hdr [fileformat.BlockHeaderSize]byte
 	if _, err := r.ra.ReadAt(hdr[:], offset); err != nil {
@@ -103,9 +106,6 @@ func (r *Reader) ReadRowsDir(offset int64) (*RowsContainer, error) {
 	}
 	if h.BlockKind != fileformat.BlockKindRows {
 		return nil, fmt.Errorf("rowpack: block %d is kind %d, expected rows", h.BlockID, h.BlockKind)
-	}
-	if h.Encrypted {
-		return nil, fmt.Errorf("rowpack: block %d is encrypted; use ReadAtRowsContainer", h.BlockID)
 	}
 	return ParseRowsDir(offset, r, h, r.limits)
 }
@@ -122,6 +122,22 @@ func (r *Reader) ReadRowsPage(offset int64, c *RowsContainer, pageIdx int) (*Row
 		return nil, fmt.Errorf("rowpack: read page %d at %d: %w", pageIdx, pgOff, err)
 	}
 	r.readBytes.Add(uint64(len(stored)))
+	// Per-page encryption: the page directory is plaintext, so the stored
+	// bytes here are the sealed page; OPEN it (authenticate) before
+	// decompressing. Metadata blocks remain whole-sealed (Decrypt).
+	if c.blockH.Encrypted {
+		if r.decrypter == nil {
+			return nil, fmt.Errorf("rowpack: block %d page %d encrypted but no decrypter", c.blockH.BlockID, pageIdx)
+		}
+		pt, err := r.decrypter.OpenPage(c.blockH, *dir, stored)
+		if err != nil {
+			return nil, err
+		}
+		if len(pt) != int(dir.StoredSize)-fileformat.AESGCMTagLen {
+			return nil, fmt.Errorf("rowpack: page %d opened %d bytes, want stored %d - tag", pageIdx, len(pt), dir.StoredSize)
+		}
+		stored = pt
+	}
 	var raw []byte
 	if c.comp == fileformat.CompressionNone {
 		raw = stored
@@ -141,44 +157,6 @@ func (r *Reader) ReadRowsPage(offset int64, c *RowsContainer, pageIdx int) (*Row
 	}
 	r.decompressedBytes.Add(uint64(len(raw)))
 	return c.parsePage(pageIdx, raw)
-}
-
-// ReadAtRowsContainer reads a Rows Block page container: the block header
-// plus the container plaintext, without decompressing any page. The container
-// is validated (header/directory CRC and page bounds) by ParseRowsContainer,
-// so a caller can locate and decompress a single page on demand. Encrypted
-// containers are decrypted as a whole (this stage keeps whole-container
-// sealing); page-level AEAD nonces are a later stage.
-func (r *Reader) ReadAtRowsContainer(offset int64) (*RowsContainer, error) {
-	var hdr [fileformat.BlockHeaderSize]byte
-	if _, err := r.ra.ReadAt(hdr[:], offset); err != nil {
-		return nil, fmt.Errorf("rowpack: read block header at %d: %w", offset, err)
-	}
-	var h fileformat.BlockHeader
-	if err := h.Unmarshal(hdr[:]); err != nil {
-		return nil, err
-	}
-	if err := r.checkHeader(&h); err != nil {
-		return nil, err
-	}
-	if h.BlockKind != fileformat.BlockKindRows {
-		return nil, fmt.Errorf("rowpack: block %d is kind %d, expected rows", h.BlockID, h.BlockKind)
-	}
-	stored := make([]byte, h.StoredSize)
-	if _, err := r.ra.ReadAt(stored, offset+fileformat.BlockHeaderSize); err != nil {
-		return nil, fmt.Errorf("rowpack: read container at %d: %w", offset+fileformat.BlockHeaderSize, err)
-	}
-	container, err := r.maybeDecrypt(stored, &h)
-	if err != nil {
-		return nil, err
-	}
-	rc, err := ParseRowsContainer(container, h, r.limits)
-	if err != nil {
-		return nil, err
-	}
-	rc.SetDecompCounter(&r.decompressedBytes)
-	r.readBytes.Add(uint64(fileformat.BlockHeaderSize + int64(h.StoredSize)))
-	return rc, nil
 }
 
 // ReadAtBlock reads, validates and decompresses the block whose header starts

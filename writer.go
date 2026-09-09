@@ -768,12 +768,28 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 		if c := w.store.encCipher; c != nil {
 			blk.header.Encrypted = true
 			blk.header.KeyEpoch = 0
-			blk.header.StoredSize = uint32(len(blk.payload)) + fileformat.AESGCMTagLen
-			sealed, err := c.Seal(0, blk.header.BlockID, &w.store.uuid, &blk.header, blk.payload)
-			if err != nil {
-				return SnapshotInfo{}, err
+			if blk.header.BlockKind == fileformat.BlockKindRows {
+				// Per-page encryption (BINARY_FORMAT_V2 §5.1): seal each page
+				// independently so a cold encrypted read can OPEN the one page
+				// it needs instead of the whole container. The helper updates
+				// StoredSize/RawCRC32C to the rebuilt (sealed) container.
+				sealed, err := sealRowContainerPages(&blk.header, blk.payload, c, &w.store.uuid, block.Limits{
+					MaxRawBytes:    w.store.opts.Limits.MaxRawBlockBytes,
+					MaxStoredBytes: w.store.opts.Limits.MaxStoredBlockBytes,
+				})
+				if err != nil {
+					return SnapshotInfo{}, err
+				}
+				blk.payload = sealed
+			} else {
+				// Metadata blocks remain whole-container sealed.
+				blk.header.StoredSize = uint32(len(blk.payload)) + fileformat.AESGCMTagLen
+				sealed, err := c.Seal(0, blk.header.BlockID, &w.store.uuid, &blk.header, blk.payload)
+				if err != nil {
+					return SnapshotInfo{}, err
+				}
+				blk.payload = sealed
 			}
-			blk.payload = sealed
 		}
 		var hb [fileformat.BlockHeaderSize]byte
 		if err := blk.header.MarshalTo(hb[:]); err != nil {

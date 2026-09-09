@@ -102,7 +102,7 @@ Block 仍满足：
 
 - 一个 Block 只属于一个 Snapshot；
 - Rows Block 只属于一个 Table；
-- 先压缩后 AES-256-GCM 加密（阶段内先保留整容器密封；逐页 nonce 域分离为后续提交）；
+- 先压缩后 AES-256-GCM 加密：**Metadata Block 仍整容器密封**，**Rows Block 逐页密封**；
 - 独立 StoredSize、RawSize、CRC 和认证。
 
 ### 5.1 Rows Block 页容器
@@ -128,7 +128,23 @@ S2 起 Rows Block 的逻辑块（写入/统计/快照组织单位）与物理压
   读取按容器目录定位页，不需要 PageSize。
 - 超过 PageSize 的单行使用独立 Large Row Page（Flags bit0）。
 
-### 5.2 Row Index（S2 仍为 v1 布局，S3 替换）
+### 5.2 Rows Page 加密（逐页 nonce）
+
+每个 Rows Page **先压缩后单独 AES-256-GCM 密封**：页目录保持明文（供读取器无需解密即可
+定位页），每个 stored 页的字节 = `AEAD(压缩页) ‖ tag`，因此 `RowsPageDirEntry.StoredSize`
+= 压缩页长 + `AESGCMTagLen`。
+
+- **Nonce（96 位）**：HMAC-SHA256 派生自独立 page-nonce 子密钥，绑定
+  `StoreUUID ‖ SnapshotID ‖ BlockID ‖ PageOrdinal ‖ KeyEpoch`，与块 nonce、IndexTxn
+  nonce 和 IndexChunk nonce 域分离（`internal/seal` 的 `NoncePage`）。
+- **AAD**：`BuildAADPage` 绑定 store UUID、SnapshotID/BlockID/TableID/Compression、
+  页目录的 PageOrdinal/FirstRecordOrdinal/RecordCount/StoredSize/RawSize/MinRowID/MaxRowID
+  和 KeyEpoch；StoredSize 取**密封后**长度，所以读取端按目录字段认证自洽。
+- 未加密页不承担 tag 开销；同一页不会重放（nonce 域分离测试见
+  `internal/seal/seal_page_test.go`）。
+- 读取只 OPEN（认证）并解压所访问的那一页，加密块同样享受页级 I/O。
+
+### 5.3 Row Index（S2 仍为 v1 布局，S3 替换）
 
 RowIndexEntry（v1 定长 40 B）继续提供 `(SnapshotID, TableID, RowID) → BlockID, ItemOrdinal`。
 排序 Row Index Page + Fence + Eager/Lazy 模式属于 S3/S4，未在本版格式中落地。

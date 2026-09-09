@@ -137,18 +137,20 @@ func ParseRowsContainer(container []byte, h fileformat.BlockHeader, limits Limit
 	return c, nil
 }
 
-// ParseRowsDir validates a plain block's header + container header + page
-// directory WITHOUT reading any page payload, and returns a lazy RowsContainer
-// that reads pages on demand through the reader. It fails on encrypted blocks
-// (the directory is sealed inside the whole container), which must go through
-// ParseRowsContainer / ReadAtRowsContainer.
+// ParseRowsDir validates a block's header + container header + page directory
+// WITHOUT reading any page payload, and returns a lazy RowsContainer that
+// reads (and, for per-page-encrypted blocks, OPENs) pages on demand through
+// the reader. The directory is plaintext for plain and encrypted blocks alike,
+// so this is the read entry point for both.
 func ParseRowsDir(offset int64, r *Reader, h fileformat.BlockHeader, limits Limits) (*RowsContainer, error) {
 	if h.BlockKind != fileformat.BlockKindRows {
 		return nil, fmt.Errorf("rowpack: block %d is kind %d, not rows", h.BlockID, h.BlockKind)
 	}
-	if h.Encrypted {
-		return nil, fmt.Errorf("rowpack: block %d is encrypted; must read the whole container", h.BlockID)
-	}
+	// The block header + container header + page directory are all plaintext
+	// even for encrypted blocks (BINARY_FORMAT_V2 §5.1: pages are sealed, the
+	// directory is not). So we can read the directory and OPEN+decompress
+	// individual pages on demand, which is the whole point of per-page
+	// encryption on the read path.
 	// Read the container header first (it carries PageCount so we know the
 	// directory length).
 	var ch [fileformat.RowsBlockHeaderSize]byte
@@ -245,7 +247,10 @@ func (c *RowsContainer) validatePageBounds(recordsStart int) error {
 		if c.stored != nil && int(e.StoredOffset)+int(e.StoredSize) > len(c.stored) {
 			return fmt.Errorf("rowpack: page %d stored bytes escape container", i)
 		}
-		if c.comp == fileformat.CompressionNone && e.StoredSize != e.RawSize {
+		// None-compression pages are stored == raw, EXCEPT per-page-encrypted
+		// blocks where the stored bytes are the sealed page (raw + tag) and
+		// the raw size is recovered after OPEN.
+		if c.comp == fileformat.CompressionNone && !c.blockH.Encrypted && e.StoredSize != e.RawSize {
 			return fmt.Errorf("rowpack: none-compressed page %d stored %d != raw %d", i, e.StoredSize, e.RawSize)
 		}
 		expectedOff += int(e.StoredSize)

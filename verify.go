@@ -82,7 +82,9 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 					return nil
 				})
 				if verr != nil {
-					return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Reason: verr.Error()}
+					// Preserve the underlying cause (e.g. ErrAuthFailed) so
+					// errors.Is(ErrAuthFailed) works on the tamper path.
+					return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: verr, Reason: verr.Error()}
 				}
 			}
 			continue

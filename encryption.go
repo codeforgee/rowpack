@@ -96,6 +96,23 @@ func (d *storeDecrypter) Decrypt(h fileformat.BlockHeader, ciphertext []byte) ([
 	return pt, nil
 }
 
+// OpenPage authenticates and decrypts one sealed Rows Page stored bytes
+// (per-page encryption). The nonce binds the store/snapshot/block/page/epoch
+// and the AAD binds the page-directory fields and block identity
+// (BINARY_FORMAT_V2 §5.1). The returned plaintext is the page's compressed
+// payload.
+func (d *storeDecrypter) OpenPage(h fileformat.BlockHeader, page fileformat.RowsPageDirEntry, ciphertext []byte) ([]byte, error) {
+	c, err := d.cipherFor(h.KeyEpoch)
+	if err != nil {
+		return nil, err
+	}
+	pt, err := c.OpenPage(&d.uuid, h.BlockID, h.SnapshotID, h.TableID, h.Compression, page, h.KeyEpoch, ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("%w: rows page %d (block %d, snapshot %d, table %d): %v", ErrAuthFailed, page.PageOrdinal, h.BlockID, h.SnapshotID, h.TableID, err)
+	}
+	return pt, nil
+}
+
 // OpenIndexChunk authenticates and decrypts one sealed index txn chunk. The
 // nonce is HMAC-derived from (txn sequence, chunk sequence) and the AAD binds
 // store, txn, chunk identity and lengths (doc §5.3/§5.4). The returned

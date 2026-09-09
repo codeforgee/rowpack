@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/stretchr/testify/require"
 )
 
@@ -247,15 +248,26 @@ func TestEncryptionTamperDetect(t *testing.T) {
 	rowsBlk := st.view.Block(loc.BlockID)
 	require.NotNil(t, rowsBlk)
 	blkOff := int64(rowsBlk.DataOffset) + 64 // 64-byte BlockHeader
+	// Per-page encryption: the container header + page directory are plaintext
+	// and the stored pages are sealed. Tamper a byte inside the first sealed
+	// page so the AEAD authenticates (a flip in the plaintext header would be
+	// caught by structure validation, not authentication). Read the container
+	// header for PageCount, then jump past the directory to page 0.
+	var chdr [fileformat.RowsBlockHeaderSize]byte
 	require.NoError(t, db.Close())
 
 	f, err := os.OpenFile(base+".rpk", os.O_RDWR, 0)
 	require.NoError(t, err)
+	_, err = f.ReadAt(chdr[:], blkOff)
+	require.NoError(t, err)
+	pageCount := le32(chdr[12:]) // RowsBlockHeader.PageCount
+	require.Greater(t, pageCount, uint32(0))
+	page0Stored := blkOff + int64(fileformat.RowsBlockHeaderSize) + int64(pageCount)*int64(fileformat.RowsPageDirEntrySize)
 	payload := make([]byte, 16)
-	_, err = f.ReadAt(payload, blkOff)
+	_, err = f.ReadAt(payload, page0Stored)
 	require.NoError(t, err)
 	payload[0] ^= 0x01
-	_, err = f.WriteAt(payload, blkOff)
+	_, err = f.WriteAt(payload, page0Stored)
 	require.NoError(t, err)
 	require.NoError(t, f.Close())
 

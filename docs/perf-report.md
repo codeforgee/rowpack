@@ -43,8 +43,19 @@ O(1) 记录索引。实测（`BenchmarkGetHot / GetCold / GetColdUnpooled / Writ
 | 文件大小（golden 样本） | — | 变小（页格式去掉逐行冗余） | ≤ +10% | ✅ |
 
 > 说明：冷读临时分配由整块解压（~256 KiB raw）降为一页（~32 KiB raw）+ 目录 + 页索引
-> ≈ 57.9 KiB，高于 40 KiB 期望但仍低于 64 KiB 硬门槛。加密块本阶段保留整容器密封，
-> 加密冷读增量成本单独报告（逐页 nonce 为下一提交，见 `docs/REFACTOR_EXECUTION_PLAN.md` §5）。
+> ≈ 57.9 KiB，高于 40 KiB 期望但仍低于 64 KiB 硬门槛。
+
+**加密档（逐页 nonce，S2 item⑤ 已实现，增量成本单独报告）**
+
+| 场景 | 明文 | 加密 | 增量 |
+| --- | --- | --- | --- |
+| 热点读 | ~255 ns/op | ~283 ns/op | ~+11% |
+| 顺序写 | ~87 ms | ~180 ms | ~2x（每页 AES-GCM） |
+| 敏感读（每个 GET 只 OPEN 一页） | 页级 I/O | 页级 I/O（整页 OPEN） | 无整容器放大 |
+
+加密块冷读由于逐页 OPEN，同样只读/解密/解压所访问的那一页，不引入整容器读取放大
+（metadata 块仍整容器密封）。逐页 nonce 域分离与篡改/跨上下文拒绝测试见
+`internal/seal/seal_page_test.go`。
 
 ## 1. 基准套件与指标口径
 

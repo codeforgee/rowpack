@@ -48,7 +48,7 @@ func TestM5VerticalSlice(t *testing.T) {
 	db, err := Create(base, opts)
 	require.NoError(t, err)
 
-	w, err := db.BeginSnapshot(ctx(t), SnapshotFull, SnapshotOptions{})
+	w, err := db.BeginFull(ctx(t))
 	require.NoError(t, err)
 
 	// Schema with 10 base types.
@@ -67,12 +67,12 @@ func TestM5VerticalSlice(t *testing.T) {
 			{Name: "balance", Type: TypeDecimal, Scale: 2},
 		},
 	}
-	require.NoError(t, w.DefineSchema(schema))
+	require.NoError(t, w.CreateTable("users", schema.Columns))
 	// Define a second table.
-	require.NoError(t, w.DefineSchema(Schema{TableID: 2, Version: 1, Name: "orders", Columns: []Column{
+	require.NoError(t, w.CreateTable("orders", []Column{
 		{Name: "order_id", Type: TypeUint64},
 		{Name: "user_id", Type: TypeUint64},
-	}}))
+	}))
 
 	// Write 2000 rows across two tables; block size 512 forces multiple blocks.
 	created := time.Date(2024, 1, 2, 3, 4, 5, 678, time.UTC)
@@ -87,15 +87,13 @@ func TestM5VerticalSlice(t *testing.T) {
 			DateTime(created.Add(time.Duration(i) * time.Second)),
 			DecimalValue(Decimal{Unscaled: big.NewInt(int64(i*100 + 99)), Scale: 2}),
 		}
-		require.NoError(t, w.Insert(ctx(t), 1, i+1, 1, row))
-		require.NoError(t, w.Insert(ctx(t), 2, i+1, 1, Row{Uint64(i + 1), Uint64(i + 1)}))
+		require.NoError(t, w.Insert(ctx(t), "users", i+1, row))
+		require.NoError(t, w.Insert(ctx(t), "orders", i+1, Row{Uint64(i + 1), Uint64(i + 1)}))
 	}
 
 	full, err := w.Commit(ctx(t))
 	require.NoError(t, err)
-	require.Equal(t, SnapshotFull, full.Type, "bad commit info: %+v", full)
-	require.Equal(t, uint64(1), full.ID, "bad commit info: %+v", full)
-	require.Equal(t, uint64(4000), full.ChangeCount, "bad commit info: %+v", full)
+	require.Equal(t, SnapshotID(1), full, "bad commit info: %+v", full)
 	require.NoError(t, db.Close())
 
 	// Reopen and verify.
@@ -108,7 +106,7 @@ func TestM5VerticalSlice(t *testing.T) {
 	require.Len(t, snapshots, 1, "snapshots: %v %v", snapshots, err)
 
 	// Schema round trip.
-	gotSchema, err := db2.Schema(ctx(t), full.ID, 1, 1)
+	gotSchema, err := db2.Schema(ctx(t), full, 1, 1)
 	require.NoError(t, err)
 	require.Len(t, gotSchema.Columns, len(schema.Columns), "schema columns %d != %d", len(gotSchema.Columns), len(schema.Columns))
 	for i := range schema.Columns {
@@ -120,16 +118,16 @@ func TestM5VerticalSlice(t *testing.T) {
 	}
 
 	// Latest schema and tables.
-	latest, err := db2.LatestSchema(ctx(t), full.ID, 1)
-	require.NoError(t, err, "latest schema: %v %v", latest, err)
-	require.Equal(t, uint32(1), latest.Version, "latest schema: %v %v", latest, err)
-	tables, err := db2.Tables(ctx(t), full.ID)
+	tables, err := db2.Tables(ctx(t), full)
 	require.NoError(t, err, "tables: %v %v", tables, err)
 	require.Len(t, tables, 2, "tables: %v %v", tables, err)
+	latest, err := db2.Schema(ctx(t), full, 1, tables[0].LatestVersion)
+	require.NoError(t, err, "latest schema: %v %v", latest, err)
+	require.Equal(t, uint32(1), latest.Version, "latest schema: %v %v", latest, err)
 
 	// Random row reads with value-by-value comparison.
 	for i := uint64(0); i < 2000; i += 37 {
-		row, err := db2.Get(ctx(t), full.ID, 1, i+1, nil)
+		row, err := db2.Get(ctx(t), full, "users", i+1, nil)
 		require.NoError(t, err, "get row %d", i+1)
 		// Compare each value.
 		v, _ := row[0].Uint64()
@@ -153,15 +151,15 @@ func TestM5VerticalSlice(t *testing.T) {
 	}
 
 	// Exists.
-	ok, err := db2.Exists(ctx(t), full.ID, 1, 1)
+	ok, err := db2.Exists(ctx(t), full, "users", 1)
 	require.NoError(t, err, "exists: %v %v", ok, err)
 	require.True(t, ok, "exists: %v %v", ok, err)
-	ok, err = db2.Exists(ctx(t), full.ID, 1, 99999)
+	ok, err = db2.Exists(ctx(t), full, "users", 99999)
 	require.NoError(t, err, "exists miss: %v %v", ok, err)
 	require.False(t, ok, "exists miss: %v %v", ok, err)
 
 	// Get of a nonexistent row returns ErrNotFound.
-	_, err = db2.Get(ctx(t), full.ID, 1, 99999, nil)
+	_, err = db2.Get(ctx(t), full, "users", 99999, nil)
 	require.Error(t, err, "get nonexistent row succeeded")
 
 	// Stats sanity.

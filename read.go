@@ -26,32 +26,6 @@ func (s *Store) captureState() (*publishedState, error) {
 	return st, nil
 }
 
-// Snapshot returns the metadata of a committed snapshot.
-func (s *Store) Snapshot(ctx context.Context, id SnapshotID) (SnapshotInfo, error) {
-	st, err := s.captureState()
-	if err != nil {
-		return SnapshotInfo{}, err
-	}
-	sm := st.view.Snapshot(id)
-	if sm == nil {
-		return SnapshotInfo{}, fmt.Errorf("%w: snapshot %d", ErrNotFound, id)
-	}
-	return snapshotInfoFromMeta(sm), nil
-}
-
-// LatestSnapshot returns the highest committed snapshot.
-func (s *Store) LatestSnapshot(ctx context.Context) (SnapshotInfo, error) {
-	st, err := s.captureState()
-	if err != nil {
-		return SnapshotInfo{}, err
-	}
-	sm := st.view.LatestSnapshot()
-	if sm == nil {
-		return SnapshotInfo{}, ErrNotFound
-	}
-	return snapshotInfoFromMeta(sm), nil
-}
-
 // ListSnapshots returns committed snapshots sorted by ID.
 func (s *Store) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 	st, err := s.captureState()
@@ -88,21 +62,25 @@ func snapshotInfoFromMeta(sm *index.SnapshotMeta) SnapshotInfo {
 // safe, but retained Value structs may observe overwritten Decimals after the
 // next call. The contents of dst are unspecified if an error is returned.
 // A DELETE tombstone or an absent row returns ErrNotFound.
-func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table TableID, rowID RowID, dst Row) (Row, error) {
+func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowID RowID, dst Row) (Row, error) {
 	st, err := s.captureState()
 	if err != nil {
 		return nil, err
 	}
-	view := st.view
-	if view.Snapshot(snapshot) == nil {
+	if st.view.Snapshot(uint64(snapshot)) == nil {
 		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	loc := view.ResolveRow(snapshot, table, rowID)
+	tid, ok := st.schemas.tableIDByName(uint64(snapshot), table)
+	if !ok {
+		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
+	}
+	view := st.view
+	loc := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
 	if loc == nil {
-		return nil, fmt.Errorf("%w: (table %d, row %d) in snapshot %d", ErrNotFound, table, rowID, snapshot)
+		return nil, fmt.Errorf("%w: (table %d, row %d) in snapshot %d", ErrNotFound, tid, rowID, snapshot)
 	}
 	if loc.ChangeType == fileformat.ChangeDelete {
-		return nil, fmt.Errorf("%w: (table %d, row %d) deleted in snapshot %d", ErrNotFound, table, rowID, snapshot)
+		return nil, fmt.Errorf("%w: (table %d, row %d) deleted in snapshot %d", ErrNotFound, tid, rowID, snapshot)
 	}
 	row, _, err := s.readRowInto(view, st.schemas, loc, dst)
 	if err != nil {
@@ -113,16 +91,20 @@ func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table TableID, row
 
 // Exists reports whether a row is visible (not deleted) at the snapshot.
 // It resolves only the index/tombstone chain and does not read a block.
-func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table TableID, rowID RowID) (bool, error) {
+func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, rowID RowID) (bool, error) {
 	st, err := s.captureState()
 	if err != nil {
 		return false, err
 	}
-	view := st.view
-	if view.Snapshot(snapshot) == nil {
+	if st.view.Snapshot(uint64(snapshot)) == nil {
 		return false, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	loc := view.ResolveRow(snapshot, table, rowID)
+	tid, ok := st.schemas.tableIDByName(uint64(snapshot), table)
+	if !ok {
+		return false, nil
+	}
+	view := st.view
+	loc := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
 	if loc == nil || loc.ChangeType == fileformat.ChangeDelete {
 		return false, nil
 	}
@@ -193,23 +175,6 @@ func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table TableID, 
 		return Schema{}, fmt.Errorf("%w: schema for table %d version %d", ErrSchemaMismatch, table, version)
 	}
 	return *schema, nil
-}
-
-// LatestSchema returns the highest schema version of a table at a snapshot.
-func (s *Store) LatestSchema(ctx context.Context, snapshot SnapshotID, table TableID) (Schema, error) {
-	st, err := s.captureState()
-	if err != nil {
-		return Schema{}, err
-	}
-	if st.view.Snapshot(snapshot) == nil {
-		return Schema{}, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
-	}
-	versions := st.schemas.versions(snapshot, table)
-	if len(versions) == 0 {
-		return Schema{}, fmt.Errorf("%w: table %d in snapshot %d", ErrNotFound, table, snapshot)
-	}
-	latest := versions[len(versions)-1]
-	return s.Schema(ctx, snapshot, table, latest)
 }
 
 // Tables lists the tables visible at a snapshot.

@@ -15,30 +15,30 @@ func buildReuseStore(t *testing.T, base string, nRows uint64, depth int) (*Store
 	t.Helper()
 	db, err := Create(base, Options{})
 	require.NoError(t, err)
-	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	require.NoError(t, w.DefineSchema(benchSchema()))
+	w, _ := db.BeginFull(context.Background())
+	require.NoError(t, w.CreateTable("bench", benchSchema()))
 	for i := uint64(0); i < nRows; i++ {
-		require.NoError(t, w.Insert(context.Background(), 1, i+1, 1, benchRow(i)))
+		require.NoError(t, w.Insert(context.Background(), "bench", i+1, benchRow(i)))
 	}
 	full, err := w.Commit(context.Background())
 	require.NoError(t, err)
-	parent := full.ID
+	parent := full
 	for d := 0; d < depth; d++ {
-		w, err := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: parent})
+		w, err := db.BeginDelta(context.Background(), parent)
 		require.NoError(t, err)
 		// Update every 10th row, delete every 50th.
 		for i := uint64(0); i < nRows; i++ {
 			switch {
 			case i%50 == 49:
-				require.NoError(t, w.Delete(context.Background(), 1, i+1))
+				require.NoError(t, w.Delete(context.Background(), "bench", i+1))
 			case i%10 == 9:
 				row := benchRow(i + 1_000_000)
-				require.NoError(t, w.Update(context.Background(), 1, i+1, 1, row))
+				require.NoError(t, w.Update(context.Background(), "bench", i+1, row))
 			}
 		}
 		info, err := w.Commit(context.Background())
 		require.NoError(t, err)
-		parent = info.ID
+		parent = info
 	}
 	return db, parent
 }
@@ -53,8 +53,8 @@ func TestGetReuse(t *testing.T) {
 
 	var dst Row
 	for i := uint64(0); i < 1000; i++ {
-		want, werr := db.Get(context.Background(), head, 1, i+1, nil)
-		got, gerr := db.Get(context.Background(), head, 1, i+1, dst)
+		want, werr := db.Get(context.Background(), head, "bench", i+1, nil)
+		got, gerr := db.Get(context.Background(), head, "bench", i+1, dst)
 		require.True(t, (werr != nil) == (gerr != nil), "row %d: err mismatch: %v vs %v", i+1, werr, gerr)
 		if werr != nil {
 			continue // deleted row
@@ -75,9 +75,9 @@ func TestNextReuse(t *testing.T) {
 	db, head := buildReuseStore(t, base, 1000, 2)
 	defer db.Close()
 
-	it, err := db.Scan(context.Background(), head, 1, ScanOptions{})
+	it, err := db.Scan(context.Background(), head, "bench", ScanOptions{})
 	require.NoError(t, err)
-	it2, err := db.Scan(context.Background(), head, 1, ScanOptions{})
+	it2, err := db.Scan(context.Background(), head, "bench", ScanOptions{})
 	require.NoError(t, err)
 	var lastRowID RowID
 	for {
@@ -105,13 +105,13 @@ func TestNextReuse(t *testing.T) {
 	require.NoError(t, it.Close())
 }
 
-// TestNextEndRowID verifies range-bounded scans terminate correctly in
+// TestNextEnd verifies range-bounded scans terminate correctly in
 // reuse mode.
-func TestNextEndRowID(t *testing.T) {
+func TestNextEnd(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "range")
 	db, full := buildReuseStore(t, base, 100, 0)
 	defer db.Close()
-	it, err := db.Scan(context.Background(), full, 1, ScanOptions{StartRowID: 10, EndRowID: 20})
+	it, err := db.Scan(context.Background(), full, "bench", ScanOptions{Start: 10, End: 20})
 	require.NoError(t, err)
 	defer it.Close()
 	n := 0
@@ -185,8 +185,8 @@ func TestScanStringViewsSurviveArenaRotation(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "arenarot")
 	db, err := Create(base, Options{})
 	require.NoError(t, err)
-	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	require.NoError(t, w.DefineSchema(benchSchema()))
+	w, _ := db.BeginFull(context.Background())
+	require.NoError(t, w.CreateTable("bench", benchSchema()))
 	// Each string is ~6 KiB, so the 32 KiB arena rotates twice per row and
 	// the scan spans multiple blocks.
 	big := func(i uint64) string {
@@ -206,12 +206,12 @@ func TestScanStringViewsSurviveArenaRotation(t *testing.T) {
 			DateTimeValueOf(1700000000000000000),
 			DecimalValue(Decimal{Unscaled: bigI(int64(i)), Scale: 2}),
 		}
-		require.NoError(t, w.Insert(context.Background(), 1, i+1, 1, r))
+		require.NoError(t, w.Insert(context.Background(), "bench", i+1, r))
 	}
 	full, err := w.Commit(context.Background())
 	require.NoError(t, err)
 
-	it, err := db.Scan(context.Background(), full.ID, 1, ScanOptions{})
+	it, err := db.Scan(context.Background(), full, "bench", ScanOptions{})
 	require.NoError(t, err)
 	// Retain one big string from every 100th row (covers chunk rotations and
 	// block boundaries), then walk the rest of the scan before checking.
@@ -250,7 +250,7 @@ func TestScanStringViewsSurviveArenaRotation(t *testing.T) {
 // allocate path.
 func TestCodecSinkParity(t *testing.T) {
 	s := benchSchema()
-	cs := schemaToCodec(&s)
+	cs := schemaToCodec(s)
 	row := benchRow(42)
 	encFresh, err := codec.Encode(cs, []codec.Value(row), codec.DefaultLimits())
 	require.NoError(t, err)
@@ -273,10 +273,10 @@ func TestCodecSinkParity(t *testing.T) {
 
 // schemaToCodec converts a root Schema into the codec representation for
 // codec-level tests.
-func schemaToCodec(s *Schema) *codec.Schema {
-	cols := make([]codec.Column, len(s.Columns))
-	for i, c := range s.Columns {
-		cols[i] = codec.Column{Name: c.Name, Type: c.Type, Nullable: c.Nullable, Scale: c.Scale}
+func schemaToCodec(cols []Column) *codec.Schema {
+	out := make([]codec.Column, len(cols))
+	for i, c := range cols {
+		out[i] = codec.Column{Name: c.Name, Type: c.Type, Nullable: c.Nullable, Scale: c.Scale}
 	}
-	return &codec.Schema{TableID: s.TableID, Version: s.Version, Name: s.Name, Columns: cols}
+	return &codec.Schema{Columns: out}
 }

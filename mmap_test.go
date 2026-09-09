@@ -43,7 +43,7 @@ func TestMmapReaderEquivalence(t *testing.T) {
 
 	// Data reads through the public API must agree with the committed rows.
 	for i := uint64(0); i < 100; i++ {
-		_, err := db.Get(context.Background(), fullID, 1, i+1, nil)
+		_, err := db.Get(context.Background(), fullID, "bench", i+1, nil)
 		require.NoError(t, err, "get %d", i+1)
 	}
 }

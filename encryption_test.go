@@ -13,31 +13,25 @@ import (
 )
 
 // writeFullSnapshot writes n rows of a two-column table into a FULL snapshot
-// and returns its info.
-func writeFullSnapshot(t *testing.T, db *Store, n uint64) SnapshotInfo {
+// and returns its snapshot ID.
+func writeFullSnapshot(t *testing.T, db *Store, n uint64) SnapshotID {
 	t.Helper()
-	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	w, err := db.BeginFull(context.Background())
 	require.NoError(t, err)
-	schema := schema1()
-	require.NoError(t, w.DefineSchema(schema))
+	require.NoError(t, w.CreateTable("t1", schema1()))
 	for i := uint64(1); i <= n; i++ {
-		require.NoError(t, w.Insert(context.Background(), 1, i, 1, row1(i)))
+		require.NoError(t, w.Insert(context.Background(), "t1", i, row1(i)))
 	}
-	info, err := w.Commit(context.Background())
+	snap, err := w.Commit(context.Background())
 	require.NoError(t, err)
-	return info
+	return snap
 }
 
 // schema1 returns a minimal two-column schema (id, name).
-func schema1() Schema {
-	return Schema{
-		TableID: 1,
-		Version: 1,
-		Name:    "t1",
-		Columns: []Column{
-			{Name: "id", Type: TypeUint64},
-			{Name: "name", Type: TypeString},
-		},
+func schema1() []Column {
+	return []Column{
+		{Name: "id", Type: TypeUint64},
+		{Name: "name", Type: TypeString},
 	}
 }
 
@@ -222,10 +216,10 @@ func buildEncryptedGoldenStore(t *testing.T, base string) {
 		},
 	})
 	require.NoError(t, err)
-	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	require.NoError(t, w.DefineSchema(schema1()))
+	w, _ := db.BeginFull(context.Background())
+	require.NoError(t, w.CreateTable("t1", schema1()))
 	for i := uint64(1); i <= 3; i++ {
-		require.NoError(t, w.Insert(context.Background(), 1, i, 1, row1(i)))
+		require.NoError(t, w.Insert(context.Background(), "t1", i, row1(i)))
 	}
 	_, err = w.Commit(context.Background())
 	require.NoError(t, err)
@@ -264,7 +258,7 @@ func TestGoldenEncryptedStore(t *testing.T) {
 	require.NoError(t, err, "open golden: %v", err)
 	defer db.Close()
 	for i := uint64(1); i <= 3; i++ {
-		r, err := db.Get(context.Background(), 1, 1, i, nil)
+		r, err := db.Get(context.Background(), 1, "t1", i, nil)
 		require.NoError(t, err, "row %d: %v", i, err)
 		n, _ := r[1].String()
 		require.Equal(t, "row-"+itoa(i), n, "row %d name = %q", i, n)

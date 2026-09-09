@@ -32,17 +32,6 @@ func (si *schemaIndex) schema(snapshot uint64, table uint32, version uint32) *co
 	return ts.byVer[version]
 }
 
-// Versions returns the sorted schema versions of (snapshot, table).
-func (si *schemaIndex) versions(snapshot uint64, table uint32) []uint32 {
-	ts := si.bySnapshot[snapshot][table]
-	if ts == nil {
-		return nil
-	}
-	out := make([]uint32, len(ts.versions))
-	copy(out, ts.versions)
-	return out
-}
-
 // Latest returns the highest schema version of (snapshot, table).
 func (si *schemaIndex) latest(snapshot uint64, table uint32) uint32 {
 	ts := si.bySnapshot[snapshot][table]
@@ -50,6 +39,22 @@ func (si *schemaIndex) latest(snapshot uint64, table uint32) uint32 {
 		return 0
 	}
 	return ts.versions[len(ts.versions)-1]
+}
+
+// tableIDByName resolves a table name to its internal table ID at a
+// snapshot. The index for a snapshot already covers every ancestor layer
+// (deriveTables walks the chain), so a linear scan over the visible tables
+// is sufficient; name conflicts are rejected at write time.
+func (si *schemaIndex) tableIDByName(snapshot uint64, name string) (TableID, bool) {
+	for tid, ts := range si.bySnapshot[snapshot] {
+		if ts == nil || len(ts.versions) == 0 {
+			continue
+		}
+		if s := ts.byVer[ts.versions[len(ts.versions)-1]]; s != nil && s.Name == name {
+			return TableID(tid), true
+		}
+	}
+	return 0, false
 }
 
 // schemaFor resolves the codec schema for one block's version, reporting

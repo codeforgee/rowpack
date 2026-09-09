@@ -6,6 +6,9 @@ RowPack 是一个使用 Go 实现的轻量级嵌入式二维表存储引擎，�
 - **单文件格式**：`<base>.rpk` 一个文件承载全部数据与索引，数据块与每快照
   IndexTxn 交错追加，由扩展 SnapshotFooter 一次性原子提交（一次 fsync）。
   备份/迁移/复制即拷贝单个文件。
+- **核心 API 按表名寻址**：`BeginFull/BeginDelta` 开启快照，`CreateTable(表名, 列)` 后
+  内部 TableID/SchemaVersion 全部由引擎分配；`Insert/Update/Delete` 逐条流式写入，
+  `Blocks`/`ScanBlocks` 暴露块级主键范围与原始变更流，支撑"块扫描批量比对"场景。
 - 支持 FULL / DELTA 快照以及 INSERT / UPDATE / DELETE 变更；任意时刻可提交
   新 FULL checkpoint（快照 ID 全局递增，深度重置）。
 - Zstandard 块压缩（默认 256 KiB 目标块）。
@@ -40,26 +43,20 @@ func main() {
 	}
 	defer db.Close()
 
-	w, err := db.BeginSnapshot(ctx, rowpack.SnapshotFull, rowpack.SnapshotOptions{})
+	w, err := db.BeginFull(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer w.Abort()
 
-	schema := rowpack.Schema{
-		TableID: 1,
-		Version: 1,
-		Name:    "users",
-		Columns: []rowpack.Column{
-			{Name: "id", Type: rowpack.TypeUint64},
-			{Name: "name", Type: rowpack.TypeString},
-			{Name: "created_at", Type: rowpack.TypeDateTime},
-		},
-	}
-	if err := w.DefineSchema(schema); err != nil {
+	if err := w.CreateTable("users", []rowpack.Column{
+		{Name: "id", Type: rowpack.TypeUint64},
+		{Name: "name", Type: rowpack.TypeString},
+		{Name: "created_at", Type: rowpack.TypeDateTime},
+	}); err != nil {
 		log.Fatal(err)
 	}
-	if err := w.Insert(ctx, 1, 1001, 1, rowpack.Row{
+	if err := w.Insert(ctx, "users", 1001, rowpack.Row{
 		rowpack.Uint64(1001),
 		rowpack.String("张三"),
 		rowpack.DateTime(time.Now()),
@@ -71,7 +68,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	row, err := db.Get(ctx, full.ID, 1, 1001, nil)
+	row, err := db.Get(ctx, full, "users", 1001, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -79,16 +76,16 @@ func main() {
 	fmt.Println("row:", name)
 
 	// DELTA 增量快照
-	d, err := db.BeginSnapshot(ctx, rowpack.SnapshotDelta, rowpack.SnapshotOptions{Parent: full.ID})
+	d, err := db.BeginDelta(ctx, full)
 	if err != nil {
 		log.Fatal(err)
 	}
-	_ = d.Update(ctx, 1, 1001, 1, rowpack.Row{
+	_ = d.Update(ctx, "users", 1001, rowpack.Row{
 		rowpack.Uint64(1001),
 		rowpack.String("张三 (更新)"),
 		rowpack.DateTime(time.Now()),
 	})
-	_ = d.Delete(ctx, 1, 1002)
+	_ = d.Delete(ctx, "users", 1002)
 	_, err = d.Commit(ctx)
 	if err != nil {
 		log.Fatal(err)
@@ -118,7 +115,7 @@ func main() {
 值始终安全（返回副本）。
 
 ```go
-it, _ := db.Scan(ctx, full.ID, 1, rowpack.ScanOptions{})
+it, _ := db.Scan(ctx, full, "users", rowpack.ScanOptions{})
 defer it.Close()
 for {
 	row, ok := it.Next()

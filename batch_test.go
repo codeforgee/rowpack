@@ -61,7 +61,7 @@ func TestBatchByIDsMatchesGet(t *testing.T) {
 			}
 			var want []wantPair
 			for _, id := range ids {
-				r, err := db.Get(context.Background(), full, 1, id, nil)
+				r, err := db.Get(context.Background(), full, "t", id, nil)
 				if err != nil {
 					continue // invisible: skipped
 				}
@@ -91,13 +91,13 @@ func TestBatchSkipInvisible(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "skip")
 	db, full := buildConcurrentStore(t, base, Options{})
 	// Delete rows 3 and 4 in a DELTA.
-	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: full})
-	require.NoError(t, w.Delete(context.Background(), 1, 3))
-	require.NoError(t, w.Delete(context.Background(), 1, 4))
+	w, _ := db.BeginDelta(context.Background(), full)
+	require.NoError(t, w.Delete(context.Background(), "t", 3))
+	require.NoError(t, w.Delete(context.Background(), "t", 4))
 	delta, err := w.Commit(context.Background())
 	require.NoError(t, err)
 
-	it, err := db.ReadRowsByIDs(context.Background(), delta.ID, 1, []RowID{2, 3, 4, 5, 9999}, BatchReadOptions{})
+	it, err := db.ReadRowsByIDs(context.Background(), delta, 1, []RowID{2, 3, 4, 5, 9999}, BatchReadOptions{})
 	require.NoError(t, err)
 	ids, vals, st := batchCollect(t, it)
 	require.Equal(t, []RowID{2, 5}, ids)
@@ -141,10 +141,10 @@ func TestBatchRanges(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "rng")
 	db, full := buildConcurrentStore(t, base, Options{})
 	// DELTA deletes 10 and inserts 2001..2003.
-	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: full})
-	require.NoError(t, w.Delete(context.Background(), 1, 10))
+	w, _ := db.BeginDelta(context.Background(), full)
+	require.NoError(t, w.Delete(context.Background(), "t", 10))
 	for i := uint64(2001); i <= 2003; i++ {
-		require.NoError(t, w.Insert(context.Background(), 1, i, 1, Row{Uint64(i), String(fmt.Sprintf("n-%d", i))}))
+		require.NoError(t, w.Insert(context.Background(), "t", i, Row{Uint64(i), String(fmt.Sprintf("n-%d", i))}))
 	}
 	delta, err := w.Commit(context.Background())
 	require.NoError(t, err)
@@ -156,7 +156,7 @@ func TestBatchRanges(t *testing.T) {
 		{Start: 2000, End: 2004}, // 2000..2003
 		{Start: 2999, End: 3999}, // empty span
 	}
-	it, err := db.ReadRowRanges(context.Background(), delta.ID, 1, ranges, BatchReadOptions{})
+	it, err := db.ReadRowRanges(context.Background(), delta, 1, ranges, BatchReadOptions{})
 	require.NoError(t, err)
 	ids, _, st := batchCollect(t, it)
 	want := []RowID{8, 9, 11, 12, 13, 14, 2000, 2001, 2002, 2003}
@@ -169,7 +169,7 @@ func TestBatchRanges(t *testing.T) {
 	// (Scan is the single-range kernel; its span covers all visible rows,
 	// which for [8,15) equals the merged range's result).
 	scanIDs := []RowID{}
-	scanIt, err := db.Scan(context.Background(), delta.ID, 1, ScanOptions{StartRowID: 8, EndRowID: 15})
+	scanIt, err := db.Scan(context.Background(), delta, "t", ScanOptions{Start: 8, End: 15})
 	require.NoError(t, err)
 	for {
 		row, ok := scanIt.Next()
@@ -181,7 +181,7 @@ func TestBatchRanges(t *testing.T) {
 	}
 	require.NoError(t, scanIt.Err())
 	require.Equal(t, []RowID{8, 9, 11, 12, 13, 14}, scanIDs, "single-range batch must match Scan visibility")
-	itScan, err := db.ReadRowRanges(context.Background(), delta.ID, 1, []RowIDRange{{Start: 8, End: 15}}, BatchReadOptions{})
+	itScan, err := db.ReadRowRanges(context.Background(), delta, 1, []RowIDRange{{Start: 8, End: 15}}, BatchReadOptions{})
 	require.NoError(t, err)
 	scanLikeIDs, _, _ := batchCollect(t, itScan)
 	require.Equal(t, scanIDs, scanLikeIDs)
@@ -309,7 +309,7 @@ func TestBatchVsGetLoopCrossCheck(t *testing.T) {
 	ids := []RowID{1, 600, 1200, 1800, 2000}
 	want := map[RowID]string{}
 	for _, id := range ids {
-		r, err := db.Get(context.Background(), full, 1, id, nil)
+		r, err := db.Get(context.Background(), full, "t", id, nil)
 		require.NoError(t, err)
 		v, _ := r[1].String()
 		want[id] = v
@@ -339,11 +339,11 @@ func TestBatchParallelMatchesSequential(t *testing.T) {
 	defer db.Close()
 
 	// DELTA layer so the plan spans multiple blocks across two layers.
-	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: full})
+	w, _ := db.BeginDelta(context.Background(), full)
 	for i := uint64(1); i <= 100; i += 7 {
-		require.NoError(t, w.Update(context.Background(), 1, i, 1, Row{Uint64(i), String(fmt.Sprintf("p-%d", i))}))
+		require.NoError(t, w.Update(context.Background(), "t", i, Row{Uint64(i), String(fmt.Sprintf("p-%d", i))}))
 	}
-	require.NoError(t, w.Delete(context.Background(), 1, 500))
+	require.NoError(t, w.Delete(context.Background(), "t", 500))
 	delta, err := w.Commit(context.Background())
 	require.NoError(t, err)
 
@@ -353,7 +353,7 @@ func TestBatchParallelMatchesSequential(t *testing.T) {
 	}
 
 	run := func(opts BatchReadOptions) ([]RowID, []string) {
-		it, err := db.ReadRowsByIDs(context.Background(), delta.ID, 1, ids, opts)
+		it, err := db.ReadRowsByIDs(context.Background(), delta, 1, ids, opts)
 		require.NoError(t, err)
 		idsOut, vals, _ := batchCollect(t, it)
 		return idsOut, vals
@@ -364,7 +364,7 @@ func TestBatchParallelMatchesSequential(t *testing.T) {
 	require.Equal(t, seqVals, parVals)
 
 	ranges := []RowIDRange{{Start: 400, End: 600}, {Start: 1000, End: 1100}, {Start: 5, End: 9}}
-	scan, err := db.ReadRowRanges(context.Background(), delta.ID, 1, ranges, BatchReadOptions{Parallelism: 4, MaxRows: 400})
+	scan, err := db.ReadRowRanges(context.Background(), delta, 1, ranges, BatchReadOptions{Parallelism: 4, MaxRows: 400})
 	require.NoError(t, err)
 	pIDs, _, pst := batchCollect(t, scan)
 	require.NotEmpty(t, pIDs)

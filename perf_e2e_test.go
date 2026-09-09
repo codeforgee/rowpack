@@ -23,8 +23,8 @@ func TestPerfEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 
 	t0 := time.Now()
-	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	schema := Schema{TableID: 1, Version: 1, Name: "perf", Columns: []Column{
+	w, _ := db.BeginFull(context.Background())
+	require.NoError(t, w.CreateTable("perf", []Column{
 		{Name: "id", Type: TypeUint64},
 		{Name: "name", Type: TypeString},
 		{Name: "active", Type: TypeBool},
@@ -32,11 +32,10 @@ func TestPerfEndToEnd(t *testing.T) {
 		{Name: "score", Type: TypeFloat64},
 		{Name: "created", Type: TypeDateTime},
 		{Name: "balance", Type: TypeDecimal, Scale: 2},
-	}}
-	require.NoError(t, w.DefineSchema(schema))
+	}))
 	created := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 	for i := uint64(0); i < rows; i++ {
-		if err := w.Insert(context.Background(), 1, i+1, 1, Row{
+		if err := w.Insert(context.Background(), "perf", i+1, Row{
 			Uint64(i + 1),
 			String(fmt.Sprintf("perf-user-%d", i)),
 			Bool(i%2 == 0),
@@ -55,7 +54,7 @@ func TestPerfEndToEnd(t *testing.T) {
 	// Random reads: verify every 97th row, value-for-value.
 	t1 := time.Now()
 	for i := uint64(0); i < rows; i += 97 {
-		row, err := db.Get(context.Background(), full.ID, 1, i+1, nil)
+		row, err := db.Get(context.Background(), full, "perf", i+1, nil)
 		require.NoError(t, err, "get %d", i+1)
 		v, _ := row[0].Uint64()
 		require.Equal(t, i+1, v, "id mismatch at %d", i+1)
@@ -69,7 +68,7 @@ func TestPerfEndToEnd(t *testing.T) {
 
 	// Full scan: count and verify first/last.
 	t2 := time.Now()
-	it, err := db.Scan(context.Background(), full.ID, 1, ScanOptions{})
+	it, err := db.Scan(context.Background(), full, "perf", ScanOptions{})
 	require.NoError(t, err)
 	n := 0
 	var first, last uint64
@@ -99,7 +98,7 @@ func TestPerfEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	openDur := time.Since(t3)
 	for i := uint64(0); i < rows; i += 1000 {
-		_, err := db2.Get(context.Background(), full.ID, 1, i+1, nil)
+		_, err := db2.Get(context.Background(), full, "perf", i+1, nil)
 		require.NoError(t, err, "reopen get %d", i+1)
 	}
 	db2.Close()

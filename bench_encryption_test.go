@@ -45,7 +45,7 @@ func benchEncGet(b *testing.B, enc, cold bool) {
 		warm = 10
 	}
 	for i := uint64(1); i <= uint64(warm); i++ {
-		if _, err := db.Get(context.Background(), fullID, 1, i, dst); err != nil {
+		if _, err := db.Get(context.Background(), fullID, "bench", i, dst); err != nil {
 			require.NoError(b, err)
 		}
 	}
@@ -57,7 +57,7 @@ func benchEncGet(b *testing.B, enc, cold bool) {
 		} else {
 			rowID = uint64(i%100) + 1
 		}
-		row, err := db.Get(context.Background(), fullID, 1, rowID, dst)
+		row, err := db.Get(context.Background(), fullID, "bench", rowID, dst)
 		if err != nil {
 			require.NoError(b, err)
 		}
@@ -72,7 +72,7 @@ func benchEncScan(b *testing.B, enc bool) {
 	db, fullID := buildBenchStoreOpts(b, filepath.Join(tmpdb(b), "es"), rows, encBenchOpts(enc, false))
 	defer db.Close()
 	for i := 0; i < 2; i++ { // burn-in
-		it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
+		it, err := db.Scan(context.Background(), fullID, "bench", ScanOptions{})
 		if err != nil {
 			require.NoError(b, err)
 		}
@@ -88,7 +88,7 @@ func benchEncScan(b *testing.B, enc bool) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
+		it, err := db.Scan(context.Background(), fullID, "bench", ScanOptions{})
 		if err != nil {
 			require.NoError(b, err)
 		}
@@ -155,11 +155,11 @@ func benchEncWrite(b *testing.B, enc bool) {
 		base := filepath.Join(tmpdb(b), "ew")
 		db, err := Create(base, encBenchOpts(enc, false))
 		require.NoError(b, err)
-		w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-		require.NoError(b, w.DefineSchema(benchSchema()))
+		w, _ := db.BeginFull(context.Background())
+		require.NoError(b, w.CreateTable("bench", benchSchema()))
 		b.StartTimer()
 		for j := uint64(0); j < rows; j++ {
-			if err := w.Insert(context.Background(), 1, j+1, 1, benchRow(j)); err != nil {
+			if err := w.Insert(context.Background(), "bench", j+1, benchRow(j)); err != nil {
 				require.NoError(b, err)
 			}
 		}

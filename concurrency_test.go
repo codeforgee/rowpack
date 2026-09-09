@@ -18,19 +18,19 @@ func buildConcurrentStore(t *testing.T, base string, opts Options) (*Store, Snap
 	t.Helper()
 	db, err := Create(base, opts)
 	require.NoError(t, err)
-	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	w, err := db.BeginFull(context.Background())
 	require.NoError(t, err)
-	if err := w.DefineSchema(Schema{TableID: 1, Version: 1, Name: "t", Columns: []Column{
+	if err := w.CreateTable("t", []Column{
 		{Name: "id", Type: TypeUint64}, {Name: "name", Type: TypeString},
-	}}); err != nil {
+	}); err != nil {
 		require.NoError(t, err)
 	}
 	for i := uint64(1); i <= 2000; i++ {
-		require.NoError(t, w.Insert(context.Background(), 1, i, 1, Row{Uint64(i), String(fmt.Sprintf("n-%d", i))}))
+		require.NoError(t, w.Insert(context.Background(), "t", i, Row{Uint64(i), String(fmt.Sprintf("n-%d", i))}))
 	}
 	full, err := w.Commit(context.Background())
 	require.NoError(t, err)
-	return db, full.ID
+	return db, full
 }
 
 // TestM7ConcurrentReadersWriters runs 32 concurrent Get/Scan goroutines while
@@ -60,14 +60,14 @@ func TestM7ConcurrentReadersWriters(t *testing.T) {
 				}
 				// Random Get against the FULL snapshot.
 				rowID := (rng % 2000) + 1
-				if _, err := db.Get(context.Background(), fullID, 1, rowID, nil); err != nil {
+				if _, err := db.Get(context.Background(), fullID, "t", rowID, nil); err != nil {
 					assert.NoError(t, err, "get %d", rowID)
 					return
 				}
 				reads.Add(1)
 				// Periodic Scan.
 				if rng%17 == 0 {
-					it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
+					it, err := db.Scan(context.Background(), fullID, "t", ScanOptions{})
 					if err != nil {
 						assert.NoError(t, err, "scan")
 						return
@@ -95,13 +95,13 @@ func TestM7ConcurrentReadersWriters(t *testing.T) {
 		defer wg.Done()
 		parent := fullID
 		for i := 0; i < 10; i++ {
-			w, err := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: parent})
+			w, err := db.BeginDelta(context.Background(), parent)
 			if err != nil {
 				assert.NoError(t, err, "begin")
 				return
 			}
 			rowID := uint64(i + 3000)
-			if err := w.Insert(context.Background(), 1, rowID, 1, Row{Uint64(rowID), String("delta")}); err != nil {
+			if err := w.Insert(context.Background(), "t", rowID, Row{Uint64(rowID), String("delta")}); err != nil {
 				assert.NoError(t, err, "insert")
 				return
 			}
@@ -110,7 +110,7 @@ func TestM7ConcurrentReadersWriters(t *testing.T) {
 				assert.NoError(t, err, "commit")
 				return
 			}
-			parent = info.ID
+			parent = info
 			time.Sleep(time.Millisecond)
 		}
 		close(stop)
@@ -131,13 +131,13 @@ func TestM7CacheHit(t *testing.T) {
 	db, fullID := buildConcurrentStore(t, base, opts)
 
 	// First read misses, subsequent reads hit.
-	_, err := db.Get(context.Background(), fullID, 1, 1, nil)
+	_, err := db.Get(context.Background(), fullID, "t", 1, nil)
 	require.NoError(t, err)
 	st1 := db.Stats()
 	require.Equal(t, uint64(0), st1.Cache.Hits, "first read should miss: hits=%d misses=%d", st1.Cache.Hits, st1.Cache.Misses)
 	require.NotZero(t, st1.Cache.Misses, "first read should miss: hits=%d misses=%d", st1.Cache.Hits, st1.Cache.Misses)
 	for i := uint64(1); i <= 20; i++ {
-		_, err := db.Get(context.Background(), fullID, 1, i, nil)
+		_, err := db.Get(context.Background(), fullID, "t", i, nil)
 		require.NoError(t, err)
 	}
 	st2 := db.Stats()
@@ -149,7 +149,7 @@ func TestM7CacheHit(t *testing.T) {
 	require.NoError(t, err)
 	defer db2.Close()
 	for i := uint64(1); i <= 100; i++ {
-		r, err := db2.Get(context.Background(), fullID, 1, i, nil)
+		r, err := db2.Get(context.Background(), fullID, "t", i, nil)
 		require.NoError(t, err)
 		v, _ := r[0].Uint64()
 		require.Equal(t, i, v, "disabled cache row %d = %d", i, v)
@@ -171,7 +171,7 @@ func TestM7ConcurrentCommitSameBlock(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := uint64(0); j < 50; j++ {
-				if _, err := db.Get(context.Background(), fullID, 1, 1, nil); err != nil {
+				if _, err := db.Get(context.Background(), fullID, "t", 1, nil); err != nil {
 					assert.NoError(t, err, "get")
 					return
 				}
@@ -219,9 +219,9 @@ func TestM7ConcurrentClose(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	_, err := db.Get(context.Background(), 1, 1, 1, nil)
+	_, err := db.Get(context.Background(), 1, "t", 1, nil)
 	require.Error(t, err, "Get after Close succeeded")
-	_, err = db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	_, err = db.BeginFull(context.Background())
 	require.Error(t, err, "BeginSnapshot after Close succeeded")
 }
 
@@ -229,15 +229,16 @@ func TestM7ConcurrentClose(t *testing.T) {
 func TestM7CloseAbortsWriter(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "abort")
 	db, _ := Create(base, Options{})
-	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	w, err := db.BeginFull(context.Background())
 	require.NoError(t, err)
-	w.DefineSchema(Schema{TableID: 1, Version: 1, Name: "t", Columns: []Column{{Name: "id", Type: TypeUint64}}})
-	_ = w.Insert(context.Background(), 1, 1, 1, Row{Uint64(1)})
+	w.CreateTable("t", []Column{{Name: "id", Type: TypeUint64}})
+	_ = w.Insert(context.Background(), "t", 1, Row{Uint64(1)})
 	// Not committed; Close must abort and the store must reopen cleanly.
 	require.NoError(t, db.Close())
 	db2, err := Open(base, Options{})
 	require.NoError(t, err, "reopen after abort-close: %v", err)
 	defer db2.Close()
-	_, err = db2.LatestSnapshot(context.Background())
-	require.Error(t, err, "aborted snapshot visible after reopen")
+	snaps, err := db2.ListSnapshots(context.Background())
+	require.NoError(t, err, "list after reopen: %v", err)
+	require.Empty(t, snaps, "aborted snapshot visible after reopen")
 }

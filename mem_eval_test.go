@@ -60,14 +60,14 @@ func TestMemEvalWritePath(t *testing.T) {
 
 	db, err := Create(base, Options{})
 	require.NoError(t, err)
-	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	w, err := db.BeginFull(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, w.DefineSchema(benchSchema()))
+	require.NoError(t, w.CreateTable("bench", benchSchema()))
 
 	midInsert := 0.0
 	peakWrite := peakHeapMB(t, func() {
 		for i := uint64(0); i < rows; i++ {
-			require.NoError(t, w.Insert(context.Background(), 1, i+1, 1, benchRow(i)))
+			require.NoError(t, w.Insert(context.Background(), "bench", i+1, benchRow(i)))
 		}
 		midInsert = heapMB(t)
 	})
@@ -122,24 +122,24 @@ func TestMemEvalOpenPath(t *testing.T) {
 	require.NoError(t, err)
 	ctx := context.Background()
 
-	w, _ := db.BeginSnapshot(ctx, SnapshotFull, SnapshotOptions{})
-	require.NoError(t, w.DefineSchema(benchSchema()))
+	w, _ := db.BeginFull(ctx)
+	require.NoError(t, w.CreateTable("bench", benchSchema()))
 	for i := uint64(0); i < 100_000; i++ {
-		require.NoError(t, w.Insert(ctx, 1, i+1, 1, benchRow(i)))
+		require.NoError(t, w.Insert(ctx, "bench", i+1, benchRow(i)))
 	}
 	full, err := w.Commit(ctx)
 	require.NoError(t, err)
 
-	parent := full.ID
+	parent := full
 	for d := 0; d < 200; d++ {
-		w, err := db.BeginSnapshot(ctx, SnapshotDelta, SnapshotOptions{Parent: parent})
+		w, err := db.BeginDelta(ctx, parent)
 		require.NoError(t, err)
 		for i := uint64(0); i < 100; i++ {
-			require.NoError(t, w.Insert(ctx, 1, 1_000_000+uint64(d)*100+i, 1, benchRow(i)))
+			require.NoError(t, w.Insert(ctx, "bench", 1_000_000+uint64(d)*100+i, benchRow(i)))
 		}
 		si, err := w.Commit(ctx)
 		require.NoError(t, err)
-		parent = si.ID
+		parent = si
 	}
 	db.Close()
 
@@ -174,7 +174,7 @@ func TestMemEvalScanAllocs(t *testing.T) {
 	defer db.Close()
 
 	// Warm-up pass (pool priming, cache).
-	it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
+	it, err := db.Scan(context.Background(), fullID, "bench", ScanOptions{})
 	require.NoError(t, err)
 	for {
 		if _, ok := it.Next(); !ok {
@@ -186,7 +186,7 @@ func TestMemEvalScanAllocs(t *testing.T) {
 	runtime.GC()
 	var ms0 runtime.MemStats
 	runtime.ReadMemStats(&ms0)
-	it, err = db.Scan(context.Background(), fullID, 1, ScanOptions{})
+	it, err = db.Scan(context.Background(), fullID, "bench", ScanOptions{})
 	require.NoError(t, err)
 	n := 0
 	for {
@@ -248,23 +248,23 @@ func TestMemEvalManySnapsOpen(t *testing.T) {
 		db, err := Create(base, Options{})
 		require.NoError(t, err)
 		ctx := context.Background()
-		w, _ := db.BeginSnapshot(ctx, SnapshotFull, SnapshotOptions{})
-		require.NoError(t, w.DefineSchema(benchSchema()))
+		w, _ := db.BeginFull(ctx)
+		require.NoError(t, w.CreateTable("bench", benchSchema()))
 		for i := uint64(0); i < 20_000; i++ {
-			require.NoError(t, w.Insert(ctx, 1, i+1, 1, benchRow(i)))
+			require.NoError(t, w.Insert(ctx, "bench", i+1, benchRow(i)))
 		}
 		full, err := w.Commit(ctx)
 		require.NoError(t, err)
-		parent := full.ID
+		parent := full
 		for d := 0; d < n; d++ {
-			w, err := db.BeginSnapshot(ctx, SnapshotDelta, SnapshotOptions{Parent: parent})
+			w, err := db.BeginDelta(ctx, parent)
 			require.NoError(t, err)
 			for i := uint64(0); i < 20; i++ {
-				require.NoError(t, w.Insert(ctx, 1, 100_000+uint64(d)*20+i, 1, benchRow(i)))
+				require.NoError(t, w.Insert(ctx, "bench", 100_000+uint64(d)*20+i, benchRow(i)))
 			}
 			si, err := w.Commit(ctx)
 			require.NoError(t, err)
-			parent = si.ID
+			parent = si
 		}
 		db.Close()
 
@@ -283,13 +283,13 @@ func buildMemStore(t testing.TB, base string, nRows uint64) (*Store, SnapshotID)
 	t.Helper()
 	db, err := Create(base, Options{})
 	require.NoError(t, err)
-	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	w, err := db.BeginFull(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, w.DefineSchema(benchSchema()))
+	require.NoError(t, w.CreateTable("bench", benchSchema()))
 	for i := uint64(0); i < nRows; i++ {
-		require.NoError(t, w.Insert(context.Background(), 1, i+1, 1, benchRow(i)))
+		require.NoError(t, w.Insert(context.Background(), "bench", i+1, benchRow(i)))
 	}
 	full, err := w.Commit(context.Background())
 	require.NoError(t, err)
-	return db, full.ID
+	return db, full
 }

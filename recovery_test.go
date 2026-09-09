@@ -62,15 +62,15 @@ func TestCrashChildHelper(t *testing.T) {
 
 	db, err := Create(base, crashChildOpts(os.Getenv("ROWCRASH_ENC") == "1"))
 	require.NoError(t, err)
-	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	w, err := db.BeginFull(context.Background())
 	require.NoError(t, err)
-	if err := w.DefineSchema(Schema{TableID: 1, Version: 1, Name: "t", Columns: []Column{
+	if err := w.CreateTable("t", []Column{
 		{Name: "id", Type: TypeUint64}, {Name: "name", Type: TypeString},
-	}}); err != nil {
+	}); err != nil {
 		require.NoError(t, err)
 	}
 	for i := uint64(1); i <= 100; i++ {
-		require.NoError(t, w.Insert(context.Background(), 1, i, 1, Row{Uint64(i), String(fmt.Sprintf("c-%d", i))}))
+		require.NoError(t, w.Insert(context.Background(), "t", i, Row{Uint64(i), String(fmt.Sprintf("c-%d", i))}))
 	}
 	_, _ = w.Commit(context.Background())
 	_ = db.Close()
@@ -94,7 +94,7 @@ func verifyCrashRecovery(t *testing.T, base string, wantSnapshots int, opts Opti
 	// The committed snapshot's rows must be readable.
 	for _, sn := range snaps {
 		for i := uint64(1); i <= 100; i++ {
-			r, err := db.Get(context.Background(), sn.ID, 1, i, nil)
+			r, err := db.Get(context.Background(), sn.ID, "t", i, nil)
 			if err != nil {
 				db.Close()
 				require.Fail(t, "snapshot %d row %d: %v", sn.ID, i, err)
@@ -214,8 +214,8 @@ func TestM8TailTruncated(t *testing.T) {
 			base := filepath.Join(tmpdb(t), "it")
 			db, fullID := buildConcurrentStore(t, base, opts)
 			// Commit a second snapshot so the file holds two txns.
-			w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: fullID})
-			require.NoError(t, w.Insert(context.Background(), 1, 9999, 1, Row{Uint64(9999), String("x")}))
+			w, _ := db.BeginDelta(context.Background(), fullID)
+			require.NoError(t, w.Insert(context.Background(), "t", 9999, Row{Uint64(9999), String("x")}))
 			_, err := w.Commit(context.Background())
 			require.NoError(t, err)
 			db.Close()
@@ -235,7 +235,7 @@ func TestM8TailTruncated(t *testing.T) {
 			defer db2.Close()
 			snaps, _ := db2.ListSnapshots(context.Background())
 			require.Len(t, snaps, 1, "snapshots = %d, want 1 (truncated tail dropped)", len(snaps))
-			_, err = db2.Get(context.Background(), snaps[0].ID, 1, 9999, nil)
+			_, err = db2.Get(context.Background(), snaps[0].ID, "t", 9999, nil)
 			require.Error(t, err, "row 9999 must be gone with the uncommitted tail: %v", err)
 		})
 	}
@@ -255,8 +255,8 @@ func TestM8MidFileCorruption(t *testing.T) {
 		opts := Options{}
 		opts.BlockSize = 2048
 		db, fullID := buildConcurrentStore(t, base, opts)
-		w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: fullID})
-		require.NoError(t, w.Insert(context.Background(), 1, 3001, 1, Row{Uint64(3001), String("d1")}))
+		w, _ := db.BeginDelta(context.Background(), fullID)
+		require.NoError(t, w.Insert(context.Background(), "t", 3001, Row{Uint64(3001), String("d1")}))
 		_, err := w.Commit(context.Background())
 		require.NoError(t, err)
 		db.Close()
@@ -302,8 +302,8 @@ func TestM8Verify(t *testing.T) {
 	t.Run("plain", func(t *testing.T) {
 		base := filepath.Join(tmpdb(t), "verify")
 		db, fullID := buildConcurrentStore(t, base, Options{})
-		w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: fullID})
-		_ = w.Insert(context.Background(), 1, 5001, 1, Row{Uint64(5001), String("v")})
+		w, _ := db.BeginDelta(context.Background(), fullID)
+		_ = w.Insert(context.Background(), "t", 5001, Row{Uint64(5001), String("v")})
 		_, err := w.Commit(context.Background())
 		require.NoError(t, err)
 		rep, err := db.Verify(context.Background(), VerifyQuick)
@@ -391,8 +391,8 @@ func TestM8RebuildSnapshotFromBlocks(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			base := filepath.Join(tmpdb(t), "rebuild")
 			db, _ := buildConcurrentStore(t, base, opts)
-			w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: 1})
-			_ = w.Insert(context.Background(), 1, 5001, 1, Row{Uint64(5001), String("v")})
+			w, _ := db.BeginDelta(context.Background(), 1)
+			_ = w.Insert(context.Background(), "t", 5001, Row{Uint64(5001), String("v")})
 			_, err := w.Commit(context.Background())
 			require.NoError(t, err)
 			db.Close()
@@ -408,12 +408,12 @@ func TestM8RebuildSnapshotFromBlocks(t *testing.T) {
 			defer db2.Close()
 			require.Equal(t, uint64(1), db2.Stats().Recovery.SnapshotsRebuilt, "SnapshotsRebuilt = %d, want 1", db2.Stats().Recovery.SnapshotsRebuilt)
 			// The first snapshot's rows still resolve (rebuilt in memory) ...
-			r, err := db2.Get(context.Background(), 1, 1, 42, nil)
+			r, err := db2.Get(context.Background(), 1, "t", 42, nil)
 			require.NoError(t, err, "row 42: %v", err)
 			v, _ := r[1].String()
 			require.Equal(t, "n-42", v, "row 42 = %q", v)
 			// ... and the second snapshot's txn replayed normally.
-			r2, err := db2.Get(context.Background(), 2, 1, 5001, nil)
+			r2, err := db2.Get(context.Background(), 2, "t", 5001, nil)
 			require.NoError(t, err, "row 5001: %v", err)
 			v2, _ := r2[1].String()
 			require.Equal(t, "v", v2, "row 5001 = %q", v2)
@@ -448,7 +448,7 @@ func TestM8DataTailTruncated(t *testing.T) {
 		// Read-only: ignores the tail, doesn't modify.
 		ro, err := Open(base, Options{ReadOnly: true})
 		require.NoError(t, err, "read-only open: %v", err)
-		_, err = ro.Get(context.Background(), 1, 1, 1, nil)
+		_, err = ro.Get(context.Background(), 1, "t", 1, nil)
 		require.NoError(t, err)
 		ro.Close()
 		sz, _ := os.Stat(base + ".rpk")
@@ -482,7 +482,7 @@ func TestM8DataTailTruncated(t *testing.T) {
 		require.Equal(t, uint64(512), st.Recovery.DataTailIgnored, "recovery stats = %+v", st.Recovery)
 		require.Equal(t, sizeBefore, fileSize(t, base+".rpk"), "tail not truncated: %d -> %d", sizeBefore, fileSize(t, base+".rpk"))
 		// Data is intact.
-		_, err = db2.Get(context.Background(), 1, 1, 5, nil)
+		_, err = db2.Get(context.Background(), 1, "t", 5, nil)
 		require.NoError(t, err, "row 5 after recovery: %v", err)
 	})
 }

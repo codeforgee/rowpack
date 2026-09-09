@@ -100,7 +100,7 @@ type Store struct {
 	// readMu guards Close against in-flight reads (RLock per read op).
 	readMu sync.RWMutex
 	state  atomic.Pointer[publishedState]
-	writer atomic.Pointer[SnapshotWriter]
+	writer atomic.Pointer[Writer]
 	closed atomic.Bool
 
 	lastSnapshotID atomic.Uint64

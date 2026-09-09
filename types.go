@@ -63,3 +63,15 @@ type Table struct {
 	Name          string
 	LatestVersion SchemaVersion
 }
+
+// Block describes one rows block written by a snapshot transaction, in
+// physical write order. MinRowID/MaxRowID bound the primary keys held in the
+// block and are derived from the in-memory row index (zero block I/O).
+type Block struct {
+	BlockID     uint64
+	ItemCount   uint32
+	MinRowID    RowID // inclusive
+	MaxRowID    RowID // exclusive
+	RawBytes    uint32
+	StoredBytes uint32
+}

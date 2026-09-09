@@ -66,8 +66,8 @@ func benchRow(i uint64) Row {
 	}
 }
 
-func benchSchema() Schema {
-	return Schema{TableID: 1, Version: 1, Name: "bench", Columns: []Column{
+func benchSchema() []Column {
+	return []Column{
 		{Name: "id", Type: TypeUint64},
 		{Name: "name", Type: TypeString},
 		{Name: "active", Type: TypeBool},
@@ -75,7 +75,7 @@ func benchSchema() Schema {
 		{Name: "score", Type: TypeFloat64},
 		{Name: "created", Type: TypeDateTime},
 		{Name: "balance", Type: TypeDecimal, Scale: 2},
-	}}
+	}
 }
 
 func buildBenchStore(b *testing.B, base string, nRows uint64, blockSize int) (*Store, SnapshotID) {
@@ -94,15 +94,15 @@ func buildBenchStoreOpts(b *testing.B, base string, nRows uint64, opts Options) 
 	b.Helper()
 	db, err := Create(base, opts)
 	require.NoError(b, err)
-	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	w, err := db.BeginFull(context.Background())
 	require.NoError(b, err)
-	require.NoError(b, w.DefineSchema(benchSchema()))
+	require.NoError(b, w.CreateTable("bench", benchSchema()))
 	for i := uint64(0); i < nRows; i++ {
-		require.NoError(b, w.Insert(context.Background(), 1, i+1, 1, benchRow(i)))
+		require.NoError(b, w.Insert(context.Background(), "bench", i+1, benchRow(i)))
 	}
 	full, err := w.Commit(context.Background())
 	require.NoError(b, err)
-	return db, full.ID
+	return db, full
 }
 
 func BenchmarkFullSequentialWrite(b *testing.B) {
@@ -113,11 +113,11 @@ func BenchmarkFullSequentialWrite(b *testing.B) {
 		base := filepath.Join(tmpdb(b), "w")
 		db, err := Create(base, Options{})
 		require.NoError(b, err)
-		w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-		require.NoError(b, w.DefineSchema(benchSchema()))
+		w, _ := db.BeginFull(context.Background())
+		require.NoError(b, w.CreateTable("bench", benchSchema()))
 		b.StartTimer()
 		for j := uint64(0); j < rows; j++ {
-			if err := w.Insert(context.Background(), 1, j+1, 1, benchRow(j)); err != nil {
+			if err := w.Insert(context.Background(), "bench", j+1, benchRow(j)); err != nil {
 				require.NoError(b, err)
 			}
 		}
@@ -141,7 +141,7 @@ func BenchmarkGetColdRead(b *testing.B) {
 	defer db2.Close()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := db2.Get(context.Background(), fullID, 1, uint64(i%100000)+1, nil); err != nil {
+		if _, err := db2.Get(context.Background(), fullID, "bench", uint64(i%100000)+1, nil); err != nil {
 			require.NoError(b, err)
 		}
 	}
@@ -152,13 +152,13 @@ func BenchmarkGetHotRead(b *testing.B) {
 	defer db.Close()
 	// Warm a few blocks.
 	for i := uint64(0); i < 100; i++ {
-		if _, err := db.Get(context.Background(), fullID, 1, i+1, nil); err != nil {
+		if _, err := db.Get(context.Background(), fullID, "bench", i+1, nil); err != nil {
 			require.NoError(b, err)
 		}
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := db.Get(context.Background(), fullID, 1, uint64(i%100)+1, nil); err != nil {
+		if _, err := db.Get(context.Background(), fullID, "bench", uint64(i%100)+1, nil); err != nil {
 			require.NoError(b, err)
 		}
 	}
@@ -171,7 +171,7 @@ func BenchmarkConcurrentGet(b *testing.B) {
 			defer db.Close()
 			// Warm the cache so the benchmark measures concurrent hot reads.
 			for i := uint64(0); i < 100000; i++ {
-				if _, err := db.Get(context.Background(), fullID, 1, i+1, nil); err != nil {
+				if _, err := db.Get(context.Background(), fullID, "bench", i+1, nil); err != nil {
 					require.NoError(b, err)
 				}
 			}
@@ -180,7 +180,7 @@ func BenchmarkConcurrentGet(b *testing.B) {
 				i := uint64(0)
 				for pb.Next() {
 					i++
-					if _, err := db.Get(context.Background(), fullID, 1, i%100000+1, nil); err != nil {
+					if _, err := db.Get(context.Background(), fullID, "bench", i%100000+1, nil); err != nil {
 						require.NoError(b, err)
 					}
 				}
@@ -194,7 +194,7 @@ func BenchmarkScan(b *testing.B) {
 	defer db.Close()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
+		it, err := db.Scan(context.Background(), fullID, "bench", ScanOptions{})
 		if err != nil {
 			require.NoError(b, err)
 		}
@@ -217,14 +217,14 @@ func BenchmarkGetHotReadInto(b *testing.B) {
 	defer db.Close()
 	// Warm a few blocks.
 	for i := uint64(0); i < 100; i++ {
-		if _, err := db.Get(context.Background(), fullID, 1, i+1, nil); err != nil {
+		if _, err := db.Get(context.Background(), fullID, "bench", i+1, nil); err != nil {
 			require.NoError(b, err)
 		}
 	}
 	var dst Row
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		row, err := db.Get(context.Background(), fullID, 1, uint64(i%100)+1, dst)
+		row, err := db.Get(context.Background(), fullID, "bench", uint64(i%100)+1, dst)
 		if err != nil {
 			require.NoError(b, err)
 		}
@@ -268,16 +268,16 @@ func buildBenchStoreN(b *testing.B, base string, nRows uint64) (*Store, Snapshot
 	b.Helper()
 	db, err := Create(base, Options{})
 	require.NoError(b, err)
-	w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-	require.NoError(b, w.DefineSchema(benchSchema()))
+	w, _ := db.BeginFull(context.Background())
+	require.NoError(b, w.CreateTable("bench", benchSchema()))
 	for i := uint64(0); i < nRows; i++ {
-		if err := w.Insert(context.Background(), 1, i+1, 1, benchRow(i)); err != nil {
+		if err := w.Insert(context.Background(), "bench", i+1, benchRow(i)); err != nil {
 			require.NoError(b, err)
 		}
 	}
 	full, err := w.Commit(context.Background())
 	require.NoError(b, err)
-	return db, full.ID
+	return db, full
 }
 
 // BenchmarkWrite1M writes a million rows in one FULL snapshot.
@@ -309,7 +309,7 @@ func BenchmarkGetRandom1M(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		rng = rng*6364136223846793005 + 1442695040888963407
 		rowID := rng%rows + 1
-		if _, err := db.Get(context.Background(), fullID, 1, rowID, nil); err != nil {
+		if _, err := db.Get(context.Background(), fullID, "bench", rowID, nil); err != nil {
 			require.NoError(b, err)
 		}
 	}
@@ -323,7 +323,7 @@ func BenchmarkScan1M(b *testing.B) {
 	defer db.Close()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		it, err := db.Scan(context.Background(), fullID, 1, ScanOptions{})
+		it, err := db.Scan(context.Background(), fullID, "bench", ScanOptions{})
 		if err != nil {
 			require.NoError(b, err)
 		}
@@ -350,15 +350,15 @@ func buildDeltaChainStore(b *testing.B, base string, depth, deltaRows int) (*Sto
 	parent := fullID
 	nextID := uint64(100_001)
 	for d := 0; d < depth; d++ {
-		w, err := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: parent})
+		w, err := db.BeginDelta(context.Background(), parent)
 		require.NoError(b, err)
 		for i := 0; i < deltaRows; i++ {
-			require.NoError(b, w.Insert(context.Background(), 1, nextID, 1, Row{Uint64(nextID), String("delta-row"), Bool(false), Int32(int32(i)), Float64(0), DateTimeValueOf(1700000000000000000), DecimalValue(Decimal{Unscaled: bigI(1), Scale: 2})}))
+			require.NoError(b, w.Insert(context.Background(), "bench", nextID, Row{Uint64(nextID), String("delta-row"), Bool(false), Int32(int32(i)), Float64(0), DateTimeValueOf(1700000000000000000), DecimalValue(Decimal{Unscaled: bigI(1), Scale: 2})}))
 			nextID++
 		}
 		info, err := w.Commit(context.Background())
 		require.NoError(b, err)
-		parent = info.ID
+		parent = info
 	}
 	return db, parent
 }
@@ -370,7 +370,7 @@ func BenchmarkGetDeepChain(b *testing.B) {
 	db, head := buildDeltaChainStore(b, filepath.Join(tmpdb(b), "chain"), 32, 1000)
 	defer db.Close()
 	for i := uint64(1); i <= 100_000; i++ {
-		if _, err := db.Get(context.Background(), head, 1, i, nil); err != nil {
+		if _, err := db.Get(context.Background(), head, "bench", i, nil); err != nil {
 			require.NoError(b, err)
 		}
 	}
@@ -379,7 +379,7 @@ func BenchmarkGetDeepChain(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		rng = rng*6364136223846793005 + 1
 		rowID := rng%100_000 + 1
-		if _, err := db.Get(context.Background(), head, 1, rowID, nil); err != nil {
+		if _, err := db.Get(context.Background(), head, "bench", rowID, nil); err != nil {
 			require.NoError(b, err)
 		}
 	}
@@ -391,7 +391,7 @@ func BenchmarkScanDeepChain(b *testing.B) {
 	defer db.Close()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		it, err := db.Scan(context.Background(), head, 1, ScanOptions{})
+		it, err := db.Scan(context.Background(), head, "bench", ScanOptions{})
 		if err != nil {
 			require.NoError(b, err)
 		}
@@ -436,12 +436,12 @@ func BenchmarkIsolatedWrite(b *testing.B) {
 		base := filepath.Join(tmpdb(b), "wisolated")
 		db, err := Create(base, Options{})
 		require.NoError(b, err)
-		w, _ := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
-		require.NoError(b, w.DefineSchema(benchSchema()))
+		w, _ := db.BeginFull(context.Background())
+		require.NoError(b, w.CreateTable("bench", benchSchema()))
 		r := isoRow()
 		b.StartTimer()
 		for j := uint64(0); j < rows; j++ {
-			if err := w.Insert(context.Background(), 1, j+1, 1, r); err != nil {
+			if err := w.Insert(context.Background(), "bench", j+1, r); err != nil {
 				require.NoError(b, err)
 			}
 		}

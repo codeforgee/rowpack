@@ -58,13 +58,13 @@ func TestStoreRoundTripAllTypes(t *testing.T) {
 
 	db, err := Create(base, Options{Compression: CompressionNone})
 	require.NoError(t, err)
-	w, err := db.BeginSnapshot(ctx, SnapshotFull, SnapshotOptions{})
+	w, err := db.BeginFull(ctx)
 	if err != nil {
 		db.Close()
 		require.NoError(t, err)
 	}
-	require.NoError(t, w.DefineSchema(schema))
-	require.NoError(t, w.Insert(ctx, schema.TableID, 1, schema.Version, want))
+	require.NoError(t, w.CreateTable("all_types", schema.Columns))
+	require.NoError(t, w.Insert(ctx, "all_types", 1, want))
 	full, err := w.Commit(ctx)
 	if err != nil {
 		db.Close()
@@ -76,11 +76,11 @@ func TestStoreRoundTripAllTypes(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	got, err := db.Get(ctx, full.ID, schema.TableID, 1, nil)
+	got, err := db.Get(ctx, full, "all_types", 1, nil)
 	require.NoError(t, err)
 	assertRowsEqual(t, want, got)
 
-	it, err := db.Scan(ctx, full.ID, schema.TableID, ScanOptions{})
+	it, err := db.Scan(ctx, full, "all_types", ScanOptions{})
 	require.NoError(t, err)
 	defer it.Close()
 	row, ok := it.Next()

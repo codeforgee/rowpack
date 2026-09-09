@@ -24,13 +24,6 @@ const (
 	SnapshotDelta
 )
 
-// SnapshotOptions configures a new snapshot.
-type SnapshotOptions struct {
-	Parent     SnapshotID
-	AllowEmpty bool
-	CreatedAt  time.Time // zero value uses current UTC time
-}
-
 // SnapshotInfo is the immutable summary of a committed snapshot.
 type SnapshotInfo struct {
 	ID          SnapshotID
@@ -52,16 +45,7 @@ const (
 	ChangeDelete
 )
 
-// Change is one row change to apply.
-type Change struct {
-	Type          ChangeType
-	TableID       TableID
-	RowID         RowID
-	SchemaVersion SchemaVersion
-	Row           Row
-}
-
-// writerState is the SnapshotWriter lifecycle state.
+// writerState is the Writer lifecycle state.
 type writerState uint8
 
 const (
@@ -71,16 +55,22 @@ const (
 	writerFailed
 )
 
-// SnapshotWriter writes one snapshot. It is not safe for concurrent use.
-type SnapshotWriter struct {
-	store      *Store
-	id         SnapshotID
-	typ        SnapshotType
-	parent     SnapshotID
-	created    int64
-	allowEmpty bool
+// Writer writes one snapshot. It is not safe for concurrent use.
+type Writer struct {
+	store   *Store
+	id      SnapshotID
+	typ     SnapshotType
+	parent  SnapshotID
+	created int64
 
 	state writerState
+
+	// tableIDs resolves table names to internal table IDs for this
+	// transaction (tables created here and tables resolved from the chain).
+	tableIDs map[string]TableID
+	// nextTableID is the lowest free internal table ID: one past the highest
+	// table ID in the committed view, raised by every CreateTable.
+	nextTableID uint32
 
 	// per-table rows block builders
 	rowBuilders map[TableID]*block.RowsBlockBuilder
@@ -128,9 +118,27 @@ type pendingBlock struct {
 	meta    []fileformat.MetadataIndexEntry
 }
 
-// BeginSnapshot starts a new snapshot. A Store allows at most one active
-// writer; a concurrent Begin returns ErrWriterBusy.
-func (s *Store) BeginSnapshot(ctx context.Context, typ SnapshotType, opts SnapshotOptions) (*SnapshotWriter, error) {
+// BeginFull starts a new FULL snapshot: a complete baseline that may be
+// committed at any time (checkpointing resets the chain depth).
+func (s *Store) BeginFull(ctx context.Context) (*Writer, error) {
+	return s.newWriter(ctx, SnapshotFull, 0)
+}
+
+// BeginDelta starts a DELTA snapshot on top of a committed parent.
+func (s *Store) BeginDelta(ctx context.Context, parent SnapshotID) (*Writer, error) {
+	if parent == 0 {
+		return nil, fmt.Errorf("%w: DELTA snapshot needs a parent", ErrInvalidParent)
+	}
+	st := s.state.Load()
+	if st == nil || st.view.Snapshot(uint64(parent)) == nil {
+		return nil, fmt.Errorf("%w: DELTA parent %d not committed", ErrInvalidParent, parent)
+	}
+	return s.newWriter(ctx, SnapshotDelta, parent)
+}
+
+// newWriter constructs the single active writer. A Store allows at most one
+// active writer; a concurrent begin returns ErrWriterBusy.
+func (s *Store) newWriter(ctx context.Context, typ SnapshotType, parent SnapshotID) (*Writer, error) {
 	if err := s.checkOpen(); err != nil {
 		return nil, err
 	}
@@ -140,45 +148,26 @@ func (s *Store) BeginSnapshot(ctx context.Context, typ SnapshotType, opts Snapsh
 	if s.writer.Load() != nil {
 		return nil, ErrWriterBusy
 	}
-	if typ != SnapshotFull && typ != SnapshotDelta {
-		return nil, fmt.Errorf("%w: snapshot type %d", ErrInvalidArgument, typ)
-	}
-	// Validate parent for the snapshot type.
-	if typ == SnapshotFull && opts.Parent != 0 {
-		return nil, fmt.Errorf("%w: FULL snapshot has parent %d", ErrInvalidParent, opts.Parent)
-	}
-	if typ == SnapshotDelta {
-		st := s.state.Load()
-		if st == nil || st.view.Snapshot(opts.Parent) == nil {
-			return nil, fmt.Errorf("%w: DELTA parent %d not committed", ErrInvalidParent, opts.Parent)
-		}
-		if opts.Parent == 0 {
-			return nil, fmt.Errorf("%w: DELTA snapshot needs a parent", ErrInvalidParent)
-		}
-	}
 	id := s.lastSnapshotID.Add(1)
 	// v2 checkpoint semantics (R7): every FULL takes the next global ID — the
 	// first snapshot of an empty store is a FULL with id 1 naturally, and a
 	// later FULL checkpoint continues the counter (Depth resets to 1 in
 	// View.Apply; its visibility no longer follows any ancestor chain).
-	created := opts.CreatedAt
-	if created.IsZero() {
-		created = time.Unix(0, effectiveNow()).UTC()
-	}
-	w := &SnapshotWriter{
+	w := &Writer{
 		store:       s,
 		id:          id,
 		typ:         typ,
-		parent:      opts.Parent,
-		created:     created.UnixNano(),
-		allowEmpty:  opts.AllowEmpty,
+		parent:      parent,
+		created:     effectiveNow(),
 		state:       writerOpen,
 		rowBuilders: make(map[TableID]*block.RowsBlockBuilder),
 		schemas:     make(map[schemaKey]*codec.Schema),
 		seenRows:    make(map[TableID]*rowIDSet),
+		tableIDs:    make(map[string]TableID),
 		allocator:   metadata.NewObjectIDAllocator(),
 	}
 	w.allocator = s.seedAllocator()
+	w.nextTableID = s.maxCommittedTableID() + 1
 	if !s.writer.CompareAndSwap(nil, w) {
 		return nil, ErrWriterBusy
 	}
@@ -203,12 +192,12 @@ func (s *Store) seedAllocator() *metadata.ObjectIDAllocator {
 }
 
 // ID returns the assigned snapshot ID.
-func (w *SnapshotWriter) ID() SnapshotID { return w.id }
+func (w *Writer) ID() SnapshotID { return w.id }
 
 // Parent returns the parent snapshot ID (0 for FULL).
-func (w *SnapshotWriter) Parent() SnapshotID { return w.parent }
+func (w *Writer) Parent() SnapshotID { return w.parent }
 
-func (w *SnapshotWriter) checkState() error {
+func (w *Writer) checkState() error {
 	switch w.state {
 	case writerCommitted:
 		return ErrSnapshotCommitted
@@ -220,45 +209,183 @@ func (w *SnapshotWriter) checkState() error {
 	return nil
 }
 
-// DefineSchema records a table schema version in this snapshot. Re-defining
-// an identical (table, version) is idempotent; a conflicting one fails with
-// ErrSchemaConflict; a version not greater than the table's latest fails with
-// ErrSchemaConflict.
-func (w *SnapshotWriter) DefineSchema(schema codec.Schema) error {
+// parentSnapshotFor returns the snapshot this writer extends (for schema
+// resolution).
+func (w *Writer) parentSnapshotFor() uint64 {
+	if w.parent != 0 {
+		return w.parent
+	}
+	if st := w.store.state.Load(); st != nil {
+		if latest := st.view.LatestSnapshot(); latest != nil {
+			return latest.ID
+		}
+	}
+	return 0
+}
+
+// writeMetadata encodes and buffers a metadata record into the metadata block
+// builder.
+func (w *Writer) writeMetadata(rec *metadata.Record) error {
+	body, err := rec.Encode(metadata.CoreFieldSchemas[rec.RecordType])
+	if err != nil {
+		return err
+	}
+	w.metaRecords = append(w.metaRecords, rec)
+	return w.metaBuilderAdd(rec, body)
+}
+
+func (w *Writer) ensureMetaBuilder() *block.MetadataBlockBuilder {
+	if w.metaBuilder == nil {
+		w.metaBuilder = block.NewMetadataBlockBuilder(
+			w.id, 0, w.store.opts.BlockSize, w.store.opts.diskCompression(), w.store.opts.CompressionLevel,
+			block.Limits{
+				MaxRawBytes:    w.store.opts.Limits.MaxRawBlockBytes,
+				MaxStoredBytes: w.store.opts.Limits.MaxStoredBlockBytes,
+			}, w.metaFlush)
+		w.attachZstdEncoder(w.metaBuilder)
+	}
+	return w.metaBuilder
+}
+
+func (w *Writer) metaBuilderAdd(rec *metadata.Record, body []byte) error {
+	entry := metadata.DirectoryEntry{
+		ObjectID:   rec.ObjectID,
+		Revision:   rec.Revision,
+		RecordType: rec.RecordType,
+		Operation:  fileformat.OperationUpsert,
+		Critical:   rec.Critical,
+	}
+	return w.ensureMetaBuilder().Add(entry, body)
+}
+
+// metaFlush captures one completed metadata block. The builder supplies the
+// directory entries directly, so no payload re-parse is needed.
+func (w *Writer) metaFlush(fb *block.FlushedBlock) error {
+	blk := &pendingBlock{header: fb.Header, payload: fb.Stored}
+	blk.meta = make([]fileformat.MetadataIndexEntry, 0, len(fb.Meta))
+	for i := range fb.Meta {
+		blk.meta = append(blk.meta, fileformat.MetadataIndexEntry{
+			SnapshotID:  w.id,
+			ObjectID:    fb.Meta[i].ObjectID,
+			Revision:    fb.Meta[i].Revision,
+			RecordType:  fb.Meta[i].RecordType,
+			ItemOrdinal: uint32(i),
+			Operation:   fb.Meta[i].Operation,
+			Critical:    fb.Meta[i].Critical,
+		})
+	}
+	w.pending = append(w.pending, blk)
+	return nil
+}
+
+// rowsFlush captures one completed rows block. The builder hands over
+// ownership of its directory slice (it allocates a fresh one for its next
+// block), so the pending block references it without a per-row copy;
+// ItemOrdinal is the directory position.
+func (w *Writer) rowsFlush(table TableID) func(*block.FlushedBlock) error {
+	return func(fb *block.FlushedBlock) error {
+		blk := &pendingBlock{header: fb.Header, payload: fb.Stored, rowsDir: fb.Rows}
+		w.pending = append(w.pending, blk)
+		return nil
+	}
+}
+
+// rowBuilder returns (creating if needed) the rows builder for a table.
+func (w *Writer) rowBuilder(table TableID) *block.RowsBlockBuilder {
+	if b := w.rowBuilders[table]; b != nil {
+		return b
+	}
+	b := block.NewRowsBlockBuilder(w.id, table, w.store.opts.BlockSize, w.store.opts.diskCompression(), w.store.opts.CompressionLevel, block.Limits{
+		MaxRawBytes:    w.store.opts.Limits.MaxRawBlockBytes,
+		MaxStoredBytes: w.store.opts.Limits.MaxStoredBlockBytes,
+	}, w.rowsFlush(table))
+	w.attachZstdEncoder(b)
+	w.rowBuilders[table] = b
+	return b
+}
+
+// attachZstdEncoder hands the store's persistent zstd encoder to a block
+// builder when the disk compression is zstd. The store owns the encoder (one
+// writer at a time, sequential flushes), so its ~1 MiB histogram is allocated
+// once per store instead of once per pool-recreating GC cycle.
+func (w *Writer) attachZstdEncoder(setter interface{ SetZstdEncoder(*block.ZstdEncoder) }) {
+	if w.store.opts.diskCompression() != fileformat.CompressionZstd {
+		return
+	}
+	setter.SetZstdEncoder(w.store.zstdEncoder())
+}
+
+// Insert appends an INSERT change.
+// CreateTable creates a table in this snapshot. The table name is the
+// caller-facing identity; the internal table ID and schema version are
+// assigned by the engine and never surface in the API.
+//
+//   - same name + same columns within this transaction ⇒ idempotent no-op;
+//   - same name + different columns ⇒ ErrSchemaConflict;
+//   - a table of the same name on the parent chain resolves to the existing
+//     internal ID: same columns ⇒ no-op, different columns ⇒ ErrSchemaConflict.
+func (w *Writer) CreateTable(name string, columns []Column) error {
 	if err := w.checkState(); err != nil {
 		return err
 	}
+	if name == "" {
+		return fmt.Errorf("%w: table name is empty", ErrInvalidArgument)
+	}
+	// Idempotence / conflict against this transaction's own definitions.
+	if tid, ok := w.tableIDs[name]; ok {
+		if w.columnsEqual(tid, columns) {
+			return nil
+		}
+		return fmt.Errorf("%w: table %q already defined with different columns", ErrSchemaConflict, name)
+	}
+	// Resolve against the committed parent chain.
+	st := w.store.state.Load()
+	if st != nil {
+		if chainTID, ok := st.schemas.tableIDByName(uint64(w.parentSnapshotFor()), name); ok {
+			if !w.chainColumnsEqual(uint64(w.parentSnapshotFor()), chainTID, columns) {
+				return fmt.Errorf("%w: table %q already exists with different columns", ErrSchemaConflict, name)
+			}
+			if w.typ == SnapshotDelta {
+				// DELTA: readers resolve the schema along the parent chain, so
+				// an identical re-definition needs no metadata of its own.
+				w.tableIDs[name] = chainTID
+				return nil
+			}
+			// FULL checkpoint (parent 0): always write the snapshot's own
+			// metadata layer, even when identical to the ancestor's (R7) —
+			// its visibility no longer follows any ancestor chain.
+			latest := st.schemas.latest(uint64(w.parentSnapshotFor()), uint32(chainTID))
+			if latest == 0 {
+				latest = 1
+			}
+			if err := w.writeTableRecords(uint32(chainTID), latest, name, columns); err != nil {
+				return err
+			}
+			w.tableIDs[name] = chainTID
+			return nil
+		}
+	}
+	// New table: allocate the internal ID and define version 1.
+	tid := w.nextTableID
+	if tid == 0 || tid == ^uint32(0) {
+		return fmt.Errorf("%w: table id space exhausted", ErrInvalidArgument)
+	}
+	if err := w.writeTableRecords(tid, 1, name, columns); err != nil {
+		return err
+	}
+	w.nextTableID++
+	w.tableIDs[name] = tid
+	return nil
+}
+
+// writeTableRecords writes the Table + Column metadata records of one table
+// version and records the resolved schema in the writer's txn map.
+func (w *Writer) writeTableRecords(tid uint32, version uint32, name string, columns []Column) error {
+	schema := codec.Schema{TableID: tid, Version: version, Name: name, Columns: columns}
 	if err := schema.Validate(w.store.opts.codecLimits()); err != nil {
 		return err
 	}
-	key := schemaKey{Table: schema.TableID, Version: schema.Version}
-	if existing, ok := w.schemas[key]; ok {
-		if !schemaEqual(existing, &schema) {
-			return fmt.Errorf("%w: schema %d v%d differs from existing definition", ErrSchemaConflict, schema.TableID, schema.Version)
-		}
-		return nil
-	}
-	// Check parent chain monotonicity. Only DELTAs extend an existing chain:
-	// a FULL checkpoint (parent 0) always writes its own metadata layer, even
-	// when the definition matches an ancestor's (R7 checkpoint semantics).
-	if w.typ == SnapshotDelta {
-		st := w.store.state.Load()
-		if st != nil {
-			if existing := st.schemas.schema(w.parentSnapshotFor(), schema.TableID, schema.Version); existing != nil {
-				if !schemaEqual(existing, &schema) {
-					return fmt.Errorf("%w: schema %d v%d conflicts with committed definition", ErrSchemaConflict, schema.TableID, schema.Version)
-				}
-				return nil
-			}
-			latest := st.schemas.latest(w.parentSnapshotFor(), schema.TableID)
-			if schema.Version <= latest {
-				return fmt.Errorf("%w: schema %d version %d not greater than latest %d", ErrSchemaConflict, schema.TableID, schema.Version, latest)
-			}
-		}
-	}
-
-	// Build metadata records.
-	tableOID := uint64(schema.TableID)
+	tableOID := uint64(tid)
 	tableRec := &metadata.Record{
 		RecordType:  uint32(fileformat.RecordTable),
 		ObjectID:    tableOID,
@@ -291,132 +418,145 @@ func (w *SnapshotWriter) DefineSchema(schema codec.Schema) error {
 			return err
 		}
 	}
-	w.schemas[key] = schema.Clone()
+	w.schemas[schemaKey{Table: tid, Version: schema.Version}] = schema.Clone()
 	return nil
 }
 
-// parentSnapshotFor returns the snapshot this writer extends (for schema
-// resolution).
-func (w *SnapshotWriter) parentSnapshotFor() uint64 {
-	if w.parent != 0 {
-		return w.parent
-	}
-	if st := w.store.state.Load(); st != nil {
-		if latest := st.view.LatestSnapshot(); latest != nil {
-			return latest.ID
+// columnsEqual compares the columns of the latest schema version defined for
+// tid within this transaction against columns.
+func (w *Writer) columnsEqual(tid TableID, columns []Column) bool {
+	var latest uint32
+	for key := range w.schemas {
+		if key.Table == tid && key.Version > latest {
+			latest = key.Version
 		}
 	}
-	return 0
+	if latest == 0 {
+		return false
+	}
+	s := w.schemas[schemaKey{Table: tid, Version: latest}]
+	return schemaColumnsEqual(s, columns)
 }
 
-// writeMetadata encodes and buffers a metadata record into the metadata block
-// builder.
-func (w *SnapshotWriter) writeMetadata(rec *metadata.Record) error {
-	body, err := rec.Encode(metadata.CoreFieldSchemas[rec.RecordType])
+// chainColumnsEqual compares the latest committed schema of (snapshot, tid)
+// against columns.
+func (w *Writer) chainColumnsEqual(snapshot uint64, tid TableID, columns []Column) bool {
+	st := w.store.state.Load()
+	if st == nil {
+		return false
+	}
+	latest := st.schemas.latest(snapshot, uint32(tid))
+	if latest == 0 {
+		return false
+	}
+	return schemaColumnsEqual(st.schemas.schema(snapshot, uint32(tid), latest), columns)
+}
+
+func schemaColumnsEqual(s *codec.Schema, columns []Column) bool {
+	if s == nil || len(s.Columns) != len(columns) {
+		return false
+	}
+	for i := range columns {
+		if s.Columns[i] != columns[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// maxCommittedTableID returns the highest internal table ID in the committed
+// view (0 when the store is empty).
+func (s *Store) maxCommittedTableID() uint32 {
+	st := s.state.Load()
+	if st == nil {
+		return 0
+	}
+	var maxID uint32
+	for _, sm := range st.view.Snapshots() {
+		for _, oid := range st.view.MetadataByType(sm.ID, uint32(fileformat.RecordTable)) {
+			if tid, err := metadata.TableID(oid); err == nil && tid > maxID {
+				maxID = tid
+			}
+		}
+	}
+	return maxID
+}
+
+// resolveTableForWrite resolves a table name to (internal ID, schema
+// version) for a write: tables created in this transaction first, then the
+// committed parent chain; the schema version is the table's latest — the
+// newest version defined in this transaction, or the committed latest when
+// the table was defined by an ancestor snapshot.
+func (w *Writer) resolveTableForWrite(table string) (TableID, SchemaVersion, error) {
+	tid, cached := w.tableIDs[table]
+	if !cached {
+		st := w.store.state.Load()
+		if st == nil {
+			return 0, 0, fmt.Errorf("%w: table %q", ErrNotFound, table)
+		}
+		var ok bool
+		if tid, ok = st.schemas.tableIDByName(uint64(w.parentSnapshotFor()), table); !ok {
+			return 0, 0, fmt.Errorf("%w: table %q", ErrNotFound, table)
+		}
+		w.tableIDs[table] = tid // cache for subsequent writes
+	}
+	ver := w.latestTxnVersion(tid)
+	if ver == 0 {
+		if st := w.store.state.Load(); st != nil {
+			ver = SchemaVersion(st.schemas.latest(uint64(w.parentSnapshotFor()), uint32(tid)))
+		}
+	}
+	return tid, ver, nil
+}
+
+func (w *Writer) latestTxnVersion(tid TableID) SchemaVersion {
+	var latest SchemaVersion
+	for key := range w.schemas {
+		if key.Table == tid && key.Version > latest {
+			latest = key.Version
+		}
+	}
+	return latest
+}
+
+// Insert appends an INSERT change. The table is addressed by name; the row
+// is encoded against the table's latest schema.
+func (w *Writer) Insert(ctx context.Context, table string, rowID RowID, row Row) error {
+	if rowID == 0 {
+		return fmt.Errorf("%w: row id is zero", ErrInvalidArgument)
+	}
+	tid, ver, err := w.resolveTableForWrite(table)
 	if err != nil {
 		return err
 	}
-	w.metaRecords = append(w.metaRecords, rec)
-	return w.metaBuilderAdd(rec, body)
-}
-
-func (w *SnapshotWriter) ensureMetaBuilder() *block.MetadataBlockBuilder {
-	if w.metaBuilder == nil {
-		w.metaBuilder = block.NewMetadataBlockBuilder(
-			w.id, 0, w.store.opts.BlockSize, w.store.opts.diskCompression(), w.store.opts.CompressionLevel,
-			block.Limits{
-				MaxRawBytes:    w.store.opts.Limits.MaxRawBlockBytes,
-				MaxStoredBytes: w.store.opts.Limits.MaxStoredBlockBytes,
-			}, w.metaFlush)
-		w.attachZstdEncoder(w.metaBuilder)
-	}
-	return w.metaBuilder
-}
-
-func (w *SnapshotWriter) metaBuilderAdd(rec *metadata.Record, body []byte) error {
-	entry := metadata.DirectoryEntry{
-		ObjectID:   rec.ObjectID,
-		Revision:   rec.Revision,
-		RecordType: rec.RecordType,
-		Operation:  fileformat.OperationUpsert,
-		Critical:   rec.Critical,
-	}
-	return w.ensureMetaBuilder().Add(entry, body)
-}
-
-// metaFlush captures one completed metadata block. The builder supplies the
-// directory entries directly, so no payload re-parse is needed.
-func (w *SnapshotWriter) metaFlush(fb *block.FlushedBlock) error {
-	blk := &pendingBlock{header: fb.Header, payload: fb.Stored}
-	blk.meta = make([]fileformat.MetadataIndexEntry, 0, len(fb.Meta))
-	for i := range fb.Meta {
-		blk.meta = append(blk.meta, fileformat.MetadataIndexEntry{
-			SnapshotID:  w.id,
-			ObjectID:    fb.Meta[i].ObjectID,
-			Revision:    fb.Meta[i].Revision,
-			RecordType:  fb.Meta[i].RecordType,
-			ItemOrdinal: uint32(i),
-			Operation:   fb.Meta[i].Operation,
-			Critical:    fb.Meta[i].Critical,
-		})
-	}
-	w.pending = append(w.pending, blk)
-	return nil
-}
-
-// rowsFlush captures one completed rows block. The builder hands over
-// ownership of its directory slice (it allocates a fresh one for its next
-// block), so the pending block references it without a per-row copy;
-// ItemOrdinal is the directory position.
-func (w *SnapshotWriter) rowsFlush(table TableID) func(*block.FlushedBlock) error {
-	return func(fb *block.FlushedBlock) error {
-		blk := &pendingBlock{header: fb.Header, payload: fb.Stored, rowsDir: fb.Rows}
-		w.pending = append(w.pending, blk)
-		return nil
-	}
-}
-
-// rowBuilder returns (creating if needed) the rows builder for a table.
-func (w *SnapshotWriter) rowBuilder(table TableID) *block.RowsBlockBuilder {
-	if b := w.rowBuilders[table]; b != nil {
-		return b
-	}
-	b := block.NewRowsBlockBuilder(w.id, table, w.store.opts.BlockSize, w.store.opts.diskCompression(), w.store.opts.CompressionLevel, block.Limits{
-		MaxRawBytes:    w.store.opts.Limits.MaxRawBlockBytes,
-		MaxStoredBytes: w.store.opts.Limits.MaxStoredBlockBytes,
-	}, w.rowsFlush(table))
-	w.attachZstdEncoder(b)
-	w.rowBuilders[table] = b
-	return b
-}
-
-// attachZstdEncoder hands the store's persistent zstd encoder to a block
-// builder when the disk compression is zstd. The store owns the encoder (one
-// writer at a time, sequential flushes), so its ~1 MiB histogram is allocated
-// once per store instead of once per pool-recreating GC cycle.
-func (w *SnapshotWriter) attachZstdEncoder(setter interface{ SetZstdEncoder(*block.ZstdEncoder) }) {
-	if w.store.opts.diskCompression() != fileformat.CompressionZstd {
-		return
-	}
-	setter.SetZstdEncoder(w.store.zstdEncoder())
-}
-
-// Insert appends an INSERT change.
-func (w *SnapshotWriter) Insert(ctx context.Context, table TableID, rowID RowID, schemaVersion SchemaVersion, row Row) error {
-	return w.put(ctx, ChangeInsert, table, rowID, schemaVersion, row)
+	return w.put(ctx, ChangeInsert, tid, rowID, ver, row)
 }
 
 // Update appends an UPDATE change (DELTA snapshots only).
-func (w *SnapshotWriter) Update(ctx context.Context, table TableID, rowID RowID, schemaVersion SchemaVersion, row Row) error {
-	return w.put(ctx, ChangeUpdate, table, rowID, schemaVersion, row)
+func (w *Writer) Update(ctx context.Context, table string, rowID RowID, row Row) error {
+	if rowID == 0 {
+		return fmt.Errorf("%w: row id is zero", ErrInvalidArgument)
+	}
+	tid, ver, err := w.resolveTableForWrite(table)
+	if err != nil {
+		return err
+	}
+	return w.put(ctx, ChangeUpdate, tid, rowID, ver, row)
 }
 
 // Delete appends a DELETE tombstone (DELTA snapshots only).
-func (w *SnapshotWriter) Delete(ctx context.Context, table TableID, rowID RowID) error {
-	return w.put(ctx, ChangeDelete, table, rowID, 0, nil)
+func (w *Writer) Delete(ctx context.Context, table string, rowID RowID) error {
+	if rowID == 0 {
+		return fmt.Errorf("%w: row id is zero", ErrInvalidArgument)
+	}
+	tid, _, err := w.resolveTableForWrite(table)
+	if err != nil {
+		return err
+	}
+	return w.put(ctx, ChangeDelete, tid, rowID, 0, nil)
 }
 
-func (w *SnapshotWriter) put(ctx context.Context, typ ChangeType, table TableID, rowID RowID, schemaVersion SchemaVersion, row Row) error {
+func (w *Writer) put(ctx context.Context, typ ChangeType, table TableID, rowID RowID, schemaVersion SchemaVersion, row Row) error {
 	if err := w.checkState(); err != nil {
 		return err
 	}
@@ -464,14 +604,14 @@ func (w *SnapshotWriter) put(ctx context.Context, typ ChangeType, table TableID,
 
 // rowSeen reports whether (table, rowID) was already written to this
 // snapshot.
-func (w *SnapshotWriter) rowSeen(table TableID, rowID RowID) bool {
+func (w *Writer) rowSeen(table TableID, rowID RowID) bool {
 	return w.seenRows[table].Contains(rowID)
 }
 
 // rememberRow records (table, rowID) as written. put() calls it only after
 // the row builder accepted the record, so failed inserts never pollute the
 // set. Nil sets are created lazily: most writers touch few tables.
-func (w *SnapshotWriter) rememberRow(table TableID, rowID RowID) {
+func (w *Writer) rememberRow(table TableID, rowID RowID) {
 	set := w.seenRows[table]
 	if set == nil {
 		set = &rowIDSet{}
@@ -480,7 +620,7 @@ func (w *SnapshotWriter) rememberRow(table TableID, rowID RowID) {
 	set.Insert(rowID)
 }
 
-func (w *SnapshotWriter) resolveSchema(table TableID, version SchemaVersion) (*codec.Schema, error) {
+func (w *Writer) resolveSchema(table TableID, version SchemaVersion) (*codec.Schema, error) {
 	if schema, ok := w.schemas[schemaKey{Table: table, Version: version}]; ok {
 		return schema, nil
 	}
@@ -494,7 +634,7 @@ func (w *SnapshotWriter) resolveSchema(table TableID, version SchemaVersion) (*c
 }
 
 // checkStrictParent enforces parent-view existence for DELTA changes.
-func (w *SnapshotWriter) checkStrictParent(table TableID, rowID RowID, typ ChangeType) error {
+func (w *Writer) checkStrictParent(table TableID, rowID RowID, typ ChangeType) error {
 	if w.typ != SnapshotDelta || w.store.opts.Validation == ValidationNone {
 		return nil
 	}
@@ -519,26 +659,9 @@ func (w *SnapshotWriter) checkStrictParent(table TableID, rowID RowID, typ Chang
 	return nil
 }
 
-// Apply consumes a channel of changes until closed, cancelled or an error.
-func (w *SnapshotWriter) Apply(ctx context.Context, changes <-chan Change) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case ch, ok := <-changes:
-			if !ok {
-				return nil
-			}
-			if err := w.put(ctx, ch.Type, ch.TableID, ch.RowID, ch.SchemaVersion, ch.Row); err != nil {
-				return err
-			}
-		}
-	}
-}
-
 // Abort discards the snapshot. It is idempotent; Abort on a committed writer
 // returns ErrSnapshotCommitted.
-func (w *SnapshotWriter) Abort() error {
+func (w *Writer) Abort() error {
 	switch w.state {
 	case writerCommitted:
 		return ErrSnapshotCommitted
@@ -551,7 +674,7 @@ func (w *SnapshotWriter) Abort() error {
 }
 
 // abort is the internal close path (no committed check).
-func (w *SnapshotWriter) abort() error {
+func (w *Writer) abort() error {
 	if w.state == writerCommitted {
 		return ErrSnapshotCommitted
 	}
@@ -560,15 +683,16 @@ func (w *SnapshotWriter) abort() error {
 	return nil
 }
 
-// Commit persists the snapshot and atomically publishes it to readers.
-func (w *SnapshotWriter) Commit(ctx context.Context) (SnapshotInfo, error) {
+// Commit persists the snapshot, atomically publishes it to readers and
+// returns the new snapshot's ID (the read path's only credential).
+func (w *Writer) Commit(ctx context.Context) (SnapshotID, error) {
 	if err := w.checkState(); err != nil {
-		return SnapshotInfo{}, err
+		return 0, err
 	}
 	if ctx != nil {
 		select {
 		case <-ctx.Done():
-			return SnapshotInfo{}, ctx.Err()
+			return 0, ctx.Err()
 		default:
 		}
 	}
@@ -576,20 +700,20 @@ func (w *SnapshotWriter) Commit(ctx context.Context) (SnapshotInfo, error) {
 	defer w.store.writeMu.Unlock()
 	if err := w.store.checkOpen(); err != nil {
 		w.state = writerFailed
-		return SnapshotInfo{}, err
+		return 0, err
 	}
 	info, commitErr := w.commitLocked(ctx)
 	if commitErr != nil {
 		w.state = writerFailed
 	}
-	return info, commitErr
+	return info.ID, commitErr
 }
 
-func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error) {
+func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 	if err := w.flushAll(); err != nil {
 		return SnapshotInfo{}, err
 	}
-	if len(w.pending) == 0 && !w.allowEmpty && w.typ == SnapshotFull {
+	if len(w.pending) == 0 && w.typ == SnapshotFull {
 		return SnapshotInfo{}, fmt.Errorf("%w: empty FULL snapshot", ErrInvalidArgument)
 	}
 	// Fault injection points (test-only): crash between these positions.
@@ -605,7 +729,6 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 	snapStart := startOffset
 	var sh fileformat.SnapshotHeader
 	sh.SnapshotType = fileformat.SnapshotType(w.typ)
-	sh.AllowEmpty = w.allowEmpty
 	sh.SnapshotID = w.id
 	sh.ParentSnapshotID = w.parent
 	sh.CreatedUnixNano = w.created
@@ -848,7 +971,7 @@ func (w *SnapshotWriter) commitLocked(ctx context.Context) (SnapshotInfo, error)
 
 // buildNewSchemas derives the schema index for the new snapshot only (the
 // parent snapshots' schemas are reused from the old index).
-func (w *SnapshotWriter) buildNewSchemas(newView *index.View) (*schemaIndex, error) {
+func (w *Writer) buildNewSchemas(newView *index.View) (*schemaIndex, error) {
 	base := w.store.state.Load()
 	si := &schemaIndex{bySnapshot: make(map[uint64]map[uint32]*tableSchemas)}
 	if base != nil && base.schemas != nil {
@@ -867,7 +990,7 @@ func (w *SnapshotWriter) buildNewSchemas(newView *index.View) (*schemaIndex, err
 }
 
 // flushAll flushes every builder into pending blocks.
-func (w *SnapshotWriter) flushAll() error {
+func (w *Writer) flushAll() error {
 	if w.metaBuilder != nil {
 		if err := w.metaBuilder.Flush(); err != nil {
 			return err
@@ -900,17 +1023,4 @@ func le64(b []byte) uint64 {
 
 func sortTableIDs(ids []TableID) {
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-}
-
-func schemaEqual(a, b *codec.Schema) bool {
-	if a.TableID != b.TableID || a.Version != b.Version || a.Name != b.Name || len(a.Columns) != len(b.Columns) {
-		return false
-	}
-	for i := range a.Columns {
-		ac, bc := a.Columns[i], b.Columns[i]
-		if ac.Name != bc.Name || ac.Type != bc.Type || ac.Nullable != bc.Nullable || ac.Scale != bc.Scale {
-			return false
-		}
-	}
-	return true
 }

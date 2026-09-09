@@ -64,19 +64,19 @@ func TestEncryptedStoreReadAfterReopen(t *testing.T) {
 	db, err := Create(base, Options{Encryption: cfg()}) // default Zstd compression
 	require.NoError(t, err)
 	full := writeFullSnapshot(t, db, 100)
-	require.NoError(t, assertRows(t, db, full.ID, 100))
+	require.NoError(t, assertRows(t, db, full, 100))
 
 	// DELTA: update row 10, delete row 20.
-	w, err := db.BeginSnapshot(ctx, SnapshotDelta, SnapshotOptions{Parent: full.ID})
+	w, err := db.BeginDelta(ctx, full)
 	require.NoError(t, err)
-	require.NoError(t, w.Update(ctx, 1, 10, 1, row1(10_000)))
-	require.NoError(t, w.Delete(ctx, 1, 20))
+	require.NoError(t, w.Update(ctx, "t1", 10, row1(10_000)))
+	require.NoError(t, w.Delete(ctx, "t1", 20))
 	head, err := w.Commit(ctx)
 	require.NoError(t, err)
-	require.NoError(t, checkHeadRows(t, db, head.ID, full.ID))
+	require.NoError(t, checkHeadRows(t, db, head, full))
 
 	// Batch read against the head.
-	rows, err := db.ReadBatch(ctx, head.ID, 1, []RowID{1, 2, 10})
+	rows, err := db.ReadBatch(ctx, head, 1, []RowID{1, 2, 10})
 	require.NoError(t, err)
 	require.Len(t, rows, 3, "batch rows = %d, want 3", len(rows))
 	name, _ := rows[2][1].String()
@@ -89,22 +89,22 @@ func TestEncryptedStoreReadAfterReopen(t *testing.T) {
 	require.NoError(t, err)
 	defer db2.Close()
 
-	row, err := db2.Get(ctx, full.ID, 1, 5, nil)
+	row, err := db2.Get(ctx, full, "t1", 5, nil)
 	require.NoError(t, err)
 	n, _ := row[1].String()
 	require.Equal(t, "row-5", n, "row 5 at FULL = %q, want row-5", n)
-	row, err = db2.Get(ctx, head.ID, 1, 10, nil)
+	row, err = db2.Get(ctx, head, "t1", 10, nil)
 	require.NoError(t, err)
 	n, _ = row[1].String()
 	require.Equal(t, "row-10000", n, "row 10 at head = %q, want row-10000", n)
-	_, err = db2.Get(ctx, head.ID, 1, 20, nil)
+	_, err = db2.Get(ctx, head, "t1", 20, nil)
 	require.ErrorIs(t, err, ErrNotFound, "deleted row 20 = %v, want ErrNotFound", err)
-	ok, err := db2.Exists(ctx, head.ID, 1, 20)
+	ok, err := db2.Exists(ctx, head, "t1", 20)
 	require.NoError(t, err, "Exists(deleted) = %v/%v, want false/nil", ok, err)
 	require.False(t, ok, "Exists(deleted) = %v/%v, want false/nil", ok, err)
 	// Full-table scan at the head: 99 rows.
 	count := 0
-	it, err := db2.Scan(ctx, head.ID, 1, ScanOptions{})
+	it, err := db2.Scan(ctx, head, "t1", ScanOptions{})
 	require.NoError(t, err)
 	for {
 		_, ok := it.Next()
@@ -182,7 +182,7 @@ func TestEncryptedStoreTamper(t *testing.T) {
 	}})
 	require.NoError(t, err)
 	defer db2.Close()
-	_, err = db2.Get(context.Background(), 1, 1, 1, nil)
+	_, err = db2.Get(context.Background(), 1, "t1", 1, nil)
 	require.ErrorIs(t, err, ErrAuthFailed, "read tampered block = %v, want ErrAuthFailed", err)
 }
 
@@ -213,7 +213,7 @@ func TestEncryptedStoreConcurrentReads(t *testing.T) {
 		go func() {
 			for i := uint64(0); i < 250; i++ {
 				id := start + RowID(i)
-				row, err := db2.Get(ctx, 1, 1, id, nil)
+				row, err := db2.Get(ctx, 1, "t1", id, nil)
 				if err != nil {
 					done <- err
 					return
@@ -235,7 +235,7 @@ func TestEncryptedStoreConcurrentReads(t *testing.T) {
 func assertRows(t *testing.T, db *Store, snap SnapshotID, n uint64) error {
 	t.Helper()
 	for i := uint64(1); i <= n; i++ {
-		row, err := db.Get(context.Background(), snap, 1, i, nil)
+		row, err := db.Get(context.Background(), snap, "t1", i, nil)
 		if err != nil {
 			return err
 		}
@@ -252,7 +252,7 @@ func checkHeadRows(t *testing.T, db *Store, head, full SnapshotID) error {
 	t.Helper()
 	for i := uint64(1); i <= 100; i++ {
 		if i == 20 {
-			if _, err := db.Get(context.Background(), head, 1, i, nil); !isErr(err, ErrNotFound) {
+			if _, err := db.Get(context.Background(), head, "t1", i, nil); !isErr(err, ErrNotFound) {
 				return errorf("row %d at head = %v, want ErrNotFound", i, err)
 			}
 			continue
@@ -261,7 +261,7 @@ func checkHeadRows(t *testing.T, db *Store, head, full SnapshotID) error {
 		if i == 10 {
 			want = "row-10000"
 		}
-		row, err := db.Get(context.Background(), head, 1, i, nil)
+		row, err := db.Get(context.Background(), head, "t1", i, nil)
 		if err != nil {
 			return err
 		}

@@ -179,7 +179,24 @@ func verify(ctx context.Context, base string) {
 func dump(ctx context.Context, base string, snap uint64, table uint32) {
 	db := open(base)
 	defer db.Close()
-	it, err := db.Scan(ctx, snap, rowpack.TableID(table), rowpack.ScanOptions{})
+	// Resolve the internal table ID to its name for the name-based Scan.
+	tables, err := db.Tables(ctx, snap)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "dump:", err)
+		os.Exit(1)
+	}
+	var name string
+	for _, t := range tables {
+		if uint32(t.ID) == table {
+			name = t.Name
+			break
+		}
+	}
+	if name == "" {
+		fmt.Fprintf(os.Stderr, "dump: table %d not found in snapshot %d\n", table, snap)
+		os.Exit(1)
+	}
+	it, err := db.Scan(ctx, snap, name, rowpack.ScanOptions{})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dump:", err)
 		os.Exit(1)

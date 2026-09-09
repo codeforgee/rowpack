@@ -49,27 +49,24 @@ func TestReadAPINotFoundErrors(t *testing.T) {
 	full := commitOneFull(t, db, 3)
 
 	// Unknown snapshot.
-	_, err := db.Get(context.Background(), 42, 1, 1, nil)
+	_, err := db.Get(context.Background(), 42, "t", 1, nil)
 	require.ErrorIs(t, err, ErrNotFound, "Get unknown snapshot: %v", err)
-	_, err = db.Snapshot(context.Background(), 42)
-	require.ErrorIs(t, err, ErrNotFound, "Snapshot unknown: %v", err)
-	_, err = db.Scan(context.Background(), 42, 1, ScanOptions{})
+	_, err = db.Scan(context.Background(), 42, "t", ScanOptions{})
 	require.ErrorIs(t, err, ErrNotFound, "Scan unknown snapshot: %v", err)
 	_, err = db.Schema(context.Background(), 42, 1, 1)
 	require.ErrorIs(t, err, ErrNotFound, "Schema unknown snapshot: %v", err)
-	_, err = db.LatestSchema(context.Background(), 42, 1)
 	require.ErrorIs(t, err, ErrNotFound, "LatestSchema unknown snapshot: %v", err)
 	// Unknown row / table / schema version.
-	_, err = db.Get(context.Background(), full, 1, 99, nil)
+	_, err = db.Get(context.Background(), full, "t", 99, nil)
 	require.ErrorIs(t, err, ErrNotFound, "Get unknown row: %v", err)
-	_, err = db.Get(context.Background(), full, 9, 1, nil)
+	_, err = db.Get(context.Background(), full, "no-such-table", 1, nil)
 	require.ErrorIs(t, err, ErrNotFound, "Get unknown table: %v", err)
 	_, err = db.Schema(context.Background(), full, 1, 7)
 	require.ErrorIs(t, err, ErrSchemaMismatch, "Schema unknown version: %v", err)
-	_, err = db.LatestSchema(context.Background(), full, 9)
-	require.ErrorIs(t, err, ErrNotFound, "LatestSchema unknown table: %v", err)
+	_, err = db.Blocks(context.Background(), full, "no-such-table")
+	require.ErrorIs(t, err, ErrNotFound, "Blocks unknown table: %v", err)
 	// Invalid scan range.
-	_, err = db.Scan(context.Background(), full, 1, ScanOptions{StartRowID: 5, EndRowID: 5})
+	_, err = db.Scan(context.Background(), full, "t", ScanOptions{Start: 5, End: 5})
 	require.ErrorIs(t, err, ErrInvalidArgument, "Scan empty range: %v", err)
 }
 
@@ -77,28 +74,28 @@ func TestReadAPITombstonesAndTables(t *testing.T) {
 	db := newEmptyStore(t)
 	full := commitOneFull(t, db, 3)
 
-	w, err := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: full})
+	w, err := db.BeginDelta(context.Background(), full)
 	require.NoError(t, err)
-	require.NoError(t, w.DefineSchema(testSchema()))
-	require.NoError(t, w.Delete(context.Background(), 1, 2))
-	require.NoError(t, w.Insert(context.Background(), 1, 10, 1, Row{Uint64(10), String("new")}))
+	require.NoError(t, w.CreateTable("t", testSchema()))
+	require.NoError(t, w.Delete(context.Background(), "t", 2))
+	require.NoError(t, w.Insert(context.Background(), "t", 10, Row{Uint64(10), String("new")}))
 	delta, err := w.Commit(context.Background())
 	require.NoError(t, err)
 
 	// Tombstoned row: Get fails, Exists is false, and the parent still sees it.
-	_, err = db.Get(context.Background(), delta.ID, 1, 2, nil)
+	_, err = db.Get(context.Background(), delta, "t", 2, nil)
 	require.ErrorIs(t, err, ErrNotFound, "Get deleted row: %v", err)
-	ok, err := db.Exists(context.Background(), delta.ID, 1, 2)
+	ok, err := db.Exists(context.Background(), delta, "t", 2)
 	require.NoError(t, err)
 	require.False(t, ok, "Exists deleted row = %v, %v", ok, err)
-	ok, err = db.Exists(context.Background(), full, 1, 2)
+	ok, err = db.Exists(context.Background(), full, "t", 2)
 	require.NoError(t, err)
 	require.True(t, ok, "Exists at parent = %v, %v", ok, err)
-	ok, err = db.Exists(context.Background(), delta.ID, 1, 99)
+	ok, err = db.Exists(context.Background(), delta, "t", 99)
 	require.NoError(t, err)
 	require.False(t, ok, "Exists absent row = %v, %v", ok, err)
 	// Tables resolve along the parent chain.
-	tables, err := db.Tables(context.Background(), delta.ID)
+	tables, err := db.Tables(context.Background(), delta)
 	require.NoError(t, err)
 	require.Len(t, tables, 1)
 	require.Equal(t, uint32(1), tables[0].ID)
@@ -111,11 +108,11 @@ func TestClosedStoreErrors(t *testing.T) {
 	commitOneFull(t, db, 1)
 	db.Close()
 
-	_, err := db.Get(context.Background(), 1, 1, 1, nil)
+	_, err := db.Get(context.Background(), 1, "t", 1, nil)
 	require.ErrorIs(t, err, ErrClosed, "Get closed: %v", err)
-	_, err = db.Snapshot(context.Background(), 1)
-	require.ErrorIs(t, err, ErrClosed, "Snapshot closed: %v", err)
-	_, err = db.Scan(context.Background(), 1, 1, ScanOptions{})
+	_, err = db.ListSnapshots(context.Background())
+	require.ErrorIs(t, err, ErrClosed, "ListSnapshots closed: %v", err)
+	_, err = db.Scan(context.Background(), 1, "t", ScanOptions{})
 	require.ErrorIs(t, err, ErrClosed, "Scan closed: %v", err)
 	_, err = db.Verify(context.Background(), VerifyQuick)
 	require.ErrorIs(t, err, ErrClosed, "Verify closed: %v", err)
@@ -130,7 +127,7 @@ func TestIteratorLifecycle(t *testing.T) {
 	db := newEmptyStore(t)
 	full := commitOneFull(t, db, 10)
 
-	it, err := db.Scan(context.Background(), full, 1, ScanOptions{})
+	it, err := db.Scan(context.Background(), full, "t", ScanOptions{})
 	require.NoError(t, err)
 	count := 0
 	for {
@@ -153,8 +150,8 @@ func TestIteratorLifecycle(t *testing.T) {
 	_, ok = it.Next()
 	require.False(t, ok, "Next after Close returned a row")
 
-	// Range-bounded scan: EndRowID is exclusive.
-	it2, err := db.Scan(context.Background(), full, 1, ScanOptions{StartRowID: 3, EndRowID: 6})
+	// Range-bounded scan: End is exclusive.
+	it2, err := db.Scan(context.Background(), full, "t", ScanOptions{Start: 3, End: 6})
 	require.NoError(t, err)
 	defer it2.Close()
 	var ids []RowID
@@ -173,7 +170,7 @@ func TestIteratorLifecycle(t *testing.T) {
 	// A cancelled context surfaces through Err().
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	it3, err := db.Scan(ctx, full, 1, ScanOptions{})
+	it3, err := db.Scan(ctx, full, "t", ScanOptions{})
 	require.NoError(t, err)
 	defer it3.Close()
 	_, ok = it3.Next()
@@ -205,7 +202,7 @@ func TestRecoveryRebuildGhostSnapshot(t *testing.T) {
 	require.Len(t, snaps, 2, "snapshots after rebuild = %+v", snaps)
 	require.Equal(t, uint64(1), snaps[0].ID)
 	require.Equal(t, uint64(99), snaps[1].ID)
-	_, err = db2.Get(context.Background(), 1, 1, 5, nil)
+	_, err = db2.Get(context.Background(), 1, "t", 5, nil)
 	require.NoError(t, err, "row 5: %v", err)
 	// In-memory rebuilds are not written back (BINARY_FORMAT_V2 §10.2): the
 	// ghost snapshot still has no stored IndexTxn, so every reopen rebuilds it
@@ -215,7 +212,7 @@ func TestRecoveryRebuildGhostSnapshot(t *testing.T) {
 	require.NoError(t, err, "second reopen: %v", err)
 	defer db3.Close()
 	require.Equal(t, uint64(1), db3.Stats().Recovery.SnapshotsRebuilt, "second rebuild = %d, want 1 (in-memory only)", db3.Stats().Recovery.SnapshotsRebuilt)
-	_, err = db3.Get(context.Background(), 1, 1, 5, nil)
+	_, err = db3.Get(context.Background(), 1, "t", 5, nil)
 	require.NoError(t, err, "row 5 after second reopen: %v", err)
 }
 

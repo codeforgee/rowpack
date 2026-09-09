@@ -14,8 +14,8 @@ import (
 
 // ScanOptions bounds a Scan.
 type ScanOptions struct {
-	StartRowID RowID // inclusive; 0 = from the beginning
-	EndRowID   RowID // exclusive; 0 = no upper bound
+	Start RowID // inclusive; 0 = from the beginning
+	End   RowID // exclusive; 0 = no upper bound
 }
 
 // IterArenaChunkSize bounds the per-iterator string arena chunks; chunks are
@@ -51,6 +51,14 @@ func (a *strArena) materialize(payload []byte) string {
 	return unsafe.String(&a.chunk[off], len(payload))
 }
 
+// scanMode selects the iterator traversal strategy.
+type scanMode uint8
+
+const (
+	scanModeMerge  scanMode = iota // parent-chain merged visible rows
+	scanModeBlocks                 // raw per-block change stream
+)
+
 // Iterator streams the logically visible rows of a table at a snapshot in
 // strictly ascending RowID order. Rows overridden by descendants and
 // tombstones are filtered out. It captures the immutable index view at
@@ -62,12 +70,14 @@ type Iterator struct {
 	snapshot SnapshotID
 	table    TableID
 	opts     ScanOptions
+	mode     scanMode
 
 	layers []*layerIter
 	heap   rowHeap
 
 	curRowID RowID
 	curLoc   *index.RowLoc
+	curType  fileformat.ChangeType // current record's change kind
 
 	// buf is the iterator-managed reusable row used when Next is called with
 	// a nil dst. It grows on demand and is overwritten by every Next call.
@@ -94,8 +104,12 @@ type Iterator struct {
 	// closes.
 	curRef *scanRef
 
-	err    error
-	closed bool
+	// Block-scan mode (scanModeBlocks): the raw per-block change stream.
+	blockIDs []uint64 // blocks to visit, ascending
+	blockPos int      // index into blockIDs
+	recPos   int      // index into curPayload.Entries
+	err      error
+	closed   bool
 }
 
 // strArenaSink binds a StringSink to an append-only arena; shared by the
@@ -129,24 +143,29 @@ func (h rowHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 func (h *rowHeap) Push(x any)   { *h = append(*h, x.(*layerIter)) }
 func (h *rowHeap) Pop() any     { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
 
-// Scan opens an iterator over the visible rows of table at snapshot.
-func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table TableID, opts ScanOptions) (*Iterator, error) {
+// Scan opens an iterator over the visible rows of the named table at
+// snapshot: the parent-chain merged view with tombstones filtered out.
+func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opts ScanOptions) (*Iterator, error) {
 	st, err := s.captureState()
 	if err != nil {
 		return nil, err
 	}
-	view := st.view
-	if view.Snapshot(snapshot) == nil {
+	if st.view.Snapshot(uint64(snapshot)) == nil {
 		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	if opts.StartRowID > 0 && opts.EndRowID > 0 && opts.StartRowID >= opts.EndRowID {
-		return nil, fmt.Errorf("%w: scan start %d >= end %d", ErrInvalidArgument, opts.StartRowID, opts.EndRowID)
+	tid, ok := st.schemas.tableIDByName(uint64(snapshot), table)
+	if !ok {
+		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
 	}
-	it := &Iterator{store: s, state: st, ctx: ctx, snapshot: snapshot, table: table, opts: opts}
+	view := st.view
+	if opts.Start > 0 && opts.End > 0 && opts.Start >= opts.End {
+		return nil, fmt.Errorf("%w: scan start %d >= end %d", ErrInvalidArgument, opts.Start, opts.End)
+	}
+	it := &Iterator{store: s, state: st, ctx: ctx, snapshot: snapshot, table: tid, opts: opts, mode: scanModeMerge}
 	// Build the parent chain layers (target snapshot first).
 	cur := snapshot
 	for depth := 0; ; depth++ {
-		keys := view.RowKeys(cur, table)
+		keys := view.RowKeys(cur, uint32(tid))
 		if len(keys) > 0 {
 			it.layers = append(it.layers, &layerIter{keys: keys, depth: depth})
 		}
@@ -192,6 +211,9 @@ func (it *Iterator) Next() (Row, bool) {
 		default:
 		}
 	}
+	if it.mode == scanModeBlocks {
+		return it.nextBlockRecord()
+	}
 	rowID, loc, ok := it.nextLoc()
 	if !ok {
 		it.releaseBlock()
@@ -205,8 +227,82 @@ func (it *Iterator) Next() (Row, bool) {
 	}
 	it.curRowID = rowID
 	it.curLoc = loc
+	it.curType = loc.ChangeType
 	it.buf = row
 	return row, true
+}
+
+// nextBlockRecord yields the raw per-record change stream of the selected
+// blocks in physical write order: every record, tombstones included, no
+// parent-chain merge. DELETE records carry a nil Row.
+func (it *Iterator) nextBlockRecord() (Row, bool) {
+	for {
+		if it.curPayload != nil && it.recPos < len(it.curPayload.Entries) {
+			ordinal := it.recPos
+			ent := &it.curPayload.Entries[ordinal]
+			it.recPos++
+			it.curRowID = RowID(ent.RowID)
+			it.curType = fileformat.ChangeType(ent.ChangeType)
+			if ent.ChangeType == fileformat.ChangeDelete {
+				return nil, true // tombstone: no payload
+			}
+			row, err := it.decodeEntry(ordinal, ent, it.buf)
+			if err != nil {
+				it.err = err
+				it.releaseBlock()
+				return nil, false
+			}
+			it.buf = row
+			return row, true
+		}
+		// Advance to the next block.
+		it.releaseBlock()
+		it.curBlockID = 0
+		it.curPayload = nil
+		it.recPos = 0
+		if it.blockPos >= len(it.blockIDs) {
+			return nil, false
+		}
+		bid := it.blockIDs[it.blockPos]
+		it.blockPos++
+		bl := it.state.view.Block(bid)
+		if bl == nil {
+			it.err = fmt.Errorf("rowpack: block %d missing from view", bid)
+			return nil, false
+		}
+		if err := it.loadBlock(bl); err != nil {
+			it.err = err
+			return nil, false
+		}
+	}
+}
+
+// loadBlock loads and parses one rows block for the block-scan cursor.
+func (it *Iterator) loadBlock(bl *index.BlockLoc) error {
+	ref, _, err := it.store.loader.LoadScan(int64(bl.DataOffset), bl.BlockID)
+	if err != nil {
+		return err
+	}
+	rp, err := block.ParseRowsDirectory(ref.Raw(), bl.ItemCount, it.dirEntries)
+	if err != nil {
+		ref.Release()
+		return err
+	}
+	it.dirEntries = rp.Entries
+	it.curBlockID = bl.BlockID
+	it.curBlk = bl
+	it.curPayload = rp
+	it.curRef = ref
+	return nil
+}
+
+// decodeEntry decodes one directory entry into dst against its schema.
+func (it *Iterator) decodeEntry(ordinal int, ent *fileformat.RowDirectoryEntry, dst Row) (Row, error) {
+	schema := it.state.schemas.schema(it.curBlk.SnapshotID, it.curBlk.TableID, ent.SchemaVersion)
+	if schema == nil {
+		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, it.curBlk.TableID, ent.SchemaVersion)
+	}
+	return codec.DecodeInto(dst, it.curPayload.RowBytes(ordinal), schema, it.store.opts.codecLimits(), it.sink)
 }
 
 // nextLoc advances the k-way merge and returns the next visible row location
@@ -221,10 +317,10 @@ func (it *Iterator) nextLoc() (RowID, *index.RowLoc, bool) {
 		for l.pos < len(keys) {
 			ent := &keys[l.pos]
 			l.pos++
-			if it.opts.StartRowID > 0 && ent.RowID < it.opts.StartRowID {
+			if it.opts.Start > 0 && ent.RowID < it.opts.Start {
 				continue
 			}
-			if it.opts.EndRowID > 0 && ent.RowID >= it.opts.EndRowID {
+			if it.opts.End > 0 && ent.RowID >= it.opts.End {
 				return 0, nil, false
 			}
 			if ent.Loc.ChangeType == fileformat.ChangeDelete {
@@ -247,10 +343,10 @@ func (it *Iterator) nextLoc() (RowID, *index.RowLoc, bool) {
 		}
 		winner.advance(&it.heap)
 		// Range filtering.
-		if it.opts.StartRowID > 0 && rowID < it.opts.StartRowID {
+		if it.opts.Start > 0 && rowID < it.opts.Start {
 			continue
 		}
-		if it.opts.EndRowID > 0 && rowID >= it.opts.EndRowID {
+		if it.opts.End > 0 && rowID >= it.opts.End {
 			return 0, nil, false
 		}
 		if loc.ChangeType == fileformat.ChangeDelete {
@@ -319,6 +415,10 @@ func (it *Iterator) releaseBlock() {
 
 // RowID returns the current row's RowID.
 func (it *Iterator) RowID() RowID { return it.curRowID }
+
+// ChangeType returns the current record's change kind. The merged Scan view
+// never yields ChangeDelete; ScanBlocks reports each record's raw kind.
+func (it *Iterator) ChangeType() ChangeType { return ChangeType(it.curType) }
 
 // Err returns the first error encountered, or nil on clean completion.
 func (it *Iterator) Err() error { return it.err }

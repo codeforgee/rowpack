@@ -23,45 +23,42 @@ func TestFullCheckpoint(t *testing.T) {
 	require.NoError(t, err)
 
 	// FULL(1): table 1 with rows 1..10.
-	w1, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	w1, err := db.BeginFull(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, w1.DefineSchema(schema1()))
-	sch := schema1()
-	sch.TableID = 1
-	require.NoError(t, w1.DefineSchema(sch))
+	require.NoError(t, w1.CreateTable("t", schema1()))
 	for i := uint64(1); i <= 10; i++ {
-		require.NoError(t, w1.Insert(context.Background(), 1, i, 1, row1(i)))
+		require.NoError(t, w1.Insert(context.Background(), "t", i, row1(i)))
 	}
 	f1, err := w1.Commit(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, SnapshotID(1), f1.ID, "first FULL id")
+	require.Equal(t, SnapshotID(1), f1, "first FULL id")
 
 	// DELTA(2): update row 2.
-	w2, err := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: f1.ID})
+	w2, err := db.BeginDelta(context.Background(), f1)
 	require.NoError(t, err)
-	require.NoError(t, w2.Update(context.Background(), 1, 2, 1, Row{Uint64(2), String("delta-2")}))
+	require.NoError(t, w2.Update(context.Background(), "t", 2, Row{Uint64(2), String("delta-2")}))
 	f2, err := w2.Commit(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, SnapshotID(2), f2.ID)
+	require.Equal(t, SnapshotID(2), f2)
 
 	// FULL(3): a checkpoint that reintroduces schema and rows 1..5.
-	w3, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	w3, err := db.BeginFull(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, w3.DefineSchema(sch)) // checkpoint carries its own schema
+	require.NoError(t, w3.CreateTable("t", schema1())) // checkpoint carries its own schema layer (R7)
 	for i := uint64(1); i <= 5; i++ {
-		require.NoError(t, w3.Insert(context.Background(), 1, i, 1, Row{Uint64(i), String("ckpt-3")}))
+		require.NoError(t, w3.Insert(context.Background(), "t", i, Row{Uint64(i), String("ckpt-3")}))
 	}
 	f3, err := w3.Commit(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, SnapshotID(3), f3.ID, "checkpoint FULL must keep the global counter")
+	require.Equal(t, SnapshotID(3), f3, "checkpoint FULL must keep the global counter")
 
 	// DELTA(4) on the checkpoint.
-	w4, err := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: f3.ID})
+	w4, err := db.BeginDelta(context.Background(), f3)
 	require.NoError(t, err)
-	require.NoError(t, w4.Insert(context.Background(), 1, 11, 1, row1(11)))
+	require.NoError(t, w4.Insert(context.Background(), "t", 11, row1(11)))
 	f4, err := w4.Commit(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, SnapshotID(4), f4.ID)
+	require.Equal(t, SnapshotID(4), f4)
 
 	st := db.state.Load()
 	require.Equal(t, uint32(1), st.view.Snapshot(1).Depth)
@@ -70,25 +67,25 @@ func TestFullCheckpoint(t *testing.T) {
 	require.Equal(t, uint32(2), st.view.Snapshot(4).Depth)
 
 	// FULL(3) visibility is independent of 1/2.
-	_, err = db.Get(context.Background(), 3, 1, 1, nil)
+	_, err = db.Get(context.Background(), 3, "t", 1, nil)
 	require.NoError(t, err, "snapshot 3 row 1")
-	r, err := db.Get(context.Background(), 3, 1, 2, nil)
+	r, err := db.Get(context.Background(), 3, "t", 2, nil)
 	require.NoError(t, err)
 	n, _ := r[1].String()
 	require.Equal(t, "ckpt-3", n, "snapshot 3 row 2 = %q, want checkpooint value (not delta-2)", n)
-	_, err = db.Get(context.Background(), 3, 1, 6, nil)
+	_, err = db.Get(context.Background(), 3, "t", 6, nil)
 	require.ErrorIs(t, err, ErrNotFound, "snapshot 3 must not see ancestor row 6")
-	_, err = db.Get(context.Background(), 3, 1, 11, nil)
+	_, err = db.Get(context.Background(), 3, "t", 11, nil)
 	require.ErrorIs(t, err, ErrNotFound, "snapshot 3 must not see descendant row 11")
 
 	// DELTA(4) sees checkpoint rows + own.
-	_, err = db.Get(context.Background(), 4, 1, 11, nil)
+	_, err = db.Get(context.Background(), 4, "t", 11, nil)
 	require.NoError(t, err)
-	_, err = db.Get(context.Background(), 4, 1, 10, nil)
+	_, err = db.Get(context.Background(), 4, "t", 10, nil)
 	require.ErrorIs(t, err, ErrNotFound, "snapshot 4 must not fall through past the checkpoint")
 
 	// Older snapshots stay readable.
-	r2, err := db.Get(context.Background(), 2, 1, 2, nil)
+	r2, err := db.Get(context.Background(), 2, "t", 2, nil)
 	require.NoError(t, err)
 	n2, _ := r2[1].String()
 	require.Equal(t, "delta-2", n2, "snapshot 2 row 2 = %q", n2)
@@ -98,12 +95,12 @@ func TestFullCheckpoint(t *testing.T) {
 	db2, err := Open(base, Options{})
 	require.NoError(t, err)
 	defer db2.Close()
-	r3, err := db2.Get(context.Background(), 4, 1, 11, nil)
+	r3, err := db2.Get(context.Background(), 4, "t", 11, nil)
 	require.NoError(t, err)
 	n3, _ := r3[1].String()
 	exp, _ := row1(11)[1].String()
 	require.Equal(t, exp, n3, "row 11 after reopen = %q", n3)
-	_, err = db2.Get(context.Background(), 2, 1, 2, nil)
+	_, err = db2.Get(context.Background(), 2, "t", 2, nil)
 	require.NoError(t, err, "snapshot 2 after reopen")
 }
 
@@ -112,12 +109,12 @@ func TestFullCheckpoint(t *testing.T) {
 func TestFooterChainLinks(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "chain")
 	db, _ := buildConcurrentStore(t, base, Options{})
-	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: 1})
-	require.NoError(t, w.Insert(context.Background(), 1, 9998, 1, Row{Uint64(9998), String("x")}))
+	w, _ := db.BeginDelta(context.Background(), 1)
+	require.NoError(t, w.Insert(context.Background(), "t", 9998, Row{Uint64(9998), String("x")}))
 	_, err := w.Commit(context.Background())
 	require.NoError(t, err)
-	w2, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: 2})
-	require.NoError(t, w2.Insert(context.Background(), 1, 9999, 1, Row{Uint64(9999), String("y")}))
+	w2, _ := db.BeginDelta(context.Background(), 2)
+	require.NoError(t, w2.Insert(context.Background(), "t", 9999, Row{Uint64(9999), String("y")}))
 	_, err = w2.Commit(context.Background())
 	require.NoError(t, err)
 
@@ -160,8 +157,8 @@ func TestFooterCorruptionLast(t *testing.T) {
 func TestFooterCorruptionMid(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "fc-mid")
 	db, _ := buildConcurrentStore(t, base, Options{})
-	w, _ := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: 1})
-	require.NoError(t, w.Insert(context.Background(), 1, 8888, 1, Row{Uint64(8888), String("z")}))
+	w, _ := db.BeginDelta(context.Background(), 1)
+	require.NoError(t, w.Insert(context.Background(), "t", 8888, Row{Uint64(8888), String("z")}))
 	_, err := w.Commit(context.Background())
 	require.NoError(t, err)
 	db.Close()
@@ -184,10 +181,10 @@ func TestFooterCorruptionMid(t *testing.T) {
 // commitLocked, BINARY_FORMAT_V2 §8).
 func TestCommitErrorUnknownOnSyncFailure(t *testing.T) {
 	db := newEmptyStore(t)
-	w, err := db.BeginSnapshot(context.Background(), SnapshotFull, SnapshotOptions{})
+	w, err := db.BeginFull(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, w.DefineSchema(testSchema()))
-	require.NoError(t, w.Insert(context.Background(), 1, 1, 1, Row{Uint64(1), String("a")}))
+	require.NoError(t, w.CreateTable("t", testSchema()))
+	require.NoError(t, w.Insert(context.Background(), "t", 1, Row{Uint64(1), String("a")}))
 	// Break the file handle exactly at the sync point: header, blocks, txn
 	// and footer are appended, the single Sync fails.
 	fault.Inject("commit.sync.before", func() { _ = db.data.Close() })
@@ -207,7 +204,7 @@ func TestEmptyDeltaReopen(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "empty-delta")
 	db := newEmptyStoreAt(t, base)
 	f := commitOneFull(t, db, 5)
-	w, err := db.BeginSnapshot(context.Background(), SnapshotDelta, SnapshotOptions{Parent: f})
+	w, err := db.BeginDelta(context.Background(), f)
 	require.NoError(t, err)
 	_, err = w.Commit(context.Background())
 	require.NoError(t, err, "empty delta commit")
@@ -220,7 +217,7 @@ func TestEmptyDeltaReopen(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, snaps, 2, "snapshots = %d, want 2", len(snaps))
 	require.Equal(t, uint64(2), snaps[1].ID)
-	_, err = db2.Get(context.Background(), 2, 1, 5, nil)
+	_, err = db2.Get(context.Background(), 2, "t", 5, nil)
 	require.NoError(t, err, "empty delta must still see the full row")
 }
 

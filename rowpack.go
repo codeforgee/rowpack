@@ -390,7 +390,7 @@ func (s *Store) initEncryption(dataHdr fileformat.DataFileHeader) error {
 	// Write path (read-write opens only): resolve the initial key up front so
 	// provider failures surface at Open, not at the first commit.
 	if !s.readOnly {
-		c, err := s.decrypter.Cipher(0)
+		c, err := s.decrypter.cipherFor(0)
 		if err != nil {
 			return err
 		}
@@ -402,9 +402,6 @@ func (s *Store) initEncryption(dataHdr fileformat.DataFileHeader) error {
 func le32(b []byte) uint32 {
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 }
-
-// footerCRCValue returns the stored SnapshotFooter FooterCRC32C.
-func footerCRCValue(fb []byte) uint32 { return le32(fb[fileformat.SnapshotFooterCRC32COffset:]) }
 
 // dataPathOf resolves the single store file path. Like v1, base paths
 // carrying a .rpk/.rpi extension are rejected so a store never ends up at

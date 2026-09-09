@@ -59,7 +59,7 @@ type RowsContainer struct {
 
 	// decompCounter is the reader's cumulative decompression counter; page
 	// decompression (the work that used to be a whole-block decode) is
-	// attributed to the reader so loader.readIOStats reports both disk bytes
+	// attributed to the reader so the loader's Stats report both disk bytes
 	// pulled and page raw bytes produced.
 	decompCounter *atomic.Uint64
 	// pageCtrs is the reader's shared per-page read counters (page loads, raw

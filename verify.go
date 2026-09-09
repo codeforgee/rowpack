@@ -94,15 +94,11 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 			return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: err.Error()}
 		}
 		if mode == VerifyFull && bl.Kind == fileformat.BlockKindMetadata {
-			if _, err := parseMetadataPayload(blk.Raw); err != nil {
+			if _, err := metadata.Parse(blk.Raw); err != nil {
 				return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, Kind: ErrCorruptData, Reason: err.Error()}
 			}
 		}
 	}
 	rep.Duration = time.Since(start)
 	return rep, nil
-}
-
-func parseMetadataPayload(raw []byte) (*metadata.Payload, error) {
-	return metadata.Parse(raw)
 }

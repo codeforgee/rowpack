@@ -129,7 +129,10 @@ func (d *storeDecrypter) OpenIndexChunk(epoch uint32, txnSeq, snapshotID uint64,
 	return pt, nil
 }
 
-// cipherFor checks out (creating on first use) the cipher for one epoch.
+// cipherFor checks out (creating on first use) the cipher for one epoch. It
+// is the shared entry point for the write path's single-writer encryptor;
+// the returned cipher is cached per epoch so a reopen of the same stored key
+// costs at most one key schedule.
 func (d *storeDecrypter) cipherFor(epoch uint32) (*seal.Cipher, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -146,11 +149,4 @@ func (d *storeDecrypter) cipherFor(epoch uint32) (*seal.Cipher, error) {
 	}
 	d.epochs[epoch] = c
 	return c, nil
-}
-
-// Cipher returns the (cached) cipher for an epoch, resolving the key through
-// the provider on first use. It is the shared entry point for the write
-// path's single-writer encryptor.
-func (d *storeDecrypter) Cipher(epoch uint32) (*seal.Cipher, error) {
-	return d.cipherFor(epoch)
 }

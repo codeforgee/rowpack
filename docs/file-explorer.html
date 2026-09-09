@@ -1,0 +1,1604 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RowPack 文件结构查看器 · File Explorer</title>
+<style>
+:root[data-theme="dark"] {
+  --bg:#0a0e17; --bg-soft:#0d1424; --panel:#101a2e; --panel-2:#0c1424;
+  --border:rgba(148,163,184,.14); --border-strong:rgba(148,163,184,.28);
+  --text:#e6ebf4; --text-dim:#9aa7bd; --text-faint:#5d6a84;
+  --accent:#818cf8; --accent-2:#22d3ee;
+  --grad:linear-gradient(135deg,#818cf8 0%,#22d3ee 100%);
+  --code-bg:rgba(148,163,184,.09);
+  --ok:#34d399; --bad:#fb7185; --warn:#fbbf24;
+  --c-magic:#f59e0b; --c-ver:#94a3b8;  --c-id:#a78bfa;  --c-cnt:#34d399;
+  --c-off:#60a5fa;  --c-crc:#fb7185;   --c-flg:#f472b6; --c-enum:#fbbf24;
+  --c-ts:#fb923c;   --c-nnc:#e879f9;   --c-rsv:#334155; --c-pay:#22d3ee;
+  --sel:rgba(129,140,248,.16);
+  --shadow:0 14px 44px -14px rgba(0,0,0,.6);
+}
+:root[data-theme="light"] {
+  --bg:#f4f6fb; --bg-soft:#ecf0f8; --panel:#ffffff; --panel-2:#f8fafd;
+  --border:rgba(15,23,42,.10); --border-strong:rgba(15,23,42,.22);
+  --text:#17233b; --text-dim:#4c5a72; --text-faint:#8b98af;
+  --accent:#4f46e5; --accent-2:#0891b2;
+  --grad:linear-gradient(135deg,#4f46e5 0%,#0891b2 100%);
+  --code-bg:rgba(15,23,42,.06);
+  --ok:#059669; --bad:#e11d48; --warn:#b45309;
+  --c-magic:#d97706; --c-ver:#64748b;  --c-id:#7c3aed;  --c-cnt:#0d9488;
+  --c-off:#2563eb;  --c-crc:#e11d48;   --c-flg:#db2777; --c-enum:#b45309;
+  --c-ts:#ea580c;   --c-nnc:#a21caf;   --c-rsv:#cbd5e1; --c-pay:#0891b2;
+  --sel:rgba(79,70,229,.10);
+  --shadow:0 12px 34px -16px rgba(15,23,42,.25);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans SC",sans-serif;
+  background:var(--bg);color:var(--text);font-size:14px;line-height:1.6;
+  display:flex;flex-direction:column;overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+.mono,.hex,td.off,td.sz,td.val,.chip,.tree-meta,.crumb,.seg-tip,button,input{
+  font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,"JetBrains Mono",Consolas,monospace;
+}
+/* ================= Top bar ================= */
+.top{
+  display:flex;align-items:center;gap:16px;padding:10px 20px;flex:none;
+  background:color-mix(in srgb,var(--bg) 78%,transparent);
+  backdrop-filter:blur(12px);border-bottom:1px solid var(--border);z-index:50;
+}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.02em;white-space:nowrap}
+.brand .logo{width:26px;height:26px;border-radius:8px;background:var(--grad);display:grid;place-items:center;color:#fff;font-size:11px;font-weight:800}
+.brand .sub{color:var(--text-faint);font-weight:500;font-size:12px}
+.fileinfo{display:flex;align-items:center;gap:8px;color:var(--text-dim);font-size:12.5px;min-width:0}
+.fileinfo .fname{color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}
+.pill{font-size:11.5px;padding:2px 9px;border-radius:999px;border:1px solid var(--border-strong);color:var(--text-dim);white-space:nowrap}
+.spacer{flex:1}
+button{
+  border:1px solid var(--border-strong);background:var(--panel);color:var(--text-dim);
+  border-radius:9px;padding:6px 13px;font-size:12.5px;cursor:pointer;transition:all .16s ease;white-space:nowrap;
+}
+button:hover:not(:disabled){color:var(--text);border-color:var(--accent);transform:translateY(-1px)}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.primary{background:var(--grad);border:none;color:#fff;font-weight:700}
+button.primary:hover:not(:disabled){filter:brightness(1.12)}
+.jump{display:flex;align-items:center;gap:6px}
+.jump input{
+  width:110px;background:var(--panel-2);border:1px solid var(--border-strong);border-radius:8px;
+  color:var(--text);padding:5px 9px;font-size:12px;outline:none;
+}
+.jump input:focus{border-color:var(--accent)}
+/* ================= Layout ================= */
+.app{flex:1;display:grid;grid-template-columns:290px minmax(0,1fr);min-height:0}
+aside{
+  border-right:1px solid var(--border);overflow:auto;padding:12px 10px 30px;background:var(--bg-soft);
+}
+.center{overflow:auto;padding:16px 22px 60px;display:flex;flex-direction:column;gap:16px;min-width:0}
+/* ================= Tree ================= */
+.tree-title{font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--text-faint);font-weight:700;margin:6px 8px 10px}
+.tnode{user-select:none}
+.trow{
+  display:flex;align-items:center;gap:7px;padding:4.5px 8px;border-radius:8px;cursor:pointer;
+  color:var(--text-dim);font-size:12.5px;border:1px solid transparent;transition:background .12s;
+}
+.trow:hover{background:var(--code-bg);color:var(--text)}
+.trow.sel{background:var(--sel);color:var(--text);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.trow .chev{width:14px;text-align:center;color:var(--text-faint);font-size:10px;flex:none;transition:transform .15s}
+.tnode.open>.trow .chev{transform:rotate(90deg)}
+.trow .tw{width:9px;height:9px;border-radius:2.5px;flex:none}
+.trow .tlabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trow .tmeta{color:var(--text-faint);font-size:11px;margin-left:auto;white-space:nowrap}
+.tkids{margin-left:15px;border-left:1px solid var(--border);padding-left:6px;display:none}
+.tnode.open>.tkids{display:block}
+.dot-ok,.dot-bad{width:7px;height:7px;border-radius:50%;flex:none}
+.dot-ok{background:var(--ok)}.dot-bad{background:var(--bad)}
+/* ================= Panels ================= */
+.card{
+  background:var(--panel);border:1px solid var(--border);border-radius:14px;
+  box-shadow:var(--shadow);overflow:hidden;flex:none;
+}
+.card-h{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.card-h .t{font-size:13px;font-weight:700}
+.card-h .r{margin-left:auto;display:flex;gap:8px;align-items:center;color:var(--text-faint);font-size:12px}
+.badge{font-size:11px;padding:2.5px 9px;border-radius:999px;font-weight:700;letter-spacing:.03em}
+.badge.ok{background:color-mix(in srgb,var(--ok) 14%,transparent);color:var(--ok);border:1px solid color-mix(in srgb,var(--ok) 35%,transparent)}
+.badge.bad{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad);border:1px solid color-mix(in srgb,var(--bad) 40%,transparent)}
+.badge.dim{background:var(--code-bg);color:var(--text-dim);border:1px solid var(--border-strong)}
+.chip{font-size:11px;padding:2px 8px;border-radius:6px;background:var(--code-bg);color:var(--text-dim)}
+/* ---- Byte map ---- */
+.bymap-wrap{padding:14px 16px 8px}
+.ruler{position:relative;height:16px;margin-top:2px}
+.ruler span{position:absolute;top:0;font-size:10px;color:var(--text-faint);transform:translateX(-50%);white-space:nowrap}
+.bymap{display:flex;height:52px;border-radius:9px;overflow:hidden;border:1px solid var(--border-strong);background:
+  repeating-linear-gradient(45deg,transparent 0 7px,rgba(148,163,184,.045) 7px 14px)}
+.seg{
+  position:relative;min-width:2px;cursor:pointer;transition:filter .12s,transform .12s;
+  display:flex;align-items:center;justify-content:center;overflow:hidden;
+}
+.seg:hover{filter:brightness(1.25);z-index:2;box-shadow:inset 0 0 0 1.5px var(--accent-2)}
+.seg.sel{box-shadow:inset 0 0 0 2px var(--accent-2);z-index:3;filter:brightness(1.18)}
+.seg .sl{font-size:9.5px;color:#0b1020;font-weight:800;white-space:nowrap;pointer-events:none;letter-spacing:.02em}
+.seg-tip{
+  position:fixed;z-index:200;pointer-events:none;opacity:0;transform:translate(-50%,calc(-100% - 10px));
+  background:var(--panel);border:1px solid var(--border-strong);border-radius:9px;padding:7px 11px;
+  font-size:11.5px;color:var(--text);box-shadow:var(--shadow);transition:opacity .1s;max-width:320px;line-height:1.5;
+}
+.seg-tip b{color:var(--accent-2)}
+.seg-tip.on{opacity:1}
+.maplegend{display:flex;flex-wrap:wrap;gap:5px 14px;padding:8px 16px 12px;font-size:11px;color:var(--text-faint)}
+.maplegend i{display:inline-block;width:8px;height:8px;border-radius:2.5px;margin-right:5px;vertical-align:-1px}
+/* ---- Detail ---- */
+.strip{display:flex;height:34px;border-radius:8px;overflow:hidden;border:1px solid var(--border-strong);margin:12px 16px 4px}
+.strip .f{min-width:2px;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer;transition:filter .1s}
+.strip .f:hover,.strip .f.hl{filter:brightness(1.3);box-shadow:inset 0 0 0 1.5px var(--accent-2);z-index:2}
+.strip .f span{font-size:9px;color:#0b1020;font-weight:800;white-space:nowrap}
+table.fields{width:100%;border-collapse:collapse;font-size:12.5px}
+table.fields th{
+  text-align:left;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-faint);
+  padding:7px 10px;border-bottom:1px solid var(--border);font-weight:700;
+}
+table.fields td{padding:5px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+table.fields tr:last-child td{border-bottom:none}
+table.fields tbody tr{cursor:default;transition:background .1s}
+table.fields tbody tr:hover,table.fields tbody tr.hl{background:var(--sel)}
+td.off,td.sz{color:var(--text-faint);white-space:nowrap;font-size:11.5px}
+td.ty .chip{font-size:10.5px}
+td.fn{white-space:nowrap;font-weight:600}
+td.fn i{display:inline-block;width:8px;height:8px;border-radius:2.5px;margin-right:7px;vertical-align:0}
+td.val{color:var(--accent-2);word-break:break-all;max-width:280px}
+td.ds{color:var(--text-dim);font-size:12px}
+.subtbl{margin:4px 16px 16px}
+.subtbl h4{font-size:12px;color:var(--text-dim);margin:12px 2px 6px;font-weight:700}
+table.rows-t{width:100%;border-collapse:collapse;font-size:12px}
+table.rows-t th{text-align:left;padding:5px 9px;color:var(--text-faint);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;border-bottom:1px solid var(--border)}
+table.rows-t td{padding:4.5px 9px;border-bottom:1px solid var(--border);color:var(--text-dim)}
+table.rows-t td:first-child{color:var(--text-faint)}
+table.rows-t tbody tr{cursor:pointer;transition:background .1s}
+table.rows-t tbody tr:hover{background:var(--sel);color:var(--text)}
+/* ---- Hex ---- */
+.hexwrap{padding:10px 16px 14px;overflow:auto}
+.hexrow{display:flex;gap:14px;white-space:nowrap;font-size:12px;line-height:1.75}
+.hexrow .ho{color:var(--text-faint);min-width:9ch;text-align:right}
+.hexrow .hb{display:flex}
+.hb b{
+  font-weight:400;color:var(--text-dim);width:2.35ch;text-align:center;border-radius:4px;cursor:default;
+  transition:background .08s;
+}
+.hb b.cmagic{color:var(--c-magic)}.hb b.coff{color:var(--c-off)}.hb b.ccrc{color:var(--c-crc)}
+.hb b.on{background:var(--accent);color:#fff;font-weight:700}
+.hb b.dimmed{opacity:.28}
+.hexrow .ha{color:var(--text-faint)}
+.trunc{color:var(--text-faint);font-size:11.5px;padding:4px 2px 0}
+/* ================= Empty state ================= */
+.empty{margin:auto;max-width:660px;text-align:center;padding:40px 20px}
+.empty .glyph{
+  width:74px;height:74px;margin:0 auto 22px;border-radius:20px;background:var(--grad);
+  display:grid;place-items:center;font-size:30px;color:#fff;box-shadow:0 18px 50px -12px color-mix(in srgb,var(--accent) 55%,transparent);
+}
+.empty h1{font-size:26px;font-weight:800;letter-spacing:-.01em;margin-bottom:10px}
+.empty p{color:var(--text-dim);max-width:520px;margin:0 auto 8px}
+.empty .acts{display:flex;gap:12px;justify-content:center;margin:26px 0 30px}
+.empty .acts button{padding:10px 22px;font-size:13.5px}
+.magics{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin-top:8px}
+.magics .chip{font-size:11px}
+/* ================= Verify panel ================= */
+.vmask{position:fixed;inset:0;background:rgba(4,8,16,.55);backdrop-filter:blur(3px);z-index:90;display:none;align-items:center;justify-content:center}
+.vmask.on{display:flex}
+.vpanel{
+  width:min(720px,92vw);max-height:80vh;display:flex;flex-direction:column;
+  background:var(--panel);border:1px solid var(--border-strong);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;
+}
+.vpanel .card-h{padding:14px 18px}
+.vclose{margin-left:auto}
+.vbody{overflow:auto;padding:6px 18px 16px}
+.vrow{display:flex;gap:10px;align-items:baseline;padding:6px 4px;border-bottom:1px solid var(--border);font-size:12.5px;cursor:pointer}
+.vrow:hover{background:var(--sel)}
+.vrow .st{flex:none;font-weight:800;width:16px;text-align:center}
+.vrow.ok .st{color:var(--ok)}.vrow.bad .st{color:var(--bad)}.vrow.na .st{color:var(--text-faint)}
+.vrow .vl{color:var(--text);white-space:nowrap}
+.vrow .vd{color:var(--text-faint);font-size:11.5px;margin-left:auto;text-align:right}
+.vsum{display:flex;gap:18px;padding:10px 4px 4px;font-size:12.5px;color:var(--text-dim)}
+.vsum b{font-size:16px}
+/* ================= Drop overlay / toast ================= */
+.dropmask{position:fixed;inset:0;z-index:120;display:none;align-items:center;justify-content:center;background:rgba(4,8,16,.66);backdrop-filter:blur(4px)}
+.dropmask.on{display:flex}
+.dropbox{
+  border:2.5px dashed var(--accent);border-radius:22px;padding:60px 90px;text-align:center;color:var(--text);
+  font-size:17px;font-weight:700;background:color-mix(in srgb,var(--panel) 80%,transparent);
+}
+.toast{
+  position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);opacity:0;z-index:150;
+  background:var(--panel);border:1px solid var(--border-strong);border-radius:11px;padding:9px 18px;
+  font-size:12.5px;box-shadow:var(--shadow);transition:all .22s ease;pointer-events:none;max-width:70vw;
+}
+.toast.on{opacity:1;transform:translateX(-50%)}
+.toast b{color:var(--accent-2)}
+.crumb{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-faint);flex-wrap:wrap}
+.crumb a{color:var(--text-dim);cursor:pointer;text-decoration:none;padding:2px 8px;border-radius:7px}
+.crumb a:hover{background:var(--code-bg);color:var(--text)}
+.crumb .cur{color:var(--accent-2);padding:2px 8px}
+@media (max-width:980px){
+  .app{grid-template-columns:1fr}
+  aside{display:none}
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand"><div class="logo">RP</div><div>RowPack 文件结构查看器 <span class="sub">v2 · 单文件格式</span></div></div>
+  <div class="fileinfo" id="fileInfo" hidden>
+    <span class="fname" id="fName"></span>
+    <span class="pill" id="fSize"></span>
+    <span class="pill" id="fSummary"></span>
+  </div>
+  <div class="spacer"></div>
+  <div class="jump"><input id="jumpInput" placeholder="跳转 offset" disabled><button id="jumpBtn" disabled>跳转</button></div>
+  <button id="verifyBtn" disabled>✓ 校验全部</button>
+  <button id="demoBtn">载入演示文件</button>
+  <button id="openBtn" class="primary">打开 .rpk</button>
+  <input type="file" id="fileInput" hidden>
+  <button id="themeBtn" title="切换主题">◐</button>
+</header>
+
+<div class="app">
+  <aside><div class="tree-title">文件结构树</div><div id="tree"><div style="padding:8px 12px;color:var(--text-faint);font-size:12.5px">打开文件后显示结构树</div></div></aside>
+  <section class="center" id="center">
+    <div class="empty" id="empty">
+      <div class="glyph">⌗</div>
+      <h1>看进一个 .rpk 的内部</h1>
+      <p>打开 RowPack v2 单文件存储，逐层下钻：文件头 → 快照事务（块 · 索引事务 · 提交 Footer）→ Rows 页容器目录 → 索引分块与 Fence。所有固定结构在浏览器本地解析，带 CRC-32C 校验与字段级 Hex 联动。</p>
+      <div class="acts">
+        <button class="primary" id="openBtn2">打开 .rpk 文件</button>
+        <button id="demoBtn2">载入演示文件</button>
+      </div>
+      <p style="font-size:12px;color:var(--text-faint)">也可以直接把文件拖进窗口 · 解析纯前端完成，不联网</p>
+      <div class="magics">
+        <span class="chip">ROWPACK2 文件头</span><span class="chip">RPKSNAPH 快照头</span><span class="chip">RPKBLOCK 块</span>
+        <span class="chip">RPKROWBL 页容器</span><span class="chip">RPITXNBH 索引事务</span><span class="chip">RPICHNK1 分块</span>
+        <span class="chip">RPKIDXPG 行索引页</span><span class="chip">RPITXNEF 事务尾</span><span class="chip">RPKSNAPF 提交 Footer</span>
+      </div>
+    </div>
+    <div id="work" hidden style="display:flex;flex-direction:column;gap:16px;min-width:0">
+      <div class="crumb" id="crumbs"></div>
+      <div class="card" id="mapCard">
+        <div class="card-h"><span class="t" id="mapTitle">整文件字节图</span><div class="r" id="mapRange"></div></div>
+        <div class="bymap-wrap"><div class="bymap" id="bymap"></div><div class="ruler" id="ruler"></div></div>
+        <div class="maplegend" id="mapLegend"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:16px" id="detailGrid">
+        <div class="card" id="detailCard">
+          <div class="card-h"><span class="t" id="detailTitle">—</span><div class="r" id="detailMeta"></div></div>
+          <div id="detailBody"></div>
+        </div>
+        <div class="card" id="hexCard">
+          <div class="card-h"><span class="t">Hex 视图</span><div class="r" id="hexMeta"></div></div>
+          <div class="hexwrap" id="hexBody"><div class="trunc">选择左侧结构后显示字节</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="seg-tip" id="segTip"></div>
+<div class="vmask" id="vmask"><div class="vpanel">
+  <div class="card-h"><span class="t">完整校验报告</span><div class="vclose"><button id="vcloseBtn">关闭</button></div></div>
+  <div class="vbody" id="vbody"></div>
+</div></div>
+<div class="dropmask" id="dropmask"><div class="dropbox">松手载入 .rpk 文件</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/*__ENGINE_START__*/
+'use strict';
+/* ================================================================
+ * RowPack v2 文件结构解析引擎（纯函数，无 DOM 依赖）
+ * 字节布局与 internal/fileformat 一一对应。
+ * ================================================================ */
+
+/* ---------------- CRC-32C (Castagnoli) ---------------- */
+const CRC_T = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0x82F63B78 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32c(buf, start, end) {
+  let c = 0xFFFFFFFF;
+  for (let i = start; i < end; i++) c = (CRC_T[(c ^ buf[i]) & 0xFF] ^ (c >>> 8)) >>> 0;
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+/* 固定结构 CRC：计算时将 crcOff 处 4 字节视为 0 */
+function structCRC(buf, start, end, crcOff) {
+  const save = [buf[crcOff], buf[crcOff+1], buf[crcOff+2], buf[crcOff+3]];
+  buf[crcOff] = buf[crcOff+1] = buf[crcOff+2] = buf[crcOff+3] = 0;
+  const c = crc32c(buf, start, end);
+  buf[crcOff] = save[0]; buf[crcOff+1] = save[1]; buf[crcOff+2] = save[2]; buf[crcOff+3] = save[3];
+  return c;
+}
+function checkCRC(buf, start, end, crcOff) {
+  const stored = (buf[crcOff] | (buf[crcOff+1]<<8) | (buf[crcOff+2]<<16) | (buf[crcOff+3]<<24)) >>> 0;
+  const calc = structCRC(buf, start, end, crcOff);
+  return { stored, calc, ok: stored === calc, off: crcOff };
+}
+
+/* ---------------- 基础读取 ---------------- */
+function u16(b,o){ return b[o] | (b[o+1]<<8); }
+function u32(b,o){ return (b[o] | (b[o+1]<<8) | (b[o+2]<<16) | (b[o+3]<<24)) >>> 0; }
+function u64(b,o){ return u32(b,o) + u32(b,o+4) * 4294967296; }
+function i64(b,o){ const v = u64(b,o); return v >= 9223372036854775808 ? v - 18446744073709551616 : v; }
+function ascii(b,o,n){ let s=''; for (let i=0;i<n;i++) s += String.fromCharCode(b[o+i]); return s; }
+function hexOf(b,o,n){ let s=''; for (let i=0;i<n;i++) s += b[o+i].toString(16).padStart(2,'0'); return s; }
+
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n/1024).toFixed(1) + ' KiB';
+  if (n < 1073741824) return (n/1048576).toFixed(2) + ' MiB';
+  return (n/1073741824).toFixed(2) + ' GiB';
+}
+function fmtTS(ns) {
+  if (!ns) return '0';
+  const d = new Date(Number(ns) / 1e6);
+  if (isNaN(d)) return String(ns);
+  return d.toISOString().replace('T',' ').replace('Z','') + ' UTC';
+}
+const hexn = (v,w=8) => '0x' + v.toString(16).toUpperCase().padStart(w,'0');
+
+/* ---------------- 枚举字典 ---------------- */
+const DICT = {
+  comp: {0:'None',1:'Zstd'},
+  kind: {1:'Rows',2:'Metadata'},
+  styp: {1:'FULL',2:'DELTA'},
+  ct:   {1:'Insert',2:'Update',3:'Delete'},
+  enc:  {0:'None',1:'TypedTuple'},
+  op:   {1:'Upsert',2:'Delete'},
+  ealg: {0:'None',1:'AES-256-GCM'},
+  nsch: {0:'None',1:'CounterV1'},
+  ckind:{1:'Snapshot',2:'Metadata',3:'Block',4:'Row'},
+};
+function dec(dict, v) { return (dict[v] !== undefined) ? `${dict[v]} (${v})` : `未知 (${v})`; }
+function featStr(v) {
+  if (v === 0) return '—';
+  const bits = [['bit0','TypedTupleV1'],['bit1','Zstd'],['bit2','MetadataBlock'],['bit3','DeltaSnapshot']];
+  const on = bits.filter((_,i) => v & (1<<i)).map(b => b[1]);
+  const unk = v & ~0x0F;
+  let s = on.join(' · ') || '—';
+  if (unk) s += ` ⚠未知位 ${hexn(unk)}`;
+  return `${s} (${hexn(v,2)})`;
+}
+
+/* ---------------- 字段描述 ---------------- */
+/* f(absOff, size, type, name, value, cat, desc) */
+function F(off, size, type, name, val, cat, desc) { return {off, size, type, name, val, cat, desc}; }
+const CATS = {
+  magic:['Magic','var(--c-magic)'], ver:['版本/尺寸','var(--c-ver)'], id:['标识符','var(--c-id)'],
+  cnt:['计数/长度','var(--c-cnt)'], off:['offset','var(--c-off)'], crc:['CRC','var(--c-crc)'],
+  flg:['标志','var(--c-flg)'], enum:['枚举','var(--c-enum)'], ts:['时间戳','var(--c-ts)'],
+  nnc:['加密','var(--c-nnc)'], pay:['数据','var(--c-pay)'], rsv:['保留','var(--c-rsv)'],
+};
+const R = '必须为 0';
+
+/* ---------------- 各固定结构解析 ---------------- */
+function parseFileHeader(buf, off) {
+  const f = [
+    F(off,8,'bytes[8]','magic',JSON.stringify(ascii(buf,off,8)),'magic','固定 "ROWPACK2"'),
+    F(off+8,2,'u16','VersionMajor',u16(buf,off+8),'ver','固定 = 2'),
+    F(off+10,2,'u16','VersionMinor',u16(buf,off+10),'ver','当前 = 0'),
+    F(off+12,4,'u32','HeaderSize',u32(buf,off+12),'ver','固定 = 128'),
+    F(off+16,16,'bytes[16]','StoreUUID',hexOf(buf,off+16,16),'id','文件身份 / 加密 AAD'),
+    F(off+32,8,'i64','CreatedUnixNano',fmtTS(i64(buf,off+32)),'ts','创建时间'),
+    F(off+40,8,'u64','RequiredFeatures',featStr(u64(buf,off+40)),'flg','未知置位 ⇒ Open 失败'),
+    F(off+48,8,'u64','OptionalFeatures',hexn(u64(buf,off+48),2),'flg','可选能力位图'),
+    F(off+56,4,'u32','DefaultBlockSize',fmtBytes(u32(buf,off+56)),'cnt','默认 256 KiB'),
+    F(off+60,1,'u8','DefaultCompression',dec(DICT.comp,buf[off+60]),'enum',''),
+    F(off+61,1,'u8','DefaultRowEncoding',dec(DICT.enc,buf[off+61]),'enum',''),
+    F(off+62,2,'u16','Flags',u16(buf,off+62),'flg','通用标志'),
+    F(off+64,1,'u8','EncryptionAlgorithm',dec(DICT.ealg,buf[off+64]),'enum','非加密 Store 恒 0'),
+    F(off+65,1,'u8','NonceScheme',dec(DICT.nsch,buf[off+65]),'enum',''),
+    F(off+66,1,'u8','KeyIDLen',buf[off+66],'cnt','0..31'),
+    F(off+67,31,'bytes[31]','KeyID',ascii(buf,off+67,buf[off+66]) || '(空)','pay','ASCII 密钥 ID'),
+    F(off+98,22,'—','Reserved','0 × 22','rsv',R),
+    F(off+120,4,'u32','HeaderCRC32C','', 'crc','覆盖整个头部（自身置零）'),
+    F(off+124,4,'u32','ReservedCRC','恒 0','rsv',''),
+  ];
+  const crc = checkCRC(buf, off, off+128, off+120);
+  f[17].val = `${hexn(crc.stored)}${crc.ok ? ' ✓' : ' ✗ 计算='+hexn(crc.calc)}`;
+  const errs = [];
+  if (ascii(buf,off,8) !== 'ROWPACK2') errs.push(`magic 错误: ${JSON.stringify(ascii(buf,off,8))}`);
+  if (u16(buf,off+8) !== 2) errs.push(`Major=${u16(buf,off+8)}，应为 2`);
+  if (u32(buf,off+12) !== 128) errs.push('HeaderSize ≠ 128');
+  if (!crc.ok) errs.push('HeaderCRC32C 校验失败');
+  if (u64(buf,off+40) & ~0x0F) errs.push('存在未知 RequiredFeatures 位');
+  return {kind:'FileHeader', title:'FileHeader', magic:'ROWPACK2', start:off, end:off+128, fields:f, crc, errs,
+    info:{uuid:hexOf(buf,off+16,16)}};
+}
+
+function parseSnapshotHeader(buf, off) {
+  const t = buf[off+12];
+  const f = [
+    F(off,8,'bytes[8]','magic',JSON.stringify(ascii(buf,off,8)),'magic','"RPKSNAPH"'),
+    F(off+8,4,'u32','HeaderSize',u32(buf,off+8),'ver','固定 = 96'),
+    F(off+12,1,'u8','SnapshotType',dec(DICT.styp,t),'enum',''),
+    F(off+13,1,'u8','Flags','bit0 AllowEmpty=' + (buf[off+13]&1),'flg',''),
+    F(off+14,2,'—','Reserved','0 × 2','rsv',R),
+    F(off+16,8,'u64','SnapshotID',u64(buf,off+16),'id','全局递增'),
+    F(off+24,8,'u64','ParentSnapshotID',u64(buf,off+24),'id',t===1?'FULL=0':'DELTA 父'),
+    F(off+32,8,'i64','CreatedUnixNano',fmtTS(i64(buf,off+32)),'ts',''),
+    F(off+40,8,'u64','FirstBlockID',u64(buf,off+40),'id',''),
+    F(off+48,8,'u64','WriterNonce',u64(buf,off+48),'nnc','诊断'),
+    F(off+56,32,'—','Reserved','0 × 32','rsv',R),
+    F(off+88,4,'u32','HeaderCRC32C','','crc','自身置零'),
+    F(off+92,4,'—','Reserved','0 × 4','rsv',R),
+  ];
+  const crc = checkCRC(buf, off, off+96, off+88);
+  f[11].val = `${hexn(crc.stored)}${crc.ok ? ' ✓' : ' ✗ 计算='+hexn(crc.calc)}`;
+  const errs = [];
+  if (ascii(buf,off,8) !== 'RPKSNAPH') errs.push('magic 错误');
+  if (!crc.ok) errs.push('HeaderCRC32C 校验失败');
+  return {kind:'SnapshotHeader', title:'SnapshotHeader', magic:'RPKSNAPH', start:off, end:off+96, fields:f, crc, errs,
+    info:{snapID:u64(buf,off+16), parent:u64(buf,off+24), type:t}};
+}
+
+function parseBlockHeader(buf, off) {
+  const flags = u16(buf,off+14);
+  const stored = u32(buf,off+44);
+  const f = [
+    F(off,8,'bytes[8]','magic',JSON.stringify(ascii(buf,off,8)),'magic','"RPKBLOCK"'),
+    F(off+8,4,'u32','HeaderSize',u32(buf,off+8),'ver','固定 = 64'),
+    F(off+12,1,'u8','BlockKind',dec(DICT.kind,buf[off+12]),'enum',''),
+    F(off+13,1,'u8','Compression',dec(DICT.comp,buf[off+13]),'enum',''),
+    F(off+14,2,'u16','Flags','bit0 Encrypted=' + (flags&1),'flg',''),
+    F(off+16,8,'u64','BlockID',u64(buf,off+16),'id','单调递增'),
+    F(off+24,8,'u64','SnapshotID',u64(buf,off+24),'id',''),
+    F(off+32,4,'u32','TableID',u32(buf,off+32),'id',''),
+    F(off+36,4,'u32','ItemCount',u32(buf,off+36),'cnt','块内记录数'),
+    F(off+40,4,'u32','RawSize',fmtBytes(u32(buf,off+40)),'cnt','解压后长度'),
+    F(off+44,4,'u32','StoredSize',fmtBytes(stored),'cnt',flags&1?'密文长度（含 16B tag）':'落盘载荷长度'),
+    F(off+48,4,'u32','RawCRC32C',hexn(u32(buf,off+48)),'crc',buf[off+12]===1?'容器 [头+目录] 明文 CRC':'未压缩载荷 CRC'),
+    F(off+52,4,'u32','HeaderCRC32C','','crc','Footer.BlocksCRC32C 拼接此值'),
+    F(off+56,4,'u32','KeyEpoch',u32(buf,off+56),'nnc',''),
+    F(off+60,4,'—','Reserved','0 × 4','rsv',R),
+  ];
+  const crc = checkCRC(buf, off, off+64, off+52);
+  f[12].val = `${hexn(crc.stored)}${crc.ok ? ' ✓' : ' ✗ 计算='+hexn(crc.calc)}`;
+  const errs = [];
+  if (ascii(buf,off,8) !== 'RPKBLOCK') errs.push('magic 错误');
+  if (!crc.ok) errs.push('HeaderCRC32C 校验失败');
+  return {kind:'BlockHeader', title:'BlockHeader', magic:'RPKBLOCK', start:off, end:off+64, fields:f, crc, errs,
+    info:{blockID:u64(buf,off+16), snapID:u64(buf,off+24), tableID:u32(buf,off+32), kindB:buf[off+12],
+          itemCount:u32(buf,off+36), rawSize:u32(buf,off+40), storedSize:stored, enc:flags&1, comp:buf[off+13]}};
+}
+
+/* Rows 块页容器：[RowsBlockHeader 24B][RowsPageDirEntry × N 56B][stored pages…]（头与目录恒明文） */
+function parseRowsContainer(buf, payloadStart, payloadEnd, bh) {
+  const out = {hdr:null, dir:[], errs:[], dirStart:payloadStart, dataStart:0};
+  if (payloadEnd - payloadStart < 24) { out.errs.push('载荷不足以容纳 RowsBlockHeader'); return out; }
+  if (ascii(buf,payloadStart,8) !== 'RPKROWBL') { out.errs.push(`容器 magic 错误: ${JSON.stringify(ascii(buf,payloadStart,8))}`); return out; }
+  const pageCount = u32(buf,payloadStart+12), dirBytes = u32(buf,payloadStart+16), totalRecords = u32(buf,payloadStart+20);
+  out.hdr = {
+    start:payloadStart, end:payloadStart+24, title:'RowsBlockHeader', magic:'RPKROWBL', kind:'RowsBlockHeader',
+    fields:[
+      F(payloadStart,8,'bytes[8]','magic',JSON.stringify('RPKROWBL'),'magic','页容器头（明文）'),
+      F(payloadStart+8,1,'u8','Version',buf[payloadStart+8],'ver','固定 = 1'),
+      F(payloadStart+9,3,'—','Reserved','0 × 3','rsv',R),
+      F(payloadStart+12,4,'u32','PageCount',pageCount,'cnt',''),
+      F(payloadStart+16,4,'u32','DirectoryBytes',dirBytes,'cnt','= PageCount × 56'),
+      F(payloadStart+20,4,'u32','TotalRecords',totalRecords,'cnt','= Block.ItemCount'),
+    ],
+    crc:null, errs:[],
+    info:{pageCount, totalRecords},
+  };
+  if (buf[payloadStart+8] !== 1) out.hdr.errs.push('Version ≠ 1');
+  if (dirBytes !== pageCount * 56) out.hdr.errs.push(`DirectoryBytes=${dirBytes} ≠ PageCount×56=${pageCount*56}`);
+  out.dataStart = payloadStart + 24 + dirBytes;
+  for (let i = 0; i < pageCount; i++) {
+    const e = payloadStart + 24 + i*56;
+    if (e + 56 > payloadEnd) { out.errs.push(`页目录项 ${i} 越界`); break; }
+    const flags = u32(buf,e+48);
+    out.dir.push({
+      start:e, end:e+56, title:`RowsPageDirEntry[${i}]`, magic:null, kind:'RowsPageDirEntry',
+      fields:[
+        F(e,4,'u32','PageOrdinal',u32(buf,e),'id',''),
+        F(e+4,4,'u32','FirstRecordOrdinal',u32(buf,e+4),'id','块内记录序数基'),
+        F(e+8,4,'u32','RecordCount',u32(buf,e+8),'cnt',''),
+        F(e+12,8,'u64','StoredOffset',u64(buf,e+12),'off','相对容器数据区起点'),
+        F(e+20,4,'u32','StoredSize',fmtBytes(u32(buf,e+20)),'cnt',bh.info.enc?'密封页（压缩+16B tag）':'压缩页'),
+        F(e+24,4,'u32','RawSize',fmtBytes(u32(buf,e+24)),'cnt',''),
+        F(e+28,8,'u64','MinRowID',u64(buf,e+28),'id',''),
+        F(e+36,8,'u64','MaxRowID',u64(buf,e+36),'id',''),
+        F(e+44,4,'u32','PageCRC32C',hexn(u32(buf,e+44)),'crc','覆盖解压后整页（需解压验证）'),
+        F(e+48,4,'u32','Flags',flags,'flg',flags&1?'bit0=超大连行页':'0'),
+      ],
+      crc:null, errs:[],
+      info:{ordinal:u32(buf,e), recCount:u32(buf,e+8), minRow:u64(buf,e+28), maxRow:u64(buf,e+36),
+            storedSize:u32(buf,e+20), rawSize:u32(buf,e+24), flags, storedOffset:u64(buf,e+12)},
+    });
+  }
+  return out;
+}
+
+function parseIndexTxnHeader(buf, off) {
+  const f = [
+    F(off,8,'bytes[8]','magic',JSON.stringify(ascii(buf,off,8)),'magic','"RPITXNBH"（恒明文）'),
+    F(off+8,4,'u32','HeaderSize',u32(buf,off+8),'ver','固定 = 80'),
+    F(off+12,4,'u32','RowIndexPageCount',u32(buf,off+12),'cnt','排序行索引页数（S3-⑦）'),
+    F(off+16,8,'u64','TxnSequence',u64(buf,off+16),'id',''),
+    F(off+24,8,'u64','SnapshotID',u64(buf,off+24),'id',''),
+    F(off+32,8,'u64','DataSnapshotStart',u64(buf,off+32),'off','SnapshotHeader 处'),
+    F(off+40,8,'u64','DataSnapshotEnd',u64(buf,off+40),'off','SnapshotFooter 之后'),
+    F(off+48,4,'u32','MetadataEntryCount',u32(buf,off+48),'cnt',''),
+    F(off+52,4,'u32','BlockEntryCount',u32(buf,off+52),'cnt',''),
+    F(off+56,8,'u64','RowEntryCount',u64(buf,off+56),'cnt',''),
+    F(off+64,8,'u64','BodyBytes',fmtBytes(u64(buf,off+64)),'cnt','Header→Footer 存储态字节'),
+    F(off+72,4,'u32','HeaderCRC32C','','crc','自身置零'),
+    F(off+76,4,'u32','KeyEpoch',u32(buf,off+76),'nnc','加密 Store；明文恒 0'),
+  ];
+  const crc = checkCRC(buf, off, off+80, off+72);
+  f[11].val = `${hexn(crc.stored)}${crc.ok ? ' ✓' : ' ✗ 计算='+hexn(crc.calc)}`;
+  const errs = [];
+  if (ascii(buf,off,8) !== 'RPITXNBH') errs.push('magic 错误');
+  if (!crc.ok) errs.push('HeaderCRC32C 校验失败');
+  return {kind:'IndexTxnHeader', title:'IndexTxnHeader', magic:'RPITXNBH', start:off, end:off+80, fields:f, crc, errs,
+    info:{pageCount:u32(buf,off+12), txnSeq:u64(buf,off+16), snapID:u64(buf,off+24),
+          bodyBytes:u64(buf,off+64), keyEpoch:u32(buf,off+76),
+          metaCnt:u32(buf,off+48), blockCnt:u32(buf,off+52), rowCnt:u64(buf,off+56)}};
+}
+
+function parseIndexTxnFooter(buf, off) {
+  const f = [
+    F(off,8,'bytes[8]','magic',JSON.stringify(ascii(buf,off,8)),'magic','"RPITXNEF"'),
+    F(off+8,4,'u32','FooterSize',u32(buf,off+8),'ver','固定 = 80'),
+    F(off+12,4,'—','Reserved','0 × 4','rsv',R),
+    F(off+16,8,'u64','TxnSequence',u64(buf,off+16),'id',''),
+    F(off+24,8,'u64','SnapshotID',u64(buf,off+24),'id',''),
+    F(off+32,8,'u64','TxnStartOffset',u64(buf,off+32),'off',''),
+    F(off+40,8,'u64','TxnEndOffset',u64(buf,off+40),'off',''),
+    F(off+48,8,'u64','DataSnapshotEnd',u64(buf,off+48),'off',''),
+    F(off+56,4,'u32','BodyCRC32C',hexn(u32(buf,off+56)),'crc','覆盖明文 body（密文时需解压验证）'),
+    F(off+60,4,'u32','DataFooterCRC32C',hexn(u32(buf,off+60)),'crc','交叉校验'),
+    F(off+64,4,'u32','FooterCRC32C','','crc','自身置零'),
+    F(off+68,12,'—','Reserved','0 × 12','rsv',R),
+  ];
+  const crc = checkCRC(buf, off, off+80, off+64);
+  f[10].val = `${hexn(crc.stored)}${crc.ok ? ' ✓' : ' ✗ 计算='+hexn(crc.calc)}`;
+  const errs = [];
+  if (ascii(buf,off,8) !== 'RPITXNEF') errs.push('magic 错误');
+  if (!crc.ok) errs.push('FooterCRC32C 校验失败');
+  return {kind:'IndexTxnFooter', title:'IndexTxnFooter', magic:'RPITXNEF', start:off, end:off+80, fields:f, crc, errs,
+    info:{txnSeq:u64(buf,off+16), snapID:u64(buf,off+24), txnStart:u64(buf,off+32), txnEnd:u64(buf,off+40),
+          bodyCRC:u32(buf,off+56)}};
+}
+
+function parseChunkHeader(buf, off) {
+  const f = [
+    F(off,8,'bytes[8]','magic',JSON.stringify(ascii(buf,off,8)),'magic','"RPICHNK1"'),
+    F(off+8,2,'u16','HeaderSize',u16(buf,off+8),'ver','固定 = 64'),
+    F(off+10,1,'u8','EntryKind',dec(DICT.ckind,buf[off+10]),'enum',''),
+    F(off+11,1,'u8','Compression',dec(DICT.comp,buf[off+11]),'enum',''),
+    F(off+12,1,'u8','Encryption',dec(DICT.ealg,buf[off+12]),'enum',''),
+    F(off+13,1,'u8','Flags',buf[off+13],'flg','必须 = 0'),
+    F(off+14,2,'—','Reserved','0 × 2','rsv',R),
+    F(off+16,4,'u32','ChunkSequence',u32(buf,off+16),'id','事务内 0 起编号'),
+    F(off+20,4,'u32','EntryCount',u32(buf,off+20),'cnt','≤ 2²⁰'),
+    F(off+24,4,'u32','FirstEntryOrdinal',u32(buf,off+24),'id',''),
+    F(off+28,4,'u32','RawBytes',fmtBytes(u32(buf,off+28)),'cnt','≤ 16 MiB'),
+    F(off+32,4,'u32','StoredBytes',fmtBytes(u32(buf,off+32)),'cnt','含 tag（加密时）'),
+    F(off+36,4,'u32','KeyEpoch',u32(buf,off+36),'nnc',''),
+    F(off+40,4,'u32','PayloadCRC32C','','crc','对存储态载荷（诊断）'),
+    F(off+44,4,'u32','HeaderCRC32C','','crc','覆盖 0..44'),
+    F(off+48,16,'—','Reserved','0 × 16','rsv',R),
+  ];
+  const crc = checkCRC(buf, off, off+64, off+44);
+  const storedBytes = u32(buf,off+32);
+  let payload = null;
+  if (storedBytes > 0 && off+64+storedBytes <= buf.length) {
+    const calc = crc32c(buf, off+64, off+64+storedBytes); /* 直接 CRC，不置零 */
+    payload = {stored:u32(buf,off+40), calc, ok:u32(buf,off+40) === calc, off:off+40};
+  }
+  f[13].val = u32(buf,off+40) ? `${hexn(payload?.stored||0)}${payload?.ok ? ' ✓' : ' ✗'}` : '0（诊断）';
+  f[14].val = `${hexn(crc.stored)}${crc.ok ? ' ✓' : ' ✗ 计算='+hexn(crc.calc)}`;
+  const errs = [];
+  if (ascii(buf,off,8) !== 'RPICHNK1') errs.push('magic 错误');
+  if (!crc.ok) errs.push('HeaderCRC32C 校验失败');
+  if (payload && !payload.ok) errs.push('PayloadCRC32C 与存储态载荷不符');
+  return {kind:'IndexChunkHeader', title:`IndexChunkHeader[${u32(buf,off+16)}]`, magic:'RPICHNK1',
+    start:off, end:off+64+storedBytes, hdrEnd:off+64, fields:f, crc, errs, payload,
+    info:{kindC:buf[off+10], seq:u32(buf,off+16), entryCount:u32(buf,off+20), storedBytes, firstOrd:u32(buf,off+24)}};
+}
+
+function parseChunkDirEntry(buf, off) {
+  return {
+    start:off, end:off+32, title:`ChunkDirEntry`, magic:null, kind:'IndexChunkDirEntry',
+    fields:[
+      F(off,4,'u32','ChunkSequence',u32(buf,off),'id',''),
+      F(off+4,4,'u32','EntryCount',u32(buf,off+4),'cnt',''),
+      F(off+8,4,'u32','FirstEntryOrdinal',u32(buf,off+8),'id',''),
+      F(off+12,4,'u32','RawBytes',u32(buf,off+12),'cnt',''),
+      F(off+16,4,'u32','StoredBytes',u32(buf,off+16),'cnt','不含 64B 块头'),
+      F(off+20,1,'u8','EntryKind',dec(DICT.ckind,buf[off+20]),'enum',''),
+      F(off+21,3,'—','Reserved','0 × 3','rsv',R),
+      F(off+24,8,'u64','RegionOffset',u64(buf,off+24),'off','相对 IndexTxn 体起点'),
+    ],
+    crc:null, errs:[],
+    info:{seq:u32(buf,off), kindC:buf[off+20], regionOffset:u64(buf,off+24), entryCount:u32(buf,off+4),
+          rawBytes:u32(buf,off+12), storedBytes:u32(buf,off+16)},
+  };
+}
+
+function parseFenceEntry(buf, off) {
+  const e = u32(buf,off+44);
+  return {
+    start:off, end:off+52, title:'RowIndexFenceEntry', magic:null, kind:'RowIndexFenceEntry',
+    fields:[
+      F(off,8,'u64','SnapshotID',u64(buf,off),'id',''),
+      F(off+8,4,'u32','TableID',u32(buf,off+8),'id',''),
+      F(off+12,8,'u64','MinRowID',u64(buf,off+12),'id',''),
+      F(off+20,8,'u64','MaxRowID',u64(buf,off+20),'id',''),
+      F(off+28,8,'u64','StoredOffset',u64(buf,off+28),'off','页在 IndexTxn 体内的偏移'),
+      F(off+36,4,'u32','StoredSize',fmtBytes(u32(buf,off+36)),'cnt','压缩(+tag)'),
+      F(off+40,4,'u32','RawSize',fmtBytes(u32(buf,off+40)),'cnt',''),
+      F(off+44,4,'u32','EntryCount',e,'cnt',''),
+      F(off+48,4,'u32','PageCRC32C',hexn(u32(buf,off+48)),'crc','覆盖解压后页'),
+    ],
+    crc:null, errs: e === 0 ? ['EntryCount = 0'] : [],
+    info:{snapID:u64(buf,off), tableID:u32(buf,off+8), minRow:u64(buf,off+12), maxRow:u64(buf,off+20),
+          storedOffset:u64(buf,off+28), storedSize:u32(buf,off+36), rawSize:u32(buf,off+40), entryCount:e},
+  };
+}
+
+function parseSnapshotFooter(buf, off) {
+  const f = [
+    F(off,8,'bytes[8]','magic',JSON.stringify(ascii(buf,off,8)),'magic','"RPKSNAPF" · 唯一提交权威'),
+    F(off+8,4,'u32','FooterSize',u32(buf,off+8),'ver','固定 = 144'),
+    F(off+12,1,'u8','SnapshotType',dec(DICT.styp,buf[off+12]),'enum',''),
+    F(off+13,3,'—','Reserved','0 × 3','rsv',R),
+    F(off+16,8,'u64','SnapshotID',u64(buf,off+16),'id',''),
+    F(off+24,8,'u64','ParentSnapshotID',u64(buf,off+24),'id','FULL=0'),
+    F(off+32,8,'u64','PreviousFooterOffset',u64(buf,off+32),'off','Footer 链'),
+    F(off+40,8,'u64','SnapshotStartOffset',u64(buf,off+40),'off',''),
+    F(off+48,8,'u64','BlocksStartOffset',u64(buf,off+48),'off','= SnapshotStart + 96'),
+    F(off+56,8,'u64','BlocksEndOffset',u64(buf,off+56),'off',''),
+    F(off+64,8,'u64','IndexTxnStartOffset',u64(buf,off+64),'off',''),
+    F(off+72,8,'u64','IndexTxnEndOffset',u64(buf,off+72),'off','+144 = SnapshotEnd'),
+    F(off+80,8,'u64','SnapshotEndOffset',u64(buf,off+80),'off',''),
+    F(off+88,8,'u64','FirstBlockID',u64(buf,off+88),'id',''),
+    F(off+96,4,'u32','BlockCount',u32(buf,off+96),'cnt','全部块数（Rows+Metadata）'),
+    F(off+100,4,'u32','MetadataBlockCount',u32(buf,off+100),'cnt',''),
+    F(off+104,8,'u64','RowRecordCount',u64(buf,off+104),'cnt',''),
+    F(off+112,8,'u64','RawBytes',fmtBytes(u64(buf,off+112)),'cnt','诊断'),
+    F(off+120,8,'u64','StoredBytes',fmtBytes(u64(buf,off+120)),'cnt','= SnapshotEnd − SnapshotStart'),
+    F(off+128,4,'u32','BlocksCRC32C','','crc','按写序拼接各块 HeaderCRC32C'),
+    F(off+132,4,'u32','IndexTxnCRC32C','','crc','覆盖落盘 txn 字节（密文亦可验）'),
+    F(off+136,4,'u32','FooterCRC32C','','crc','提交判定核心'),
+    F(off+140,4,'—','Reserved','0 × 4','rsv',R),
+  ];
+  const crc = checkCRC(buf, off, off+144, off+136);
+  f[20].val = `${hexn(crc.stored)}${crc.ok ? ' ✓' : ' ✗ 计算='+hexn(crc.calc)}`;
+  const errs = [];
+  if (ascii(buf,off,8) !== 'RPKSNAPF') errs.push('magic 错误');
+  if (!crc.ok) errs.push('FooterCRC32C 校验失败');
+  return {kind:'SnapshotFooter', title:'SnapshotFooter', magic:'RPKSNAPF', start:off, end:off+144, fields:f, crc, errs,
+    info:{snapID:u64(buf,off+16), parent:u64(buf,off+24), prev:u64(buf,off+32), type:buf[off+12],
+          snapStart:u64(buf,off+40), blocksStart:u64(buf,off+48), blocksEnd:u64(buf,off+56),
+          idxStart:u64(buf,off+64), idxEnd:u64(buf,off+72), snapEnd:u64(buf,off+80),
+          blockCount:u32(buf,off+96), metaBlockCount:u32(buf,off+100), rows:u64(buf,off+104),
+          blocksCRC:u32(buf,off+128), idxCRC:u32(buf,off+132)}};
+}
+/* footer 一致性（用 info 而非字段查找） */
+function offsetsConsistent(info) {
+  return info.snapStart > 0
+    && info.blocksStart === info.snapStart + 96
+    && info.blocksStart <= info.blocksEnd && info.blocksEnd <= info.idxStart
+    && info.idxStart <= info.idxEnd
+    && info.snapEnd === info.idxEnd + 144;
+}
+
+/* ---------------- 全文件扫描（镜像 §10.1 物理扫描协议） ---------------- */
+function scanStore(buf) {
+  const m = {size:buf.length, fileHeader:null, txns:[], tail:null, fatal:null};
+  if (buf.length < 128) { m.fatal = '文件不足 128 B，无法容纳 FileHeader'; return m; }
+  m.fileHeader = parseFileHeader(buf, 0);
+  let pos = 128, cur = null;
+  const N = buf.length;
+  while (pos + 8 <= N) {
+    const magic = ascii(buf, pos, 8);
+    if (magic === 'RPKSNAPH') {
+      if (pos + 96 > N) { m.tail = {start:pos, end:N, reason:'SnapshotHeader 截断'}; break; }
+      cur = {header:parseSnapshotHeader(buf,pos), blocks:[], indexTxn:null, footer:null, committed:false};
+      m.txns.push(cur); pos += 96;
+    } else if (magic === 'RPKBLOCK') {
+      if (pos + 64 > N) { m.tail = {start:pos, end:N, reason:'BlockHeader 截断'}; break; }
+      const bh = parseBlockHeader(buf, pos);
+      const pStart = pos + 64, pEnd = pStart + bh.info.storedSize;
+      const blk = {header:bh, payload:{start:pStart, end:Math.min(pEnd,N)}, container:null};
+      if (pEnd > N) { bh.errs.push(`载荷越界: 需要 ${pEnd - pStart} B，文件仅剩 ${N - pStart} B`); blk.payload.end = N; }
+      else if (bh.info.kindB === 1) {
+        blk.container = parseRowsContainer(buf, pStart, pEnd, bh);
+      }
+      if (cur) cur.blocks.push(blk);
+      pos = pEnd;
+    } else if (magic === 'RPITXNBH') {
+      if (pos + 80 > N) { m.tail = {start:pos, end:N, reason:'IndexTxnHeader 截断'}; break; }
+      const ith = parseIndexTxnHeader(buf, pos);
+      const bodyStart = pos + 80, bodyEnd = bodyStart + ith.info.bodyBytes;
+      const txn = {header:ith, chunks:[], dir:[], dirStart:0, fences:[], pagesRegion:null, footer:null,
+                   body:{start:bodyStart, end:Math.min(bodyEnd,N)}};
+      let p = bodyStart;
+      const bEnd = Math.min(bodyEnd, N);
+      while (p + 64 <= bEnd && ascii(buf,p,8) === 'RPICHNK1') {
+        const ch = parseChunkHeader(buf, p);
+        txn.chunks.push(ch);
+        p = ch.end;
+        if (ch.end > bEnd) { ch.errs.push('载荷越出事务体'); break; }
+      }
+      const dirLen = txn.chunks.length * 32;
+      if (dirLen > 0 && p + dirLen <= bEnd) {
+        txn.dirStart = p;
+        for (let i = 0; i < txn.chunks.length; i++) txn.dir.push(parseChunkDirEntry(buf, p + i*32));
+        p += dirLen;
+      }
+      const nPages = ith.info.pageCount;
+      if (nPages > 0) {
+        const fenceStart = bodyEnd - nPages * 52;
+        if (fenceStart >= p && fenceStart + nPages*52 <= bEnd + 0 && fenceStart <= N) {
+          txn.pagesRegion = {start:p, end:fenceStart};
+          for (let i = 0; i < nPages; i++) {
+            const fe = fenceStart + i*52;
+            if (fe + 52 > N) break;
+            txn.fences.push(parseFenceEntry(buf, fe));
+          }
+        } else {
+          ith.errs.push(`Fence 区越界: pageCount=${nPages}, body=[${bodyStart},${bodyEnd})`);
+        }
+      }
+      if (bodyEnd + 80 <= N && ascii(buf, bodyEnd, 8) === 'RPITXNEF') {
+        txn.footer = parseIndexTxnFooter(buf, bodyEnd);
+        const fi = txn.footer.info;
+        if (fi.txnStart !== pos) txn.footer.errs.push(`TxnStartOffset=${fi.txnStart} ≠ 实际 ${pos}`);
+        if (fi.txnEnd !== bodyEnd + 80) txn.footer.errs.push(`TxnEndOffset=${fi.txnEnd} ≠ 实际 ${bodyEnd + 80}（事务尾含自身 80B）`);
+        if (fi.snapID !== ith.info.snapID || fi.txnSeq !== ith.info.txnSeq) txn.footer.errs.push('Footer 与 Header 的 SnapshotID/TxnSequence 不一致');
+      } else {
+        ith.errs.push('Header 后缺少 IndexTxnFooter');
+      }
+      if (cur) cur.indexTxn = txn;
+      pos = Math.min(bodyEnd, N) + (bodyEnd + 80 <= N ? 80 : 0);
+    } else if (magic === 'RPKSNAPF') {
+      if (pos + 144 > N) { m.tail = {start:pos, end:N, reason:'SnapshotFooter 截断'}; break; }
+      const ftr = parseSnapshotFooter(buf, pos);
+      if (cur) {
+        cur.footer = ftr;
+        cur.committed = ftr.crc.ok && offsetsConsistent(ftr.info);
+        if (!offsetsConsistent(ftr.info)) ftr.errs.push('offset 区间不自洽（OffsetsAreConsistent = false）');
+      }
+      pos += 144; cur = null;
+    } else {
+      m.tail = {start:pos, end:N, reason:`未知结构 magic=${JSON.stringify(magic)}（最后有效 Footer 之后属未提交尾部）`};
+      break;
+    }
+  }
+  if (!m.tail && pos < N) m.tail = {start:pos, end:N, reason:'剩余未解析字节'};
+  return m;
+}
+
+/* ---------------- 全量校验 ---------------- */
+function verifyStore(buf, m) {
+  const checks = [];
+  const add = (label, ok, detail, selectId, na) => checks.push({label, ok, detail, selectId, na:!!na});
+  const fh = m.fileHeader;
+  add('FileHeader.CRC32C', fh.crc.ok, `stored=${hexn(fh.crc.stored)} calc=${hexn(fh.crc.calc)}`, 'fh');
+  let prevFooter = null, prevID = 0, nOk = {crc:0, bad:0};
+  m.txns.forEach((t, ti) => {
+    const id = s => `t${ti}-${s}`;
+    add(`快照 ${t.header.info.snapID} · SnapshotHeader CRC`, t.header.crc.ok, '', id('sh'));
+    t.blocks.forEach((b, bi) => {
+      add(`块 #${b.header.info.blockID} · BlockHeader CRC`, b.header.crc.ok, '', id(`b${bi}`));
+      if (b.container) {
+        const c = b.container;
+        if (c.hdr) add(`块 #${b.header.info.blockID} · 容器几何`, c.hdr.errs.length === 0 && c.errs.length === 0,
+          c.hdr.errs.concat(c.errs).join('；'), id(`b${bi}`));
+        const sumRec = c.dir.reduce((s,d) => s + d.info.recCount, 0);
+        if (c.hdr) add(`块 #${b.header.info.blockID} · 页记录数合计`, sumRec === c.hdr.info.totalRecords,
+          `ΣRecordCount=${sumRec}，TotalRecords=${c.hdr.info.totalRecords}`, id(`b${bi}`));
+      }
+    });
+    const x = t.indexTxn;
+    if (x) {
+      add(`IndexTxn · Header CRC`, x.header.crc.ok, '', id('idx'));
+      const enc = x.header.info.keyEpoch > 0 || x.chunks.some(c => c.fields[4].val.indexOf('AES') === 0);
+      x.chunks.forEach((c, ci) => add(`IndexTxn · Chunk[${c.info.seq}] CRC`, c.crc.ok && (!c.payload || c.payload.ok),
+        c.errs.join('；'), id(`ch${ci}`)));
+      if (x.dir.length) {
+        let dirOk = x.dir.length === x.chunks.length;
+        const dets = [];
+        x.dir.forEach((d, di) => {
+          const c = x.chunks[di];
+          if (c && (d.info.seq !== c.info.seq || d.info.kindC !== c.info.kindC ||
+              d.info.storedBytes !== c.info.storedBytes || d.info.regionOffset !== c.start - x.body.start))
+            { dirOk = false; dets.push(`目录项[${di}] 与块头不符`); }
+        });
+        add('IndexTxn · 分块目录与块头一致', dirOk, dets.join('；'), id('idxdir'));
+      }
+      if (x.footer) {
+        const fi = x.footer.info;
+        add('IndexTxn · Footer CRC + 区间一致', x.footer.crc.ok && x.footer.errs.length === 0,
+          x.footer.errs.join('；'), id('idxf'));
+        add('IndexTxn · BodyCRC32C', true,
+          '覆盖压缩前原始内容拼接（快照原始 + 各 chunk 原始 + 目录 + 页原始 + fence，不含 chunk header），需解码后验证', id('idxf'), true);
+      }
+      if (x.fences.length) {
+        let fOk = true; const dets = [];
+        let expect = x.pagesRegion ? x.pagesRegion.start - x.body.start : -1;
+        x.fences.forEach((f2, i) => {
+          if (f2.info.storedOffset !== expect) { fOk = false; dets.push(`fence[${i}].StoredOffset=${f2.info.storedOffset} ≠ 期望 ${expect}`); }
+          expect += f2.info.storedSize;
+          if (f2.errs.length) { fOk = false; dets.push(...f2.errs); }
+        });
+        const regionLen = x.pagesRegion ? x.pagesRegion.end - x.pagesRegion.start : 0;
+        if (regionLen !== expect - (x.pagesRegion ? x.pagesRegion.start - x.body.start : 0)) { fOk = false; dets.push('页区总长与 ΣStoredSize 不符'); }
+        add('IndexTxn · Fence 目录几何', fOk, dets.join('；'), id('idx'));
+      }
+    }
+    const ft = t.footer;
+    if (ft) {
+      const consistent = offsetsConsistent(ft.info);
+      add(`快照 ${ft.info.snapID} · Footer CRC`, ft.crc.ok, '', id('ftr'));
+      add(`快照 ${ft.info.snapID} · OffsetsAreConsistent`, consistent, '', id('ftr'));
+      /* Footer 区间与实际扫描位置一致性 */
+      add(`快照 ${ft.info.snapID} · Footer 位置 = SnapshotEnd − 144`,
+        ft.start === ft.info.snapEnd - 144, `footer@${ft.start}，snapEnd=${ft.info.snapEnd}`, id('ftr'));
+      /* IndexTxnCRC 覆盖落盘 txn */
+      const txnStart = ft.info.idxStart, txnEnd = ft.info.idxEnd;
+      if (txnEnd > txnStart && txnEnd <= buf.length) {
+        const calc = crc32c(buf, txnStart, txnEnd);
+        add(`快照 ${ft.info.snapID} · IndexTxnCRC32C（落盘字节）`, calc === ft.info.idxCRC,
+          `stored=${hexn(ft.info.idxCRC)} calc=${hexn(calc)}`, id('idx'));
+      }
+      /* BlocksCRC32C：拼接各块头 CRC 字段 */
+      if (t.blocks.length) {
+        const parts = [];
+        let c = 0xFFFFFFFF;
+        t.blocks.forEach(b => {
+          const v = b.header.crc.stored;
+          for (let k = 0; k < 4; k++) c = (CRC_T[(c ^ (v >>> (8*k))) & 0xFF] ^ (c >>> 8)) >>> 0;
+        });
+        const calc = (c ^ 0xFFFFFFFF) >>> 0;
+        add(`快照 ${ft.info.snapID} · BlocksCRC32C（拼接块头 CRC）`, calc === ft.info.blocksCRC,
+          `stored=${hexn(ft.info.blocksCRC)} calc=${hexn(calc)}`, id('ftr'));
+      }
+      if (prevFooter !== null) {
+        add(`快照 ${ft.info.snapID} · Footer 链连续`, ft.info.prev === prevFooter && ft.info.snapID > prevID,
+          `PreviousFooterOffset=${ft.info.prev}，期望 ${prevFooter}`, id('ftr'));
+      }
+      prevFooter = ft.start; prevID = ft.info.snapID;
+      add(`快照 ${ft.info.snapID} · 提交状态`, t.committed, t.committed ? 'FooterCRC 有效且区间自洽' : '视为未提交/损坏', id('ftr'));
+    }
+  });
+  if (m.tail) add('未提交尾部', true, `[${m.tail.start}, ${m.tail.end}) ${m.tail.reason}`, 'tail', true);
+  return checks;
+}
+
+/* ---------------- 演示文件构造（合法 v2 布局，CRC 全部真实计算，一遍成型零回填） ---------------- */
+function buildDemoStore() {
+  const NS = 1757400000000000000;
+  const lcg = s => () => (s = (s * 48271) % 2147483647) / 2147483647;
+  const rndBytes = (n, seed) => { const r = lcg(seed); const a = new Uint8Array(n); for (let i=0;i<n;i++) a[i] = Math.floor(r()*256); return a; };
+
+  /* --- 顺序写缓冲 --- */
+  const mk = cap => ({ b: new Uint8Array(cap), n: 0 });
+  const need = (w,k) => { if (w.n + k > w.b.length) { const nb = new Uint8Array(Math.max(w.b.length*2, w.n+k)); nb.set(w.b.subarray(0,w.n)); w.b = nb; } };
+  const wu8  = (w,v) => { need(w,1); w.b[w.n++] = v & 0xFF; };
+  const wu16 = (w,v) => { need(w,2); for (let i=0;i<2;i++) w.b[w.n++] = (v >>> (8*i)) & 0xFF; };
+  const wu32 = (w,v) => { need(w,4); for (let i=0;i<4;i++) w.b[w.n++] = (Number(v) >>> (8*i)) & 0xFF; };
+  const wu64 = (w,v) => { wu32(w, v % 4294967296); wu32(w, Math.floor(v / 4294967296)); };
+  const wmagic = (w,s) => { need(w,8); for (let i=0;i<8;i++) w.b[w.n++] = s.charCodeAt(i); };
+  const wbytes = (w,a) => { need(w,a.length); w.b.set(a, w.n); w.n += a.length; };
+  const wzeros = (w,k) => { need(w,k); w.b.fill(0, w.n, w.n+k); w.n += k; };
+  const patch32 = (w,off,v) => { for (let i=0;i<4;i++) w.b[off+i] = (v >>> (8*i)) & 0xFF; };
+  const joinBytes = arr => {
+    const t = arr.reduce((s,x) => s + x.length, 0); const out = new Uint8Array(t); let o = 0;
+    for (const x of arr) { out.set(x, o); o += x.length; } return out;
+  };
+
+  /* --- 独立缓冲小工具 --- */
+  const mkc = cap => ({ b: new Uint8Array(cap),
+    w32(o,v){ for(let i=0;i<4;i++) this.b[o+i]=(v>>>(8*i))&0xFF; },
+    w64(o,v){ this.w32(o, v % 4294967296); this.w32(o+4, Math.floor(v/4294967296)); } });
+
+  /* Rows 页容器：[RPKROWBL 24B][页目录×N 56B][stored pages]，RawCRC 盖头+目录 */
+  function rowsContainer(pages) {
+    const dirBytes = pages.length * 56;
+    const total = 24 + dirBytes + pages.reduce((s,p) => s + p.stored, 0);
+    const c = mkc(total);
+    for (let i=0;i<8;i++) c.b[i] = 'RPKROWBL'.charCodeAt(i);
+    c.b[8] = 1;
+    c.w32(12, pages.length); c.w32(16, dirBytes);
+    c.w32(20, pages.reduce((s,p) => s + p.recCount, 0));
+    let off = 24 + dirBytes;
+    pages.forEach((p,i) => {
+      const e = 24 + i*56;
+      c.w32(e, i); c.w32(e+4, 0); c.w32(e+8, p.recCount);
+      c.w64(e+12, off); c.w32(e+20, p.stored); c.w32(e+24, p.raw);
+      c.w64(e+28, p.min); c.w64(e+36, p.max);
+      c.w32(e+44, 0x5A5A5A5A); c.w32(e+48, p.flags || 0);
+      const tmp = rndBytes(p.stored, p.min * 7919 + 13);
+      c.b.set(tmp, off);
+      c.b[off]=0x28; c.b[off+1]=0xB5; c.b[off+2]=0x2F; c.b[off+3]=0xFD; /* zstd magic 伪装 */
+      off += p.stored;
+    });
+    return { bytes: c.b, rawCRC: crc32c(c.b, 0, 24 + dirBytes) };
+  }
+
+  /* Metadata 载荷（comp=None 直接落盘） */
+  function metaPayload() {
+    const c = mkc(80);
+    for (let i=0;i<8;i++) c.b[i] = 'RPKMETAP'.charCodeAt(i);
+    c.w32(8,1); c.w32(12,32); c.w32(16,1); c.w32(20,32); c.w64(24,16);
+    const rec = 'TableDefault01xx';
+    c.b.set([...rec].map(ch => ch.charCodeAt(0) & 0xFF), 64);
+    c.w32(32, 100); c.w32(36, 1); c.w32(40, 2); c.w32(44, 0);
+    c.w32(48, 16); c.b[52] = 1; c.b[53] = 0;
+    c.w32(60, crc32c(c.b, 64, 80));
+    return c.b;
+  }
+
+  /* 索引条目（72/48/56 B，含自身 EntryCRC） */
+  function snapEntryBytes(e) {
+    const w = mk(72);
+    wu64(w,e.snapID); wu64(w,e.parent); wu8(w,e.type); wzeros(w,3); wu32(w,e.blockCount);
+    wu64(w,e.rows); wu64(w,e.dataStart); wu64(w,e.dataEnd); wu64(w,NS);
+    wu32(w,0); wzeros(w,4); wzeros(w,8);
+    patch32(w, 60, structCRC(w.b, 0, 72, 60));
+    return w.b;
+  }
+  function metaEntryBytes(e) {
+    const w = mk(48);
+    wu64(w,e.snapID); wu64(w,e.objID); wu32(w,e.rev); wu32(w,e.type); wu64(w,e.blockID);
+    wu32(w,0); wu8(w,1); wu8(w,0); wzeros(w,2); wzeros(w,4); wzeros(w,4);
+    patch32(w, 40, structCRC(w.b, 0, 48, 40));
+    return w.b;
+  }
+  function blockEntryBytes(e) {
+    const w = mk(56);
+    wu64(w,e.blockID); wu64(w,e.snapID); wu32(w,e.tableID); wu8(w,e.kind); wu8(w,e.comp); wzeros(w,2);
+    wu64(w,e.dataOffset); wu32(w,e.rawSize); wu32(w,e.storedSize); wu32(w,e.itemCount); wu32(w,e.rawCRC);
+    wzeros(w,4); wzeros(w,4);
+    patch32(w, 48, structCRC(w.b, 0, 56, 48));
+    return w.b;
+  }
+
+  /* 行索引页（raw==stored，页 CRC 覆盖流区、可直接验证） */
+  function indexPageBytes(pg) {
+    const streams = 4 + 8 + 8 + 4 + 1;
+    const w = mk(64 + streams);
+    wmagic(w,'RPKIDXPG'); wu8(w,1); wzeros(w,3); wu32(w,pg.entries);
+    wu32(w,4); wu32(w,8); wu32(w,8); wu32(w,4); wu32(w,1);
+    wu64(w,pg.min); wu64(w,pg.min); wu64(w,pg.max); wu32(w,0);
+    wbytes(w, rndBytes(streams, pg.min * 104729 + 7));
+    patch32(w, 60, crc32c(w.b, 64, w.n));
+    return w.b;
+  }
+
+  /* 写一个完整 SnapshotTxn（布局全部定长 → 先预算后落笔，零回填） */
+  function writeTxn(opt) {
+    const snapStart = w.n;
+    /* ① SnapshotHeader */
+    wmagic(w,'RPKSNAPH'); wu32(w,96); wu8(w,opt.type); wu8(w,0); wu16(w,0);
+    wu64(w,opt.id); wu64(w,opt.parent); wu64(w,NS); wu64(w,opt.firstBlock); wu64(w,424242);
+    wzeros(w,32); wzeros(w,4); wzeros(w,4);
+    patch32(w, snapStart+88, structCRC(w.b, snapStart, snapStart+96, snapStart+88));
+    /* ② Blocks（记录块头实际 offset，供 block entry 的 DataOffset 使用） */
+    const blockHdrCRCs = [], blockOffsets = [];
+    for (const b of opt.blocks) {
+      const hStart = w.n;
+      blockOffsets.push(hStart);
+      wmagic(w,'RPKBLOCK'); wu32(w,64); wu8(w,b.kind); wu8(w,b.comp); wu16(w,0);
+      wu64(w,b.id); wu64(w,opt.id); wu32(w,b.table); wu32(w,b.itemCount);
+      wu32(w,b.rawSize); wu32(w,b.payload.length); wu32(w,b.rawCRC); wu32(w,0); wu32(w,0); wu32(w,0);
+      patch32(w, hStart+52, structCRC(w.b, hStart, hStart+64, hStart+52));
+      blockHdrCRCs.push(u32(w.b, hStart+52));
+      wbytes(w, b.payload);
+    }
+    const blocksEnd = w.n;
+    /* ③ 布局预算（全部定长） */
+    const nMetaCh = opt.idx.metaEntries.length ? 1 : 0;
+    const nBlkCh  = opt.idx.blockEntries.length ? 1 : 0;
+    const pages = opt.idx.pages.map(p => ({ ...p, bytes: indexPageBytes(p) }));
+    const chunkLen = 64+72 + nMetaCh*(64+48*opt.idx.metaEntries.length) + nBlkCh*(64+56*opt.idx.blockEntries.length);
+    const dirLen = (1 + nMetaCh + nBlkCh) * 32;
+    const pagesLen = pages.reduce((s,p) => s + p.bytes.length, 0);
+    const bodyLen = chunkLen + dirLen + pagesLen + pages.length * 52;
+    const idxStart = blocksEnd, bodyStart = idxStart + 80, bodyEnd = bodyStart + bodyLen;
+    const idxEnd = bodyEnd + 80, snapEnd = idxEnd + 144; /* TxnEndOffset 含事务尾自身 80B（Go: te = ts + 80 + bodyLen + 80） */
+    /* ④ 索引条目（此刻 dataOffset/dataEnd 均已知） */
+    const chunkPayloads = [];
+    chunkPayloads.push({ kind:1, seq:0, bytes: snapEntryBytes({ snapID:opt.id, parent:opt.parent, type:opt.type,
+      blockCount:opt.blocks.length, rows:opt.idx.rowCnt, dataStart:snapStart, dataEnd:snapEnd }) });
+    let seq = 1;
+    if (nMetaCh) chunkPayloads.push({ kind:2, seq:seq++, bytes: joinBytes(opt.idx.metaEntries.map(metaEntryBytes)) });
+    if (nBlkCh) chunkPayloads.push({ kind:3, seq:seq++, bytes: joinBytes(opt.idx.blockEntries.map((e,i) =>
+      blockEntryBytes({ ...e, dataOffset: blockOffsets[i] })) ) });
+    /* ⑤ IndexTxnHeader */
+    wmagic(w,'RPITXNBH'); wu32(w,80); wu32(w,pages.length); wu64(w,opt.idx.seq); wu64(w,opt.id);
+    wu64(w,snapStart); wu64(w,snapEnd);
+    wu32(w,opt.idx.metaEntries.length); wu32(w,opt.idx.blockEntries.length); wu64(w,opt.idx.rowCnt);
+    wu64(w,bodyLen); wu32(w,0); wu32(w,0);
+    patch32(w, idxStart+72, structCRC(w.b, idxStart, idxStart+80, idxStart+72));
+    /* ⑥ chunks（头 + 载荷，头内 CRC 现算） */
+    let rel = 0;
+    const dirRows = [];
+    for (const c of chunkPayloads) {
+      const chStart = w.n;
+      const entryCount = c.kind===1 ? 1 : Math.round(c.bytes.length / (c.kind===2 ? 48 : 56));
+      wmagic(w,'RPICHNK1'); wu16(w,64); wu8(w,c.kind); wu8(w,0); wu8(w,0); wu8(w,0); wu16(w,0);
+      wu32(w,c.seq); wu32(w,entryCount); wu32(w,0); wu32(w,c.bytes.length); wu32(w,c.bytes.length); wu32(w,0);
+      wu32(w,0); wu32(w,0); wzeros(w,16); /* payloadCRC + hdrCRC 占位 + 尾部保留 */
+      wbytes(w, c.bytes);
+      patch32(w, chStart+40, crc32c(w.b, chStart+64, chStart+64+c.bytes.length));
+      patch32(w, chStart+44, structCRC(w.b, chStart, chStart+64, chStart+44));
+      dirRows.push({ seq:c.seq, entryCount, kind:c.kind, len:c.bytes.length, rel });
+      rel += 64 + c.bytes.length;
+    }
+    /* ⑦ chunk directory */
+    for (const d of dirRows) {
+      wu32(w,d.seq); wu32(w,d.entryCount); wu32(w,0); wu32(w,d.len); wu32(w,d.len);
+      wu8(w,d.kind); wzeros(w,3); wu64(w,d.rel);
+    }
+    /* ⑧ pages + fences（rel 需先加上目录长度：fence 的 StoredOffset = chunkLen + dirLen） */
+    rel += dirLen;
+    for (const pg of pages) {
+      const pageRel = rel;
+      wbytes(w, pg.bytes); rel += pg.bytes.length;
+      wu64(w,opt.id); wu32(w,pg.table); wu64(w,pg.min); wu64(w,pg.max);
+      wu64(w,pageRel); wu32(w,pg.bytes.length); wu32(w,pg.bytes.length);
+      wu32(w,pg.entries); wu32(w,crc32c(pg.bytes, 64, pg.bytes.length)); /* 页 CRC 盖流区 */
+    }
+    /* ⑨ IndexTxnFooter（位于 bodyEnd，自身 CRC 在 bodyEnd+64） */
+    wmagic(w,'RPITXNEF'); wu32(w,80); wu32(w,0);
+    wu64(w,opt.idx.seq); wu64(w,opt.id); wu64(w,idxStart); wu64(w,idxEnd); wu64(w,snapEnd);
+    wu32(w,crc32c(w.b, bodyStart, bodyEnd)); wu32(w,0); wu32(w,0); wzeros(w,12);
+    patch32(w, bodyEnd+64, structCRC(w.b, bodyEnd, bodyEnd+80, bodyEnd+64));
+    /* ⑩ SnapshotFooter */
+    const fStart = w.n;
+    wmagic(w,'RPKSNAPF'); wu32(w,144); wu8(w,opt.type); wzeros(w,3);
+    wu64(w,opt.id); wu64(w,opt.parent); wu64(w,opt.prevFooter);
+    wu64(w,snapStart); wu64(w,snapStart+96); wu64(w,blocksEnd); wu64(w,idxStart); wu64(w,idxEnd); wu64(w,snapEnd);
+    wu64(w,opt.firstBlock);
+    wu32(w,opt.blocks.length); wu32(w,opt.blocks.filter(b => b.kind===2).length);
+    wu64(w,opt.idx.rowCnt); wu64(w,opt.rawBytes); wu64(w,snapEnd - snapStart);
+    let cb = 0xFFFFFFFF;
+    for (const v of blockHdrCRCs) for (let k=0;k<4;k++) cb = (CRC_T[(cb ^ (v >>> (8*k))) & 0xFF] ^ (cb >>> 8)) >>> 0;
+    wu32(w,(cb ^ 0xFFFFFFFF) >>> 0);
+    wu32(w,crc32c(w.b, idxStart, idxEnd));
+    wu32(w,0); wzeros(w,4);
+    patch32(w, fStart+136, structCRC(w.b, fStart, fStart+144, fStart+136));
+    return { snapEnd, footerOff: fStart };
+  }
+
+  /* ================= 组装演示 Store ================= */
+  const w = mk(1 << 14);
+  /* FileHeader */
+  wmagic(w,'ROWPACK2'); wu16(w,2); wu16(w,0); wu32(w,128);
+  wbytes(w,[0x52,0x50,0x4b,0x44,0x45,0x4d,0x4f,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09]);
+  wu64(w,NS); wu64(w,0x0F); wu64(w,0);
+  wu32(w,262144); wu8(w,1); wu8(w,1); wu16(w,0);
+  wu8(w,0); wu8(w,0); wu8(w,0); wzeros(w,31); wzeros(w,22); wzeros(w,4); wzeros(w,4);
+  patch32(w, 120, structCRC(w.b, 0, 128, 120));
+
+  /* TXN 1 · FULL id=1：1 Rows 块（2 页，含 1 个超大连行页）+ 1 Metadata 块 */
+  const rc1 = rowsContainer([
+    { recCount:2, stored:100, raw:256, min:1, max:2, flags:0 },
+    { recCount:1, stored: 80, raw:140, min:3, max:3, flags:1 },
+  ]);
+  const mp1 = metaPayload();
+  const r1 = writeTxn({
+    id:1, parent:0, type:1, firstBlock:1, prevFooter:0, rawBytes: 396 + mp1.length,
+    blocks:[
+      { id:1, table:1, kind:1, comp:1, itemCount:3, rawSize:396, rawCRC:rc1.rawCRC, payload:rc1.bytes },
+      { id:2, table:0, kind:2, comp:0, itemCount:1, rawSize:mp1.length, rawCRC:crc32c(mp1,0,mp1.length), payload:mp1 },
+    ],
+    idx:{ seq:1, rowCnt:3,
+      metaEntries:[{ snapID:1, objID:100, rev:1, type:2, blockID:2 }],
+      blockEntries:[
+        { blockID:1, snapID:1, tableID:1, kind:1, comp:1, rawSize:396, storedSize:rc1.bytes.length, itemCount:3, rawCRC:rc1.rawCRC },
+        { blockID:2, snapID:1, tableID:0, kind:2, comp:0, rawSize:mp1.length, storedSize:mp1.length, itemCount:1, rawCRC:crc32c(mp1,0,mp1.length) },
+      ],
+      pages:[{ table:1, min:1, max:3, entries:3 }] },
+  });
+
+  /* TXN 2 · DELTA id=2：1 Rows 块（1 页） */
+  const rc2 = rowsContainer([{ recCount:2, stored:120, raw:180, min:4, max:5, flags:0 }]);
+  const r2 = writeTxn({
+    id:2, parent:1, type:2, firstBlock:3, prevFooter:r1.footerOff, rawBytes: 180,
+    blocks:[
+      { id:3, table:1, kind:1, comp:1, itemCount:2, rawSize:180, rawCRC:rc2.rawCRC, payload:rc2.bytes },
+    ],
+    idx:{ seq:2, rowCnt:2,
+      metaEntries:[],
+      blockEntries:[
+        { blockID:3, snapID:2, tableID:1, kind:1, comp:1, rawSize:180, storedSize:rc2.bytes.length, itemCount:2, rawCRC:rc2.rawCRC },
+      ],
+      pages:[{ table:1, min:4, max:5, entries:2 }] },
+  });
+
+  /* 未提交尾部（未知 magic → 触发查看器的尾部识别） */
+  wbytes(w, [...'ROWPACKX'].map(c => c.charCodeAt(0) & 0xFF));
+  wbytes(w, rndBytes(29, 99));
+
+  return w.b.subarray(0, w.n);
+}
+
+/*__ENGINE_END__*/
+
+/* ================================================================
+ * UI 层
+ * ================================================================ */
+const $ = id => document.getElementById(id);
+const S = { name:'', buf:null, model:null, reg:{}, sel:null, zoom:-1 };
+
+const MAPCOL = {
+  fh:'var(--c-magic)', sh:'var(--c-id)', rows:'var(--c-pay)', meta:'var(--c-flg)',
+  idx:'var(--c-off)', ftr:'var(--c-crc)', tail:'var(--c-rsv)'
+};
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function reg(id, e){ e.id = id; S.reg[id] = e; return e; }
+
+/* ---------------- 注册表 ---------------- */
+function buildRegistry() {
+  S.reg = {};
+  const m = S.model;
+  reg('fh', { label:'FileHeader', sub:m.fileHeader.info.uuid.slice(0,8)+'…', start:0, end:128, color:MAPCOL.fh, node:m.fileHeader });
+  m.txns.forEach((t, ti) => {
+    const p = s => `t${ti}-${s}`;
+    const typ = t.header.info.type === 1 ? 'FULL' : 'DELTA';
+    reg(p('sh'), { label:`SnapshotHeader`, sub:typ, start:t.header.start, end:t.header.end, color:MAPCOL.sh, node:t.header, txn:ti });
+    t.blocks.forEach((b, bi) => {
+      const kind = b.header.info.kindB;
+      reg(p(`b${bi}`), { label:`块 #${b.header.info.blockID}`,
+        sub:(kind===1?'Rows':'Metadata')+` · 表${b.header.info.tableID} · ${b.header.info.itemCount} 行`,
+        start:b.header.start, end:b.payload.end, color:kind===1?MAPCOL.rows:MAPCOL.meta, node:b.header, block:b, txn:ti });
+      const c = b.container;
+      if (c) {
+        if (c.hdr) reg(p(`b${bi}-rc`), { label:'容器头', sub:'RPKROWBL', start:c.hdr.start, end:c.hdr.end, color:MAPCOL.rows, node:c.hdr });
+        c.dir.forEach((d, di) => reg(p(`b${bi}-pg${di}`), { label:`页目录[${di}]`,
+          sub:`${d.info.recCount} 行 · RowID ${d.info.minRow}–${d.info.maxRow}`, start:d.start, end:d.end, color:MAPCOL.rows, node:d }));
+      }
+    });
+    const x = t.indexTxn;
+    if (x) {
+      reg(p('idx'), { label:'IndexTxn', sub:`${x.chunks.length} chunk · ${x.header.info.pageCount} 索引页`,
+        start:x.header.start, end:x.footer ? x.footer.end : x.body.end, color:MAPCOL.idx, node:x.header, itxn:x, txn:ti });
+      x.chunks.forEach((c, ci) => reg(p(`ch${ci}`), { label:`Chunk[${c.info.seq}]`, sub:(DICT.ckind[c.info.kindC]||'?')+` · ${c.info.entryCount} 条`,
+        start:c.start, end:c.end, color:MAPCOL.idx, node:c }));
+      if (x.dir.length) reg(p('dir'), { label:'ChunkDirectory', sub:`${x.dir.length} 项 × 32B`,
+        start:x.dirStart, end:x.dirStart + x.dir.length*32, color:MAPCOL.idx,
+        node:{ title:'IndexChunkDirectory', start:x.dirStart, end:x.dirStart + x.dir.length*32, fields:null, crc:null, errs:[],
+          info:{ note:'明文块目录：即使加密 Store 也可无键定位分块。每项记录 chunk 序号 / 条数 / 原始与存储字节数 / 体 内偏移。' } }, dir:x.dir });
+      if (x.pagesRegion && x.pagesRegion.end > x.pagesRegion.start)
+        reg(p('pages'), { label:'IndexPage 区', sub:fmtBytes(x.pagesRegion.end - x.pagesRegion.start),
+          start:x.pagesRegion.start, end:x.pagesRegion.end, color:MAPCOL.idx,
+          node:{ title:'Row Index Pages（压缩存储）', start:x.pagesRegion.start, end:x.pagesRegion.end, fields:null, crc:null, errs:[],
+            info:{ note:'每页独立 zstd 压缩（加密 Store 逐页密封）。由下方 Fence 目录按 (TableID, RowID) 二分定位；浏览器内不解压页内容。' } } });
+      x.fences.forEach((f, fi2) => reg(p(`fe${fi2}`), { label:`Fence[${fi2}]`,
+        sub:`表${f.info.tableID} · RowID ${f.info.minRow}–${f.info.maxRow} · ${f.info.entryCount} 条`, start:f.start, end:f.end, color:MAPCOL.idx, node:f }));
+    }
+    if (t.footer) reg(p('ftr'), { label:`SnapshotFooter ${t.committed ? '✓' : '✗'}`, sub:t.committed?'已提交':'未提交/损坏',
+      start:t.footer.start, end:t.footer.end, color:MAPCOL.ftr, node:t.footer, txn:ti });
+  });
+  if (m.tail) reg('tail', { label:'未提交尾部', sub:fmtBytes(m.tail.end - m.tail.start), start:m.tail.start, end:m.tail.end, color:MAPCOL.tail,
+    node:{ title:'未提交尾部', start:m.tail.start, end:m.tail.end, fields:null, crc:null, errs:[], info:{ note:m.tail.reason } } });
+}
+
+/* ---------------- 树 ---------------- */
+function crcDot(node) {
+  if (!node || !node.crc) return '';
+  return node.crc.ok ? '<span class="dot-ok"></span>' : '<span class="dot-bad"></span>';
+}
+function renderTree() {
+  const m = S.model;
+  let html = '';
+  const leaf = id => {
+    const e = S.reg[id]; if (!e) return '';
+    return `<div class="tnode"><div class="trow" data-sel="${id}"><span class="chev"></span>
+      <span class="tw" style="background:${e.color}"></span>${crcDot(e.node)}
+      <span class="tlabel">${esc(e.label)}</span><span class="tmeta">${esc(e.sub||'')}</span></div></div>`;
+  };
+  const group = (id, kids, label, meta) => {
+    const e = S.reg[id];
+    return `<div class="tnode open"><div class="trow" data-sel="${id}"><span class="chev">▶</span>
+      <span class="tw" style="background:${e.color}"></span>${crcDot(e.node)}
+      <span class="tlabel">${esc(label)}</span><span class="tmeta">${esc(meta||'')}</span></div>
+      <div class="tkids">${kids}</div></div>`;
+  };
+  html += leaf('fh');
+  m.txns.forEach((t, ti) => {
+    const p = s => `t${ti}-${s}`;
+    const typ = t.header.info.type === 1 ? 'FULL' : 'DELTA';
+    let kids = leaf(p('sh'));
+    t.blocks.forEach((b, bi) => {
+      const sub = [];
+      const c = b.container;
+      if (c) {
+        if (c.hdr) sub.push(leaf(p(`b${bi}-rc`)));
+        c.dir.forEach((d, di) => sub.push(leaf(p(`b${bi}-pg${di}`))));
+      }
+      kids += sub.length ? group(p(`b${bi}`), sub.join(''), S.reg[p(`b${bi}`)].label, S.reg[p(`b${bi}`)].sub) : leaf(p(`b${bi}`));
+    });
+    const x = t.indexTxn;
+    if (x) {
+      let ikids = '';
+      x.chunks.forEach((c2, ci) => ikids += leaf(p(`ch${ci}`)));
+      if (x.dir.length) ikids += leaf(p('dir'));
+      if (x.pagesRegion && x.pagesRegion.end > x.pagesRegion.start) ikids += leaf(p('pages'));
+      x.fences.forEach((f, fi2) => ikids += leaf(p(`fe${fi2}`)));
+      kids += group(p('idx'), ikids, 'IndexTxn', `${x.chunks.length} chunk · ${x.header.info.pageCount} 页`);
+    }
+    if (t.footer) kids += leaf(p('ftr'));
+    html += group(p('sh'), kids, `快照 ${t.header.info.snapID} · ${typ}`, t.committed ? '已提交' : '⚠ 未提交');
+  });
+  if (m.tail) html += leaf('tail');
+  $('tree').innerHTML = html;
+  $('tree').querySelectorAll('.trow[data-sel]').forEach(row => {
+    row.addEventListener('click', ev => {
+      const id = row.getAttribute('data-sel');
+      const tnode = row.parentElement;
+      const isGroup = tnode.querySelector(':scope > .tkids');
+      if (isGroup && ev.target.classList.contains('chev')) { tnode.classList.toggle('open'); return; }
+      select(id);
+    });
+  });
+}
+
+/* ---------------- 字节图 ---------------- */
+function fileSegments() {
+  const segs = [];
+  const e = S.reg['fh'];
+  segs.push({ start:e.start, end:e.end, color:e.color, label:'文件头', sel:'fh', tip:'FileHeader · 128B' });
+  S.model.txns.forEach((t, ti) => {
+    const p = s => `t${ti}-${s}`;
+    const sh = S.reg[p('sh')];
+    segs.push({ start:sh.start, end:sh.end, color:sh.color, label:'SH', sel:p('sh'), tip:`快照 ${t.header.info.snapID} SnapshotHeader` });
+    t.blocks.forEach((b, bi) => {
+      const be = S.reg[p(`b${bi}`)];
+      segs.push({ start:be.start, end:be.end, color:be.color, label:`#${b.header.info.blockID}`, sel:p(`b${bi}`),
+        tip:`块 #${b.header.info.blockID} · ${b.header.info.kindB===1?'Rows':'Metadata'} · 载荷 ${fmtBytes(b.header.info.storedSize)}` });
+    });
+    if (t.indexTxn) { const ie = S.reg[p('idx')];
+      segs.push({ start:ie.start, end:ie.end, color:ie.color, label:'IndexTxn', sel:p('idx'), tip:`IndexTxn · ${t.indexTxn.chunks.length} 分块 + ${t.indexTxn.header.info.pageCount} 索引页` }); }
+    if (t.footer) { const fe = S.reg[p('ftr')];
+      segs.push({ start:fe.start, end:fe.end, color:fe.color, label:'FOOTER', sel:p('ftr'), tip:`SnapshotFooter · ${t.committed?'已提交':'未提交/损坏'}` }); }
+  });
+  if (S.model.tail) { const te = S.reg['tail'];
+    segs.push({ start:te.start, end:te.end, color:te.color, label:'尾部', sel:'tail', tip:'未提交尾部 · ' + S.model.tail.reason }); }
+  return segs;
+}
+function txnSegments(ti) {
+  const t = S.model.txns[ti]; const p = s => `t${ti}-${s}`; const segs = [];
+  const sh = S.reg[p('sh')];
+  segs.push({ start:sh.start, end:sh.end, color:MAPCOL.sh, label:'快照头', sel:p('sh'), tip:'SnapshotHeader · 96B' });
+  t.blocks.forEach((b, bi) => {
+    const be = S.reg[p(`b${bi}`)];
+    segs.push({ start:b.header.start, end:b.header.end, color:be.color, label:`#${b.header.info.blockID}头`, sel:p(`b${bi}`), tip:`块 #${b.header.info.blockID} BlockHeader · 64B` });
+    segs.push({ start:b.payload.start, end:b.payload.end, color:be.color, label:'载荷', sel:p(`b${bi}`), tip:`块 #${b.header.info.blockID} 载荷 · ${fmtBytes(b.header.info.storedSize)}` });
+  });
+  const x = t.indexTxn;
+  if (x) {
+    segs.push({ start:x.header.start, end:x.header.end, color:MAPCOL.idx, label:'IDX头', sel:p('idx'), tip:'IndexTxnHeader · 80B' });
+    x.chunks.forEach((c, ci) => segs.push({ start:c.start, end:c.end, color:MAPCOL.idx, label:`C${c.info.seq}`, sel:p(`ch${ci}`),
+      tip:`Chunk[${c.info.seq}] · ${(DICT.ckind[c.info.kindC]||'?')} · ${c.info.entryCount} 条` }));
+    if (x.dir.length) segs.push({ start:x.dirStart, end:x.dirStart + x.dir.length*32, color:MAPCOL.idx, label:'目录', sel:p('dir'), tip:'IndexChunkDirectory（明文）' });
+    if (x.pagesRegion && x.pagesRegion.end > x.pagesRegion.start)
+      segs.push({ start:x.pagesRegion.start, end:x.pagesRegion.end, color:MAPCOL.idx, label:'索引页', sel:p('pages'), tip:'Row Index Pages（压缩）' });
+    x.fences.forEach((f, fi) => segs.push({ start:f.start, end:f.end, color:MAPCOL.idx, label:'F', sel:p(`fe${fi}`), tip:`Fence[${fi}] · 表${f.info.tableID}` }));
+  }
+  if (t.footer) { const fe = S.reg[p('ftr')];
+    segs.push({ start:fe.start, end:fe.end, color:MAPCOL.ftr, label:'FOOTER', sel:p('ftr'), tip:'SnapshotFooter · 144B' }); }
+  return segs;
+}
+function renderMap() {
+  const segs = S.zoom < 0 ? fileSegments() : txnSegments(S.zoom);
+  const r0 = segs.length ? segs[0].start : 0;
+  const r1 = segs.length ? segs[segs.length-1].end : 1;
+  $('mapTitle').textContent = S.zoom < 0 ? '整文件字节图' : `快照 ${S.model.txns[S.zoom].header.info.snapID} 内部字节图`;
+  $('mapRange').textContent = `${r0} – ${r1} · ${fmtBytes(r1 - r0)}`;
+  const map = $('bymap');
+  map.innerHTML = segs.map(s => {
+    const size = Math.max(1, s.end - s.start);
+    const wide = size / (r1 - r0) > 0.055;
+    return `<div class="seg${S.sel===s.sel?' sel':''}${s.dim?' dimseg':''}" data-sel="${s.sel}" data-tip="${esc(s.tip)}"
+      style="flex:${size};background:${s.color};${s.dim?'opacity:.62':''}">${wide?`<span class="sl">${esc(s.label)}</span>`:''}</div>`;
+  }).join('');
+  /* 标尺 */
+  const ticks = [0, .25, .5, .75, 1].map(f =>
+    `<span style="left:${f*100}%">${(r0 + (r1-r0)*f >= 1073741824 ? fmtBytes(r0+(r1-r0)*f) : fmtBytes(Math.round(r0+(r1-r0)*f)))}</span>`).join('');
+  $('ruler').innerHTML = ticks;
+  $('mapLegend').innerHTML =
+    `<span><i style="background:${MAPCOL.fh}"></i>文件头</span><span><i style="background:${MAPCOL.sh}"></i>快照头</span>
+     <span><i style="background:${MAPCOL.rows}"></i>Rows 块</span><span><i style="background:${MAPCOL.meta}"></i>Metadata 块</span>
+     <span><i style="background:${MAPCOL.idx}"></i>索引事务</span><span><i style="background:${MAPCOL.ftr}"></i>提交 Footer</span>
+     <span><i style="background:${MAPCOL.tail}"></i>未提交尾部</span>`;
+  map.querySelectorAll('.seg').forEach(el => {
+    el.addEventListener('click', () => select(el.getAttribute('data-sel')));
+    el.addEventListener('dblclick', () => {
+      const id = el.getAttribute('data-sel');
+      const m2 = id.match(/^t(\d+)-/);
+      if (m2) { S.zoom = S.zoom === +m2[1] ? -1 : +m2[1]; renderMap(); renderCrumbs(); }
+    });
+    el.addEventListener('mouseenter', ev => showTip(el, ev));
+    el.addEventListener('mousemove', ev => moveTip(ev));
+    el.addEventListener('mouseleave', hideTip);
+  });
+  renderCrumbs();
+}
+function renderCrumbs() {
+  const parts = [`<a data-zoom="-1">整文件 (${fmtBytes(S.buf.length)})</a>`];
+  if (S.zoom >= 0) {
+    const t = S.model.txns[S.zoom];
+    parts.push(`<span>›</span><a data-zoom="-1">快照 ${t.header.info.snapID}</a>`);
+    parts.push(`<span>›</span><span class="cur">内部布局 · 双击段可返回</span>`);
+  }
+  if (S.sel) parts.push(`<span>›</span><span class="cur">${esc(S.reg[S.sel] ? (S.reg[S.sel].node.title || S.reg[S.sel].label) : '')}</span>`);
+  $('crumbs').innerHTML = parts.join('');
+  $('crumbs').querySelectorAll('a[data-zoom]').forEach(a => a.addEventListener('click', () => {
+    S.zoom = -1; renderMap();
+  }));
+}
+/* ---------------- 气泡提示 ---------------- */
+function showTip(el, ev) { const tip = $('segTip'); tip.textContent = el.getAttribute('data-tip'); tip.classList.add('on'); moveTip(ev); }
+function moveTip(ev) { const tip = $('segTip'); tip.style.left = ev.clientX + 'px'; tip.style.top = ev.clientY + 'px'; }
+function hideTip() { $('segTip').classList.remove('on'); }
+
+/* ---------------- 详情 ---------------- */
+function fieldRowsHTML(node) {
+  return `<table class="fields"><thead><tr><th>Offset</th><th>Size</th><th>Type</th><th>Field</th><th>Value</th><th>Description</th></tr></thead><tbody>` +
+    node.fields.map((f, i) => {
+      const c = CATS[f.cat] || CATS.rsv;
+      return `<tr data-f="${i}"><td class="off">${hexn(f.off - node.start, 2)}</td><td class="sz">${f.size} B</td>
+        <td class="ty"><span class="chip">${esc(f.type)}</span></td>
+        <td class="fn"><i style="background:${c[1]}"></i>${esc(f.name)}</td>
+        <td class="val">${esc(f.val || '—')}</td><td class="ds">${esc(f.desc || '')}</td></tr>`;
+    }).join('') + '</tbody></table>';
+}
+function stripHTML(node) {
+  const total = node.end - node.start;
+  return `<div class="strip">` + node.fields.map((f, i) => {
+    const c = CATS[f.cat] || CATS.rsv;
+    const wide = f.size / total > 0.12;
+    return `<div class="f" data-f="${i}" style="flex:${f.size};background:${c[1]}">${wide?`<span>${esc(f.name)}</span>`:''}</div>`;
+  }).join('') + `</div>`;
+}
+function pagesTableHTML(e) {
+  const b = e.block, c = b.container;
+  if (!c || !c.dir.length) return '';
+  const base = S.reg[e.id.replace(/-pg\d+$/, '')] ? e.id.replace(/-pg\d+$/, '') : e.id;
+  const blkId = e.id.match(/^(t\d+-b\d+)/)[1];
+  let h = `<div class="subtbl"><h4>Rows 页目录（明文 · ${c.dir.length} 页 · 容器数据区起点 0x${(c.dataStart).toString(16)}）</h4><table class="rows-t">
+    <thead><tr><th>#</th><th>行数</th><th>RowID 范围</th><th>StoredOff</th><th>Stored</th><th>Raw</th><th>Flags</th><th>PageCRC</th></tr></thead><tbody>`;
+  c.dir.forEach((d, di) => {
+    h += `<tr data-sel="${blkId}-pg${di}"><td>${d.info.ordinal}</td><td>${d.info.recCount}</td>
+      <td>${d.info.minRow} – ${d.info.maxRow}</td><td>${d.info.storedOffset}</td>
+      <td>${fmtBytes(d.info.storedSize)}</td><td>${fmtBytes(d.info.rawSize)}</td>
+      <td>${d.info.flags & 1 ? '超大连行' : '—'}</td><td>${hexn(u32(S.buf, d.start+44))}${(d.info.rawSize===d.info.storedSize && crc32c(S.buf, S.reg[blkId+'-pg'+di].node.start - 0, 0)) ? '' : ''}</td></tr>`;
+  });
+  void base;
+  return h + '</tbody></table></div>';
+}
+function itxnTablesHTML(e) {
+  const x = e.itxn;
+  let h = `<div class="subtbl"><h4>索引分块（压缩/认证单位）</h4><table class="rows-t">
+    <thead><tr><th>Seq</th><th>Kind</th><th>条数</th><th>Raw</th><th>Stored</th><th>Comp</th><th>Enc</th></tr></thead><tbody>`;
+  x.chunks.forEach((c, ci) => {
+    h += `<tr data-sel="${e.id.replace(/^(t\d+-idx)$/, `t${e.txn}-ch${ci}`)}"><td>${c.info.seq}</td>
+      <td>${esc(DICT.ckind[c.info.kindC]||'?')}</td><td>${c.info.entryCount}</td>
+      <td>${fmtBytes(u32(S.buf, c.start+28))}</td><td>${fmtBytes(u32(S.buf, c.start+32))}</td>
+      <td>${esc(S.buf[c.start+11] === 1 ? 'Zstd' : 'None')}</td><td>${esc(S.buf[c.start+12] === 1 ? 'GCM' : '—')}</td></tr>`;
+  });
+  h += '</tbody></table>';
+  if (x.fences.length) {
+    h += `<h4>Row Index Fence 目录（明文 · 二分定位索引页）</h4><table class="rows-t">
+      <thead><tr><th>#</th><th>表</th><th>RowID 范围</th><th>条数</th><th>页定位(体 内)</th><th>Stored</th><th>Raw</th><th>PageCRC</th></tr></thead><tbody>`;
+    x.fences.forEach((f, fi) => {
+      let crcCell = hexn(u32(S.buf, f.start+48));
+      if (f.info.rawSize === f.info.storedSize) {
+        const ps = x.body.start + f.info.storedOffset;
+        crcCell += crc32c(S.buf, ps + 64, ps + 64 + (f.info.rawSize - 64)) === u32(S.buf, f.start+48)
+          ? ' ✓' : ' ✗';
+      }
+      h += `<tr data-sel="${e.id.replace(/^(t\d+-idx)$/, `t${e.txn}-fe${fi}`)}"><td>${fi}</td><td>${f.info.tableID}</td>
+        <td>${f.info.minRow} – ${f.info.maxRow}</td><td>${f.info.entryCount}</td><td>${f.info.storedOffset}</td>
+        <td>${fmtBytes(f.info.storedSize)}</td><td>${fmtBytes(f.info.rawSize)}</td><td>${crcCell}</td></tr>`;
+    });
+    h += '</tbody></table>';
+  }
+  return h + '</div>';
+}
+function infoListHTML(node) {
+  let h = `<div class="subtbl">`;
+  if (node.info && node.info.note) h += `<p class="ds" style="padding:4px 2px;color:var(--text-dim)">${esc(node.info.note)}</p>`;
+  h += `<p class="ds" style="padding:2px;color:var(--text-faint)">范围 ${node.start} – ${node.end} · ${fmtBytes(node.end - node.start)}</p></div>`;
+  return h;
+}
+function showDetail(id) {
+  const e = S.reg[id]; if (!e) return;
+  const node = e.node;
+  $('detailTitle').textContent = node.title || e.label;
+  const bits = [];
+  if (node.magic) bits.push(`<span class="chip">✦ ${node.magic}</span>`);
+  bits.push(`<span class="chip">0x${node.start.toString(16)} – 0x${node.end.toString(16)}</span>`);
+  bits.push(`<span class="chip">${fmtBytes(node.end - node.start)}</span>`);
+  if (node.crc) bits.push(node.crc.ok ? '<span class="badge ok">CRC ✓</span>' : '<span class="badge bad">CRC ✗</span>');
+  if (e.itxn || id === 'fh') { /* 额外提交徽标在 footer 树上可见 */ }
+  $('detailMeta').innerHTML = bits.join(' ');
+  let html = '';
+  if (node.fields) html += stripHTML(node) + `<div class="subtbl" style="margin-top:2px"><table class="fields">` +
+    fieldRowsHTML(node).replace(/^<table class="fields"><thead>[\s\S]*?<\/thead>/, '') ;
+  else html += infoListHTML(node);
+  if (node.errs && node.errs.length)
+    html += `<div class="subtbl">${node.errs.map(er => `<p style="color:var(--bad);font-size:12px;padding:2px 0">✗ ${esc(er)}</p>`).join('')}</div>`;
+  if (e.block && e.block.container) html += pagesTableHTML(e);
+  if (e.itxn) html += itxnTablesHTML(e);
+  if (node.fields) html += '</div>';
+  $('detailBody').innerHTML = html;
+  /* hover 联动：字段行 ↔ strip ↔ hex */
+  const rows = $('detailBody').querySelectorAll('tr[data-f]');
+  rows.forEach(r => {
+    const fi = +r.getAttribute('data-f');
+    r.addEventListener('mouseenter', () => hlField(node, fi, true));
+    r.addEventListener('mouseleave', () => hlField(node, fi, false));
+  });
+  const segs = $('detailBody').querySelectorAll('.strip .f');
+  segs.forEach(sg => {
+    const fi = +sg.getAttribute('data-f');
+    sg.addEventListener('mouseenter', () => hlField(node, fi, true));
+    sg.addEventListener('mouseleave', () => hlField(node, fi, false));
+  });
+  $('detailBody').querySelectorAll('tr[data-sel]').forEach(r =>
+    r.addEventListener('click', () => select(r.getAttribute('data-sel'))));
+}
+function hlField(node, fi, on) {
+  const f = node.fields[fi];
+  const row = $('detailBody').querySelector(`tr[data-f="${fi}"]`);
+  if (row) row.classList.toggle('hl', on);
+  const seg = $('detailBody').querySelector(`.strip .f[data-f="${fi}"]`);
+  if (seg) seg.classList.toggle('hl', on);
+  if (f) hexHighlight(f.off - node.start, f.off - node.start + f.size, on);
+}
+
+/* ---------------- Hex ---------------- */
+function showHex(id) {
+  const e = S.reg[id]; if (!e) return;
+  const node = e.node;
+  const total = node.end - node.start;
+  const len = Math.min(total, 512);
+  let html = '';
+  for (let ro = 0; ro < len; ro += 16) {
+    let bytes = '', asc = '';
+    for (let i = ro; i < Math.min(ro + 16, len); i++) {
+      const f = node.fields ? node.fields.find(f2 => node.start + i >= f2.off && node.start + i < f2.off + f2.size) : null;
+      const cat = f ? f.cat : 'pay';
+      const style = cat === 'rsv' ? 'opacity:.35' : `color:var(--c-${cat === 'enum' ? 'enum' : cat})`;
+      bytes += `<b data-o="${i}" style="${style}">${S.buf[node.start + i].toString(16).padStart(2,'0')}</b>`;
+      const ch = S.buf[node.start + i];
+      asc += ch >= 32 && ch < 127 ? String.fromCharCode(ch) : '·';
+    }
+    html += `<div class="hexrow"><span class="ho">${(node.start + ro).toString(16).padStart(8,'0')}</span><span class="hb">${bytes}</span><span class="ha">${esc(asc)}</span></div>`;
+  }
+  if (total > len) html += `<div class="trunc">仅显示前 ${len} B / 共 ${fmtBytes(total)}（载荷区省略）</div>`;
+  $('hexBody').innerHTML = html;
+  $('hexMeta').textContent = `0x${node.start.toString(16)} 起`;
+}
+function hexHighlight(from, to, on) {
+  $('hexBody').querySelectorAll('b[data-o]').forEach(b => {
+    const o = +b.getAttribute('data-o');
+    if (o >= from && o < to) b.classList.toggle('on', on);
+    else if (on) b.classList.add('dimmed');
+  });
+  if (!on) $('hexBody').querySelectorAll('b.dimmed').forEach(b => b.classList.remove('dimmed'));
+}
+
+/* ---------------- 选择 ---------------- */
+function select(id) {
+  if (!S.reg[id]) return;
+  S.sel = id;
+  document.querySelectorAll('.trow.sel').forEach(r => r.classList.remove('sel'));
+  const row = document.querySelector(`.trow[data-sel="${id}"]`);
+  if (row) { row.classList.add('sel'); row.scrollIntoView({ block:'nearest' }); }
+  document.querySelectorAll('.seg.sel').forEach(s => s.classList.remove('sel'));
+  document.querySelectorAll(`.seg[data-sel="${id}"]`).forEach(s => s.classList.add('sel'));
+  showDetail(id); showHex(id); renderCrumbs();
+}
+
+/* ---------------- 校验面板 ---------------- */
+function runVerify() {
+  const checks = verifyStore(S.buf, S.model);
+  const pass = checks.filter(c => c.ok && !c.na).length;
+  const fail = checks.filter(c => !c.ok && !c.na);
+  const na = checks.filter(c => c.na);
+  let h = `<div class="vsum"><span style="color:var(--ok)"><b>${pass}</b> 通过</span>
+    <span style="color:var(--bad)"><b>${fail.length}</b> 失败</span>
+    <span><b>${na.length}</b> 不适用</span>
+    <span>文件 ${esc(S.name)} · ${fmtBytes(S.buf.length)}</span></div>`;
+  h += checks.map(c => `<div class="vrow ${c.na ? 'na' : (c.ok ? 'ok' : 'bad')}" ${c.selectId && S.reg[c.selectId] ? `data-sel="${c.selectId}"` : ''}>
+    <span class="st">${c.na ? '–' : (c.ok ? '✓' : '✗')}</span><span class="vl">${esc(c.label)}</span>
+    <span class="vd">${esc(c.detail || '')}</span></div>`).join('');
+  $('vbody').innerHTML = h;
+  $('vbody').querySelectorAll('.vrow[data-sel]').forEach(r => r.addEventListener('click', () => {
+    $('vmask').classList.remove('on'); select(r.getAttribute('data-sel'));
+  }));
+  $('vmask').classList.add('on');
+}
+
+/* ---------------- 载入 ---------------- */
+function loadBuffer(u8, name) {
+  S.name = name; S.buf = u8; S.model = scanStore(u8); S.zoom = -1; S.sel = null;
+  buildRegistry();
+  const t = S.model.txns;
+  const blocks = t.reduce((s2, x) => s2 + x.blocks.length, 0);
+  const rows = t.reduce((s2, x) => s2 + (x.footer ? x.footer.info.rows : 0), 0);
+  $('fName').textContent = name;
+  $('fSize').textContent = fmtBytes(u8.length);
+  $('fSummary').textContent = `${t.length} 快照 · ${blocks} 块 · ${rows} 行` + (S.model.tail ? ' · 含未提交尾部' : '');
+  $('fileInfo').hidden = false;
+  $('empty').hidden = true; $('work').hidden = false;
+  $('jumpInput').disabled = false; $('jumpBtn').disabled = false; $('verifyBtn').disabled = false;
+  renderTree(); renderMap(); select('fh');
+  toast(`<b>${esc(name)}</b> 载入完成 · ${t.length} 快照 · 点击结构树或字节图任意区域下钻`);
+}
+function openFile(f) {
+  const r = new FileReader();
+  r.onload = () => { loadBuffer(new Uint8Array(r.result), f.name); };
+  r.readAsArrayBuffer(f);
+}
+let toastTimer = null;
+function toast(html) {
+  const el = $('toast'); el.innerHTML = html; el.classList.add('on');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('on'), 3200);
+}
+
+/* ---------------- 事件绑定 ---------------- */
+$('openBtn').addEventListener('click', () => $('fileInput').click());
+$('openBtn2').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', ev => { if (ev.target.files[0]) openFile(ev.target.files[0]); ev.target.value = ''; });
+$('demoBtn').addEventListener('click', () => loadBuffer(buildDemoStore(), 'demo-store.rpk'));
+$('demoBtn2').addEventListener('click', () => loadBuffer(buildDemoStore(), 'demo-store.rpk'));
+$('verifyBtn').addEventListener('click', runVerify);
+$('vcloseBtn').addEventListener('click', () => $('vmask').classList.remove('on'));
+$('vmask').addEventListener('click', ev => { if (ev.target === $('vmask')) $('vmask').classList.remove('on'); });
+$('themeBtn').addEventListener('click', () => {
+  const cur = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+});
+function doJump() {
+  const v = $('jumpInput').value.trim(); if (!v) return;
+  const off = v.startsWith('0x') || v.startsWith('0X') ? parseInt(v, 16) : parseInt(v, 10);
+  if (isNaN(off) || off < 0 || off >= S.buf.length) { toast('offset 超出文件范围'); return; }
+  let best = null;
+  for (const id in S.reg) {
+    const e = S.reg[id];
+    if (off >= e.start && off < e.end && (!best || (e.end - e.start) < (best.end - best.start))) best = e;
+  }
+  if (best) { select(best.id); toast(`0x${off.toString(16)} 位于 <b>${esc(best.node.title || best.label)}</b>`); }
+  else toast('该 offset 不在任何已识别结构内');
+}
+$('jumpBtn').addEventListener('click', doJump);
+$('jumpInput').addEventListener('keydown', ev => { if (ev.key === 'Enter') doJump(); });
+/* 拖放 */
+let dragDepth = 0;
+window.addEventListener('dragenter', ev => { ev.preventDefault(); dragDepth++; $('dropmask').classList.add('on'); });
+window.addEventListener('dragleave', ev => { ev.preventDefault(); if (--dragDepth <= 0) { dragDepth = 0; $('dropmask').classList.remove('on'); } });
+window.addEventListener('dragover', ev => ev.preventDefault());
+window.addEventListener('drop', ev => {
+  ev.preventDefault(); dragDepth = 0; $('dropmask').classList.remove('on');
+  const f = ev.dataTransfer.files && ev.dataTransfer.files[0];
+  if (f) openFile(f);
+});
+
+</script>
+</body>
+</html>

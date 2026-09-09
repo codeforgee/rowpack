@@ -105,10 +105,10 @@ func (s *Store) Stats() Stats {
 		stt.Cache.CapacityBytes, stt.Cache.UsedBytes, stt.Cache.Hits, stt.Cache.Misses, stt.Cache.Evictions, stt.Cache.Loads = l.cacheStats()
 		stt.ScanCache.CapacityBytes, stt.ScanCache.UsedBytes, stt.ScanCache.Hits, stt.ScanCache.Misses, stt.ScanCache.Evictions, stt.ScanCache.Loads = l.scanStats()
 		stt.IndexPageCache.CapacityBytes, stt.IndexPageCache.UsedBytes, stt.IndexPageCache.Hits, stt.IndexPageCache.Misses, stt.IndexPageCache.Evictions, stt.IndexPageCache.Loads = l.indexStats()
-		stt.Cache.OverheadBytes = l.cacheOverhead()
-		stt.ScanCache.OverheadBytes = l.scanOverhead()
-		stt.IndexPageCache.OverheadBytes = l.indexOverhead()
-		io := l.readIOStats()
+		stt.Cache.OverheadBytes = l.cache.OverheadBytes()
+		stt.ScanCache.OverheadBytes = l.scan.OverheadBytes()
+		stt.IndexPageCache.OverheadBytes = l.index.OverheadBytes()
+		io := l.reader.Stats()
 		stt.Read.ReadBytes = io.ReadBytes
 		stt.Read.DecompressedBytes = io.DecompressedBytes
 		stt.Read.PageLoads = io.PageLoads

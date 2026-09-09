@@ -177,11 +177,6 @@ func (b *RowsBlockBuilder) Add(rowID uint64, schemaVersion uint32, change filefo
 	return nil
 }
 
-// Delete appends a DELETE tombstone record (no row payload).
-func (b *RowsBlockBuilder) Delete(rowID uint64, schemaVersion uint32) error {
-	return b.Add(rowID, schemaVersion, fileformat.ChangeDelete, nil)
-}
-
 // Pending returns the number of buffered records (finished + current page).
 func (b *RowsBlockBuilder) Pending() int { return len(b.entries) }
 

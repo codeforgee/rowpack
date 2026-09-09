@@ -354,7 +354,7 @@ func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, n
 			c.end = cur + fileformat.SnapshotFooterSize
 			c.prevFooter = ftr.PreviousFooterOffset
 			c.ftrTxnCRC = ftr.IndexTxnCRC32C
-			c.footerCRC = footerCRCValue(fb[:])
+			c.footerCRC = le32(fb[fileformat.SnapshotFooterCRC32COffset:])
 			c.footerBytes = append([]byte(nil), fb[:]...)
 			c.blockCount = ftr.BlockCount
 			c.metaCount = ftr.MetadataBlockCount

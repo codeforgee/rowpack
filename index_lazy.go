@@ -27,13 +27,13 @@ func (s *Store) LoadIndexPage(snapshotID uint64, pageIdx int, fence fileformat.R
 	// fence.StoredOffset is an offset into the txn BODY (after the IndexTxn
 	// header); the txn itself starts at txnStart in the file.
 	absOff := info.txnStart + fileformat.IndexTxnHeaderSize + int64(fence.StoredOffset)
-	if cache && s.loader.indexCache() != nil {
-		if v, ok := s.loader.indexCache().Get(uint64(absOff)); ok {
+	if cache && s.loader.index != nil {
+		if v, ok := s.loader.index.Get(uint64(absOff)); ok {
 			return v.([]fileformat.RowIndexEntry), nil
 		}
 	}
 	v, err := s.idxPageSF.Do(uint64(absOff), func() (any, error) {
-		return s.loadAndDecodeIndexPage(snapshotID, pageIdx, fence, absOff, cache && s.loader.indexCache() != nil)
+		return s.loadAndDecodeIndexPage(snapshotID, pageIdx, fence, absOff, cache && s.loader.index != nil)
 	})
 	if err != nil {
 		return nil, err
@@ -77,8 +77,8 @@ func (s *Store) loadAndDecodeIndexPage(snapshotID uint64, pageIdx int, fence fil
 	if uint32(len(entries)) != fence.EntryCount {
 		return nil, s.loader.blockReadError(absOff, 0, fmt.Errorf("rowpack: index page %d entries, fence says %d", len(entries), fence.EntryCount))
 	}
-	if cache && s.loader.indexCache() != nil {
-		s.loader.indexCache().Put(uint64(absOff), int64(len(entries))*fileformat.RowIndexEntrySize, entries)
+	if cache && s.loader.index != nil {
+		s.loader.index.Put(uint64(absOff), int64(len(entries))*fileformat.RowIndexEntrySize, entries)
 	}
 	return entries, nil
 }

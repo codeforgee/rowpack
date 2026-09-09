@@ -49,11 +49,7 @@ type ChunkCrypto struct {
 
 func zigzag(v int64) uint64 { return uint64((v << 1) ^ (v >> 63)) }
 
-// crcConcat extends a streaming CRC-32C with one more slice.
-func crcConcat(crc uint32, data []byte) uint32 { return fileformat.CRC32CConcat2(crc, data) }
-func unzigzag(v uint64) int64                  { return int64(v>>1) ^ -int64(v&1) }
-
-// ---- chunk body assembly (write path) ----
+func unzigzag(v uint64) int64 { return int64(v>>1) ^ -int64(v&1) }
 
 // chunkCompressor accumulates the stored body: chunk headers + payloads in
 // frozen order (snapshot, metadata, block, rows), then the plaintext
@@ -327,7 +323,10 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 		parts = append(parts, pages[i].raw)
 	}
 	parts = append(parts, fenceBytes)
-	plainCRC = fileformat.CRC32CConcat(parts...)
+	plainCRC = uint32(0)
+	for _, p := range parts {
+		plainCRC = fileformat.CRC32CConcat(plainCRC, p)
+	}
 	body = cc.out
 	body = append(body, cc.dir...)
 	for i := range pages {
@@ -577,7 +576,7 @@ func parseStoredBody(region []byte, snapshotID uint64, metadataCount, blockCount
 			return nil, fmt.Errorf("rowpack: chunk %d unknown kind %d", seq, h.EntryKind)
 		}
 		nextOrd[h.EntryKind] += h.EntryCount
-		sb.plainCRC = crcConcat(sb.plainCRC, raw)
+		sb.plainCRC = fileformat.CRC32CConcat(sb.plainCRC, raw)
 		pos += fileformat.IndexChunkHeaderSize + int(h.StoredBytes)
 		seq++
 	}
@@ -618,7 +617,7 @@ func parseStoredBody(region []byte, snapshotID uint64, metadataCount, blockCount
 		checkPos += fileformat.IndexChunkHeaderSize + int(h.StoredBytes)
 	}
 	sb.dir = dir
-	sb.plainCRC = crcConcat(sb.plainCRC, dirBytes)
+	sb.plainCRC = fileformat.CRC32CConcat(sb.plainCRC, dirBytes)
 	sb.chunkCount = seq
 	if err := parseRowIndexPages(region, pos+dirLen, rowIndexPageCount, snapshotID, crypto, sink, seq, &sb.plainCRC, &sb.rowCount); err != nil {
 		return nil, err
@@ -759,7 +758,7 @@ func parseRowIndexPages(region []byte, pageStart int, pageCount uint32, snapshot
 				return fmt.Errorf("rowpack: row index page %d %d entries, fence says %d", i, emitted, f.EntryCount)
 			}
 			*rowCount += uint64(emitted)
-			*plainCRC = crcConcat(*plainCRC, pageRaw)
+			*plainCRC = fileformat.CRC32CConcat(*plainCRC, pageRaw)
 			continue
 		}
 		entries, err := decodeRowIndexPage(pageRaw)
@@ -773,7 +772,7 @@ func parseRowIndexPages(region []byte, pageStart int, pageCount uint32, snapshot
 			entries[j].SnapshotID = snapshotID
 		}
 		*rowCount += uint64(len(entries))
-		*plainCRC = crcConcat(*plainCRC, pageRaw)
+		*plainCRC = fileformat.CRC32CConcat(*plainCRC, pageRaw)
 		for start := 0; start < len(entries); start += rowBatchSize {
 			end := start + rowBatchSize
 			if end > len(entries) {
@@ -784,6 +783,6 @@ func parseRowIndexPages(region []byte, pageStart int, pageCount uint32, snapshot
 			}
 		}
 	}
-	*plainCRC = crcConcat(*plainCRC, region[pageEnd:])
+	*plainCRC = fileformat.CRC32CConcat(*plainCRC, region[pageEnd:])
 	return nil
 }

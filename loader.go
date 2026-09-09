@@ -49,22 +49,6 @@ func scanBudgetFor(cacheBytes int64) int64 {
 	return b
 }
 
-// splitCacheBudget resolves the (data, scan) pair for a store. total <= 0
-// disables caching entirely; scan < 0 keeps the data cache but disables the
-// scan window; scan == 0 selects the default split. The two capacities always
-// sum to exactly total.
-func splitCacheBudget(total, scan int64) (dataCap, scanCap int64) {
-	if total <= 0 {
-		return 0, 0
-	}
-	if scan < 0 {
-		scan = 0
-	} else if scan == 0 {
-		scan = scanBudgetFor(total)
-	}
-	return total - scan, scan
-}
-
 // indexBudgetFor returns the default IndexPageCache budget for lazy stores:
 // a quarter of the total (capped at 32 MiB) so index pages get a fair slice
 // while data blocks keep the majority. Never exceeds total.
@@ -166,22 +150,12 @@ func (l *blockLoader) Load(offset int64, blockID uint64) (*block.Block, error) {
 	return v.(*block.Block), nil
 }
 
-// loadRowsContext reads the validated Rows Block page container for a block.
-// It reads only the block header + container header + page directory (a lazy
-// container that reads individual pages on demand), so a cold single-row read
-// pulls one page — for plain and (per-page-encrypted) encrypted stores alike:
-// the page directory is plaintext, and each page is OPENed and decompressed
-// only when accessed.
-func (l *blockLoader) loadRowsContext(offset int64) (*block.RowsContainer, error) {
-	return l.reader.ReadRowsDir(offset)
-}
-
 // LoadRows loads the validated Rows Block container for a block through the
 // random-read cache with singleflight miss merging. Only
 // CRC/geometry-validated containers are cached.
 func (l *blockLoader) LoadRows(offset int64, blockID uint64) (*block.RowsContainer, error) {
 	if l.cache == nil {
-		return l.loadRowsContext(offset)
+		return l.reader.ReadRowsDir(offset)
 	}
 	if v, ok := l.cache.Get(blockID); ok {
 		if rc, ok := v.(*block.RowsContainer); ok {
@@ -190,7 +164,7 @@ func (l *blockLoader) LoadRows(offset int64, blockID uint64) (*block.RowsContain
 	}
 	v, err := l.sf.Do(blockID, func() (any, error) {
 		l.cache.NoteLoad()
-		rc, err := l.loadRowsContext(offset)
+		rc, err := l.reader.ReadRowsDir(offset)
 		if err != nil {
 			return nil, l.blockReadError(offset, blockID, err)
 		}
@@ -222,7 +196,7 @@ func (l *blockLoader) LoadScanRows(offset int64, blockID uint64) (*block.RowsCon
 			}
 		}
 	}
-	rc, err := l.loadRowsContext(offset)
+	rc, err := l.reader.ReadRowsDir(offset)
 	if err != nil {
 		return nil, l.blockReadError(offset, blockID, err)
 	}
@@ -263,19 +237,3 @@ func (l *blockLoader) indexOverhead() uint64 {
 	}
 	return l.index.OverheadBytes()
 }
-
-// indexCache returns the Row Index Page LRU (nil when Lazy index cache is
-// disabled). The store's LazySource uses it to serve decoded pages.
-func (l *blockLoader) indexCache() *cache.LRU { return l.index }
-
-// readStats returns the cumulative physical I/O counters of the underlying
-// reader (bytes pulled from the file, bytes produced by decompression).
-func (l *blockLoader) readIOStats() block.IOStats { return l.reader.Stats() }
-
-// cacheOverhead returns the estimated management memory of the random-read
-// cache (nil-safe).
-func (l *blockLoader) cacheOverhead() uint64 { return l.cache.OverheadBytes() }
-
-// scanOverhead returns the estimated management memory of the scan window
-// (nil-safe).
-func (l *blockLoader) scanOverhead() uint64 { return l.scan.OverheadBytes() }

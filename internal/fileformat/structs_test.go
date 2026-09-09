@@ -283,7 +283,7 @@ func TestCRCKnownAnswer(t *testing.T) {
 	}
 	// Concat == CRC over the concatenation.
 	a, b := []byte("1234"), []byte("56789")
-	if got := CRC32CConcat(a, b); got != CRC32C([]byte("123456789")) {
+	if got := CRC32CConcat(CRC32C(a), b); got != CRC32C([]byte("123456789")) {
 		t.Fatalf("CRC32CConcat = %08x, want %08x", got, CRC32C([]byte("123456789")))
 	}
 }

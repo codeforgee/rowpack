@@ -285,6 +285,9 @@ func (w *Writer) metaFlush(fb *block.FlushedBlock) error {
 func (w *Writer) rowsFlush(table TableID) func(*block.FlushedBlock) error {
 	return func(fb *block.FlushedBlock) error {
 		blk := &pendingBlock{header: fb.Header, payload: fb.Stored, rowsDir: fb.Rows}
+		if fb.OversizedPages > 0 {
+			w.store.oversizedPages.Add(uint64(fb.OversizedPages))
+		}
 		w.pending = append(w.pending, blk)
 		return nil
 	}

@@ -8,6 +8,11 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
+// uint32LE reads a little-endian uint32 for corruption tests.
+func uint32LE(b []byte, off int) uint32 {
+	return uint32(b[off]) | uint32(b[off+1])<<8 | uint32(b[off+2])<<16 | uint32(b[off+3])<<24
+}
+
 // row_index_page_test.go — S3-⑦ 落盘②：Row Index Page + Fence 的生产实现测试。
 // 目标：encodeRowIndexPage/decodeRowIndexPage/fenceForRowIndexPage 的往返一致性
 // 与严格损坏校验（截断、单 bit 翻转、伪造 size/count、非法 changeType、排序破坏、

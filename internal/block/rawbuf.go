@@ -115,7 +115,3 @@ func putRawBuf(b *rawBuf) {
 	}
 	rawBufPools[c-poolClassMinBits].Put(b)
 }
-
-// pooledBytes reports the bytes currently retained across all scratch
-// classes (for tests and diagnostics).
-func pooledRetention() int64 { return pooledBytes.Load() }

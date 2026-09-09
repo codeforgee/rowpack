@@ -103,10 +103,6 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 	return rep, nil
 }
 
-func decodeRowBytes(b []byte, schema *codec.Schema, opts Options) (Row, error) {
-	return codec.Decode(b, schema, opts.codecLimits())
-}
-
 func parseMetadataPayload(raw []byte) (*metadata.Payload, error) {
 	return metadata.Parse(raw)
 }

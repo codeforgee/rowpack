@@ -232,62 +232,6 @@ func (l *blockLoader) LoadScanRows(offset int64, blockID uint64) (*block.RowsCon
 	return rc, nil
 }
 
-// scanRef wraps a block for streamed use. Cache-owned blocks are served
-// directly (Release is a no-op); transient (uncached) blocks own a pooled
-// scratch buffer that Release returns to the pool.
-type scanRef struct {
-	blk *block.Block
-	sc  *block.BlockScratch
-}
-
-// Raw returns the validated uncompressed payload.
-func (r *scanRef) Raw() []byte { return r.blk.Raw }
-
-// Release returns any pooled scratch. It is idempotent.
-func (r *scanRef) Release() {
-	if r.sc != nil {
-		r.sc.Release()
-		r.sc = nil
-	}
-}
-
-// LoadScan serves streaming reads (Scan and batch reads). Lookup order is the
-// random-read cache, then the scan window; a miss is decompressed into a
-// pooled scratch. A block with room in the window is promoted into it: an
-// exact-fit scratch transfers its buffer without a copy (the pool
-// replenishes itself on demand); an oversized scratch is copied so window
-// accounting stays tight. The returned hit reports a cache/scan-window hit
-// (used for batch cache statistics; scans ignore it).
-func (l *blockLoader) LoadScan(offset int64, blockID uint64) (*scanRef, bool, error) {
-	if l.cache != nil {
-		if v, ok := l.cache.Get(blockID); ok {
-			return &scanRef{blk: v.(*block.Block)}, true, nil
-		}
-		if v, ok := l.scan.Get(blockID); ok {
-			return &scanRef{blk: v.(*block.Block)}, true, nil
-		}
-	}
-	sc, err := l.reader.ReadAtBlockTransient(offset)
-	if err != nil {
-		return nil, false, l.blockReadError(offset, blockID, err)
-	}
-	if l.scan != nil && uint64(len(sc.Raw)) <= l.scan.Remaining() {
-		if cap(sc.Raw) == len(sc.Raw) {
-			// Exact-fit scratch: transfer ownership into the window.
-			blk := sc.Block
-			sc.Detach()
-			l.scan.Put(blockID, int64(len(blk.Raw)), &blk)
-			return &scanRef{blk: &blk}, false, nil
-		}
-		blk := &block.Block{Header: sc.Header, Raw: make([]byte, len(sc.Raw))}
-		copy(blk.Raw, sc.Raw)
-		l.scan.Put(blockID, int64(len(blk.Raw)), blk)
-		sc.Release()
-		return &scanRef{blk: blk}, false, nil
-	}
-	return &scanRef{blk: &sc.Block, sc: sc}, false, nil
-}
-
 // cacheStats returns the cache counters (nil-safe).
 func (l *blockLoader) cacheStats() (capBytes, used, hits, misses, evictions, loads uint64) {
 	if l.cache == nil {

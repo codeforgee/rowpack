@@ -15,9 +15,7 @@ func TestFrozenSizes(t *testing.T) {
 		"SnapshotHeaderSize":     SnapshotHeaderSize,
 		"SnapshotFooterSize":     SnapshotFooterSize,
 		"BlockHeaderSize":        BlockHeaderSize,
-		"RowsPayloadHeaderSize":  RowsPayloadHeaderSize,
 		"RowDirectoryEntrySize":  RowDirectoryEntrySize,
-		"RowRecordHeaderSize":    RowRecordHeaderSize,
 		"MetaPayloadHeaderSize":  MetaPayloadHeaderSize,
 		"MetaDirectoryEntrySize": MetaDirectoryEntrySize,
 		"IndexTxnHeaderSize":     IndexTxnHeaderSize,
@@ -34,9 +32,7 @@ func TestFrozenSizes(t *testing.T) {
 		"SnapshotHeaderSize":     96,
 		"SnapshotFooterSize":     144,
 		"BlockHeaderSize":        64,
-		"RowsPayloadHeaderSize":  32,
 		"RowDirectoryEntrySize":  24,
-		"RowRecordHeaderSize":    24,
 		"MetaPayloadHeaderSize":  32,
 		"MetaDirectoryEntrySize": 32,
 		"IndexTxnHeaderSize":     80,
@@ -60,7 +56,7 @@ func TestFrozenSizes(t *testing.T) {
 func TestFrozenMagics(t *testing.T) {
 	magics := []string{
 		MagicDataFile, MagicSnapshotHdr, MagicSnapshotFtr, MagicBlockHdr,
-		MagicRowsPayload, MagicMetaPayload, MagicIndexTxnHdr, MagicIndexTxnFtr,
+		MagicMetaPayload, MagicIndexTxnHdr, MagicIndexTxnFtr,
 		MagicIndexChunkHdr,
 	}
 	seen := map[string]bool{}
@@ -190,14 +186,8 @@ func TestFixedStructureRoundTrip(t *testing.T) {
 	}
 	marshalRoundTrip(t, &blockHdr, blockHdr.Size())
 
-	rowsHdr := RowsPayloadHeader{ItemCount: 42, DirectoryBytes: 42 * RowDirectoryEntrySize, RecordsBytes: 4096}
-	marshalRoundTrip(t, &rowsHdr, rowsHdr.Size())
-
 	rowDir := RowDirectoryEntry{RowID: 1001, RecordOffset: 77, RecordLength: 88, ChangeType: ChangeUpdate, SchemaVersion: 2}
 	marshalRoundTrip(t, &rowDir, rowDir.Size())
-
-	rowRec := RowRecordHeader{RowID: 1001, SchemaVersion: 1, ChangeType: ChangeInsert, RowEncoding: RowEncodingTypedTuple, RowLength: 33, RowCRC32C: 9}
-	marshalRoundTrip(t, &rowRec, rowRec.Size())
 
 	txnHdr := IndexTxnHeader{
 		TxnSequence: 12, SnapshotID: 7, DataSnapshotStart: 128, DataSnapshotEnd: 20000,

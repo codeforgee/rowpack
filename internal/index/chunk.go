@@ -2,7 +2,6 @@ package index
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -48,170 +47,11 @@ type ChunkCrypto struct {
 	Open func(chunkSeq uint32, kind uint8, firstOrdinal uint32, rawBytes int, stored []byte) ([]byte, error)
 }
 
-var errChunkTruncated = errors.New("index chunk data truncated")
-
-// ---- row delta codec ----
-
-func putChunkUvarint(dst []byte, v uint64) []byte {
-	for v >= 0x80 {
-		dst = append(dst, byte(v)|0x80)
-		v >>= 7
-	}
-	return append(dst, byte(v))
-}
-
 func zigzag(v int64) uint64 { return uint64((v << 1) ^ (v >> 63)) }
 
 // crcConcat extends a streaming CRC-32C with one more slice.
 func crcConcat(crc uint32, data []byte) uint32 { return fileformat.CRC32CConcat2(crc, data) }
-
-func unzigzag(v uint64) int64 { return int64(v>>1) ^ -int64(v&1) }
-
-// rowEncoder is the stateful incremental encoder for one row chunk: the
-// first entry is written as the absolute base, later entries as deltas.
-type rowEncoder struct {
-	buf     []byte
-	started bool
-	prev    fileformat.RowIndexEntry
-}
-
-// encode appends the frozen delta encoding of one entry.
-func (re *rowEncoder) encode(e *fileformat.RowIndexEntry) {
-	if !re.started {
-		re.buf = putChunkUvarint(re.buf, uint64(e.TableID))
-		re.buf = putChunkUvarint(re.buf, e.RowID)
-		re.buf = putChunkUvarint(re.buf, e.BlockID)
-		re.buf = putChunkUvarint(re.buf, uint64(e.ItemOrdinal))
-		re.buf = append(re.buf, byte(e.ChangeType))
-		re.started = true
-		re.prev = *e
-		return
-	}
-	p := &re.prev
-	var tag byte
-	if e.TableID == p.TableID {
-		tag |= 1
-	}
-	if e.BlockID == p.BlockID {
-		tag |= 2
-	}
-	re.buf = append(re.buf, tag)
-	if tag&1 == 0 {
-		re.buf = putChunkUvarint(re.buf, zigzag(int64(e.TableID)-int64(p.TableID)))
-	}
-	if tag&2 == 0 {
-		re.buf = putChunkUvarint(re.buf, zigzag(int64(e.BlockID)-int64(p.BlockID)))
-	}
-	re.buf = putChunkUvarint(re.buf, zigzag(int64(e.RowID)-int64(p.RowID)))
-	re.buf = putChunkUvarint(re.buf, zigzag(int64(e.ItemOrdinal)-int64(p.ItemOrdinal)))
-	re.buf = append(re.buf, byte(e.ChangeType))
-	re.prev = *e
-}
-
-// decodeRowChunk decodes count entries from the frozen delta layout, passing
-// each entry to add with strict bounds checks: truncated or malformed input
-// is an error, never a panic. SnapshotID is txn-wide and stamped by the
-// caller. add may return an error to abort decoding (streaming sinks).
-func decodeRowChunk(raw []byte, count uint32, snapshotID uint64, add func(fileformat.RowIndexEntry) error) error {
-	pos := 0
-	readUvarint := func() (uint64, error) {
-		v, n := binary.Uvarint(raw[pos:])
-		if n <= 0 {
-			return 0, errChunkTruncated
-		}
-		pos += n
-		return v, nil
-	}
-	readByte := func() (byte, error) {
-		if pos >= len(raw) {
-			return 0, errChunkTruncated
-		}
-		b := raw[pos]
-		pos++
-		return b, nil
-	}
-	var prevTable, prevRowID, prevBlockID, prevOrdinal uint64
-	for i := uint32(0); i < count; i++ {
-		var e fileformat.RowIndexEntry
-		if i == 0 {
-			table, err := readUvarint()
-			if err != nil {
-				return err
-			}
-			rowID, err := readUvarint()
-			if err != nil {
-				return err
-			}
-			blockID, err := readUvarint()
-			if err != nil {
-				return err
-			}
-			ordinal, err := readUvarint()
-			if err != nil {
-				return err
-			}
-			change, err := readByte()
-			if err != nil {
-				return err
-			}
-			prevTable, prevRowID, prevBlockID, prevOrdinal = table, rowID, blockID, ordinal
-			e.TableID, e.RowID, e.BlockID, e.ItemOrdinal = uint32(table), rowID, blockID, uint32(ordinal)
-			e.ChangeType = fileformat.ChangeType(change)
-		} else {
-			tag, err := readByte()
-			if err != nil {
-				return err
-			}
-			if tag&^byte(3) != 0 {
-				return fmt.Errorf("rowpack: row chunk entry %d: unknown tag bits %#x", i, tag)
-			}
-			if tag&1 == 0 {
-				d, err := readUvarint()
-				if err != nil {
-					return err
-				}
-				prevTable = uint64(int64(prevTable) + unzigzag(d))
-				if prevTable > 0xFFFFFFFF {
-					return fmt.Errorf("rowpack: row chunk entry %d: table id overflow", i)
-				}
-			}
-			if tag&2 == 0 {
-				d, err := readUvarint()
-				if err != nil {
-					return err
-				}
-				prevBlockID = uint64(int64(prevBlockID) + unzigzag(d))
-			}
-			d, err := readUvarint()
-			if err != nil {
-				return err
-			}
-			prevRowID = uint64(int64(prevRowID) + unzigzag(d))
-			d, err = readUvarint()
-			if err != nil {
-				return err
-			}
-			prevOrdinal = uint64(int64(prevOrdinal) + unzigzag(d))
-			change, err := readByte()
-			if err != nil {
-				return err
-			}
-			e.TableID, e.RowID, e.BlockID, e.ItemOrdinal = uint32(prevTable), prevRowID, prevBlockID, uint32(prevOrdinal)
-			e.ChangeType = fileformat.ChangeType(change)
-		}
-		if e.ChangeType != fileformat.ChangeInsert && e.ChangeType != fileformat.ChangeUpdate && e.ChangeType != fileformat.ChangeDelete {
-			return fmt.Errorf("rowpack: row chunk entry %d: bad change type %d", i, e.ChangeType)
-		}
-		e.SnapshotID = snapshotID
-		if err := add(e); err != nil {
-			return err
-		}
-	}
-	if pos != len(raw) {
-		return fmt.Errorf("rowpack: row chunk has %d trailing bytes", len(raw)-pos)
-	}
-	return nil
-}
+func unzigzag(v uint64) int64                  { return int64(v>>1) ^ -int64(v&1) }
 
 // ---- chunk body assembly (write path) ----
 

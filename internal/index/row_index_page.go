@@ -17,6 +17,10 @@ import (
 // 块内序号、块边界重置），并改用已冻结的 fileformat.RowIndexPageHeader /
 // fileformat.RowIndexFenceEntry。原型文件保持不变（测量工件），本文件才是生产实现。
 
+// maxUint32 is used for width checks (a TableID/ItemOrdinal exceeding uint32
+// is rejected).
+const maxUint32 = uint64(0xFFFFFFFF)
+
 // indexPageEntryCount 是每页最大行条目数（ADR-005 决策 #2 = 4096）。
 const indexPageEntryCount = 4096
 
@@ -96,6 +100,18 @@ func (b *Builder) buildRowIndexPages(crypto *ChunkCrypto, level int, pageSeqBase
 	}
 	b.pageCount = uint32(len(out))
 	return out, nil
+}
+
+// appendChangeBit appends the 2-bit changeType for entry ordinal into a packed
+// byte stream, zero-extending as needed.
+func appendChangeBit(dst []byte, ordinal uint32, packed uint8) []byte {
+	byteIdx := ordinal / 4
+	for uint32(len(dst)) <= byteIdx {
+		dst = append(dst, 0)
+	}
+	shift := (ordinal % 4) * 2
+	dst[byteIdx] |= packed << shift
+	return dst
 }
 
 // sortRowIndexEntries 把行索引条目就地按 (TableID, RowID) 升序排序（决定 #1：

@@ -39,7 +39,6 @@ type RowsContainer struct {
 	// compression / encryption context used to decode pages).
 	blockH fileformat.BlockHeader
 	comp   fileformat.Compression
-	level  int
 	limits Limits
 
 	// stored is the whole container plaintext when mode==whole; nil when lazy.
@@ -63,6 +62,9 @@ type RowsContainer struct {
 	// attributed to the reader so loader.readIOStats reports both disk bytes
 	// pulled and page raw bytes produced.
 	decompCounter *atomic.Uint64
+	// pageCtrs is the reader's shared per-page read counters (page loads, raw
+	// and stored page bytes) for the S2 page-container I/O stats.
+	pageCtrs *PageStatCtrs
 }
 
 // lazy reports whether this container reads pages on demand rather than from
@@ -182,6 +184,7 @@ func ParseRowsDir(offset int64, r *Reader, h fileformat.BlockHeader, limits Limi
 		return nil, err
 	}
 	c := &RowsContainer{Header: rh, Dir: dir, blockH: h, comp: h.Compression, limits: limits, reader: r, blockOffset: offset}
+	c.pageCtrs = r.pageCounts()
 	if err := c.validatePageBounds(fileformat.RowsBlockHeaderSize + len(dir)*fileformat.RowsPageDirEntrySize); err != nil {
 		return nil, err
 	}
@@ -312,6 +315,11 @@ func (c *RowsContainer) decompressPageInto(i int, buf *rawBuf) ([]byte, error) {
 	}
 	if c.decompCounter != nil {
 		c.decompCounter.Add(uint64(len(raw)))
+	}
+	if c.pageCtrs != nil {
+		c.pageCtrs.loads.Add(1)
+		c.pageCtrs.raw.Add(uint64(dir.RawSize))
+		c.pageCtrs.stored.Add(uint64(dir.StoredSize))
 	}
 	return raw, nil
 }

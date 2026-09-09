@@ -1,7 +1,6 @@
 package block
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"sync/atomic"
@@ -39,17 +38,41 @@ type Reader struct {
 
 	// Cumulative I/O counters (measurement instrumentation, S0 baseline):
 	// readBytes counts header+stored bytes pulled from the handle before
-	// decryption; decompressedBytes counts validated raw payload bytes.
-	// Together they quantify cold-read amplification: with a 256 KiB block
-	// a single-row read still pulls and decompresses the whole block.
+	// decryption; decompressedBytes counts validated raw payload bytes;
+	// pageCtrs counts Rows-page reads (S2 page container). Together they
+	// quantify cold-read amplification: with a 256 KiB block a single-row
+	// read still pulls and decompresses the whole block, but only the
+	// accessed page is loaded from a page container.
 	readBytes         atomic.Uint64
 	decompressedBytes atomic.Uint64
+	pageCtrs          PageStatCtrs
 }
+
+// PageStats is a snapshot of the per-page read counters (S2 page container).
+type PageStats struct {
+	PageLoads       uint64 // pages decompressed on demand
+	PageRawBytes    uint64 // validated raw page payload bytes produced
+	PageStoredBytes uint64 // stored page bytes pulled from the handle
+}
+
+// PageStatCtrs is the shared per-page counter set written by RowsContainer.
+type PageStatCtrs struct {
+	loads  atomic.Uint64
+	raw    atomic.Uint64
+	stored atomic.Uint64
+}
+
+// pageCounts returns the per-page counters for a RowsContainer to attribute
+// its lazy page reads to the reader.
+func (r *Reader) pageCounts() *PageStatCtrs { return &r.pageCtrs }
 
 // IOStats is a snapshot of the reader's cumulative I/O counters.
 type IOStats struct {
 	ReadBytes         uint64 // header + stored bytes pulled from the handle
 	DecompressedBytes uint64 // validated raw payload bytes produced
+	PageLoads         uint64 // Rows-page decompressions on demand
+	PageRawBytes      uint64 // validated raw page payload bytes
+	PageStoredBytes   uint64 // stored page bytes pulled from the handle
 }
 
 // Stats returns the cumulative counters since the Reader was created.
@@ -57,6 +80,9 @@ func (r *Reader) Stats() IOStats {
 	return IOStats{
 		ReadBytes:         r.readBytes.Load(),
 		DecompressedBytes: r.decompressedBytes.Load(),
+		PageLoads:         r.pageCtrs.loads.Load(),
+		PageRawBytes:      r.pageCtrs.raw.Load(),
+		PageStoredBytes:   r.pageCtrs.stored.Load(),
 	}
 }
 
@@ -305,144 +331,3 @@ type Block struct {
 	Header fileformat.BlockHeader
 	Raw    []byte
 }
-
-// ReadAtBlockTransient reads, validates and decompresses the block whose
-// header starts at offset, decompressing into a pooled scratch buffer. The
-// returned BlockScratch aliases the scratch; callers must call Release once
-// they are done with Raw (and any slices of it). Transient reads never enter
-// a cache: they are meant for streaming paths (Scan) where
-// each block is consumed once and must not pollute the hot cache.
-func (r *Reader) ReadAtBlockTransient(offset int64) (*BlockScratch, error) {
-	if v, ok := r.ra.(viewer); ok {
-		return r.readAtBlockViewT(offset, v)
-	}
-	return r.readAtBlockCopyT(offset)
-}
-
-// BlockScratch is a validated block whose Raw may alias a pooled scratch
-// buffer. Release returns the buffer to the pool and must be called exactly
-// once after Raw and all of its slices are no longer referenced.
-type BlockScratch struct {
-	Block
-	buf *rawBuf
-}
-
-// Release returns the pooled scratch buffer. It is idempotent.
-func (s *BlockScratch) Release() {
-	if s.buf != nil {
-		putRawBuf(s.buf)
-		s.buf = nil
-	}
-}
-
-// Detach clears the scratch association so Release becomes a no-op,
-// transferring buffer ownership to the caller (used to hand an exact-fit
-// buffer to a cache without a copy). The detached buffer never returns to
-// the pool; the pool replenishes itself on demand.
-func (s *BlockScratch) Detach() { s.buf = nil }
-
-// decompressIntoScratch decompresses stored into buf, ensuring the result
-// never aliases a file mapping (None copies into the scratch).
-func (r *Reader) decompressIntoScratch(h *fileformat.BlockHeader, stored []byte, buf *rawBuf) ([]byte, error) {
-	switch h.Compression {
-	case fileformat.CompressionNone:
-		if uint32(len(stored)) > r.limits.MaxRawBytes {
-			return nil, fmt.Errorf("rowpack: stored size %d exceeds limit %d", len(stored), r.limits.MaxRawBytes)
-		}
-		out := buf.data[:len(stored)]
-		copy(out, stored)
-		return out, nil
-	case fileformat.CompressionZstd:
-		out, err := decompressZstd(buf.data, stored, r.limits.MaxRawBytes)
-		if err != nil {
-			return nil, fmt.Errorf("rowpack: block %d: %w", h.BlockID, err)
-		}
-		return out, nil
-	}
-	return nil, fmt.Errorf("rowpack: unsupported compression %d", h.Compression)
-}
-
-// readAtBlockViewT is the transient zero-copy path; see readAtBlockView.
-func (r *Reader) readAtBlockViewT(offset int64, v viewer) (*BlockScratch, error) {
-	hb, hdone, err := v.View(offset, fileformat.BlockHeaderSize)
-	if err != nil {
-		return nil, fmt.Errorf("rowpack: read block header at %d: %w", offset, err)
-	}
-	var h fileformat.BlockHeader
-	herr := h.Unmarshal(hb)
-	hdone()
-	if herr != nil {
-		return nil, herr
-	}
-	if err := r.checkHeader(&h); err != nil {
-		return nil, err
-	}
-	sb, sdone, err := v.View(offset+fileformat.BlockHeaderSize, int64(h.StoredSize))
-	if err != nil {
-		return nil, fmt.Errorf("rowpack: read block payload at %d: %w", offset+fileformat.BlockHeaderSize, err)
-	}
-	defer sdone()
-	stored, err := r.maybeDecrypt(sb, &h)
-	if err != nil {
-		return nil, err
-	}
-	buf := getRawBuf(h.RawSize)
-	raw, err := r.decompressIntoScratch(&h, stored, buf)
-	if err != nil {
-		putRawBuf(buf)
-		return nil, err
-	}
-	if uint32(len(raw)) != h.RawSize {
-		putRawBuf(buf)
-		return nil, fmt.Errorf("rowpack: decompressed %d bytes, want %d", len(raw), h.RawSize)
-	}
-	if fileformat.CRC32C(raw) != h.RawCRC32C {
-		putRawBuf(buf)
-		return nil, fmt.Errorf("rowpack: block %d raw CRC mismatch", h.BlockID)
-	}
-	r.count(&h)
-	buf.data = raw // DecodeAll may have grown past the pooled buffer
-	return &BlockScratch{Block: Block{Header: h, Raw: raw}, buf: buf}, nil
-}
-
-// readAtBlockCopyT is the transient ReadAt path (plain io.ReaderAt handles).
-func (r *Reader) readAtBlockCopyT(offset int64) (*BlockScratch, error) {
-	var hdr [fileformat.BlockHeaderSize]byte
-	if _, err := r.ra.ReadAt(hdr[:], offset); err != nil {
-		return nil, fmt.Errorf("rowpack: read block header at %d: %w", offset, err)
-	}
-	var h fileformat.BlockHeader
-	if err := h.Unmarshal(hdr[:]); err != nil {
-		return nil, err
-	}
-	if err := r.checkHeader(&h); err != nil {
-		return nil, err
-	}
-	stored := make([]byte, h.StoredSize)
-	if _, err := r.ra.ReadAt(stored, offset+fileformat.BlockHeaderSize); err != nil {
-		return nil, fmt.Errorf("rowpack: read block payload at %d: %w", offset+fileformat.BlockHeaderSize, err)
-	}
-	plain, err := r.maybeDecrypt(stored, &h)
-	if err != nil {
-		return nil, err
-	}
-	buf := getRawBuf(h.RawSize)
-	raw, err := r.decompressIntoScratch(&h, plain, buf)
-	if err != nil {
-		putRawBuf(buf)
-		return nil, err
-	}
-	if uint32(len(raw)) != h.RawSize {
-		putRawBuf(buf)
-		return nil, fmt.Errorf("rowpack: decompressed %d bytes, want %d", len(raw), h.RawSize)
-	}
-	if fileformat.CRC32C(raw) != h.RawCRC32C {
-		putRawBuf(buf)
-		return nil, fmt.Errorf("rowpack: block %d raw CRC mismatch", h.BlockID)
-	}
-	r.count(&h)
-	buf.data = raw
-	return &BlockScratch{Block: Block{Header: h, Raw: raw}, buf: buf}, nil
-}
-
-var _ = errors.New

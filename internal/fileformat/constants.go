@@ -42,7 +42,6 @@ const (
 	MagicSnapshotHdr = "RPKSNAPH"
 	MagicSnapshotFtr = "RPKSNAPF"
 	MagicBlockHdr    = "RPKBLOCK"
-	MagicRowsPayload = "RPKROWPL"
 	MagicMetaPayload = "RPKMETAP"
 	MagicIndexTxnHdr = "RPITXNBH"
 	MagicIndexTxnFtr = "RPITXNEF"
@@ -56,9 +55,7 @@ const (
 	SnapshotHeaderSize     = 96
 	SnapshotFooterSize     = 144
 	BlockHeaderSize        = 64
-	RowsPayloadHeaderSize  = 32
 	RowDirectoryEntrySize  = 24
-	RowRecordHeaderSize    = 24
 	MetaPayloadHeaderSize  = 32
 	MetaDirectoryEntrySize = 32
 	IndexTxnHeaderSize     = 80
@@ -234,9 +231,9 @@ const (
 	TypeDecimal  ValueType = 17
 )
 
-// Payload versions for Rows and Metadata payloads.
+// Payload versions for the Metadata payload (Rows moved to the S2 page
+// container format and no longer uses a payload version constant).
 const (
-	RowsPayloadVersion = 1
 	MetaPayloadVersion = 1
 )
 

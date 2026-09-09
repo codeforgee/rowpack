@@ -44,29 +44,33 @@ type RecoveryStats struct {
 // Their ratio to the caller's logical bytes is the read amplification the
 // page-format refactor targets (256 KiB raw blocks → 16–64 KiB pages).
 type ReadStats struct {
-	ReadBytes         uint64
-	DecompressedBytes uint64
+	ReadBytes         uint64 // header + stored bytes pulled from the file
+	DecompressedBytes uint64 // validated raw payload bytes produced
+	PageLoads         uint64 // Rows-page decompressions on demand (S2 page container)
+	PageRawBytes      uint64 // validated raw page payload bytes
+	PageStoredBytes   uint64 // stored page bytes pulled from the file
 }
 
 // Stats is an approximate read-only snapshot of store statistics. It does not
 // establish a transaction barrier.
 type Stats struct {
-	Snapshots        uint64
-	Tables           uint64
-	Blocks           uint64
-	LogicalRows      uint64
-	DataFileBytes    int64
-	RawBytes         uint64
-	StoredBytes      uint64
-	IndexMemoryBytes uint64
-	IndexMode        IndexMode  // Eager (default) or Lazy
-	IndexFenceBytes  uint64     // resident Row Index Fence bytes in Lazy mode
-	Cache            CacheStats // random-read decoded block cache
-	ScanCache        CacheStats // bounded decoded scan window
-	IndexPageCache   CacheStats // Lazy decoded Row Index Page cache
-	Read             ReadStats  // cumulative physical read amplification
-	Batch            BatchStats
-	Recovery         RecoveryStats
+	Snapshots         uint64
+	Tables            uint64
+	Blocks            uint64
+	LogicalRows       uint64
+	DataFileBytes     int64
+	RawBytes          uint64
+	StoredBytes       uint64
+	IndexMemoryBytes  uint64
+	IndexMode         IndexMode  // Eager (default) or Lazy
+	IndexFenceBytes   uint64     // resident Row Index Fence bytes in Lazy mode
+	OversizedRowPages uint64     // pages holding a single record larger than the page target
+	Cache             CacheStats // random-read decoded block cache
+	ScanCache         CacheStats // bounded decoded scan window
+	IndexPageCache    CacheStats // Lazy decoded Row Index Page cache
+	Read              ReadStats  // cumulative physical read amplification
+	Batch             BatchStats
+	Recovery          RecoveryStats
 }
 
 // Stats returns a snapshot of the store's statistics.
@@ -93,6 +97,7 @@ func (s *Store) Stats() Stats {
 	stt.IndexMemoryBytes = view.MemoryBytes()
 	stt.IndexMode = s.opts.IndexMode
 	stt.IndexFenceBytes = view.IndexFenceBytes()
+	stt.OversizedRowPages = s.oversizedPages.Load()
 	if sz, err := s.data.Size(); err == nil {
 		stt.DataFileBytes = sz
 	}
@@ -106,6 +111,9 @@ func (s *Store) Stats() Stats {
 		io := l.readIOStats()
 		stt.Read.ReadBytes = io.ReadBytes
 		stt.Read.DecompressedBytes = io.DecompressedBytes
+		stt.Read.PageLoads = io.PageLoads
+		stt.Read.PageRawBytes = io.PageRawBytes
+		stt.Read.PageStoredBytes = io.PageStoredBytes
 	}
 	stt.Batch.Calls = s.batchCalls.Load()
 	stt.Batch.Rows = s.batchRows.Load()

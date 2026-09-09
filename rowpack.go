@@ -118,6 +118,11 @@ type Store struct {
 	batchBlocks   atomic.Uint64
 	batchRawBytes atomic.Uint64
 
+	// oversizedPages counts Rows-page-container pages that hold a single
+	// record larger than the page target (Flags bit 0), accumulated on the
+	// write path.
+	oversizedPages atomic.Uint64
+
 	// zstdEnc is the store-level persistent zstd encoder for the write path.
 	// A store has at most one active writer and block flushing is sequential,
 	// so the encoder is never used concurrently; owning it (instead of going

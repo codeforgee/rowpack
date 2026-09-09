@@ -1,8 +1,6 @@
 package block
 
 import (
-	"encoding/binary"
-	"errors"
 	"fmt"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -26,6 +24,9 @@ type FlushedBlock struct {
 	Raw    []byte
 	Rows   []fileformat.RowDirectoryEntry // rows blocks only
 	Meta   []metadata.DirectoryEntry      // metadata blocks only
+	// OversizedPages is the number of pages in this block that hold a single
+	// record larger than the page target (Flags bit 0).
+	OversizedPages uint32
 }
 
 // RowsBlockBuilder accumulates body-only TypedTuple records of one
@@ -67,6 +68,9 @@ type RowsBlockBuilder struct {
 	storedPages   [][]byte
 	rawSize       int
 	recordOrdinal uint32
+	// oversizedPages counts pages holding a single record larger than the
+	// page target (Flags bit 0), reported per block via FlushedBlock.
+	oversizedPages uint32
 
 	// enc is the caller-owned zstd encoder (store-level, outliving GC pool
 	// churn); nil selects the pooled encoder.
@@ -226,6 +230,7 @@ func (b *RowsBlockBuilder) storePage(rawPage []byte, oversized bool) error {
 	}
 	if oversized {
 		dir.Flags = 1
+		b.oversizedPages++
 	}
 	b.dirEntries = append(b.dirEntries, dir)
 	b.storedPages = append(b.storedPages, stored)
@@ -287,7 +292,8 @@ func (b *RowsBlockBuilder) Flush() error {
 		StoredSize:  uint32(len(container)),
 		RawCRC32C:   fileformat.CRC32C(container[:dataStart]),
 	}
-	if err := b.onFlush(&FlushedBlock{Header: h, Stored: container, Raw: container, Rows: b.entries}); err != nil {
+	fb := &FlushedBlock{Header: h, Stored: container, Raw: container, Rows: b.entries, OversizedPages: b.oversizedPages}
+	if err := b.onFlush(fb); err != nil {
 		return err
 	}
 	// Directory ownership transferred to the callback; fresh inputs next block.
@@ -296,241 +302,6 @@ func (b *RowsBlockBuilder) Flush() error {
 	b.storedPages = b.storedPages[:0]
 	b.rawSize = 0
 	b.recordOrdinal = 0
+	b.oversizedPages = 0
 	return nil
 }
-
-// RowsPayload is a validated uncompressed Rows block payload.
-type RowsPayload struct {
-	Header  fileformat.RowsPayloadHeader
-	Entries []fileformat.RowDirectoryEntry
-	Records [][]byte // record bytes (header+body) in entry order
-}
-
-// ParseRowsPayload validates an uncompressed Rows payload against the block
-// header's item count, directory/record consistency and record-header
-// agreement. It never allocates more than the input length.
-func ParseRowsPayload(raw []byte, itemCount uint32) (*RowsPayload, error) {
-	var h fileformat.RowsPayloadHeader
-	if err := h.Unmarshal(raw); err != nil {
-		return nil, err
-	}
-	if h.ItemCount != itemCount {
-		return nil, fmt.Errorf("rowpack: payload item count %d != block item count %d", h.ItemCount, itemCount)
-	}
-	base := fileformat.RowsPayloadHeaderSize + int(h.DirectoryBytes)
-	if base > len(raw) {
-		return nil, errors.New("rowpack: rows payload directory exceeds payload")
-	}
-	if h.RecordsBytes > uint64(len(raw)-base) {
-		return nil, errors.New("rowpack: rows payload records exceed payload")
-	}
-	if base+int(h.RecordsBytes) != len(raw) {
-		return nil, fmt.Errorf("rowpack: rows payload %d bytes, want %d", len(raw), base+int(h.RecordsBytes))
-	}
-	p := &RowsPayload{Header: h}
-	pos := fileformat.RowsPayloadHeaderSize
-	for i := uint32(0); i < h.ItemCount; i++ {
-		if pos+fileformat.RowDirectoryEntrySize > len(raw) {
-			return nil, errors.New("rowpack: rows directory truncated")
-		}
-		var e fileformat.RowDirectoryEntry
-		if err := e.Unmarshal(raw[pos : pos+fileformat.RowDirectoryEntrySize]); err != nil {
-			return nil, err
-		}
-		pos += fileformat.RowDirectoryEntrySize
-		p.Entries = append(p.Entries, e)
-	}
-	for i := range p.Entries {
-		e := &p.Entries[i]
-		off := int(e.RecordOffset)
-		ln := int(e.RecordLength)
-		if off < 0 || ln < 0 || off+ln > int(h.RecordsBytes) {
-			return nil, fmt.Errorf("rowpack: row record %d out of bounds", i)
-		}
-		rec := raw[base+off : base+off+ln]
-		var rh fileformat.RowRecordHeader
-		if err := rh.Unmarshal(rec); err != nil {
-			return nil, err
-		}
-		// Directory and record header must agree.
-		if rh.RowID != e.RowID || rh.ChangeType != e.ChangeType || rh.SchemaVersion != e.SchemaVersion {
-			return nil, fmt.Errorf("rowpack: row record %d header mismatch with directory", i)
-		}
-		if uint32(len(rec)) != fileformat.RowRecordHeaderSize+rh.RowLength {
-			return nil, fmt.Errorf("rowpack: row record %d length mismatch", i)
-		}
-		if rh.ChangeType == fileformat.ChangeDelete {
-			if rh.RowEncoding != fileformat.RowEncodingNone || rh.RowLength != 0 || rh.RowCRC32C != 0 {
-				return nil, fmt.Errorf("rowpack: DELETE record %d carries row bytes", i)
-			}
-		} else if rh.RowEncoding != fileformat.RowEncodingTypedTuple {
-			return nil, fmt.Errorf("rowpack: record %d has row encoding %d", i, rh.RowEncoding)
-		}
-		p.Records = append(p.Records, rec)
-	}
-	return p, nil
-}
-
-// RowsIndex is a lightweight view of a rows payload: the payload header and
-// directory entries only. Record bytes are sliced on demand, so building the
-// index costs O(ItemCount) without parsing every record header or allocating
-// per-record slices. Used by sequential scans where the caller walks the
-// directory in order.
-type RowsIndex struct {
-	Header  fileformat.RowsPayloadHeader
-	Entries []fileformat.RowDirectoryEntry
-	raw     []byte // entire payload
-	recBase int    // records region start
-}
-
-// ParseRowsDirectory validates a rows payload's header and directory region
-// and returns the directory index. Unlike ParseRowsPayload it does not parse
-// record headers or materialize record slices. The block's RawCRC already
-// guards payload integrity, so the per-record header cross-check is deferred
-// to the single-record reader when needed. When cap(entries) covers
-// itemCount the slice is reused (each entry is overwritten), avoiding a
-// per-block allocation on sequential scans; the returned RowsIndex aliases
-// entries, so the caller must not reuse entries until it is done with the
-// index. Pass nil to allocate a fresh slice.
-func ParseRowsDirectory(raw []byte, itemCount uint32, entries []fileformat.RowDirectoryEntry) (*RowsIndex, error) {
-	var h fileformat.RowsPayloadHeader
-	if err := h.Unmarshal(raw); err != nil {
-		return nil, err
-	}
-	if h.ItemCount != itemCount {
-		return nil, fmt.Errorf("rowpack: payload item count %d != block item count %d", h.ItemCount, itemCount)
-	}
-	base := fileformat.RowsPayloadHeaderSize + int(h.DirectoryBytes)
-	if base > len(raw) {
-		return nil, errors.New("rowpack: rows payload directory exceeds payload")
-	}
-	if h.RecordsBytes > uint64(len(raw)-base) || base+int(h.RecordsBytes) != len(raw) {
-		return nil, errors.New("rowpack: rows payload records region mismatch")
-	}
-	if cap(entries) < int(itemCount) {
-		entries = make([]fileformat.RowDirectoryEntry, itemCount)
-	}
-	entries = entries[:itemCount]
-	pos := fileformat.RowsPayloadHeaderSize
-	for i := uint32(0); i < h.ItemCount; i++ {
-		if pos+fileformat.RowDirectoryEntrySize > base {
-			return nil, errors.New("rowpack: rows directory truncated")
-		}
-		if err := entries[i].Unmarshal(raw[pos : pos+fileformat.RowDirectoryEntrySize]); err != nil {
-			return nil, err
-		}
-		pos += fileformat.RowDirectoryEntrySize
-	}
-	// Validate every directory entry's record bounds once (still O(n), but
-	// cheap and allocation-free).
-	for i := range entries {
-		e := &entries[i]
-		if e.RecordLength < fileformat.RowRecordHeaderSize {
-			return nil, fmt.Errorf("rowpack: row record %d too short", i)
-		}
-		if int(e.RecordOffset)+int(e.RecordLength) > int(h.RecordsBytes) {
-			return nil, fmt.Errorf("rowpack: row record %d out of bounds", i)
-		}
-	}
-	return &RowsIndex{Header: h, Entries: entries, raw: raw, recBase: base}, nil
-}
-
-// RowBytes returns the row payload bytes of the record at ordinal (nil for
-// DELETE). It slices on demand; the result aliases the index's raw buffer.
-func (r *RowsIndex) RowBytes(ordinal int) []byte {
-	e := &r.Entries[ordinal]
-	rec := r.raw[r.recBase+int(e.RecordOffset) : r.recBase+int(e.RecordOffset)+int(e.RecordLength)]
-	if e.ChangeType == fileformat.ChangeDelete {
-		return nil
-	}
-	return rec[fileformat.RowRecordHeaderSize:]
-}
-
-// RowRef locates one record within a validated rows payload.
-type RowRef struct {
-	Entry  fileformat.RowDirectoryEntry
-	Header fileformat.RowRecordHeader
-	// Row is the row payload bytes (nil for DELETE). It references the
-	// caller's raw buffer and must not outlive it.
-	Row []byte
-}
-
-// ParseRowAt validates the rows payload header and the single record at
-// ordinal, returning its directory entry, record header and row payload.
-// Unlike ParseRowsPayload it does not parse the whole directory, so single-row
-// random reads cost O(1) in the block size. RowRef is returned by value: hot
-// random reads call this per row, and a heap-escaped pointer would cost one
-// allocation per Get.
-func ParseRowAt(raw []byte, itemCount uint32, ordinal uint32) (RowRef, error) {
-	var h fileformat.RowsPayloadHeader
-	if err := h.Unmarshal(raw); err != nil {
-		return RowRef{}, err
-	}
-	if h.ItemCount != itemCount {
-		return RowRef{}, fmt.Errorf("rowpack: payload item count %d != block item count %d", h.ItemCount, itemCount)
-	}
-	if ordinal >= itemCount {
-		return RowRef{}, fmt.Errorf("rowpack: ordinal %d out of range (count %d)", ordinal, itemCount)
-	}
-	base := fileformat.RowsPayloadHeaderSize + int(h.DirectoryBytes)
-	if base > len(raw) {
-		return RowRef{}, errors.New("rowpack: rows payload directory exceeds payload")
-	}
-	if h.RecordsBytes > uint64(len(raw)-base) || base+int(h.RecordsBytes) != len(raw) {
-		return RowRef{}, errors.New("rowpack: rows payload records region mismatch")
-	}
-	dirOff := fileformat.RowsPayloadHeaderSize + int(ordinal)*fileformat.RowDirectoryEntrySize
-	if dirOff+fileformat.RowDirectoryEntrySize > base {
-		return RowRef{}, errors.New("rowpack: rows directory truncated")
-	}
-	var e fileformat.RowDirectoryEntry
-	if err := e.Unmarshal(raw[dirOff : dirOff+fileformat.RowDirectoryEntrySize]); err != nil {
-		return RowRef{}, err
-	}
-	recOff := base + int(e.RecordOffset)
-	recLen := int(e.RecordLength)
-	if recOff < base || recOff+recLen > base+int(h.RecordsBytes) {
-		return RowRef{}, fmt.Errorf("rowpack: row record out of bounds")
-	}
-	rec := raw[recOff : recOff+recLen]
-	var rh fileformat.RowRecordHeader
-	if err := rh.Unmarshal(rec); err != nil {
-		return RowRef{}, err
-	}
-	if rh.RowID != e.RowID || rh.ChangeType != e.ChangeType || rh.SchemaVersion != e.SchemaVersion {
-		return RowRef{}, fmt.Errorf("rowpack: row record header mismatch with directory")
-	}
-	if uint32(len(rec)) != fileformat.RowRecordHeaderSize+rh.RowLength {
-		return RowRef{}, fmt.Errorf("rowpack: row record length mismatch")
-	}
-	if rh.ChangeType == fileformat.ChangeDelete {
-		if rh.RowEncoding != fileformat.RowEncodingNone || rh.RowLength != 0 || rh.RowCRC32C != 0 {
-			return RowRef{}, fmt.Errorf("rowpack: DELETE record carries row bytes")
-		}
-	} else if rh.RowEncoding != fileformat.RowEncodingTypedTuple {
-		return RowRef{}, fmt.Errorf("rowpack: record has row encoding %d", rh.RowEncoding)
-	}
-	ref := RowRef{Entry: e, Header: rh}
-	if rh.ChangeType != fileformat.ChangeDelete {
-		ref.Row = rec[fileformat.RowRecordHeaderSize:]
-	}
-	return ref, nil
-}
-
-// RowBytes returns the row payload bytes of record i (nil for DELETE).
-func (p *RowsPayload) RowBytes(i int) []byte {
-	rec := p.Records[i]
-	if p.Entries[i].ChangeType == fileformat.ChangeDelete {
-		return nil
-	}
-	return rec[fileformat.RowRecordHeaderSize:]
-}
-
-// RowCRC returns the stored row CRC of record i.
-func (p *RowsPayload) RowCRC(i int) uint32 {
-	var rh fileformat.RowRecordHeader
-	_ = rh.Unmarshal(p.Records[i])
-	return rh.RowCRC32C
-}
-
-var _ = binary.LittleEndian

@@ -123,7 +123,8 @@ S2 起 Rows Block 的逻辑块（写入/统计/快照组织单位）与物理压
   StoredSize / RawSize / MinRowID / MaxRowID / PageCRC32C / Flags（bit0=超大连行页）。
 - 压缩页内部的 `RowsPage` 使用一次性列流（RowID zigzag delta / end-offset delta /
   SchemaVersion RLE / ChangeType 2bit / body-only TypedTuple），去掉 v1 冗余的逐行
-  RowDirectoryEntry+RowRecordHeader；Page CRC 覆盖解压后完整页。
+  `RowRecordHeader`（`RowDirectoryEntry` 仍保留为块级目录，见 `FlushedBlock.Rows`）；
+  Page CRC 覆盖解压后完整页。
 - 默认 PageSize = 32 KiB（S2 原型冻结，ADR），PageSize 是建库后不可变的写时分页参数；
   读取按容器目录定位页，不需要 PageSize。
 - 超过 PageSize 的单行使用独立 Large Row Page（Flags bit0）。
@@ -144,10 +145,14 @@ S2 起 Rows Block 的逻辑块（写入/统计/快照组织单位）与物理压
   `internal/seal/seal_page_test.go`）。
 - 读取只 OPEN（认证）并解压所访问的那一页，加密块同样享受页级 I/O。
 
-### 5.3 Row Index（S2 仍为 v1 布局，S3 替换）
+### 5.3 Row Index（S3 起：排序 Row Index Page + Fence Directory）
 
-RowIndexEntry（v1 定长 40 B）继续提供 `(SnapshotID, TableID, RowID) → BlockID, ItemOrdinal`。
-排序 Row Index Page + Fence + Eager/Lazy 模式属于 S3/S4，未在本版格式中落地。
+自 S3-⑦ 起，行索引不再使用 v1 的 `RowIndexEntry` chunk delta，而是**排序 Row Index
+Page + Fence Directory**（见 §6）。`(SnapshotID, TableID, RowID) → BlockID, ItemOrdinal`
+映射由该页格式提供；Eager 模式在 Open 时把整行索引解码为紧凑 SoA shard，Lazy 模式只加载
+Fence 并按需读页。每个 `RowIndexPage` **按表切页**（一个页绝不跨表 run），使页内
+`TableID` 唯一、`MinRowID`/`MaxRowID` 属于该表，Fence 成为 `(TableID, RowID)` 的单调
+二叉索引；这是 Lazy 二叉搜索正确的前提（跨表页会让全局 `MinRowID` 随页非单调）。
 
 **M0 决议（R14）**：BlockHeader 保持 v1 的 64 字节布局（含 KeyEpoch@56），**不增加
 disk RowID envelope 字段**；批量 planner 的 MinRowID/MaxRowIDExclusive 由内存索引在
@@ -174,9 +179,11 @@ IndexTxnFooter (80B)
 - `RowIndexPageCount`（N）存于 `IndexTxnHeader` offset 12..16 的 reserved 字；页数
   必须 ≤ `RowEntryCount`（每页 ≥1 条）。offset 76..80 的 reserved 字留给加密 store 的
   `KeyEpoch`，二者互不冲突（与 ADR-005 落盘决策一致）。
-- 每个 `RowIndexPage` 是 `(TableID, RowID)` 升序的 4096 条记录（末页可少），页头为
-  冻结 `RowIndexPageHeader`，五条流（TableID run / RowID 非负 uvarint delta /
-  BlockID run / ItemOrdinal zigzag delta / ChangeType 2bit），页 CRC 覆盖流区。
+- 每个 `RowIndexPage` 是 `(TableID, RowID)` 升序的 ≤4096 条记录，且**按表切页**（一个页
+  绝不跨表 run；末页可少、表边界可产生较小页）。页头为冻结 `RowIndexPageHeader`，五条流
+  （TableID run / RowID 非负 uvarint delta / BlockID run / ItemOrdinal zigzag delta /
+  ChangeType 2bit），页 CRC 覆盖流区。按表切页使 Fence 成为正确的 `(TableID, RowID)`
+  单调二叉索引（Lazy 前提，见 ADR-006）。
 - 每个 `RowIndexFenceEntry`（52B）带 `SnapshotID/TableID/Min/MaxRowID/StoredOffset
   (正文内)/StoredSize(压缩+tag)/RawSize/EntryCount/PageCRC32C`；Fence 明文，按
   `StoredOffset` 递增排列，用于按 RowID 二分定位页后 OPEN+decompress+decode。

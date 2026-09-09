@@ -35,7 +35,7 @@ type batchReq struct {
 // Blocks and RawBytes quantify the aggregation (Blocks <= len(ids); with
 // clustered ids, Blocks << len(ids) and the same payload is decompressed
 // once per batch instead of once per row).
-func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table TableID, ids []RowID) ([]Row, error) {
+func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string, ids []RowID) ([]Row, error) {
 	st, err := s.captureState()
 	if err != nil {
 		return nil, err
@@ -43,6 +43,10 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table TableI
 	view := st.view
 	if view.Snapshot(snapshot) == nil {
 		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
+	}
+	tid, ok := st.schemas.tableIDByName(snapshot, table)
+	if !ok {
+		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
 	}
 	if len(ids) == 0 {
 		return nil, nil
@@ -54,12 +58,12 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table TableI
 	groups := make(map[uint64][]batchReq, 8)
 	blockIDs := make([]uint64, 0, 8)
 	for i, id := range ids {
-		loc := view.ResolveRow(snapshot, table, id)
+		loc := view.ResolveRow(snapshot, uint32(tid), id)
 		if loc == nil {
-			return nil, fmt.Errorf("%w: (table %d, row %d) in snapshot %d", ErrNotFound, table, id, snapshot)
+			return nil, fmt.Errorf("%w: (table %q, row %d) in snapshot %d", ErrNotFound, table, id, snapshot)
 		}
 		if loc.ChangeType == fileformat.ChangeDelete {
-			return nil, fmt.Errorf("%w: (table %d, row %d) deleted in snapshot %d", ErrNotFound, table, id, snapshot)
+			return nil, fmt.Errorf("%w: (table %q, row %d) deleted in snapshot %d", ErrNotFound, table, id, snapshot)
 		}
 		reqs := groups[loc.BlockID]
 		if len(reqs) == 0 {

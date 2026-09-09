@@ -1,6 +1,7 @@
 package rowpack
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"flag"
@@ -11,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rowpack/rowpack/internal/block"
+	"github.com/rowpack/rowpack/internal/codec"
+	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/stretchr/testify/require"
 )
 
@@ -155,4 +159,116 @@ func TestGoldenStoreSamples(t *testing.T) {
 	require.Equal(t, byte(255), b[255])
 	// CreatedAt from the golden (deterministic override).
 	require.True(t, snaps[0].CreatedAt.Equal(time.Unix(0, 1757400000000000000)), "createdAt = %v", snaps[0].CreatedAt)
+}
+
+// ---- 从 internal/block、internal/fileformat 合并过来的 golden 生成器 ----
+// 它们原来分别是 internal/block/golden_test.go 与 internal/fileformat/golden_test.go，
+// 与上面的 store golden 共用同一个 -update-golden flag 和 goldenPath，
+// 因此 `make golden` 一条命令即可再生全部样本。
+
+// goldenCaptureSink captures flushed blocks from a block builder.
+type goldenCaptureSink struct {
+	blocks []*block.FlushedBlock
+}
+
+func (s *goldenCaptureSink) flush(fb *block.FlushedBlock) error {
+	s.blocks = append(s.blocks, fb)
+	return nil
+}
+
+// TestGoldenRowsPayloadAllTypes locks the deterministic uncompressed Rows
+// payload produced by the codec and block builder for a fixed all-types
+// schema and a fixed row set. Any change to TypedTuple or the rows payload
+// layout breaks this test. (原 internal/block/golden_test.go)
+func TestGoldenRowsPayloadAllTypes(t *testing.T) {
+	schema := &codec.Schema{TableID: 1, Version: 1, Name: "golden", Columns: []codec.Column{
+		{Name: "b", Type: codec.TypeBool},
+		{Name: "i64", Type: codec.TypeInt64},
+		{Name: "u32", Type: codec.TypeUint32},
+		{Name: "f64", Type: codec.TypeFloat64},
+		{Name: "s", Type: codec.TypeString},
+		{Name: "by", Type: codec.TypeBytes},
+		{Name: "d", Type: codec.TypeDate},
+		{Name: "t", Type: codec.TypeTime},
+		{Name: "dt", Type: codec.TypeDateTime},
+		{Name: "dec", Type: codec.TypeDecimal, Scale: 4},
+		{Name: "maybe", Type: codec.TypeString, Nullable: true},
+	}}
+	row, err := codec.Encode(schema, Row{
+		Bool(true),
+		Int64(-987654321012345),
+		Uint32(4294967295),
+		Float64(3.141592653589793),
+		String("黄金行 Δemo😀"),
+		Bytes([]byte{0x00, 0x01, 0xFE, 0xFF}),
+		DateValue(19723),
+		TimeValue(TimeOfDay(43200000000001)),
+		DateTime(time.Unix(0, 1700000000123456789).UTC()),
+		DecimalValue(Decimal{Unscaled: bigI(-1234567890123), Scale: 4}),
+		Null(),
+	}, codec.DefaultLimits())
+	require.NoError(t, err)
+
+	var sink goldenCaptureSink
+	b := block.NewRowsBlockBuilder(1, 1, 1<<20, fileformat.CompressionNone, 0, block.DefaultLimits(), sink.flush)
+	for i := 0; i < 3; i++ {
+		require.NoError(t, b.Add(uint64(100+i), 1, fileformat.ChangeInsert, row))
+	}
+	require.NoError(t, b.Flush())
+	require.Len(t, sink.blocks, 1, "got %d blocks, want 1", len(sink.blocks))
+	payload := sink.blocks[0].Stored // None compression: stored == raw
+
+	path := goldenPath("rows-payload-all-types.bin")
+	if *updateGolden {
+		require.NoError(t, os.WriteFile(path, payload, 0o644))
+		return
+	}
+	got, err := os.ReadFile(path)
+	require.NoError(t, err, "read golden %s: %v (regenerate with make golden)", path, err)
+	if !bytes.Equal(got, payload) {
+		require.Fail(t, "golden %s differs from implementation (regenerate with make golden)", path)
+	}
+	// The golden must parse back.
+	p, err := block.ParseRowsPayload(payload, 3)
+	require.NoError(t, err)
+	require.Len(t, p.Entries, 3, "golden payload has %d entries, want 3", len(p.Entries))
+}
+
+// fixedStoreUUID is the deterministic UUID used by the empty-store golden
+// generator so byte comparison is stable across runs.
+var fixedStoreUUID = [16]byte{0x52, 0x4f, 0x57, 0x50, 0x41, 0x43, 0x4b, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+
+// buildEmptyDataHeader renders the canonical empty-store .rpk header.
+func buildEmptyDataHeader() []byte {
+	var h fileformat.DataFileHeader
+	h.FileHeader = fileformat.FileHeader{
+		StoreUUID:          fixedStoreUUID,
+		CreatedUnixNano:    1757400000000000000,
+		RequiredFeatures:   fileformat.RequiredFeaturesV1,
+		OptionalFeatures:   0,
+		DefaultBlockSize:   fileformat.DefaultBlockSize,
+		DefaultCompression: fileformat.CompressionZstd,
+		DefaultRowEncoding: fileformat.RowEncodingTypedTuple,
+		Flags:              0,
+	}
+	buf := make([]byte, fileformat.DataFileHeaderSize)
+	_ = h.MarshalTo(buf)
+	return buf
+}
+
+// TestGoldenEmptyStore locks the single 128-byte "empty store" golden file.
+// (原 internal/fileformat/golden_test.go)
+func TestGoldenEmptyStore(t *testing.T) {
+	data := buildEmptyDataHeader()
+	path := goldenPath("empty-store.rpk")
+	if *updateGolden {
+		require.NoError(t, os.WriteFile(path, data, 0o644))
+		return
+	}
+	got, err := os.ReadFile(path)
+	require.NoError(t, err, "read golden %s: %v (regenerate with make golden)", path, err)
+	if !bytes.Equal(got, data) {
+		require.Fail(t, "golden %s differs from implementation (regenerate with make golden)", path)
+	}
+	require.Equal(t, fileformat.DataFileHeaderSize, len(got), "golden size = %d, want %d", len(got), fileformat.DataFileHeaderSize)
 }

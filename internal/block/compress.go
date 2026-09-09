@@ -1,7 +1,6 @@
 package block
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 
@@ -163,5 +162,3 @@ func decompressZstd(dst, src []byte, maxOut uint32) ([]byte, error) {
 	}
 	return out, nil
 }
-
-var errShortBlock = errors.New("rowpack: block payload shorter than declared")

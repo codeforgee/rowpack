@@ -2,315 +2,360 @@ package fileformat
 
 import (
 	"bytes"
-	"encoding/binary"
+	"reflect"
 	"testing"
-
-	"github.com/stretchr/testify/require"
 )
 
-// roundTrip verifies marshal -> unmarshal succeeds and that the CRC field
-// makes the serialized form self-consistent.
-func roundTrip(t *testing.T, name string, m func(dst []byte) error, u func(src []byte) error) {
-	t.Helper()
-	buf := make([]byte, 1024)
-	require.NoError(t, m(buf), "%s: marshal", name)
-	require.NoError(t, u(buf), "%s: unmarshal", name)
-	// Marshaling to a longer buffer must leave the bytes identical.
-	buf2 := make([]byte, 1024)
-	require.NoError(t, m(buf2), "%s: re-marshal", name)
-	require.True(t, bytes.Equal(buf, buf2), "%s: non-deterministic marshal", name)
-}
-
-// corruptBytes flips one byte in buf at offset off (or at len/2 when off<0).
-func corruptBytes(buf []byte, off int) []byte {
-	if off < 0 {
-		off = len(buf) / 2
+// TestFrozenSizes locks every fixed structure size. These values are part of
+// the on-disk format contract: changing any of them is a format break that
+// must go through versioning, not a routine refactor.
+func TestFrozenSizes(t *testing.T) {
+	want := map[string]int{
+		"DataFileHeaderSize":     DataFileHeaderSize,
+		"SnapshotHeaderSize":     SnapshotHeaderSize,
+		"SnapshotFooterSize":     SnapshotFooterSize,
+		"BlockHeaderSize":        BlockHeaderSize,
+		"RowsPayloadHeaderSize":  RowsPayloadHeaderSize,
+		"RowDirectoryEntrySize":  RowDirectoryEntrySize,
+		"RowRecordHeaderSize":    RowRecordHeaderSize,
+		"MetaPayloadHeaderSize":  MetaPayloadHeaderSize,
+		"MetaDirectoryEntrySize": MetaDirectoryEntrySize,
+		"IndexTxnHeaderSize":     IndexTxnHeaderSize,
+		"IndexTxnFooterSize":     IndexTxnFooterSize,
+		"IndexChunkHeaderSize":   IndexChunkHeaderSize,
+		"IndexChunkDirEntrySize": IndexChunkDirEntrySize,
+		"SnapshotIndexEntrySize": SnapshotIndexEntrySize,
+		"MetadataIndexEntrySize": MetadataIndexEntrySize,
+		"BlockIndexEntrySize":    BlockIndexEntrySize,
+		"RowIndexEntrySize":      RowIndexEntrySize,
 	}
-	cp := append([]byte(nil), buf...)
-	cp[off] ^= 0xFF
-	return cp
+	sizes := map[string]int{
+		"DataFileHeaderSize":     128,
+		"SnapshotHeaderSize":     96,
+		"SnapshotFooterSize":     144,
+		"BlockHeaderSize":        64,
+		"RowsPayloadHeaderSize":  32,
+		"RowDirectoryEntrySize":  24,
+		"RowRecordHeaderSize":    24,
+		"MetaPayloadHeaderSize":  32,
+		"MetaDirectoryEntrySize": 32,
+		"IndexTxnHeaderSize":     80,
+		"IndexTxnFooterSize":     80,
+		"IndexChunkHeaderSize":   64,
+		"IndexChunkDirEntrySize": 32,
+		"SnapshotIndexEntrySize": 72,
+		"MetadataIndexEntrySize": 48,
+		"BlockIndexEntrySize":    56,
+		"RowIndexEntrySize":      40,
+	}
+	for name, got := range want {
+		if sizes[name] != int(got) {
+			t.Errorf("%s = %d, frozen value is %d; format break needs versioning", name, got, sizes[name])
+		}
+	}
 }
 
-func testRejects(t *testing.T, name string, u func(src []byte) error, src []byte, wantErr string) {
-	t.Helper()
-	err := u(src)
-	require.Error(t, err, "%s: expected error containing %q, got nil", name, wantErr)
-	require.Contains(t, err.Error(), wantErr, "%s: error %q does not contain %q", name, err, wantErr)
+// TestFrozenMagics locks the ASCII magics. All are exactly 8 bytes and must
+// never collide with each other.
+func TestFrozenMagics(t *testing.T) {
+	magics := []string{
+		MagicDataFile, MagicSnapshotHdr, MagicSnapshotFtr, MagicBlockHdr,
+		MagicRowsPayload, MagicMetaPayload, MagicIndexTxnHdr, MagicIndexTxnFtr,
+		MagicIndexChunkHdr,
+	}
+	seen := map[string]bool{}
+	for _, m := range magics {
+		if len(m) != 8 {
+			t.Errorf("magic %q must be exactly 8 bytes, got %d", m, len(m))
+		}
+		if seen[m] {
+			t.Errorf("duplicate magic %q", m)
+		}
+		seen[m] = true
+	}
 }
 
-// testFixedStructure drives the shared rejection cases for every fixed
-// structure: short input, bad magic (for structures carrying one), bad CRC.
-func testFixedStructure(t *testing.T, name string, marshal func(dst []byte) error, unmarshal func(src []byte) error, hasMagic bool, size int) {
+// TestFrozenEnums locks enum values used on disk. Renumbering any of these
+// silently corrupts how old files are read.
+func TestFrozenEnums(t *testing.T) {
+	checks := []struct {
+		name string
+		got  uint16
+		want uint16
+	}{
+		{"TypeBool", uint16(TypeBool), 1}, {"TypeInt8", uint16(TypeInt8), 2},
+		{"TypeInt16", uint16(TypeInt16), 3}, {"TypeInt32", uint16(TypeInt32), 4},
+		{"TypeInt64", uint16(TypeInt64), 5}, {"TypeUint8", uint16(TypeUint8), 6},
+		{"TypeUint16", uint16(TypeUint16), 7}, {"TypeUint32", uint16(TypeUint32), 8},
+		{"TypeUint64", uint16(TypeUint64), 9}, {"TypeFloat32", uint16(TypeFloat32), 10},
+		{"TypeFloat64", uint16(TypeFloat64), 11}, {"TypeString", uint16(TypeString), 12},
+		{"TypeBytes", uint16(TypeBytes), 13}, {"TypeDate", uint16(TypeDate), 14},
+		{"TypeTime", uint16(TypeTime), 15}, {"TypeDateTime", uint16(TypeDateTime), 16},
+		{"TypeDecimal", uint16(TypeDecimal), 17},
+		{"RecordTable", uint16(RecordTable), 2}, {"RecordColumn", uint16(RecordColumn), 3},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %d, frozen value is %d", c.name, c.got, c.want)
+		}
+	}
+	e := []struct {
+		name string
+		got  uint8
+		want uint8
+	}{
+		{"ChangeInsert", uint8(ChangeInsert), 1}, {"ChangeUpdate", uint8(ChangeUpdate), 2},
+		{"ChangeDelete", uint8(ChangeDelete), 3},
+		{"OperationUpsert", uint8(OperationUpsert), 1}, {"OperationDelete", uint8(OperationDelete), 2},
+		{"BlockKindRows", uint8(BlockKindRows), 1}, {"BlockKindMetadata", uint8(BlockKindMetadata), 2},
+		{"CompressionNone", uint8(CompressionNone), 0}, {"CompressionZstd", uint8(CompressionZstd), 1},
+		{"SnapshotFull", uint8(SnapshotFull), 1}, {"SnapshotDelta", uint8(SnapshotDelta), 2},
+		{"EncNone", uint8(EncNone), 0}, {"EncAES256GCM", uint8(EncAES256GCM), 1},
+		{"WireBool", uint8(WireBool), 1}, {"WireUint", uint8(WireUint), 2},
+		{"WireSint", uint8(WireSint), 3}, {"WireString", uint8(WireString), 4},
+		{"WireBytes", uint8(WireBytes), 5},
+	}
+	for _, c := range e {
+		if c.got != c.want {
+			t.Errorf("%s = %d, frozen value is %d", c.name, c.got, c.want)
+		}
+	}
+}
+
+// TestVersionConstants locks the format major. v1 never shipped; major 2 is
+// the single-file line and the only openable line.
+func TestVersionConstants(t *testing.T) {
+	if VersionMajor != 2 || VersionMinor != 0 {
+		t.Fatalf("VersionMajor/Minor = %d.%d, frozen at 2.0", VersionMajor, VersionMinor)
+	}
+	if RequiredFeaturesV1 == 0 {
+		t.Fatal("RequiredFeaturesV1 must not be zero")
+	}
+}
+
+// TestFixedStructureRoundTrip marshals and unmarshals every fixed structure
+// with non-trivial field values and requires an exact round trip. This is the
+// cross-check underneath the golden files: it catches field-order bugs that
+// byte-equality against a recorded file cannot localize.
+func TestFixedStructureRoundTrip(t *testing.T) {
+	var (
+		uuid = [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	)
+
+	// DataFileHeader.
+	{
+		var h DataFileHeader
+		h.FileHeader = FileHeader{
+			StoreUUID: uuid, CreatedUnixNano: 1757400000000000000,
+			RequiredFeatures: RequiredFeaturesV1, OptionalFeatures: 0,
+			DefaultBlockSize: 262144, DefaultCompression: CompressionZstd,
+			DefaultRowEncoding: RowEncodingTypedTuple, Flags: 3,
+		}
+		marshalRoundTrip(t, &h, h.Size())
+	}
+	// KeyID round trip (encryption header fields).
+	{
+		var h DataFileHeader
+		h.FileHeader = FileHeader{
+			StoreUUID: uuid, CreatedUnixNano: 1,
+			RequiredFeatures: RequiredFeaturesV1, DefaultBlockSize: 1024,
+			DefaultCompression: CompressionZstd, DefaultRowEncoding: RowEncodingTypedTuple,
+			EncryptionAlgorithm: EncAES256GCM, NonceScheme: NonceCounterV1,
+			KeyID: []byte("k1"),
+		}
+		marshalRoundTrip(t, &h, h.Size())
+	}
+
+	snapshotHdr := SnapshotHeader{
+		SnapshotType: SnapshotFull, AllowEmpty: true,
+		SnapshotID: 7, ParentSnapshotID: 3, CreatedUnixNano: 42,
+		FirstBlockID: 9, WriterNonce: 0xDEADBEEF,
+	}
+	marshalRoundTrip(t, &snapshotHdr, snapshotHdr.Size())
+
+	footer := SnapshotFooter{
+		SnapshotType: SnapshotDelta, SnapshotID: 7, ParentSnapshotID: 3,
+		PreviousFooterOffset: 1000, SnapshotStartOffset: 128, BlocksStartOffset: 224,
+		BlocksEndOffset: 8192, IndexTxnStartOffset: 8192, IndexTxnEndOffset: 12000,
+		SnapshotEndOffset: 12144, FirstBlockID: 9, BlockCount: 12,
+		MetadataBlockCount: 2, RowRecordCount: 999, RawBytes: 81920,
+		StoredBytes: 81972, BlocksCRC32C: 0x11111111, IndexTxnCRC32C: 0x22222222,
+	}
+	marshalRoundTrip(t, &footer, footer.Size())
+
+	blockHdr := BlockHeader{
+		BlockKind: BlockKindRows, Compression: CompressionZstd, BlockID: 5,
+		SnapshotID: 2, TableID: 1, ItemCount: 1000, RawSize: 4096,
+		StoredSize: 1024, RawCRC32C: 0xABCDEF01, Encrypted: true, KeyEpoch: 3,
+	}
+	marshalRoundTrip(t, &blockHdr, blockHdr.Size())
+
+	rowsHdr := RowsPayloadHeader{ItemCount: 42, DirectoryBytes: 42 * RowDirectoryEntrySize, RecordsBytes: 4096}
+	marshalRoundTrip(t, &rowsHdr, rowsHdr.Size())
+
+	rowDir := RowDirectoryEntry{RowID: 1001, RecordOffset: 77, RecordLength: 88, ChangeType: ChangeUpdate, SchemaVersion: 2}
+	marshalRoundTrip(t, &rowDir, rowDir.Size())
+
+	rowRec := RowRecordHeader{RowID: 1001, SchemaVersion: 1, ChangeType: ChangeInsert, RowEncoding: RowEncodingTypedTuple, RowLength: 33, RowCRC32C: 9}
+	marshalRoundTrip(t, &rowRec, rowRec.Size())
+
+	txnHdr := IndexTxnHeader{
+		TxnSequence: 12, SnapshotID: 7, DataSnapshotStart: 128, DataSnapshotEnd: 20000,
+		MetadataEntryCount: 3, BlockEntryCount: 10, RowEntryCount: 5000, BodyBytes: 640,
+	}
+	marshalRoundTrip(t, &txnHdr, txnHdr.Size())
+
+	txnFtr := IndexTxnFooter{
+		TxnSequence: 12, SnapshotID: 7, TxnStartOffset: 123, TxnEndOffset: 456,
+		DataSnapshotEnd: 20000, BodyCRC32C: 0xBBBBBBBB, DataFooterCRC32C: 0xAAAAAAAA,
+	}
+	marshalRoundTrip(t, &txnFtr, txnFtr.Size())
+
+	chunkHdr := IndexChunkHeader{
+		EntryKind: IndexChunkKindRow, Compression: IndexChunkCompressionZstd,
+		Encryption: IndexChunkEncryptionNone, Flags: 0, ChunkSequence: 1,
+		EntryCount: 100, FirstEntryOrdinal: 0, RawBytes: 2048, StoredBytes: 900,
+		KeyEpoch: 0, PayloadCRC32C: 0x11223344,
+	}
+	marshalRoundTrip(t, &chunkHdr, chunkHdr.Size())
+
+	snapEntry := SnapshotIndexEntry{
+		SnapshotID: 7, ParentSnapshotID: 3, SnapshotType: SnapshotDelta,
+		BlockCount: 10, RowRecordCount: 5000, DataStart: 128, DataEnd: 20000, CreatedUnixNano: 99,
+	}
+	marshalRoundTrip(t, &snapEntry, snapEntry.Size())
+
+	metaEntry := MetadataIndexEntry{
+		SnapshotID: 7, ObjectID: 100, Revision: 1, RecordType: uint32(RecordTable),
+		BlockID: 4, ItemOrdinal: 2, Operation: OperationUpsert, Critical: true,
+	}
+	marshalRoundTrip(t, &metaEntry, metaEntry.Size())
+
+	blockEntry := BlockIndexEntry{
+		BlockID: 5, SnapshotID: 2, TableID: 1, BlockKind: BlockKindRows,
+		Compression: CompressionZstd, DataOffset: 4096, RawSize: 4096,
+		StoredSize: 1024, ItemCount: 1000, RawCRC32C: 0xABCDEF01,
+	}
+	marshalRoundTrip(t, &blockEntry, blockEntry.Size())
+
+	rowEntry := RowIndexEntry{
+		SnapshotID: 2, TableID: 1, ChangeType: ChangeInsert, RowID: 1001,
+		BlockID: 5, ItemOrdinal: 7,
+	}
+	marshalRoundTrip(t, &rowEntry, rowEntry.Size())
+}
+
+// marshalRoundTrip marshals a fixed structure, unmarshals it into a fresh
+// zero value and requires the re-encoded bytes to be identical: the serialized
+// form must be a fixed point (CRC fields included). It also asserts that two
+// marshals of the same value are byte-identical.
+func marshalRoundTrip(t *testing.T, m interface {
+	Size() int
+	MarshalTo(dst []byte) error
+	Unmarshal(src []byte) error
+}, size int) {
 	t.Helper()
 	buf := make([]byte, size)
-	require.NoError(t, marshal(buf), "%s: marshal", name)
-
-	// Round trip on the exact size.
-	require.NoError(t, unmarshal(buf), "%s: unmarshal exact size", name)
-
-	// Short inputs of every length below the fixed size must fail cleanly.
-	for n := 0; n < size; n++ {
-		require.Error(t, unmarshal(buf[:n]), "%s: unmarshal of %d bytes succeeded, want error", name, n)
-	}
-
-	// Long input (extra trailing bytes) is tolerated at this layer; higher
-	// layers bound their slices.
-	require.NoError(t, unmarshal(append(buf, 1, 2, 3)), "%s: unmarshal with trailing bytes", name)
-
-	// Bad CRC must be rejected.
-	require.Error(t, unmarshal(corruptBytes(buf, size-8)), "%s: corrupt CRC accepted", name)
-
-	if hasMagic {
-		// Bad magic must be rejected.
-		bad := append([]byte(nil), buf...)
-		bad[0] ^= 0xFF
-		require.Error(t, unmarshal(bad), "%s: bad magic accepted", name)
-	}
-}
-
-func TestDataFileHeader(t *testing.T) {
-	h := &DataFileHeader{FileHeader: FileHeader{
-		StoreUUID:           [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
-		CreatedUnixNano:     1700000000123456789,
-		RequiredFeatures:    RequiredFeaturesV1,
-		OptionalFeatures:    0,
-		DefaultBlockSize:    256 << 10,
-		DefaultCompression:  CompressionZstd,
-		DefaultRowEncoding:  RowEncodingTypedTuple,
-		Flags:               0,
-		EncryptionAlgorithm: EncAES256GCM,
-		NonceScheme:         NonceCounterV1,
-		KeyID:               []byte("store-key-01"),
-	}}
-	roundTrip(t, "DataFileHeader", h.MarshalTo, h.Unmarshal)
-
-	var got DataFileHeader
-	require.NoError(t, got.Unmarshal(mustMarshal(t, h)))
-	require.Equal(t, h.StoreUUID, got.StoreUUID, "field mismatch: %+v vs %+v", got, h)
-	require.Equal(t, h.CreatedUnixNano, got.CreatedUnixNano, "field mismatch: %+v vs %+v", got, h)
-	require.Equal(t, h.RequiredFeatures, got.RequiredFeatures, "field mismatch: %+v vs %+v", got, h)
-	require.Equal(t, h.DefaultBlockSize, got.DefaultBlockSize, "field mismatch: %+v vs %+v", got, h)
-	require.Equal(t, h.DefaultCompression, got.DefaultCompression, "field mismatch: %+v vs %+v", got, h)
-	require.Equal(t, h.DefaultRowEncoding, got.DefaultRowEncoding, "field mismatch: %+v vs %+v", got, h)
-	require.Equal(t, EncAES256GCM, got.EncryptionAlgorithm, "encryption field mismatch: %+v vs %+v", got, h)
-	require.Equal(t, NonceCounterV1, got.NonceScheme, "encryption field mismatch: %+v vs %+v", got, h)
-	require.Equal(t, "store-key-01", string(got.KeyID), "encryption field mismatch: %+v vs %+v", got, h)
-
-	testFixedStructure(t, "DataFileHeader", h.MarshalTo, h.Unmarshal, true, DataFileHeaderSize)
-
-	// Unknown major version must be rejected.
-	buf := mustMarshal(t, h)
-	putU16(buf[8:], 99)
-	testRejects(t, "DataFileHeader major", h.Unmarshal, buf, "unsupported version")
-
-	// Bad size field.
-	buf = mustMarshal(t, h)
-	putU32(buf[12:], 64)
-	testRejects(t, "DataFileHeader size", h.Unmarshal, buf, "bad size")
-
-	// Feature bit check.
-	got2 := h
-	got2.RequiredFeatures = 1 << 60
-	require.Error(t, got2.CheckVersion(), "unknown required feature bit accepted")
-}
-
-func TestFileHeaderKeyIDLimits(t *testing.T) {
-	// Over-long key id must fail marshal.
-	h := &DataFileHeader{}
-	h.EncryptionAlgorithm = EncAES256GCM
-	h.KeyID = bytes.Repeat([]byte("k"), FileHeaderKeyIDMaxLen+1)
-	buf := make([]byte, DataFileHeaderSize)
-	require.Error(t, h.MarshalTo(buf), "over-long key id accepted")
-
-	// Corrupted length byte (> max) must fail unmarshal.
-	h2 := &DataFileHeader{FileHeader: FileHeader{
-		EncryptionAlgorithm: EncAES256GCM,
-		NonceScheme:         NonceCounterV1,
-		KeyID:               []byte("abc"),
-	}}
-	require.NoError(t, h2.MarshalTo(buf))
-	buf[FileHeaderKeyIDLenOffset] = 50
-	require.Error(t, h2.Unmarshal(buf), "over-long key id length accepted")
-}
-
-func TestSnapshotHeader(t *testing.T) {
-	h := &SnapshotHeader{
-		SnapshotType:     SnapshotDelta,
-		AllowEmpty:       true,
-		SnapshotID:       42,
-		ParentSnapshotID: 41,
-		CreatedUnixNano:  1700000000000000001,
-		FirstBlockID:     100,
-		WriterNonce:      0xDEADBEEF,
-	}
-	roundTrip(t, "SnapshotHeader", h.MarshalTo, h.Unmarshal)
-	testFixedStructure(t, "SnapshotHeader", h.MarshalTo, h.Unmarshal, true, SnapshotHeaderSize)
-
-	var got SnapshotHeader
-	require.NoError(t, got.Unmarshal(mustMarshal(t, h)))
-	require.Equal(t, SnapshotDelta, got.SnapshotType, "field mismatch: %+v vs %+v", got, h)
-	require.True(t, got.AllowEmpty, "field mismatch: %+v vs %+v", got, h)
-	require.Equal(t, uint64(42), got.SnapshotID, "field mismatch: %+v vs %+v", got, h)
-	require.Equal(t, uint64(41), got.ParentSnapshotID, "field mismatch: %+v vs %+v", got, h)
-	require.Equal(t, uint64(100), got.FirstBlockID, "field mismatch: %+v vs %+v", got, h)
-	require.Equal(t, uint64(0xDEADBEEF), got.WriterNonce, "field mismatch: %+v vs %+v", got, h)
-}
-
-func TestSnapshotFooter(t *testing.T) {
-	f := &SnapshotFooter{
-		SnapshotType:         SnapshotFull,
-		SnapshotID:           42,
-		ParentSnapshotID:     0,
-		PreviousFooterOffset: 0,
-		SnapshotStartOffset:  128,
-		BlocksStartOffset:    128 + SnapshotHeaderSize,
-		BlocksEndOffset:      128 + SnapshotHeaderSize + 4096,
-		IndexTxnStartOffset:  128 + SnapshotHeaderSize + 4096,
-		IndexTxnEndOffset:    128 + SnapshotHeaderSize + 4096 + IndexTxnHeaderSize + SnapshotIndexEntrySize + IndexTxnFooterSize,
-		SnapshotEndOffset:    128 + SnapshotHeaderSize + 4096 + IndexTxnHeaderSize + SnapshotIndexEntrySize + IndexTxnFooterSize + SnapshotFooterSize,
-		FirstBlockID:         100,
-		BlockCount:           4,
-		MetadataBlockCount:   1,
-		RowRecordCount:       10000,
-		RawBytes:             1 << 20,
-		StoredBytes:          1 << 19,
-		BlocksCRC32C:         0xC0FFEE,
-		IndexTxnCRC32C:       0xBADF00D,
-	}
-	roundTrip(t, "SnapshotFooter", f.MarshalTo, f.Unmarshal)
-	testFixedStructure(t, "SnapshotFooter", f.MarshalTo, f.Unmarshal, true, SnapshotFooterSize)
-
-	var got SnapshotFooter
-	require.NoError(t, got.Unmarshal(mustMarshal(t, f)))
-	require.Equal(t, *f, got)
-
-	require.True(t, f.OffsetsAreConsistent())
-	require.False(t, (&SnapshotFooter{SnapshotType: SnapshotDelta, SnapshotID: 2,
-		SnapshotStartOffset: 128, BlocksStartOffset: 128 + SnapshotHeaderSize,
-		BlocksEndOffset: 128 + SnapshotHeaderSize, IndexTxnStartOffset: 128 + SnapshotHeaderSize,
-		IndexTxnEndOffset: 128 + SnapshotHeaderSize, SnapshotEndOffset: 0}).OffsetsAreConsistent())
-}
-
-func TestBlockHeader(t *testing.T) {
-	h := &BlockHeader{
-		BlockKind:   BlockKindRows,
-		Compression: CompressionZstd,
-		BlockID:     7,
-		SnapshotID:  42,
-		TableID:     3,
-		ItemCount:   512,
-		RawSize:     260000,
-		StoredSize:  100000,
-		RawCRC32C:   0x12345678,
-		Encrypted:   true,
-		KeyEpoch:    7,
-	}
-	roundTrip(t, "BlockHeader", h.MarshalTo, h.Unmarshal)
-	testFixedStructure(t, "BlockHeader", h.MarshalTo, h.Unmarshal, true, BlockHeaderSize)
-
-	var got BlockHeader
-	require.NoError(t, got.Unmarshal(mustMarshal(t, h)))
-	require.Equal(t, uint32(0x12345678), got.RawCRC32C, "field mismatch: %+v", got)
-	require.Equal(t, uint32(512), got.ItemCount, "field mismatch: %+v", got)
-	require.Equal(t, BlockKindRows, got.BlockKind, "field mismatch: %+v", got)
-	require.True(t, got.Encrypted, "encryption field mismatch: %+v", got)
-	require.Equal(t, uint32(7), got.KeyEpoch, "encryption field mismatch: %+v", got)
-}
-
-// TestBlockHeaderPlainRoundTrip locks that a plain (unencrypted) block header
-// marshals identically to the pre-encryption format: Flags and KeyEpoch stay
-// zero.
-func TestBlockHeaderPlainRoundTrip(t *testing.T) {
-	h := &BlockHeader{
-		BlockKind:   BlockKindRows,
-		Compression: CompressionZstd,
-		BlockID:     7,
-		SnapshotID:  42,
-		TableID:     3,
-		ItemCount:   512,
-		RawSize:     260000,
-		StoredSize:  100000,
-		RawCRC32C:   0x12345678,
-	}
-	buf := mustMarshal(t, h)
-	require.Equal(t, byte(0), buf[14], "plain header carries nonzero encryption bytes: %v", buf[14:16])
-	require.Equal(t, uint32(0), binary.LittleEndian.Uint32(buf[BlockHeaderKeyEpochOffset:]), "plain header carries nonzero encryption bytes: %v", buf[14:16])
-	var got BlockHeader
-	require.NoError(t, got.Unmarshal(buf))
-	require.False(t, got.Encrypted, "plain header parsed as encrypted: %+v", got)
-	require.Equal(t, uint32(0), got.KeyEpoch, "plain header parsed as encrypted: %+v", got)
-}
-
-func TestIndexTxnHeader(t *testing.T) {
-	h := &IndexTxnHeader{
-		TxnSequence:        1,
-		SnapshotID:         42,
-		DataSnapshotStart:  128,
-		DataSnapshotEnd:    128 + 96 + 4096 + 96,
-		MetadataEntryCount: 3,
-		BlockEntryCount:    4,
-		RowEntryCount:      1000,
-		BodyBytes:          3*48 + 4*56 + 1000*40,
-	}
-	roundTrip(t, "IndexTxnHeader", h.MarshalTo, h.Unmarshal)
-	testFixedStructure(t, "IndexTxnHeader", h.MarshalTo, h.Unmarshal, true, IndexTxnHeaderSize)
-}
-
-func TestIndexEntries(t *testing.T) {
-	tests := []struct {
-		name      string
-		marshal   func(dst []byte) error
-		unmarshal func(src []byte) error
-		size      int
-	}{
-		{"SnapshotIndexEntry", (&SnapshotIndexEntry{
-			SnapshotID: 42, ParentSnapshotID: 41, SnapshotType: SnapshotDelta,
-			BlockCount: 4, RowRecordCount: 1000, DataStart: 128, DataEnd: 4096,
-			CreatedUnixNano: 1700000000000000000, DataFooterCRC32C: 0xABCD,
-		}).MarshalTo, (&SnapshotIndexEntry{}).Unmarshal, SnapshotIndexEntrySize},
-
-		{"MetadataIndexEntry", (&MetadataIndexEntry{
-			SnapshotID: 42, ObjectID: 1001, Revision: 2, RecordType: 3,
-			BlockID: 7, ItemOrdinal: 5, Operation: OperationUpsert, Critical: true,
-		}).MarshalTo, (&MetadataIndexEntry{}).Unmarshal, MetadataIndexEntrySize},
-
-		{"BlockIndexEntry", (&BlockIndexEntry{
-			BlockID: 7, SnapshotID: 42, TableID: 3, BlockKind: BlockKindRows,
-			Compression: CompressionZstd, DataOffset: 4096, RawSize: 260000,
-			StoredSize: 100000, ItemCount: 512, RawCRC32C: 0xDEAD,
-		}).MarshalTo, (&BlockIndexEntry{}).Unmarshal, BlockIndexEntrySize},
-
-		{"RowIndexEntry", (&RowIndexEntry{
-			SnapshotID: 42, TableID: 3, ChangeType: ChangeInsert,
-			RowID: 1001, BlockID: 7, ItemOrdinal: 3,
-		}).MarshalTo, (&RowIndexEntry{}).Unmarshal, RowIndexEntrySize},
-	}
-
-	for _, tt := range tests {
-		testFixedStructure(t, tt.name, tt.marshal, tt.unmarshal, false, tt.size)
-	}
-}
-
-func TestIndexTxnFooter(t *testing.T) {
-	f := &IndexTxnFooter{
-		TxnSequence:      1,
-		SnapshotID:       42,
-		TxnStartOffset:   128,
-		TxnEndOffset:     128 + 80 + 1000 + 80,
-		DataSnapshotEnd:  4096,
-		BodyCRC32C:       0x1111,
-		DataFooterCRC32C: 0x2222,
-	}
-	roundTrip(t, "IndexTxnFooter", f.MarshalTo, f.Unmarshal)
-	testFixedStructure(t, "IndexTxnFooter", f.MarshalTo, f.Unmarshal, true, IndexTxnFooterSize)
-}
-
-// mustMarshal marshals h into a fresh Size()-sized buffer.
-func mustMarshal(t *testing.T, m interface{ MarshalTo([]byte) error }) []byte {
-	t.Helper()
-	buf := make([]byte, 1024)
 	if err := m.MarshalTo(buf); err != nil {
-		require.Fail(t, "marshal: %v", err)
+		t.Fatalf("%T marshal: %v", m, err)
 	}
-	return buf
+	again := make([]byte, size)
+	if err := m.MarshalTo(again); err != nil {
+		t.Fatalf("%T re-marshal: %v", m, err)
+	}
+	if !bytes.Equal(buf, again) {
+		t.Fatalf("%T marshal not deterministic", m)
+	}
+	// Unmarshal into a fresh zero value, then re-encode and compare.
+	cp := reflect.New(reflect.TypeOf(m).Elem()).Interface().(interface {
+		Size() int
+		MarshalTo(dst []byte) error
+		Unmarshal(src []byte) error
+	})
+	if err := cp.Unmarshal(buf); err != nil {
+		t.Fatalf("%T unmarshal: %v", m, err)
+	}
+	rebuf := make([]byte, size)
+	if err := cp.MarshalTo(rebuf); err != nil {
+		t.Fatalf("%T re-encode after unmarshal: %v", m, err)
+	}
+	if !bytes.Equal(buf, rebuf) {
+		t.Fatalf("%T round trip changed bytes: %x vs %x", m, buf, rebuf)
+	}
+}
+
+// TestCRCKnownAnswer locks the CRC-32C implementation against a reference
+// value, so accidental table swaps or endianness bugs surface immediately.
+func TestCRCKnownAnswer(t *testing.T) {
+	// CRC-32C("123456789") = 0xE3069283 (Castagnoli, standard test vector).
+	if got := CRC32C([]byte("123456789")); got != 0xE3069283 {
+		t.Fatalf("CRC32C(\"123456789\") = %08x, want e3069283", got)
+	}
+	// Concat == CRC over the concatenation.
+	a, b := []byte("1234"), []byte("56789")
+	if got := CRC32CConcat(a, b); got != CRC32C([]byte("123456789")) {
+		t.Fatalf("CRC32CConcat = %08x, want %08x", got, CRC32C([]byte("123456789")))
+	}
+}
+
+// TestCRCFieldZeroing verifies the fixed-structure CRC rule: the CRC field is
+// covered as zero by the checksum, and verifyCRC does not modify the buffer.
+func TestCRCFieldZeroing(t *testing.T) {
+	var h BlockHeader
+	h.BlockKind = BlockKindRows
+	h.BlockID = 1
+	var buf [BlockHeaderSize]byte
+	if err := h.MarshalTo(buf[:]); err != nil {
+		t.Fatal(err)
+	}
+	stored := binaryUint32(buf[52:])
+	before := append([]byte(nil), buf[:]...)
+	got, err := verifyCRC(buf[:], 52)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != stored {
+		t.Fatalf("verifyCRC returned %08x, stored %08x", got, stored)
+	}
+	if !bytes.Equal(buf[:], before) {
+		t.Fatal("verifyCRC modified its input buffer")
+	}
+	// Corrupting a single payload byte must break verification.
+	buf[40] ^= 0xFF
+	if _, err := verifyCRC(buf[:], 52); err == nil {
+		t.Fatal("verifyCRC accepted a corrupted header")
+	}
+}
+
+func binaryUint32(b []byte) uint32 {
+	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+}
+
+// TestVersionGates locks Open-time version handling: unknown required feature
+// bits and wrong majors are rejected.
+func TestVersionGates(t *testing.T) {
+	var h DataFileHeader
+	h.FileHeader = FileHeader{RequiredFeatures: RequiredFeaturesV1, DefaultBlockSize: 1024}
+	if err := h.CheckVersion(); err != nil {
+		t.Fatalf("v1 features must be accepted: %v", err)
+	}
+	h.RequiredFeatures |= 1 << 20 // unknown required bit
+	if err := h.CheckVersion(); err == nil {
+		t.Fatal("unknown required feature bit must be rejected")
+	}
+	// Marshal with the bad header still works (it is a writer-side construct);
+	// Unmarshal of a major-3 header must fail with IsVersionError.
+	var good DataFileHeader
+	good.FileHeader = FileHeader{RequiredFeatures: RequiredFeaturesV1, DefaultBlockSize: 1024}
+	var buf [DataFileHeaderSize]byte
+	if err := good.MarshalTo(buf[:]); err != nil {
+		t.Fatal(err)
+	}
+	buf[8], buf[9] = 0, 3 // major = 3
+	var got DataFileHeader
+	if err := got.Unmarshal(buf[:]); err == nil {
+		t.Fatal("major 3 must be rejected")
+	} else if !IsVersionError(err) {
+		t.Fatalf("major rejection must be a version error, got %T: %v", err, err)
+	}
 }

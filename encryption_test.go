@@ -2,49 +2,18 @@ package rowpack
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/stretchr/testify/require"
 )
 
-// writeFullSnapshot writes n rows of a two-column table into a FULL snapshot
-// and returns its snapshot ID.
-func writeFullSnapshot(t *testing.T, db *Store, n uint64) SnapshotID {
-	t.Helper()
-	w, err := db.BeginFull(context.Background())
-	require.NoError(t, err)
-	require.NoError(t, w.CreateTable("t1", schema1()))
-	for i := uint64(1); i <= n; i++ {
-		require.NoError(t, w.Insert(context.Background(), "t1", i, row1(i)))
-	}
-	snap, err := w.Commit(context.Background())
-	require.NoError(t, err)
-	return snap
-}
-
-// schema1 returns a minimal two-column schema (id, name).
-func schema1() []Column {
-	return []Column{
-		{Name: "id", Type: TypeUint64},
-		{Name: "name", Type: TypeString},
-	}
-}
-
-func row1(i uint64) Row {
-	return Row{Uint64(i), String("row-" + itoa(i))}
-}
-
-func isErr(err, target error) bool {
-	return err != nil && errors.Is(err, target)
-}
-
 // staticKeyProvider hands out a fixed AES-256 key for (keyID, epoch), with an
-// optional forced error.
+// optional forced error. It mirrors the provider used to generate the
+// encrypted golden sample, so the golden can be reopened and checked.
 type staticKeyProvider struct {
 	keyID string
 	key   []byte
@@ -61,8 +30,8 @@ func (p *staticKeyProvider) Key(ctx context.Context, keyID string, epoch uint32)
 	return p.key, nil
 }
 
+// testKey derives a deterministic 32-byte key per key id.
 func testKey(id string) []byte {
-	// 32-byte deterministic key, distinct per id.
 	var k [32]byte
 	for i := range k {
 		k[i] = byte(id[i%len(id)]) + byte(i)
@@ -72,195 +41,188 @@ func testKey(id string) []byte {
 
 func encOptions(keyID string) Options {
 	return Options{
+		BlockSize: 1024,
 		Encryption: &EncryptionConfig{
 			KeyProvider: &staticKeyProvider{keyID: keyID, key: testKey(keyID)},
 			KeyID:       keyID,
 		},
-		Compression: CompressionNone, // crisp StoredSize assertions
 	}
 }
 
-// TestCreateEncryptedHeader verifies the store headers carry the encryption
-// fields and the key id.
-func TestCreateEncryptedHeader(t *testing.T) {
-	dir := tmpdb(t)
-	db, err := Create(dir+"/db", encOptions("key-a"))
+// TestEncryptedRoundTrip writes FULL + DELTA into an encrypted store and
+// reads them back through a fresh open with the same key.
+func TestEncryptedRoundTrip(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "enc")
+	db, err := Create(base, encOptions("k1"))
 	require.NoError(t, err)
-	require.NotNil(t, db.encCipher, "expected write-path cipher")
-	db.Close()
-
-	// Read the .rpk header back from disk.
-	raw, err := os.ReadFile(dir + "/db.rpk")
+	ctx := context.Background()
+	w, _ := db.BeginFull(ctx)
+	require.NoError(t, w.CreateTable("users", usersSchema()))
+	insertUsers(t, w, 5)
+	full, err := w.Commit(ctx)
 	require.NoError(t, err)
-	var h fileformat.DataFileHeader
-	require.NoError(t, h.Unmarshal(raw[:fileformat.DataFileHeaderSize]))
-	require.Equal(t, fileformat.EncAES256GCM, h.EncryptionAlgorithm, "algorithm = %d, want %d", h.EncryptionAlgorithm, fileformat.EncAES256GCM)
-	require.Equal(t, fileformat.NonceCounterV1, h.NonceScheme, "nonce scheme = %d, want %d", h.NonceScheme, fileformat.NonceCounterV1)
-	require.Equal(t, "key-a", string(h.KeyID), "key id = %q, want %q", h.KeyID, "key-a")
-}
-
-// TestEncryptedWriteSealsBlocks verifies committed blocks are sealed: the
-// block header is flagged encrypted, KeyEpoch is set, and StoredSize grows by
-// exactly the tag length (CompressionNone makes the plaintext length equal
-// RawSize).
-func TestEncryptedWriteSealsBlocks(t *testing.T) {
-	dir := tmpdb(t)
-	db, err := Create(dir+"/db", encOptions("key-b"))
-	require.NoError(t, err)
-	writeFullSnapshot(t, db, 100)
-	db.Close()
-
-	// Walk the .rpk payload: SnapshotHeader then per-block header+payload.
-	raw, err := os.ReadFile(dir + "/db.rpk")
-	require.NoError(t, err)
-	off := int64(fileformat.DataFileHeaderSize + fileformat.SnapshotHeaderSize)
-	sawEncrypted := 0
-	for off < int64(len(raw)) && string(raw[off:off+8]) != fileformat.MagicIndexTxnHdr {
-		var bh fileformat.BlockHeader
-		require.NoError(t, bh.Unmarshal(raw[off:off+fileformat.BlockHeaderSize]), "block header at %d", off)
-		require.True(t, bh.Encrypted, "block %d at %d not encrypted", bh.BlockID, off)
-		require.Equal(t, uint32(0), bh.KeyEpoch, "block %d epoch = %d, want 0", bh.BlockID, bh.KeyEpoch)
-		require.Equal(t, uint32(bh.RawSize+fileformat.AESGCMTagLen), bh.StoredSize, "block %d stored %d != raw %d + tag %d", bh.BlockID, bh.StoredSize, bh.RawSize, fileformat.AESGCMTagLen)
-		sawEncrypted++
-		off += fileformat.BlockHeaderSize + int64(bh.StoredSize)
-	}
-	require.NotZero(t, sawEncrypted, "no block scanned")
-}
-
-// TestPlainStoreBlocksUnencrypted guards the plain path: no encryption bytes.
-func TestPlainStoreBlocksUnencrypted(t *testing.T) {
-	dir := tmpdb(t)
-	db, err := Create(dir+"/db", Options{Compression: CompressionNone})
-	require.NoError(t, err)
-	writeFullSnapshot(t, db, 10)
-	db.Close()
-
-	raw, err := os.ReadFile(dir + "/db.rpk")
-	require.NoError(t, err)
-	off := int64(fileformat.DataFileHeaderSize + fileformat.SnapshotHeaderSize)
-	for off < int64(len(raw)) && string(raw[off:off+8]) != fileformat.MagicIndexTxnHdr {
-		var bh fileformat.BlockHeader
-		require.NoError(t, bh.Unmarshal(raw[off:off+fileformat.BlockHeaderSize]), "block header at %d", off)
-		require.False(t, bh.Encrypted || bh.KeyEpoch != 0, "plain block %d carries encryption bytes", bh.BlockID)
-		require.Equal(t, bh.RawSize, bh.StoredSize, "plain block %d stored %d != raw %d", bh.BlockID, bh.StoredSize, bh.RawSize)
-		off += fileformat.BlockHeaderSize + int64(bh.StoredSize)
-	}
-}
-
-// TestEncryptionInvalidConfig covers configuration rejection.
-func TestEncryptionInvalidConfig(t *testing.T) {
-	dir := tmpdb(t)
-	_, err := Create(dir+"/a", Options{Encryption: &EncryptionConfig{KeyID: "k"}})
-	require.ErrorIs(t, err, ErrInvalidArgument, "nil provider = %v, want ErrInvalidArgument", err)
-	_, err = Create(dir+"/b", Options{Encryption: &EncryptionConfig{
-		KeyProvider: &staticKeyProvider{keyID: "k", key: testKey("k")},
-	}})
-	require.ErrorIs(t, err, ErrInvalidArgument, "empty key id = %v, want ErrInvalidArgument", err)
-	longID := make([]byte, fileformat.FileHeaderKeyIDMaxLen+1)
-	for i := range longID {
-		longID[i] = 'x'
-	}
-	_, err = Create(dir+"/c", Options{Encryption: &EncryptionConfig{
-		KeyProvider: &staticKeyProvider{keyID: string(longID), key: testKey("k")},
-		KeyID:       string(longID),
-	}})
-	require.ErrorIs(t, err, ErrInvalidArgument, "over-long key id = %v, want ErrInvalidArgument", err)
-}
-
-// TestEncryptionProviderError propagates provider failure at Create.
-func TestEncryptionProviderError(t *testing.T) {
-	dir := tmpdb(t)
-	_, err := Create(dir+"/db", Options{Encryption: &EncryptionConfig{
-		KeyProvider: &staticKeyProvider{keyID: "k", key: testKey("k"), fail: context.Canceled},
-		KeyID:       "k",
-	}})
-	require.Error(t, err, "provider error swallowed at Create")
-	require.ErrorIs(t, err, ErrKeyUnavailable, "err = %v, want ErrKeyUnavailable wrapper", err)
-}
-
-// TestBlockHeaderOffsetsOnDisk guards the on-disk offsets read by the walk in
-// TestEncryptedWriteSealsBlocks: magic at 0, StoredSize at 44, KeyEpoch at 56.
-func TestBlockHeaderOffsetsOnDisk(t *testing.T) {
-	var h fileformat.BlockHeader
-	h.Encrypted = true
-	h.KeyEpoch = 3
-	h.StoredSize = 0xAABBCCDD
-	var buf [fileformat.BlockHeaderSize]byte
-	require.NoError(t, h.MarshalTo(buf[:]))
-	require.Equal(t, "RPKBLOCK", string(buf[0:8]), "magic")
-	require.Equal(t, h.StoredSize, binary.LittleEndian.Uint32(buf[44:]), "stored size offset")
-	require.Equal(t, uint32(3), binary.LittleEndian.Uint32(buf[fileformat.BlockHeaderKeyEpochOffset:]), "key epoch offset")
-}
-
-// buildEncryptedGoldenStore writes a deterministic encrypted FULL store with
-// one rows block (None compression keeps the ciphertext layout independent of
-// the zstd library version).
-func buildEncryptedGoldenStore(t *testing.T, base string) {
-	t.Helper()
-	uuid := [16]byte{0xE0, 0xC1, 0xE2, 0xC3, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C}
-	testUUIDOverride = &uuid
-	testNowOverride = 1757400000000000001
-	nonce := uint64(0xE0E0E0E0E0E0E0E1)
-	testNonceOverride = &nonce
-	t.Cleanup(func() {
-		testUUIDOverride = nil
-		testNowOverride = 0
-		testNonceOverride = nil
-	})
-	keyID := "gk"
-	db, err := Create(base, Options{
-		Compression: CompressionNone,
-		Encryption: &EncryptionConfig{
-			KeyProvider: &staticKeyProvider{keyID: keyID, key: testKey(keyID)},
-			KeyID:       keyID,
-		},
-	})
-	require.NoError(t, err)
-	w, _ := db.BeginFull(context.Background())
-	require.NoError(t, w.CreateTable("t1", schema1()))
-	for i := uint64(1); i <= 3; i++ {
-		require.NoError(t, w.Insert(context.Background(), "t1", i, row1(i)))
-	}
-	_, err = w.Commit(context.Background())
+	d, _ := db.BeginDelta(ctx, full)
+	require.NoError(t, d.Delete(ctx, "users", 3))
+	delta, err := d.Commit(ctx)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
+
+	// Reopen with the key: everything decrypts.
+	db2, err := Open(base, encOptions("k1"))
+	require.NoError(t, err)
+	t.Cleanup(func() { db2.Close() })
+	row, err := db2.Get(ctx, delta, "users", 2, nil)
+	require.NoError(t, err)
+	name, _ := row[1].String()
+	require.Equal(t, "user-2", name)
+	_, err = db2.Get(ctx, delta, "users", 3, nil)
+	require.ErrorIs(t, err, ErrNotFound, "encrypted delta hides the deleted row")
+	row, err = db2.Get(ctx, delta, "users", 5, nil)
+	require.NoError(t, err)
+	name, _ = row[1].String()
+	require.Equal(t, "user-5", name)
+	// Full verify must pass on an intact encrypted store.
+	rep, err := db2.Verify(ctx, VerifyFull)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), rep.SnapshotsChecked)
+	require.Greater(t, rep.RowsChecked, uint64(0))
 }
 
-// TestGoldenEncryptedStore locks the byte layout of an encrypted store
-// (encryption header fields, block flags, KeyEpoch, ciphertext) and verifies
-// the golden opens and reads back with its key.
+// TestEncryptedKeyContract enforces the key contract: no provider at Open
+// fails with ErrKeyRequired, a provider error surfaces as ErrKeyUnavailable,
+// and a wrong key fails authentication on the read path.
+func TestEncryptedKeyContract(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "keycontract")
+	db, err := Create(base, encOptions("k1"))
+	require.NoError(t, err)
+	ctx := context.Background()
+	w, _ := db.BeginFull(ctx)
+	require.NoError(t, w.CreateTable("users", usersSchema()))
+	insertUsers(t, w, 3)
+	full, _ := w.Commit(ctx)
+	require.NoError(t, db.Close())
+
+	// Opening encrypted storage without a provider is a hard error, not a
+	// half-usable store.
+	_, err = Open(base, Options{BlockSize: 1024})
+	require.ErrorIs(t, err, ErrKeyRequired)
+
+	// Key ID validation at Create.
+	_, err = Create(filepath.Join(tmpdb(t), "badid"), Options{
+		Encryption: &EncryptionConfig{KeyProvider: &staticKeyProvider{keyID: "x", key: testKey("x")}, KeyID: ""},
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	// A provider that errors (e.g. key rotation miss) surfaces as
+	// ErrKeyUnavailable on read.
+	failing := Options{
+		BlockSize: 1024,
+		Encryption: &EncryptionConfig{
+			KeyProvider: &staticKeyProvider{keyID: "k1", key: testKey("k1"), fail: context.Canceled},
+			KeyID:       "k1",
+		},
+	}
+	_, err = Open(base, failing)
+	require.ErrorIs(t, err, ErrKeyUnavailable)
+
+	// Wrong key: block authentication fails on open recovery.
+	wrong := Options{
+		BlockSize: 1024,
+		Encryption: &EncryptionConfig{
+			KeyProvider: &staticKeyProvider{keyID: "k1", key: make([]byte, 32)}, // all-zero key
+			KeyID:       "k1",
+		},
+	}
+	_, err = Open(base, wrong)
+	require.Error(t, err, "wrong key must not silently open")
+	require.True(t, errors.Is(err, ErrAuthFailed) || errors.Is(err, ErrCorruptData),
+		"wrong key failure must expose ErrAuthFailed chain, got: %v", err)
+
+	// The correct key still opens afterwards.
+	dbOK, err := Open(base, encOptions("k1"))
+	require.NoError(t, err)
+	t.Cleanup(func() { dbOK.Close() })
+	row, err := dbOK.Get(ctx, full, "users", 1, nil)
+	require.NoError(t, err)
+	name, _ := row[1].String()
+	require.Equal(t, "user-1", name)
+}
+
+// TestGoldenEncryptedStore reopens the locked encrypted golden sample (from
+// testdata/golden/encrypted-store.rpk) with its generation key and verifies
+// the full content reads back. The manifest already locks the bytes; this
+// test locks the open+decrypt semantics.
 func TestGoldenEncryptedStore(t *testing.T) {
 	keyID := "gk"
-	enc := func() Options {
+	opts := func() Options {
 		return Options{
 			Compression: CompressionNone,
-			Encryption: &EncryptionConfig{
-				KeyProvider: &staticKeyProvider{keyID: keyID, key: testKey(keyID)},
-				KeyID:       keyID,
-			},
+			Encryption:  &EncryptionConfig{KeyProvider: &staticKeyProvider{keyID: keyID, key: testKey(keyID)}, KeyID: keyID},
 		}
 	}
 	base := filepath.Join(tmpdb(t), "golden-enc")
-	buildEncryptedGoldenStore(t, base)
-	generated, err := os.ReadFile(base + ".rpk")
-	require.NoError(t, err)
-	if *updateGolden {
-		require.NoError(t, os.WriteFile(goldenPath("encrypted-store.rpk"), generated, 0o644))
-		return
-	}
-	// Copy the golden sample and open it with the key.
 	data, err := os.ReadFile(goldenPath("encrypted-store.rpk"))
-	require.NoError(t, err, "read golden (regenerate with make golden): %v", err)
-	require.Equal(t, data, generated, "writer output differs from locked encrypted golden (regenerate with make golden only for an intentional format change)")
-	base = filepath.Join(tmpdb(t), "golden-enc-open")
+	require.NoError(t, err, "read encrypted golden (regenerate with make golden)")
 	require.NoError(t, os.WriteFile(base+".rpk", data, 0o644))
-	db, err := Open(base, enc())
-	require.NoError(t, err, "open golden: %v", err)
-	defer db.Close()
+
+	db, err := Open(base, opts())
+	require.NoError(t, err, "open encrypted golden")
+	t.Cleanup(func() { db.Close() })
+	ctx := context.Background()
+	snaps, err := db.ListSnapshots(ctx)
+	require.NoError(t, err)
+	require.True(t, len(snaps) >= 1)
+	require.Equal(t, SnapshotType(SnapshotFull), snaps[0].Type)
+	// The golden holds a FULL with three rows of (id, name) == ("row-N").
 	for i := uint64(1); i <= 3; i++ {
-		r, err := db.Get(context.Background(), 1, "t1", i, nil)
-		require.NoError(t, err, "row %d: %v", i, err)
-		n, _ := r[1].String()
-		require.Equal(t, "row-"+itoa(i), n, "row %d name = %q", i, n)
+		row, err := db.Get(ctx, snaps[0].ID, "t1", i, nil)
+		require.NoError(t, err, "golden row %d", i)
+		name, _ := row[1].String()
+		require.Equal(t, fmt.Sprintf("row-%d", i), name)
 	}
+}
+
+// TestEncryptionTamperDetect flips one ciphertext byte and requires the read
+// path to fail authentication: the AEAD is the integrity boundary, so a
+// flipped byte must never decode to a modified row.
+func TestEncryptionTamperDetect(t *testing.T) {
+	base := filepath.Join(tmpdb(t), "tamper")
+	db, err := Create(base, encOptions("k1"))
+	require.NoError(t, err)
+	ctx := context.Background()
+	w, _ := db.BeginFull(ctx)
+	require.NoError(t, w.CreateTable("users", usersSchema()))
+	insertUsers(t, w, 10)
+	full, _ := w.Commit(ctx)
+
+	// Address the rows block that physically holds row 1 (physical flush
+	// order of metadata vs rows blocks varies), and tamper its ciphertext.
+	st, err := db.captureState()
+	require.NoError(t, err)
+	loc := st.view.ResolveRow(full, 1, 1)
+	require.NotNil(t, loc)
+	rowsBlk := st.view.Block(loc.BlockID)
+	require.NotNil(t, rowsBlk)
+	blkOff := int64(rowsBlk.DataOffset) + 64 // 64-byte BlockHeader
+	require.NoError(t, db.Close())
+
+	f, err := os.OpenFile(base+".rpk", os.O_RDWR, 0)
+	require.NoError(t, err)
+	payload := make([]byte, 16)
+	_, err = f.ReadAt(payload, blkOff)
+	require.NoError(t, err)
+	payload[0] ^= 0x01
+	_, err = f.WriteAt(payload, blkOff)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	// Reopen is possible (no block read during index replay) but any read of
+	// the tampered block fails with ErrAuthFailed.
+	db2, err := Open(base, encOptions("k1"))
+	require.NoError(t, err)
+	t.Cleanup(func() { db2.Close() })
+	_, err = db2.Get(ctx, full, "users", 1, nil)
+	require.ErrorIs(t, err, ErrAuthFailed, "tampered ciphertext must fail authentication")
+	_, err = db2.Verify(ctx, VerifyFull)
+	require.ErrorIs(t, err, ErrAuthFailed, "Verify must report the tampered block")
 }

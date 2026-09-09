@@ -1,7 +1,5 @@
 package rowpack
 
-import "time"
-
 // CacheStats summarizes block cache activity.
 type CacheStats struct {
 	CapacityBytes uint64
@@ -40,7 +38,6 @@ type Stats struct {
 	Blocks           uint64
 	LogicalRows      uint64
 	DataFileBytes    int64
-	IndexFileBytes   int64
 	RawBytes         uint64
 	StoredBytes      uint64
 	IndexMemoryBytes uint64
@@ -75,8 +72,6 @@ func (s *Store) Stats() Stats {
 	if sz, err := s.data.Size(); err == nil {
 		stt.DataFileBytes = sz
 	}
-	// Single-file store: the embedded IndexTxn stream is part of the data
-	// file; there is no separate index byte count (M2).
 	if l := s.loader; l != nil {
 		stt.Cache.CapacityBytes, stt.Cache.UsedBytes, stt.Cache.Hits, stt.Cache.Misses, stt.Cache.Evictions, stt.Cache.Loads = l.cacheStats()
 		stt.ScanCache.CapacityBytes, stt.ScanCache.UsedBytes, stt.ScanCache.Hits, stt.ScanCache.Misses, stt.ScanCache.Evictions, stt.ScanCache.Loads = l.scanStats()
@@ -94,5 +89,3 @@ func (s *Store) Stats() Stats {
 	}
 	return stt
 }
-
-var _ = time.Second

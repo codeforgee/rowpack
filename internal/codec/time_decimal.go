@@ -113,21 +113,6 @@ func (t TimeOfDay) Time() time.Time {
 
 // ---- Decimal canonical big-endian two's-complement encoding ----
 
-// encodeDecimalBytes returns the canonical minimal big-endian two's-complement
-// bytes of u: no redundant 0x00 (positive) or 0xFF (negative) sign-extension
-// bytes, and zero encoded as a single 0x00 byte. Values that fit int64 take a
-// fast path that builds the bytes from the raw bits without temporary big.Ints
-// or a magnitude slice via Bytes().
-func encodeDecimalBytes(u *big.Int) ([]byte, error) {
-	if u == nil {
-		return nil, errors.New("rowpack: decimal unscaled is nil")
-	}
-	if u.IsInt64() {
-		return encodeDecimalInt64(u.Int64()), nil
-	}
-	return encodeDecimalBig(u)
-}
-
 // appendDecimalBytes appends the canonical big-endian two's-complement bytes
 // of u to buf (with a u32 length prefix) without allocating when u fits int64.
 // It is the write-path counterpart of encodeDecimalBytes used by appendValue.
@@ -210,44 +195,6 @@ func appendDecimalInt64Into(buf []byte, v int64) []byte {
 		}
 		return buf
 	}
-}
-
-// encodeDecimalInt64 builds the canonical encoding of an int64 decimal value
-// from its raw bits. Positive values need ceil(bitlen/8) bytes plus a leading
-// 0x00 when the top byte has its high bit set; negative values need the
-// minimal width w with -2^(8w-1) <= v, from which the low w bytes of the 64-bit
-// two's-complement form are the encoding.
-func encodeDecimalInt64(v int64) []byte {
-	if v >= 0 {
-		if v == 0 {
-			return []byte{0x00}
-		}
-		n := bits.Len64(uint64(v))
-		bytes := (n + 7) / 8
-		raw := make([]byte, bytes)
-		for i := 0; i < bytes; i++ {
-			raw[bytes-1-i] = byte(v >> (8 * i))
-		}
-		if raw[0]&0x80 != 0 {
-			out := make([]byte, bytes+1)
-			out[0], out[1] = 0, raw[0]
-			copy(out[2:], raw[1:])
-			return out
-		}
-		return raw
-	}
-	// Negative: minimal two's-complement width w, then the low w bytes of the
-	// 64-bit two's-complement form.
-	w := 1
-	for w < 8 && v < -(int64(1)<<(8*w-1)) {
-		w++
-	}
-	out := make([]byte, w)
-	u := uint64(v)
-	for i := 0; i < w; i++ {
-		out[w-1-i] = byte(u >> (8 * i))
-	}
-	return out
 }
 
 // encodeDecimalBig is the general big.Int path for decimals that do not fit
@@ -341,14 +288,4 @@ func decodeDecimalBytesInto(dst *big.Int, b []byte) error {
 		dst.Sub(dst, mod)
 	}
 	return nil
-}
-
-// decodeDecimalBytes interprets canonical two's-complement bytes, allocating
-// the result.
-func decodeDecimalBytes(b []byte) (*big.Int, error) {
-	x := new(big.Int)
-	if err := decodeDecimalBytesInto(x, b); err != nil {
-		return nil, err
-	}
-	return x, nil
 }

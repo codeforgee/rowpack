@@ -4,6 +4,13 @@
 > 日期：2026-09-08
 > 格式基线：[BINARY_FORMAT_V2.md](BINARY_FORMAT_V2.md)
 > 评审：API 相关 R17–R21 风险已核定并吸收进本文档（原风险清单文档已移除）
+>
+> **现状更新（2026-09-09，API 未公开期收敛）**：§3/§4 的 `ReadRowsByIDs` /
+> `ReadRowRanges` / `BatchReadOptions` / `BatchIterator` 设计已被更小、语义更收敛的
+> 单一入口 `Store.ReadBatch(ctx, snapshot, table string, ids []RowID) ([]Row, error)`
+> 取代（见 `read_batch.go`）：整批一次性返回、任一 id 不可见即整批 `ErrNotFound`
+> （与逐行 `Get` 一致）、按表名寻址；`Schema` 同样改为表名寻址。本文档相关章节
+> 保留作决策记录，不再是无争议的实现说明。
 
 ## 1. API 原则
 

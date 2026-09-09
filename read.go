@@ -161,8 +161,9 @@ func (s *Store) decodeRowInto(ref *block.RowRef, bl *index.BlockLoc, si *schemaI
 	return codec.DecodeInto(dst, ref.Row, schema, s.opts.codecLimits(), nil)
 }
 
-// Schema returns the schema of a table version at a snapshot.
-func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table TableID, version SchemaVersion) (Schema, error) {
+// Schema returns the schema of a table version at a snapshot. The table is
+// addressed by name, like the other read paths.
+func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table string, version SchemaVersion) (Schema, error) {
 	st, err := s.captureState()
 	if err != nil {
 		return Schema{}, err
@@ -170,9 +171,13 @@ func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table TableID, 
 	if st.view.Snapshot(snapshot) == nil {
 		return Schema{}, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	schema := st.schemas.schema(snapshot, table, version)
+	tid, ok := st.schemas.tableIDByName(snapshot, table)
+	if !ok {
+		return Schema{}, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
+	}
+	schema := st.schemas.schema(snapshot, uint32(tid), version)
 	if schema == nil {
-		return Schema{}, fmt.Errorf("%w: schema for table %d version %d", ErrSchemaMismatch, table, version)
+		return Schema{}, fmt.Errorf("%w: schema for table %d version %d", ErrSchemaMismatch, tid, version)
 	}
 	return *schema, nil
 }

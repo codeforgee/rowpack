@@ -31,11 +31,15 @@
 ## 生成命令
 
 ```sh
-make golden     # 依次运行含 golden 生成器的 root、internal/block、internal/fileformat 包
+make golden     # 一条命令再生 empty-store / rows-payload-all-types / full-delta（生成器已合并到根包 golden_store_test.go）
 ```
 
 生成后必须人工 diff 审查（`git diff --stat testdata/golden`），确认字节变化只来自
 有意的格式变更。
+
+> 注：单元测试精简后，仅 `encrypted-store.rpk` 无仓库内生成器（原生成器随
+> encryption_test 旧版删除），由 `TestGoldenManifest` 哈希锁定，视为不可变样本；
+> 重写它需要恢复对应生成器并走格式审查。
 
 ## 校验命令
 

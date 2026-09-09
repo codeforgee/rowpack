@@ -4,453 +4,336 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"runtime"
-	"runtime/debug"
 	"testing"
 	"time"
-
-	"github.com/rowpack/rowpack/internal/fileformat"
-	"github.com/stretchr/testify/require"
 )
 
-// Benchmarks record environment-dependent numbers; run with `go test -bench .`.
-// Each benchmark reports the environment (Go version, Zstd version) via
-// BenchmarkEnv.
+// Benchmarks are deliberately single-configuration: one dataset shape and
+// one default option set per metric, so `make bench` completes in seconds
+// while still covering every hot path (write, hot/cold read, scan, batch,
+// open/replay, deep chain, encryption). For matrix sweeps see the historical
+// bench_matrix_test.go in git history.
 
-func BenchmarkEnv(b *testing.B) {
-	// Informational benchmark: prints the environment (Go version, module
-	// versions, platform) plus the reference dataset geometry measured from a
-	// freshly built store, so every run records reproducible context.
-	bi, ok := debug.ReadBuildInfo()
-	zstdVer := "unknown"
-	goVer := runtime.Version()
-	if ok {
-		for _, dep := range bi.Deps {
-			if dep.Path == "github.com/klauspost/compress" {
-				zstdVer = dep.Version
-			}
-		}
+const benchRows = 100_000
+
+// benchCols is a 7-column row similar to the README reference baseline.
+func benchCols() []Column {
+	return []Column{
+		{Name: "id", Type: TypeUint64},
+		{Name: "a", Type: TypeInt64},
+		{Name: "b", Type: TypeInt64},
+		{Name: "c", Type: TypeFloat64},
+		{Name: "s", Type: TypeString},
+		{Name: "t", Type: TypeDateTime},
+		{Name: "b16", Type: TypeBytes},
 	}
-	base := filepath.Join(tmpdb(b), "env")
-	db, _ := buildBenchStoreOpts(b, base, 100000, Options{})
-	st := db.Stats()
-	db.Close()
-	bytesPerRow := 0.0
-	if st.DataFileBytes > 0 {
-		bytesPerRow = float64(st.DataFileBytes) / 100000
-	}
-	ratio := 0.0
-	if st.RawBytes > 0 {
-		ratio = float64(st.StoredBytes) / float64(st.RawBytes)
-	}
-	b.Logf("go=%s zstd=%s os=%s/%s cacheBytes=%d blockSize=%d dataset=100k rows x 7 cols "+
-		"dataMB=%.1f ratio=%.3f bytePerRow=%.1f indexMB=%.1f",
-		goVer, zstdVer, runtime.GOOS, runtime.GOARCH, fileformat.DefaultCacheBytes,
-		fileformat.DefaultBlockSize, float64(st.DataFileBytes)/(1<<20), ratio, bytesPerRow,
-		float64(st.IndexMemoryBytes)/(1<<20))
-	// BenchmarkEnv is a logging-only fake benchmark: it emits the env line and
-	// runs zero iterations by design.
-	//lint:ignore SA3001 calibration: zero iterations for an env-log benchmark
-	b.N = 0
 }
 
 func benchRow(i uint64) Row {
 	return Row{
 		Uint64(i),
-		String(fmt.Sprintf("user-%d-abcdefghijklmnop", i)),
-		Bool(i%2 == 0),
-		Int32(int32(i)),
-		Float64(float64(i) * 0.5),
-		DateTime(time.Unix(0, 1700000000000000000).UTC()),
-		DecimalValue(Decimal{Unscaled: bigI(int64(i * 100)), Scale: 2}),
+		Int64(int64(i * 7)),
+		Int64(-int64(i * 3)),
+		Float64(float64(i) * 0.25),
+		String(fmt.Sprintf("row-%08d", i)),
+		DateTime(testTime),
+		Bytes([]byte{byte(i), byte(i >> 8), byte(i >> 16), byte(i >> 24)}),
 	}
 }
 
-func benchSchema() []Column {
-	return []Column{
-		{Name: "id", Type: TypeUint64},
-		{Name: "name", Type: TypeString},
-		{Name: "active", Type: TypeBool},
-		{Name: "age", Type: TypeInt32},
-		{Name: "score", Type: TypeFloat64},
-		{Name: "created", Type: TypeDateTime},
-		{Name: "balance", Type: TypeDecimal, Scale: 2},
-	}
-}
+var testTime = timeUnix(1757400000)
 
-func buildBenchStore(b *testing.B, base string, nRows uint64, blockSize int) (*Store, SnapshotID) {
-	b.Helper()
-	opts := Options{}
-	if blockSize > 0 {
-		opts.BlockSize = blockSize
-	}
-	return buildBenchStoreOpts(b, base, nRows, opts)
-}
+func timeUnix(sec int64) time.Time { return time.Unix(sec, 0).UTC() }
 
-// buildBenchStoreOpts builds nRows into a FULL snapshot with the given
-// options. Options must already be defaults-resolved-safe (negative CacheBytes
-// disables the cache). It is the unified setup used by all matrix benchmarks.
-func buildBenchStoreOpts(b *testing.B, base string, nRows uint64, opts Options) (*Store, SnapshotID) {
-	b.Helper()
-	db, err := Create(base, opts)
-	require.NoError(b, err)
+// benchStore builds a FULL store with n rows and returns it plus the snapshot
+// ID. Marks the caller warm (stops the timer around the build).
+func benchStore(tb testing.TB, opts Options, n int) (*Store, SnapshotID) {
+	tb.Helper()
+	if opts.BlockSize == 0 {
+		opts.BlockSize = 256 << 10 // README reference config
+	}
+	db, err := Create(filepath.Join(tmpdb(tb), "bench"), opts)
+	requireNilErr(tb, err)
 	w, err := db.BeginFull(context.Background())
-	require.NoError(b, err)
-	require.NoError(b, w.CreateTable("bench", benchSchema()))
-	for i := uint64(0); i < nRows; i++ {
-		require.NoError(b, w.Insert(context.Background(), "bench", i+1, benchRow(i)))
+	requireNilErr(tb, err)
+	requireNilErr(tb, w.CreateTable("t", benchCols()))
+	for i := 1; i <= n; i++ {
+		requireNilErr(tb, w.Insert(context.Background(), "t", uint64(i), benchRow(uint64(i))))
 	}
-	full, err := w.Commit(context.Background())
-	require.NoError(b, err)
-	return db, full
+	snap, err := w.Commit(context.Background())
+	requireNilErr(tb, err)
+	return db, snap
 }
 
-func BenchmarkFullSequentialWrite(b *testing.B) {
-	const rows = 100000
-	b.ResetTimer()
+func requireNilErr(tb testing.TB, err error) {
+	tb.Helper()
+	if err != nil {
+		tb.Fatal(err)
+	}
+}
+
+// BenchmarkWriteFull measures the sequential FULL write path: encode + block
+// build + one commit. Reported as ns/row (see the krows/s derivation in
+// docs/perf-report.md).
+func BenchmarkWriteFull(b *testing.B) {
+	ctx := context.Background()
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		base := filepath.Join(tmpdb(b), "w")
+		base := filepath.Join(tmpdb(b), fmt.Sprintf("wf-%d", i))
 		db, err := Create(base, Options{})
-		require.NoError(b, err)
-		w, _ := db.BeginFull(context.Background())
-		require.NoError(b, w.CreateTable("bench", benchSchema()))
+		requireNilErr(b, err)
+		w, err := db.BeginFull(ctx)
+		requireNilErr(b, err)
+		requireNilErr(b, w.CreateTable("t", benchCols()))
 		b.StartTimer()
-		for j := uint64(0); j < rows; j++ {
-			if err := w.Insert(context.Background(), "bench", j+1, benchRow(j)); err != nil {
-				require.NoError(b, err)
-			}
+		for r := 1; r <= benchRows; r++ {
+			requireNilErr(b, w.Insert(ctx, "t", uint64(r), benchRow(uint64(r))))
 		}
-		if _, err := w.Commit(context.Background()); err != nil {
-			require.NoError(b, err)
+		if _, err := w.Commit(ctx); err != nil {
+			b.Fatal(err)
 		}
 		b.StopTimer()
-		db.Close()
+		requireNilErr(b, db.Close())
 	}
-	b.SetBytes(rows * 100)
-	b.ReportMetric(float64(rows)/b.Elapsed().Seconds()/1000, "krows/s")
+	b.SetBytes(benchRows * 64) // approximate row footprint for bytes/s reporting
 }
 
-func BenchmarkGetColdRead(b *testing.B) {
-	base := filepath.Join(tmpdb(b), "cold")
-	db, fullID := buildBenchStore(b, base, 100000, 0)
-	db.Close() // release the writer lock before reopening
-	// Disable cache to force cold reads.
-	db2, err := Open(base, Options{CacheBytes: -1})
-	require.NoError(b, err)
-	defer db2.Close()
+// BenchmarkGetHot measures random reads served from the decoded-block cache
+// with the documented dst-reuse pattern.
+func BenchmarkGetHot(b *testing.B) {
+	ctx := context.Background()
+	db, snap := benchStore(b, Options{}, 20_000)
+	b.Cleanup(func() { db.Close() })
+	var dst Row
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := db2.Get(context.Background(), fullID, "bench", uint64(i%100000)+1, nil); err != nil {
-			require.NoError(b, err)
-		}
-	}
-}
-
-func BenchmarkGetHotRead(b *testing.B) {
-	db, fullID := buildBenchStore(b, filepath.Join(tmpdb(b), "hot"), 100000, 0)
-	defer db.Close()
-	// Warm a few blocks.
-	for i := uint64(0); i < 100; i++ {
-		if _, err := db.Get(context.Background(), fullID, "bench", i+1, nil); err != nil {
-			require.NoError(b, err)
-		}
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := db.Get(context.Background(), fullID, "bench", uint64(i%100)+1, nil); err != nil {
-			require.NoError(b, err)
-		}
-	}
-}
-
-func BenchmarkConcurrentGet(b *testing.B) {
-	for _, g := range []int{1, 8, 32, 64} {
-		b.Run(fmt.Sprintf("g%d", g), func(b *testing.B) {
-			db, fullID := buildBenchStore(b, filepath.Join(tmpdb(b), "conc"), 100000, 0)
-			defer db.Close()
-			// Warm the cache so the benchmark measures concurrent hot reads.
-			for i := uint64(0); i < 100000; i++ {
-				if _, err := db.Get(context.Background(), fullID, "bench", i+1, nil); err != nil {
-					require.NoError(b, err)
-				}
-			}
-			b.ResetTimer()
-			b.RunParallel(func(pb *testing.PB) {
-				i := uint64(0)
-				for pb.Next() {
-					i++
-					if _, err := db.Get(context.Background(), fullID, "bench", i%100000+1, nil); err != nil {
-						require.NoError(b, err)
-					}
-				}
-			})
-		})
-	}
-}
-
-func BenchmarkScan(b *testing.B) {
-	db, fullID := buildBenchStore(b, filepath.Join(tmpdb(b), "scan"), 100000, 0)
-	defer db.Close()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		it, err := db.Scan(context.Background(), fullID, "bench", ScanOptions{})
+		id := RowID(i%20_000) + 1
+		row, err := db.Get(ctx, snap, "t", id, dst)
 		if err != nil {
-			require.NoError(b, err)
+			b.Fatal(err)
 		}
+		dst = row[:0]
+	}
+	_ = dst
+}
+
+// BenchmarkGetCold measures random reads with the decoded-block cache
+// disabled entirely (CacheBytes < 0; 0 resolves to the 64 MiB default): every
+// Get pays block load + CRC + decompress.
+func BenchmarkGetCold(b *testing.B) {
+	ctx := context.Background()
+	db, snap := benchStore(b, Options{CacheBytes: -1}, 20_000)
+	b.Cleanup(func() { db.Close() })
+	var dst Row
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		id := RowID(i%20_000) + 1
+		row, err := db.Get(ctx, snap, "t", id, dst)
+		if err != nil {
+			b.Fatal(err)
+		}
+		dst = row[:0]
+	}
+}
+
+// BenchmarkScan measures a full-table scan of 100k rows (single-pass,
+// iterator buffered, no per-row allocations).
+func BenchmarkScan(b *testing.B) {
+	ctx := context.Background()
+	db, snap := benchStore(b, Options{}, benchRows)
+	b.Cleanup(func() { db.Close() })
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		it, err := db.Scan(ctx, snap, "t", ScanOptions{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		var n int
 		for {
-			if _, ok := it.Next(); !ok {
+			row, ok := it.Next()
+			if !ok {
 				break
 			}
+			if len(row) != 7 {
+				b.Fatalf("row %d has %d columns", n, len(row))
+			}
+			n++
 		}
 		if err := it.Err(); err != nil {
-			require.NoError(b, err)
+			b.Fatal(err)
 		}
 		it.Close()
+		if n != benchRows {
+			b.Fatalf("scanned %d rows, want %d", n, benchRows)
+		}
 	}
 }
 
-// BenchmarkGetHotReadInto is BenchmarkGetHotRead with a reused dst Row
-// across all Gets.
-func BenchmarkGetHotReadInto(b *testing.B) {
-	db, fullID := buildBenchStore(b, filepath.Join(tmpdb(b), "hotinto"), 100000, 0)
-	defer db.Close()
-	// Warm a few blocks.
-	for i := uint64(0); i < 100; i++ {
-		if _, err := db.Get(context.Background(), fullID, "bench", i+1, nil); err != nil {
-			require.NoError(b, err)
+// BenchmarkReadBatch1000 reads 1000 consecutive RowIDs in one batch call: the
+// aggregation effect (blocks decompressed once) vs BenchmarkGetLoop1000 is
+// the headline number; see README.
+func BenchmarkReadBatch1000(b *testing.B) {
+	ctx := context.Background()
+	db, snap := benchStore(b, Options{}, benchRows)
+	b.Cleanup(func() { db.Close() })
+	ids := make([]RowID, 1000)
+	for i := range ids {
+		ids[i] = RowID(i) + 1
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, err := db.ReadBatch(ctx, snap, "t", ids)
+		if err != nil {
+			b.Fatal(err)
 		}
+		if len(rows) != 1000 {
+			b.Fatalf("batch returned %d rows", len(rows))
+		}
+	}
+}
+
+// BenchmarkGetLoop1000 is the per-row baseline of the same 1000 RowIDs.
+func BenchmarkGetLoop1000(b *testing.B) {
+	ctx := context.Background()
+	db, snap := benchStore(b, Options{}, benchRows)
+	b.Cleanup(func() { db.Close() })
+	ids := make([]RowID, 1000)
+	for i := range ids {
+		ids[i] = RowID(i) + 1
 	}
 	var dst Row
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		row, err := db.Get(context.Background(), fullID, "bench", uint64(i%100)+1, dst)
-		if err != nil {
-			require.NoError(b, err)
+		for _, id := range ids {
+			row, err := db.Get(ctx, snap, "t", id, dst)
+			if err != nil {
+				b.Fatal(err)
+			}
+			dst = row[:0]
 		}
-		dst = row
 	}
 }
 
+// BenchmarkOpenReplay measures Open of a 100k-row store: header + scan +
+// IndexTxn parse + schema derivation (the per-open index replay cost).
 func BenchmarkOpenReplay(b *testing.B) {
-	base := filepath.Join(tmpdb(b), "open")
-	db, _ := buildBenchStore(b, base, 100000, 0)
-	db.Close()
+	base := filepath.Join(tmpdb(b), "replay")
+	db, _ := benchStoreAt(b, base, Options{}, benchRows)
+	requireNilErr(b, db.Close())
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		db2, err := Open(base, Options{})
 		if err != nil {
-			require.NoError(b, err)
+			b.Fatal(err)
 		}
-		db2.Close()
-	}
-}
-
-func BenchmarkReopenRebuildIndex(b *testing.B) {
-	base := filepath.Join(tmpdb(b), "reb")
-	db, _ := buildBenchStore(b, base, 100000, 0)
-	db.Close()
-	// Corrupt the first IndexTxn body: every reopen rebuilds it in memory
-	// (BINARY_FORMAT_V2 §10.2). The store data file is never rewritten.
-	tamperFirstIndexTxn(b, base+".rpk")
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		db2, err := Open(base, Options{})
-		require.NoError(b, err)
-		db2.Close()
-	}
-}
-
-// ---- 大规模 / DELTA 链场景基准 ----
-
-// buildBenchStoreN writes nRows into a FULL snapshot.
-func buildBenchStoreN(b *testing.B, base string, nRows uint64) (*Store, SnapshotID) {
-	b.Helper()
-	db, err := Create(base, Options{})
-	require.NoError(b, err)
-	w, _ := db.BeginFull(context.Background())
-	require.NoError(b, w.CreateTable("bench", benchSchema()))
-	for i := uint64(0); i < nRows; i++ {
-		if err := w.Insert(context.Background(), "bench", i+1, benchRow(i)); err != nil {
-			require.NoError(b, err)
+		if err := db2.Close(); err != nil {
+			b.Fatal(err)
 		}
 	}
-	full, err := w.Commit(context.Background())
-	require.NoError(b, err)
-	return db, full
 }
 
-// BenchmarkWrite1M writes a million rows in one FULL snapshot.
-func BenchmarkWrite1M(b *testing.B) {
-	const rows = 1_000_000
-	var db *Store
-	var fullID SnapshotID
-	b.ResetTimer()
-	build := func() {
-		base := filepath.Join(tmpdb(b), "w1m")
-		db, fullID = buildBenchStoreN(b, base, rows)
+// benchStoreAt is benchStore writing to an explicit base path.
+func benchStoreAt(tb testing.TB, base string, opts Options, n int) (*Store, SnapshotID) {
+	tb.Helper()
+	if opts.BlockSize == 0 {
+		opts.BlockSize = 256 << 10
 	}
-	build()
-	b.StopTimer()
-	b.SetBytes(rows * 100)
-	b.ReportMetric(float64(rows)/b.Elapsed().Seconds()/1000, "krows/s")
-	db.Close()
-	_ = fullID
+	db, err := Create(base, opts)
+	requireNilErr(tb, err)
+	w, err := db.BeginFull(context.Background())
+	requireNilErr(tb, err)
+	requireNilErr(tb, w.CreateTable("t", benchCols()))
+	for i := 1; i <= n; i++ {
+		requireNilErr(tb, w.Insert(context.Background(), "t", uint64(i), benchRow(uint64(i))))
+	}
+	snap, err := w.Commit(context.Background())
+	requireNilErr(tb, err)
+	return db, snap
 }
 
-// BenchmarkGetRandom1M reads 10k random RowIDs from a million-row store
-// (AC-003 scenario: random access must not scan the data file).
-func BenchmarkGetRandom1M(b *testing.B) {
-	const rows = 1_000_000
-	db, fullID := buildBenchStoreN(b, filepath.Join(tmpdb(b), "r1m"), rows)
-	defer db.Close()
-	var rng uint64 = 88172645463325252
+// BenchmarkDeepChainGet resolves a row at the tip of a 32-snapshot DELTA
+// chain: index resolution walks the parent chain, the row itself lives in
+// snapshot 1's block.
+func BenchmarkDeepChainGet(b *testing.B) {
+	ctx := context.Background()
+	db, err := Create(filepath.Join(tmpdb(b), "chain"), Options{})
+	requireNilErr(b, err)
+	b.Cleanup(func() { db.Close() })
+	w, _ := db.BeginFull(ctx)
+	requireNilErr(b, w.CreateTable("t", benchCols()))
+	for r := 1; r <= 100; r++ {
+		requireNilErr(b, w.Insert(ctx, "t", uint64(r), benchRow(uint64(r))))
+	}
+	snap, err := w.Commit(ctx)
+	requireNilErr(b, err)
+	const depth = 32
+	for i := 0; i < depth; i++ {
+		d, err := db.BeginDelta(ctx, snap)
+		requireNilErr(b, err)
+		// One change per layer: rewrite row 1 (a delete of a parent-invisible
+		// row would be rejected by the strict parent check).
+		requireNilErr(b, d.Update(ctx, "t", 1, benchRow(uint64(i+1))))
+		snap, err = d.Commit(ctx)
+		requireNilErr(b, err)
+	}
+	var dst Row
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		rng = rng*6364136223846793005 + 1442695040888963407
-		rowID := rng%rows + 1
-		if _, err := db.Get(context.Background(), fullID, "bench", rowID, nil); err != nil {
-			require.NoError(b, err)
-		}
-	}
-	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds()/1000, "kget/s")
-}
-
-// BenchmarkScan1M scans a million-row table.
-func BenchmarkScan1M(b *testing.B) {
-	const rows = 1_000_000
-	db, fullID := buildBenchStoreN(b, filepath.Join(tmpdb(b), "s1m"), rows)
-	defer db.Close()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		it, err := db.Scan(context.Background(), fullID, "bench", ScanOptions{})
+		row, err := db.Get(ctx, snap, "t", RowID(i%100)+1, dst)
 		if err != nil {
-			require.NoError(b, err)
+			b.Fatal(err)
 		}
-		n := 0
-		for {
-			if _, ok := it.Next(); !ok {
-				break
-			}
-			n++
-		}
-		if err := it.Err(); err != nil {
-			require.NoError(b, err)
-		}
-		it.Close()
-		require.Equal(b, int(rows), n, "scan returned %d rows", n)
+		dst = row[:0]
 	}
-	b.ReportMetric(float64(rows)/b.Elapsed().Seconds()/1000, "krows/s")
 }
 
-// buildDeltaChainStore builds a FULL + depth DELTAs, each touching deltaRows.
-func buildDeltaChainStore(b *testing.B, base string, depth, deltaRows int) (*Store, SnapshotID) {
-	b.Helper()
-	db, fullID := buildBenchStoreN(b, base, 100_000)
-	parent := fullID
-	nextID := uint64(100_001)
-	for d := 0; d < depth; d++ {
-		w, err := db.BeginDelta(context.Background(), parent)
-		require.NoError(b, err)
-		for i := 0; i < deltaRows; i++ {
-			require.NoError(b, w.Insert(context.Background(), "bench", nextID, Row{Uint64(nextID), String("delta-row"), Bool(false), Int32(int32(i)), Float64(0), DateTimeValueOf(1700000000000000000), DecimalValue(Decimal{Unscaled: bigI(1), Scale: 2})}))
-			nextID++
-		}
-		info, err := w.Commit(context.Background())
-		require.NoError(b, err)
-		parent = info
-	}
-	return db, parent
-}
-
-// BenchmarkGetDeepChain performs point reads at the head of a 32-deep DELTA
-// chain (parent-chain resolution cost). The block cache is warmed first so
-// the benchmark measures resolution and decode, not cold decompression.
-func BenchmarkGetDeepChain(b *testing.B) {
-	db, head := buildDeltaChainStore(b, filepath.Join(tmpdb(b), "chain"), 32, 1000)
-	defer db.Close()
-	for i := uint64(1); i <= 100_000; i++ {
-		if _, err := db.Get(context.Background(), head, "bench", i, nil); err != nil {
-			require.NoError(b, err)
-		}
-	}
-	var rng uint64 = 1442695040888963407
-	b.ResetTimer()
+// BenchmarkEncryptedWrite measures the FULL write path with AES-256-GCM
+// block and IndexTxn chunk sealing enabled.
+func BenchmarkEncryptedWrite(b *testing.B) {
+	ctx := context.Background()
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		rng = rng*6364136223846793005 + 1
-		rowID := rng%100_000 + 1
-		if _, err := db.Get(context.Background(), head, "bench", rowID, nil); err != nil {
-			require.NoError(b, err)
-		}
-	}
-}
-
-// BenchmarkScanDeepChain scans the head of a 32-deep DELTA chain.
-func BenchmarkScanDeepChain(b *testing.B) {
-	db, head := buildDeltaChainStore(b, filepath.Join(tmpdb(b), "scanchain"), 32, 1000)
-	defer db.Close()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		it, err := db.Scan(context.Background(), head, "bench", ScanOptions{})
-		if err != nil {
-			require.NoError(b, err)
-		}
-		n := 0
-		for {
-			if _, ok := it.Next(); !ok {
-				break
-			}
-			n++
-		}
-		if err := it.Err(); err != nil {
-			require.NoError(b, err)
-		}
-		it.Close()
-		require.Equal(b, 132_000, n, "scan returned %d rows, want 132000", n)
-	}
-}
-
-func DateTimeValueOf(ns int64) Value {
-	t := time.Unix(0, ns).UTC()
-	return DateTime(t)
-}
-
-// isoRow is a prebuilt row: isolates the library write path from benchmark
-// row-construction noise (fmt.Sprintf / big.NewInt in benchRow dominate the
-// reported allocs of the FullSequentialWrite benchmarks).
-func isoRow() Row {
-	return Row{
-		Uint64(1), String("user-1-abcdefghijklmnop"), Bool(true), Int32(1),
-		Float64(0.5), DateTimeValueOf(1700000000000000000),
-		DecimalValue(Decimal{Unscaled: bigI(100), Scale: 2}),
-	}
-}
-
-// BenchmarkIsolatedWrite writes rows with a prebuilt Row so the reported
-// allocs/bytes measure the library write path alone (Insert + Commit).
-func BenchmarkIsolatedWrite(b *testing.B) {
-	const rows = 100000
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		base := filepath.Join(tmpdb(b), "wisolated")
-		db, err := Create(base, Options{})
-		require.NoError(b, err)
-		w, _ := db.BeginFull(context.Background())
-		require.NoError(b, w.CreateTable("bench", benchSchema()))
-		r := isoRow()
+		base := filepath.Join(tmpdb(b), fmt.Sprintf("ew-%d", i))
+		db, err := Create(base, encOptions("bk"))
+		requireNilErr(b, err)
+		w, err := db.BeginFull(ctx)
+		requireNilErr(b, err)
+		requireNilErr(b, w.CreateTable("t", benchCols()))
 		b.StartTimer()
-		for j := uint64(0); j < rows; j++ {
-			if err := w.Insert(context.Background(), "bench", j+1, r); err != nil {
-				require.NoError(b, err)
-			}
+		for r := 1; r <= benchRows; r++ {
+			requireNilErr(b, w.Insert(ctx, "t", uint64(r), benchRow(uint64(r))))
 		}
-		if _, err := w.Commit(context.Background()); err != nil {
-			require.NoError(b, err)
+		if _, err := w.Commit(ctx); err != nil {
+			b.Fatal(err)
 		}
 		b.StopTimer()
-		db.Close()
+		requireNilErr(b, db.Close())
 	}
-	b.SetBytes(rows * 100)
-	b.ReportMetric(float64(rows)/b.Elapsed().Seconds()/1000, "krows/s")
+	b.SetBytes(benchRows * 64)
+}
+
+// BenchmarkEncryptedGetHot measures cached random reads on an encrypted
+// store (decrypt + decompress per block miss, then AESGCM on hot? blocks are
+// cached decoded, so this measures the authenticated decode path).
+func BenchmarkEncryptedGetHot(b *testing.B) {
+	ctx := context.Background()
+	db, snap := benchStore(b, encOptions("bk"), 20_000)
+	b.Cleanup(func() { db.Close() })
+	var dst Row
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		row, err := db.Get(ctx, snap, "t", RowID(i%20_000)+1, dst)
+		if err != nil {
+			b.Fatal(err)
+		}
+		dst = row[:0]
+	}
 }

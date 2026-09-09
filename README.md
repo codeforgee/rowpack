@@ -129,34 +129,27 @@ for {
 
 ## 批量读取
 
-批量读取按块聚合：每个块至多加载、解密、解压和校验一次，经有界重排缓冲按请求
-顺序流出。两个入口：
-
-- `ReadRowsByIDs`：显式 RowID 集合；重复输入重复返回（与输入下标 1:1），
-  缺失/已删除行跳过（不报错，`Stats` 反映差异）。
-- `ReadRowRanges`：多范围，重叠自动合并，升序输出。
+`ReadBatch` 按块聚合：每个块至多加载、解密、解压和校验一次，不管请求中有多少行
+落在这个块里。语义与逐行 `Get` 一致：所有 id 必须在该快照可见（缺失或已删除整批
+返回 `ErrNotFound`）；返回顺序与输入 ids 一一对应（重复输入重复返回）；返回的行
+归调用方所有、互不别名。
 
 ```go
-it, err := db.ReadRowsByIDs(ctx, full.ID, 1, []RowID{1001, 1002, 1005},
-	rowpack.BatchReadOptions{Order: rowpack.BatchOrderInput})
+rows, err := db.ReadBatch(ctx, full, "users", []RowID{1001, 1002, 1005})
 if err != nil {
 	log.Fatal(err)
 }
-defer it.Close()
-for {
-	id, row, ok := it.Next(nil)
-	if !ok {
-		break
-	}
-	name, _ := row[1].String()
-	_ = id
+for i, r := range rows {
+	name, _ := r[1].String()
 	_ = name
+	_ = i
 }
-st := it.Stats() // 块数、解压字节、命中与跳过差异
+
+st := db.Stats().Batch // Calls/Rows/Blocks/RawBytes：聚合效果可量化（Blocks << len(ids)）
 ```
 
-`Parallelism > 1` 启用并行块解码（发射顺序不变）。冷缓存连续 1000 行场景较
-逐行 Get 提升约 400×（`BenchmarkBatchVsGetLoop` 复现）。
+冷缓存连续 1000 行场景较逐行 Get 提升数百倍（`make bench-batch` 对比
+`BenchmarkGetLoop1000` vs `BenchmarkReadBatch1000`）。
 
 ## 文档
 
@@ -177,20 +170,22 @@ st := it.Stats() // 块数、解压字节、命中与跳过差异
 ```sh
 make test        # go test ./...
 make race        # go test -race ./...
-make fuzz-short  # 每个 fuzz 目标 5s
+make vet         # go vet ./...
+make staticcheck # staticcheck ./...
+make bench       # 单配置基准套件（写/热冷读/扫描/批量/Open/深链/加密），输出 docs/bench-results.txt
+make bench-batch # 批量读对比：逐行 Get 基线 vs ReadBatch（10s 每场景）
 make golden      # 重新生成 golden files（格式变更时人工审查）
-make bench       # 统一基准矩阵（v1.2 Tier 0），输出 docs/bench-results.txt
-make bench-batch # 批量读对比：逐行 Get 基线 vs ReadBatch（v1.2 Tier 1）
 ```
 
 ## 参考基准
 
-统一矩阵由 `make bench` 复现（`BenchmarkEnv` + `BenchmarkMainMatrix` +
-`BenchmarkLatency`，BlockSize × 缓存 × 持久化 × mmap/readat 的剪枝矩阵，带
-p50/p95/p99 与峰值 RSS），完整结果落盘 `docs/bench-results.txt`，要点见
-[docs/perf-report.md](docs/perf-report.md) §1。环境：Go 1.27 / darwin/arm64 /
-klauspost zstd v1.20 / BlockSize 256 KiB / Zstd / SyncCommit，数据集 100k 行 × 7 列。
-数值随磁盘与 CPU 变化，仅作相对参考。
+单配置基准套件由 `make bench` 复现（`BenchmarkWriteFull` + `BenchmarkGetHot` +
+`BenchmarkGetCold` + `BenchmarkScan` + `BenchmarkReadBatch1000`/`BenchmarkGetLoop1000`
++ `BenchmarkOpenReplay` + `BenchmarkDeepChainGet` + 加密档），完整结果落盘
+`docs/bench-results.txt`，要点见 [docs/perf-report.md](docs/perf-report.md) §1。
+环境：Go 1.27 / darwin/arm64 / klauspost zstd v1.20 / BlockSize 256 KiB / Zstd /
+SyncCommit（批量与缓存档另标注），数据集 100k 行 × 7 列。数值随磁盘与 CPU 变化，
+仅作相对参考。
 
 | 基准（256K/mmap 档） | 结果 |
 | --- | --- |

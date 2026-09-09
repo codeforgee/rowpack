@@ -83,8 +83,3 @@ func (e *CommitError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *CommitError) Unwrap() error { return e.Err }
-
-// newCorruption builds a CorruptionError over ErrCorruptData.
-func newCorruption(file string, offset int64, snapshot SnapshotID, table TableID, block uint64, reason string) *CorruptionError {
-	return &CorruptionError{File: file, Offset: offset, SnapshotID: snapshot, TableID: table, BlockID: block, Kind: ErrCorruptData, Reason: reason}
-}

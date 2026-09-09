@@ -578,7 +578,13 @@ func (w *Writer) put(ctx context.Context, typ ChangeType, table TableID, rowID R
 	}
 	var encoded []byte
 	if typ == ChangeDelete {
-		// Tombstone: no row payload.
+		// Tombstone: no row payload. The strict parent-existence check still
+		// applies: deleting a row that does not exist in the parent view is
+		// reported like an UPDATE of a missing row (checkStrictParent handles
+		// ChangeDelete explicitly).
+		if err := w.checkStrictParent(table, rowID, typ); err != nil {
+			return err
+		}
 	} else {
 		schema, err := w.resolveSchema(table, schemaVersion)
 		if err != nil {

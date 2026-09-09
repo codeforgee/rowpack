@@ -1,6 +1,8 @@
 package rowpack
 
 import (
+	"errors"
+
 	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/cache"
 )
@@ -18,8 +20,13 @@ import (
 //     here are reused across scan iterations (small working sets hit fully);
 //     once the window is full, further scan blocks stream through the
 //     scratch pool, never allocating and never evicting the hot set.
+//
+// Every block read on the store goes through this type (Get/Scan/batch/scan
+// verify/recovery rebuild), so consecutive decode failures are normalized
+// into a structured CorruptionError before they escape to public callers.
 type blockLoader struct {
 	reader *block.Reader
+	file   string // label for CorruptionError.File (the store data path)
 	cache  *cache.LRU
 	scan   *cache.LRU
 	sf     cache.Group
@@ -41,13 +48,33 @@ func scanBudgetFor(cacheBytes int64) int64 {
 	return b
 }
 
-func newBlockLoader(reader *block.Reader, cacheBytes int64) *blockLoader {
+func newBlockLoader(reader *block.Reader, file string, cacheBytes int64) *blockLoader {
 	var lru, scn *cache.LRU
 	if cacheBytes > 0 {
 		lru = cache.NewLRU(cacheBytes)
 		scn = cache.NewLRU(scanBudgetFor(cacheBytes))
 	}
-	return &blockLoader{reader: reader, cache: lru, scan: scn}
+	return &blockLoader{reader: reader, file: file, cache: lru, scan: scn}
+}
+
+// blockReadError normalizes a block read/decode failure into a structured
+// CorruptionError so public read paths can match ErrCorruptData with
+// errors.Is, while still unwrapping to the underlying Cause (e.g.
+// ErrAuthFailed for a failed AEAD authentication). Failures that already
+// carry a corruption or auth sentinel are returned unchanged so Verify and
+// the recovery rebuild never double-wrap.
+func (l *blockLoader) blockReadError(offset int64, blockID uint64, err error) error {
+	if errors.Is(err, ErrCorruptData) || errors.Is(err, ErrAuthFailed) {
+		return err
+	}
+	return &CorruptionError{
+		File:    l.file,
+		Offset:  offset,
+		BlockID: blockID,
+		Kind:    ErrCorruptData,
+		Cause:   err,
+		Reason:  err.Error(),
+	}
 }
 
 // Load returns the validated block at offset with the given block ID, serving
@@ -63,7 +90,7 @@ func (l *blockLoader) Load(offset int64, blockID uint64) (*block.Block, error) {
 		l.cache.NoteLoad()
 		blk, err := l.reader.ReadAtBlock(offset)
 		if err != nil {
-			return nil, err
+			return nil, l.blockReadError(offset, blockID, err)
 		}
 		// Only validated blocks (CRC passed inside ReadAtBlock) are cached.
 		l.cache.Put(blockID, int64(len(blk.Raw)), blk)
@@ -112,7 +139,7 @@ func (l *blockLoader) LoadScan(offset int64, blockID uint64) (*scanRef, bool, er
 	}
 	sc, err := l.reader.ReadAtBlockTransient(offset)
 	if err != nil {
-		return nil, false, err
+		return nil, false, l.blockReadError(offset, blockID, err)
 	}
 	if l.scan != nil && uint64(len(sc.Raw)) <= l.scan.Remaining() {
 		if cap(sc.Raw) == len(sc.Raw) {

@@ -48,19 +48,6 @@ func (a *Appender) View(offset, n int64) ([]byte, func(), error) {
 	return a.mapper.view(offset, n)
 }
 
-// viewCopy is the portable ReadAt fallback view: a fresh copy the caller
-// owns outright.
-func (a *Appender) viewCopy(offset, n int64) ([]byte, func(), error) {
-	if n < 0 || offset < 0 {
-		return nil, nil, fmt.Errorf("rowpack: invalid view range [%d,%d)", offset, offset+n)
-	}
-	b := make([]byte, n)
-	if _, err := a.f.ReadAt(b, offset); err != nil {
-		return nil, nil, err
-	}
-	return b, func() {}, nil
-}
-
 // Offset returns the current write offset (bytes appended so far).
 func (a *Appender) Offset() int64 { return a.offset }
 

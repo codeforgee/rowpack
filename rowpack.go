@@ -210,7 +210,7 @@ func openStore(basePath, dataPath string, opts Options, uuid [16]byte, header fi
 		MaxRawBytes:    opts.Limits.MaxRawBlockBytes,
 		MaxStoredBytes: opts.Limits.MaxStoredBlockBytes,
 	})
-	s.loader = newBlockLoader(s.reader, opts.CacheBytes)
+	s.loader = newBlockLoader(s.reader, dataPath, opts.CacheBytes)
 	s.uuid = uuid
 	s.header = header
 	// Cross-process single-writer lock for read-write opens.
@@ -296,6 +296,7 @@ func (s *Store) Close() error {
 	return errors.Join(errs...)
 }
 
+// readDataHeader reads and validates the single-file header.
 func (s *Store) readDataHeader() (fileformat.DataFileHeader, error) {
 	var h fileformat.DataFileHeader
 	buf := make([]byte, fileformat.DataFileHeaderSize)
@@ -311,8 +312,7 @@ func (s *Store) readDataHeader() (fileformat.DataFileHeader, error) {
 	return h, nil
 }
 
-// readIndexHeader was removed with the separate index file (v2).
-
+// checkOpen reports ErrClosed after Close.
 func (s *Store) checkOpen() error {
 	if s.closed.Load() {
 		return ErrClosed

@@ -147,7 +147,7 @@ func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc *index.RowLoc
 			return nil, 0, fmt.Errorf("rowpack: row CRC mismatch in block %d", bl.BlockID)
 		}
 	}
-	row, err := s.decodeRowInto(ref, bl, si, dst)
+	row, err := s.decodeRowInto(ref, bl, si, dst, nil)
 	return row, ref.Entry.SchemaVersion, err
 }
 
@@ -167,13 +167,15 @@ func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc 
 	return codec.DecodeInto(dst, rp.RowBytes(int(loc.ItemOrdinal)), schema, s.opts.codecLimits(), sink)
 }
 
-// decodeRowInto decodes a located row into dst against its schema.
-func (s *Store) decodeRowInto(ref block.RowRef, bl *index.BlockLoc, si *schemaIndex, dst Row) (Row, error) {
+// decodeRowInto decodes a located row into dst against its schema. A non-nil
+// sink materializes String/Bytes payloads as views (batch reads); nil keeps
+// copy semantics (Get).
+func (s *Store) decodeRowInto(ref block.RowRef, bl *index.BlockLoc, si *schemaIndex, dst Row, sink *codec.Sink) (Row, error) {
 	schema, err := si.schemaFor(bl, ref.Entry.SchemaVersion)
 	if err != nil {
 		return nil, err
 	}
-	return codec.DecodeInto(dst, ref.Row, schema, s.opts.codecLimits(), nil)
+	return codec.DecodeInto(dst, ref.Row, schema, s.opts.codecLimits(), sink)
 }
 
 // Schema returns the schema of a table version at a snapshot. The table is

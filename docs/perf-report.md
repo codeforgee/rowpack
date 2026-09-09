@@ -93,12 +93,16 @@
 | 禁用缓存（CacheBytes<0）的冷读改走池化瞬态解压（原每读一块即丢弃一个 ~330KB 缓冲） | readRowInto / ReadBatch 路由到 loader.LoadScan | 冷读 328,149 → **160 B/op**（-99.95%）· 7 → 6 allocs；5 轮中位 329 µs（噪声带内 +1.3%）|
 | ParseRowAt 返回 RowRef 值（原指针堆逃逸，热读每行一次） | block.ParseRowAt / decodeRowInto | 热读 3 → **2 allocs/op** · 96 → **16 B/op**（-83%），速度持平（270 ns）|
 | 深链 Get / 加密热读同步受益 | — | 深链 Get 4 → 3 allocs · 800 → 720 B/op；加密热读 310.8 → **297.9 ns**（-4.2%）且 3 → 2 allocs |
+| ReadBatch 的 String/Bytes 列改走每次调用独立的 arena 视图（行仍互不别名、不 pin 块缓冲） | read_batch.go + decodeRowInto 增设 sink 参数 | ReadBatch1000 分配 2,018 → **19**（-99%）· 229 µs（逐行 Get 基线 281 µs · 2,000 allocs）；B/op 持平（大头为返回行 Value slab，不可避免）|
 
-ReadBatch 保持每行复制（行归调用方所有，不得 alias 块缓冲）；Get 路径的
-String/Bytes 复制保留（Get 是并发入口，无法安全 alias 有界 LRU 缓存的块缓冲）。
-写路径未动（后续候选：索引构建预分配 Builder.Reserve / rowIDSet.rehash，
-commit 期 ~2 allocs/行）。CPU 侧最大单项 runtime.madvise（~21%，将瞬态页
-归还 OS）随冷读/扫描垃圾量下降已显著缓解。
+**写路径调研结论**（`-memprofilerate=1` 精确计数）：BenchmarkWriteFull 报告的
+~4 allocs/行几乎全部来自基准负载自身的行构造（fmt.Sprintf + 复合字面量），
+引擎 Insert 路径靠缓冲构建器与编码器池化已是 ~0 allocs/行；剩余 ~1,000
+allocs/op 为 commit 批量分配（zstd/索引缓冲，均已池化复用），无可观收益点，
+故本轮不动写路径。Get 路径的 String/Bytes 复制保留（Get 是并发入口，无法
+安全 alias 有界 LRU 缓存的块缓冲）。CPU 侧最大单项 runtime.madvise（~21%，
+将瞬态页归还 OS）随冷读/扫描垃圾量下降已显著缓解；剩余写 CPU 主体为 zstd
+压缩本体与 fsync。
 
 ## 3. 与 v1（双文件）基线的对照（历史记录，v1 已废弃）
 

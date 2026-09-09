@@ -28,8 +28,11 @@ type batchReq struct {
 // (neither missing nor deleted), otherwise ReadBatch returns the same
 // ErrNotFound error Get would and no rows are returned. Rows are freshly
 // decoded and owned by the caller (like Get with a nil dst; none of the rows
-// alias each other or the block buffers). ctx is accepted for signature
-// consistency; cancellation is not observed mid-batch (same as Get).
+// alias each other or the block buffers): String/Bytes payloads are
+// materialized into a per-call arena as distinct zero-copy views, so retained
+// values stay valid via GC without pinning block buffers. ctx is accepted
+// for signature consistency; cancellation is not observed mid-batch (same as
+// Get).
 //
 // ReadBatch is safe for concurrent use and counts toward Stats.Batch:
 // Blocks and RawBytes quantify the aggregation (Blocks <= len(ids); with
@@ -77,6 +80,13 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 	sort.Slice(blockIDs, func(i, j int) bool { return blockIDs[i] < blockIDs[j] })
 
 	out := make([]Row, len(ids))
+	// Per-call arena: String/Bytes payloads materialize as zero-copy views
+	// into bounded chunks instead of one heap copy per value. Rows remain
+	// caller-owned: each value gets its own arena region (never aliased by
+	// another row), and views survive chunk rotation, so retained values keep
+	// their chunk alive via GC without pinning whole block buffers.
+	var arena strArena
+	sink := strArenaSink(&arena)
 	var dirScratch []fileformat.RowDirectoryEntry // reused across blocks
 	var blocks, rawBytes uint64
 	var scr *scanRef // transient scratch (cache-disabled); released per block
@@ -117,7 +127,7 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 			if err != nil {
 				return nil, err
 			}
-			row, err := s.decodeRowInto(ref, bl, st.schemas, nil)
+			row, err := s.decodeRowInto(ref, bl, st.schemas, nil, sink)
 			if err != nil {
 				return nil, err
 			}
@@ -156,7 +166,7 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 			if maxCols != 0 {
 				dst = values[i*maxCols : (i+1)*maxCols]
 			}
-			row, err := s.rowFromPayloadInto(rp, bl, &index.RowLoc{BlockID: bid, ItemOrdinal: req.ordinal}, st.schemas, dst, nil)
+			row, err := s.rowFromPayloadInto(rp, bl, &index.RowLoc{BlockID: bid, ItemOrdinal: req.ordinal}, st.schemas, dst, sink)
 			if err != nil {
 				return nil, err
 			}

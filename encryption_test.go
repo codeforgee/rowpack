@@ -243,8 +243,7 @@ func TestEncryptionTamperDetect(t *testing.T) {
 	// order of metadata vs rows blocks varies), and tamper its ciphertext.
 	st, err := db.captureState()
 	require.NoError(t, err)
-	loc, ok, err := st.view.ResolveRow(full, 1, 1)
-	require.NoError(t, err)
+	loc, ok := st.view.ResolveRow(full, 1, 1)
 	require.True(t, ok)
 	rowsBlk := st.view.Block(loc.BlockID)
 	require.NotNil(t, rowsBlk)

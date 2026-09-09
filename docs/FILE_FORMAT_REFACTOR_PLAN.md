@@ -597,3 +597,6 @@ Index 的收益依赖实际数据规模和工作集，设计空间更大。
 
 任何提交都必须保持 `go test ./...` 通过；格式切换提交允许集中更新 golden，但不得暂时保留
 静默双格式分派。
+# Implementation note (2026-09-09)
+
+The proposed Lazy Row Index mode was removed before release. The implementation and public API are Eager-only; sorted Row Index Pages remain on disk, while Open/recovery always builds compact in-memory shards. The historical Lazy sections below are retained only as design history.

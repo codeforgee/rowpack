@@ -26,10 +26,10 @@ func TestSplitCacheBudget(t *testing.T) {
 		{2 * MiB, 0, 1 * MiB, 1 * MiB},           // small total: no 1 MiB floor, sum preserved
 	}
 	for _, c := range cases {
-		data, scan, idx := splitCacheBudget3(c.total, c.scan, -1)
-		if data != c.wantData || scan != c.wantScan || idx != 0 {
-			t.Errorf("splitCacheBudget3(total=%d, scan=%d, index=-1) = (%d, %d, %d), want (%d, %d, 0)",
-				c.total, c.scan, data, scan, idx, c.wantData, c.wantScan)
+		data, scan := splitCacheBudget(c.total, c.scan)
+		if data != c.wantData || scan != c.wantScan {
+			t.Errorf("splitCacheBudget(total=%d, scan=%d) = (%d, %d), want (%d, %d)",
+				c.total, c.scan, data, scan, c.wantData, c.wantScan)
 		}
 		if c.total > 0 && data+scan != c.total {
 			t.Errorf("total=%d: data+scan = %d, must equal total", c.total, data+scan)

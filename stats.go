@@ -62,12 +62,9 @@ type Stats struct {
 	RawBytes          uint64
 	StoredBytes       uint64
 	IndexMemoryBytes  uint64
-	IndexMode         IndexMode  // Eager (default) or Lazy
-	IndexFenceBytes   uint64     // resident Row Index Fence bytes in Lazy mode
 	OversizedRowPages uint64     // pages holding a single record larger than the page target
 	Cache             CacheStats // random-read decoded block cache
 	ScanCache         CacheStats // bounded decoded scan window
-	IndexPageCache    CacheStats // Lazy decoded Row Index Page cache
 	Read              ReadStats  // cumulative physical read amplification
 	Batch             BatchStats
 	Recovery          RecoveryStats
@@ -95,8 +92,6 @@ func (s *Store) Stats() Stats {
 		}
 	}
 	stt.IndexMemoryBytes = view.MemoryBytes()
-	stt.IndexMode = s.opts.IndexMode
-	stt.IndexFenceBytes = view.IndexFenceBytes()
 	stt.OversizedRowPages = s.oversizedPages.Load()
 	if sz, err := s.data.Size(); err == nil {
 		stt.DataFileBytes = sz
@@ -104,10 +99,8 @@ func (s *Store) Stats() Stats {
 	if l := s.loader; l != nil {
 		stt.Cache.CapacityBytes, stt.Cache.UsedBytes, stt.Cache.Hits, stt.Cache.Misses, stt.Cache.Evictions, stt.Cache.Loads = l.cacheStats()
 		stt.ScanCache.CapacityBytes, stt.ScanCache.UsedBytes, stt.ScanCache.Hits, stt.ScanCache.Misses, stt.ScanCache.Evictions, stt.ScanCache.Loads = l.scanStats()
-		stt.IndexPageCache.CapacityBytes, stt.IndexPageCache.UsedBytes, stt.IndexPageCache.Hits, stt.IndexPageCache.Misses, stt.IndexPageCache.Evictions, stt.IndexPageCache.Loads = l.indexStats()
 		stt.Cache.OverheadBytes = l.cache.OverheadBytes()
 		stt.ScanCache.OverheadBytes = l.scan.OverheadBytes()
-		stt.IndexPageCache.OverheadBytes = l.index.OverheadBytes()
 		io := l.reader.Stats()
 		stt.Read.ReadBytes = io.ReadBytes
 		stt.Read.DecompressedBytes = io.DecompressedBytes

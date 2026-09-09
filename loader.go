@@ -29,7 +29,6 @@ type blockLoader struct {
 	file   string // label for CorruptionError.File (the store data path)
 	cache  *cache.LRU
 	scan   *cache.LRU
-	index  *cache.LRU // decoded Row Index Page cache (Lazy mode only; nil in Eager)
 	sf     cache.Group
 }
 
@@ -49,60 +48,31 @@ func scanBudgetFor(cacheBytes int64) int64 {
 	return b
 }
 
-// indexBudgetFor returns the default IndexPageCache budget for lazy stores:
-// a quarter of the total (capped at 32 MiB) so index pages get a fair slice
-// while data blocks keep the majority. Never exceeds total.
-func indexBudgetFor(cacheBytes int64) int64 {
-	b := cacheBytes / 4
-	if b > 32<<20 {
-		return 32 << 20
-	}
-	return b
-}
-
-// splitCacheBudget3 resolves the (data, scan, index) triple for a store.
-// total <= 0 disables all caching; scan < 0 disables the scan window;
-// index < 0 disables the index page cache; index == 0 selects the default
-// index split. The three capacities always sum to exactly total when total > 0.
-func splitCacheBudget3(total, scan, index int64) (dataCap, scanCap, idxCap int64) {
+func splitCacheBudget(total, scan int64) (dataCap, scanCap int64) {
 	if total <= 0 {
-		return 0, 0, 0
+		return 0, 0
 	}
-	if index < 0 {
-		idxCap = 0
-	} else if index == 0 {
-		idxCap = indexBudgetFor(total)
-	} else {
-		idxCap = index
-	}
-	if idxCap > total {
-		idxCap = total
-	}
-	rest := total - idxCap
 	if scan < 0 {
 		scan = 0
 	} else if scan == 0 {
-		scan = scanBudgetFor(rest)
+		scan = scanBudgetFor(total)
 	}
-	if scan > rest {
-		scan = rest
+	if scan > total {
+		scan = total
 	}
-	return rest - scan, scan, idxCap
+	return total - scan, scan
 }
 
-func newBlockLoader(reader *block.Reader, file string, cacheBytes, scanCacheBytes, indexCacheBytes int64) *blockLoader {
-	dataCap, scanCap, idxCap := splitCacheBudget3(cacheBytes, scanCacheBytes, indexCacheBytes)
-	var lru, scn, idx *cache.LRU
+func newBlockLoader(reader *block.Reader, file string, cacheBytes, scanCacheBytes int64) *blockLoader {
+	dataCap, scanCap := splitCacheBudget(cacheBytes, scanCacheBytes)
+	var lru, scn *cache.LRU
 	if dataCap > 0 {
 		lru = cache.NewLRU(dataCap)
 	}
 	if scanCap > 0 {
 		scn = cache.NewLRU(scanCap)
 	}
-	if idxCap > 0 {
-		idx = cache.NewLRU(idxCap)
-	}
-	return &blockLoader{reader: reader, file: file, cache: lru, scan: scn, index: idx}
+	return &blockLoader{reader: reader, file: file, cache: lru, scan: scn}
 }
 
 // blockReadError normalizes a block read/decode failure into a structured
@@ -222,20 +192,4 @@ func (l *blockLoader) scanStats() (capBytes, used, hits, misses, evictions, load
 		return 0, 0, 0, 0, 0, 0
 	}
 	return l.scan.CapacityBytes(), l.scan.UsedBytes(), l.scan.Hits(), l.scan.Misses(), l.scan.Evictions(), l.scan.Loads()
-}
-
-// indexStats returns the Row Index Page cache counters (nil-safe).
-func (l *blockLoader) indexStats() (capBytes, used, hits, misses, evictions, loads uint64) {
-	if l.index == nil {
-		return 0, 0, 0, 0, 0, 0
-	}
-	return l.index.CapacityBytes(), l.index.UsedBytes(), l.index.Hits(), l.index.Misses(), l.index.Evictions(), l.index.Loads()
-}
-
-// indexOverhead returns the Row Index Page cache management memory (nil-safe).
-func (l *blockLoader) indexOverhead() uint64 {
-	if l.index == nil {
-		return 0
-	}
-	return l.index.OverheadBytes()
 }

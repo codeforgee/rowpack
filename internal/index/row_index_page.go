@@ -489,7 +489,7 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 
 // DecodeIndexPage decodes a Row Index Page into a []RowIndexEntry. It is the
 // exported form of decodeRowIndexPage, used by the store's LazySource to
-// materialize a page on a lazy load and hand it to the IndexPageCache.
+// materialize a validated index page for diagnostics and tests.
 func DecodeIndexPage(raw []byte) ([]fileformat.RowIndexEntry, error) {
 	return decodeRowIndexPage(raw)
 }

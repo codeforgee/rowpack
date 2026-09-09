@@ -134,19 +134,13 @@ func header(base string) {
 	fmt.Printf("snapshots=%d blocks=%d tables=%d logicalRows=%d\n", st.Snapshots, st.Blocks, st.Tables, st.LogicalRows)
 	fmt.Printf("dataBytes=%d rawBytes=%d storedBytes=%d indexMemory=%d indexRst=%d\n",
 		st.DataFileBytes, st.RawBytes, st.StoredBytes, st.IndexMemoryBytes, st.OversizedRowPages)
-	mode := "eager"
-	if st.IndexMode == rowpack.IndexLazy {
-		mode = "lazy"
-	}
-	fmt.Printf("rowIndex: mode=%s fenceBytes=%d (resident row-index bytes; eager=shards, lazy=fence)\n", mode, st.IndexFenceBytes)
+	fmt.Printf("rowIndex: memoryBytes=%d (eager sorted shards)\n", st.IndexMemoryBytes)
 	fmt.Printf("cache: hits=%d misses=%d evictions=%d used=%d/%d\n",
 		st.Cache.Hits, st.Cache.Misses, st.Cache.Evictions, st.Cache.UsedBytes, st.Cache.CapacityBytes)
 	fmt.Printf("scanCache: hits=%d misses=%d evictions=%d used=%d/%d\n",
 		st.ScanCache.Hits, st.ScanCache.Misses, st.ScanCache.Evictions, st.ScanCache.UsedBytes, st.ScanCache.CapacityBytes)
 	fmt.Printf("pageIO: loads=%d rawBytes=%d storedBytes=%d\n",
 		st.Read.PageLoads, st.Read.PageRawBytes, st.Read.PageStoredBytes)
-	fmt.Printf("indexPageCache: hits=%d misses=%d evictions=%d used=%d/%d\n",
-		st.IndexPageCache.Hits, st.IndexPageCache.Misses, st.IndexPageCache.Evictions, st.IndexPageCache.UsedBytes, st.IndexPageCache.CapacityBytes)
 	fmt.Printf("recovery: performed=%v dataTail=%d indexTail=%d rebuilt=%d\n",
 		st.Recovery.Performed, st.Recovery.DataTailIgnored, st.Recovery.IndexTailIgnored, st.Recovery.SnapshotsRebuilt)
 }

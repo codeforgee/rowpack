@@ -71,12 +71,7 @@ type View struct {
 	blocks         map[uint64]*BlockLoc
 	metadata       map[uint64]map[uint64]*MetadataLoc // SnapshotID -> ObjectID -> loc
 	metadataByType map[uint64]map[uint32][]uint64     // SnapshotID -> RecordType -> sorted ObjectIDs
-	rows           map[uint64]map[uint32]*rowShard    // SnapshotID -> TableID -> shard (Eager; nil in Lazy)
-
-	// lazy holds the per-snapshot Row Index Fence directories + a page source
-	// for on-demand page reads. It is non-nil only in Lazy mode, where rows is
-	// nil (the Eager rowShards are never materialized).
-	lazy *lazyIndex
+	rows           map[uint64]map[uint32]*rowShard
 
 	memoryBytes uint64
 }
@@ -177,9 +172,6 @@ func (it *rowShardIter) Next()         { it.pos++ }
 // RowIter returns a fresh iterator over rows for (snapshot, table), or nil
 // when there are no rows.
 func (v *View) RowIter(snapshot uint64, table uint32) *RowKeyIter {
-	if v.lazy != nil && v.lazy.snapshots[snapshot] != nil {
-		return v.lazy.rowIterFor(snapshot, table)
-	}
 	sh := v.rows[snapshot][table]
 	if sh == nil {
 		return nil
@@ -240,9 +232,6 @@ func (v *View) Blocks() []*BlockLoc {
 func (v *View) Row(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool) {
 	// Per-snapshot: a lazy snapshot uses the fence+page source; a snapshot that
 	// was rebuilt eagerly (corrupt-txn recovery fallback) uses rowShards.
-	if v.lazy != nil && v.lazy.snapshots[snapshot] != nil {
-		return v.lazy.row(snapshot, table, rowID)
-	}
 	sh := v.rows[snapshot][table]
 	if sh == nil {
 		return RowLoc{}, false
@@ -273,47 +262,20 @@ func (v *View) MetadataByType(snapshot uint64, recordType uint32) []uint64 {
 	return v.metadataByType[snapshot][recordType]
 }
 
-// MemoryBytes estimates the in-memory footprint of the view. In Lazy mode this
-// is the resident Fence Directory bytes (~52 B per page, ~0.013 B/row) plus the
-// block/metadata maps; the Eager rowShards are never materialized.
+// MemoryBytes estimates the in-memory footprint of the view.
 func (v *View) MemoryBytes() uint64 { return v.memoryBytes }
 
-// LazyError returns the first Row Index Page load error encountered by a Lazy
-// view (nil in Eager mode or when no page failed to load). The store surfaces
-// it as a CorruptionError on the offending read.
-func (v *View) LazyError() error {
-	if v.lazy == nil {
-		return nil
-	}
-	v.lazy.errMu.Lock()
-	defer v.lazy.errMu.Unlock()
-	return v.lazy.err
-}
-
-// IndexFenceBytes returns the resident Row Index Fence Directory bytes (the
-// Lazy row-index footprint; 0 in Eager mode).
-func (v *View) IndexFenceBytes() uint64 {
-	if v.lazy == nil {
-		return 0
-	}
-	return v.lazy.fenceBytes
-}
-
 // ResolveRow finds the row location for (snapshot, table, rowID) along the
-// parent chain. It reports found=false when no record exists and propagates
-// lazy index page load/corruption failures instead of treating them as absence.
-func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool, error) {
+// parent chain.
+func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool) {
 	cur := snapshot
 	for {
 		if loc, ok := v.Row(cur, table, rowID); ok {
-			return loc, true, nil
-		}
-		if err := v.LazyError(); err != nil {
-			return RowLoc{}, false, err
+			return loc, true
 		}
 		sm := v.Snapshot(cur)
 		if sm == nil || sm.Parent == 0 {
-			return RowLoc{}, false, nil
+			return RowLoc{}, false
 		}
 		cur = sm.Parent
 	}
@@ -321,9 +283,6 @@ func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, 
 
 // RowTables returns the table IDs that have row entries at the snapshot.
 func (v *View) RowTables(snapshot uint64) []uint32 {
-	if v.lazy != nil && v.lazy.snapshots[snapshot] != nil {
-		return v.lazy.tables(snapshot)
-	}
 	tbl := v.rows[snapshot]
 	if tbl == nil {
 		return nil
@@ -826,7 +785,6 @@ func (v *View) shallowCopy() *View {
 	for k, r := range v.rows {
 		nv.rows[k] = r
 	}
-	nv.lazy = v.lazy
 	nv.memoryBytes = v.memoryBytes
 	return nv
 }

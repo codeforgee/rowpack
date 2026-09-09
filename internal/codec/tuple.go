@@ -109,13 +109,19 @@ func Decode(data []byte, schema *Schema, limits Limits) ([]Value, error) {
 	return DecodeInto(nil, data, schema, limits, nil)
 }
 
-// StringSink materializes the payload of a decoded String/bytes value as a
-// string. The payload slice aliases the caller's buffer and must not be
-// aliased by the returned string; the sink must copy it or pin it in a
-// caller-owned buffer (it is called at most once per decoded string). A nil
-// sink copies the payload like Decode. An iterator may hand out append-only
-// arena views so a full scan performs no per-string allocation.
-type StringSink func(payload []byte) string
+// Sink lets decode paths that control payload-buffer lifetime (iterators)
+// materialize String/Bytes payloads as zero-copy views instead of fresh
+// copies. A nil *Sink, or a nil func field, keeps the copy semantics of
+// Decode: the payload is copied into the decoded Value. Each func is called
+// at most once per decoded value; returned views must stay valid for as long
+// as the decoded Row is documented to live (see the iterator ownership
+// contract).
+type Sink struct {
+	// String materializes a decoded String payload.
+	String func(payload []byte) string
+	// Bytes materializes a decoded Bytes payload.
+	Bytes func(payload []byte) []byte
+}
 
 // DecodeInto is the single decode entry: it writes the decoded values into
 // dst (growing it when the schema has more columns than dst can hold) and the
@@ -126,7 +132,7 @@ type StringSink func(payload []byte) string
 // column already holds one). Like Decode it requires an already-validated
 // schema and enforces all length/bounds/limit checks, so malformed payloads
 // never panic.
-func DecodeInto(dst []Value, data []byte, schema *Schema, limits Limits, sink StringSink) ([]Value, error) {
+func DecodeInto(dst []Value, data []byte, schema *Schema, limits Limits, sink *Sink) ([]Value, error) {
 	if schema == nil {
 		return nil, errors.New("rowpack: nil schema")
 	}
@@ -197,7 +203,7 @@ func DecodeInto(dst []Value, data []byte, schema *Schema, limits Limits, sink St
 // the same row slice across rows), avoiding a big.Int allocation per row. For
 // all other types the value is freshly built. When sink is non-nil, String
 // payloads are materialized through it instead of being copied.
-func readValueInto(reuse Value, b []byte, col Column, limits Limits, sink StringSink) (Value, int, error) {
+func readValueInto(reuse Value, b []byte, col Column, limits Limits, sink *Sink) (Value, int, error) {
 	need := func(n int) ([]byte, bool) {
 		if len(b) < n {
 			return nil, false
@@ -276,10 +282,13 @@ func readValueInto(reuse Value, b []byte, col Column, limits Limits, sink String
 			return Value{}, 0, errors.New("string is not valid UTF-8")
 		}
 		if col.Type == TypeString {
-			if sink != nil {
-				return Value{typ: TypeString, s: sink(payload)}, 4 + ln, nil
+			if sink != nil && sink.String != nil {
+				return Value{typ: TypeString, s: sink.String(payload)}, 4 + ln, nil
 			}
 			return String(string(payload)), 4 + ln, nil
+		}
+		if sink != nil && sink.Bytes != nil {
+			return Value{typ: TypeBytes, by: sink.Bytes(payload)}, 4 + ln, nil
 		}
 		return Bytes(payload), 4 + ln, nil
 	case TypeDate:

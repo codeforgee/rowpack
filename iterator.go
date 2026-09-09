@@ -83,10 +83,10 @@ type Iterator struct {
 	// a nil dst. It grows on demand and is overwritten by every Next call.
 	buf Row
 
-	// sink materializes decoded String payloads as append-only views into
-	// the arena (strArena), eliminating the per-row string copy allocation.
-	// See strArena for the view-lifetime guarantee.
-	sink  codec.StringSink
+	// sink materializes decoded String/Bytes payloads as append-only views
+	// into the arena (strArena), eliminating per-row payload copy
+	// allocations. See strArena for the view-lifetime guarantee.
+	sink  *codec.Sink
 	arena strArena
 
 	// Block cursor: reuses the parsed rows directory while consecutive rows
@@ -112,11 +112,35 @@ type Iterator struct {
 	closed   bool
 }
 
-// strArenaSink binds a StringSink to an append-only arena; shared by the
-// Scan and batch iterators and pre-bound once at iterator creation so
-// per-row decodes never allocate a method value.
-func strArenaSink(a *strArena) codec.StringSink {
-	return func(payload []byte) string { return a.materialize(payload) }
+// strArenaSink binds an append-only arena as the decode Sink: String and
+// Bytes payloads become zero-copy views into arena chunks (chunks rotate but
+// are never overwritten), eliminating per-row payload copies on scans. Bound
+// once at iterator creation so per-row decodes never allocate a sink.
+func strArenaSink(a *strArena) *codec.Sink {
+	return &codec.Sink{
+		String: func(payload []byte) string { return a.materialize(payload) },
+		Bytes:  func(payload []byte) []byte { return a.materializeBytes(payload) },
+	}
+}
+
+// materializeBytes copies payload into the arena and returns a full-slice
+// view into it (cap == len, so callers cannot append past the view and
+// clobber neighbouring materializations). Views stay valid across chunk
+// rotation for the same lifetime reason as materialize.
+func (a *strArena) materializeBytes(payload []byte) []byte {
+	if len(payload) == 0 {
+		return nil
+	}
+	if len(a.chunk)+len(payload) > cap(a.chunk) {
+		c := iterArenaChunkSize
+		if len(payload) > c {
+			c = len(payload)
+		}
+		a.chunk = make([]byte, 0, c)
+	}
+	off := len(a.chunk)
+	a.chunk = append(a.chunk, payload...)
+	return a.chunk[off:len(a.chunk):len(a.chunk)]
 }
 
 // layerIter walks one snapshot layer's sorted incremental row index.

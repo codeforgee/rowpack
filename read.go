@@ -118,9 +118,24 @@ func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc *index.RowLoc
 	if bl == nil {
 		return nil, 0, fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)
 	}
-	blk, err := s.loader.Load(int64(bl.DataOffset), bl.BlockID)
-	if err != nil {
-		return nil, 0, err
+	var blk *block.Block
+	if s.loader.cache == nil {
+		// Cache disabled: stream the block through the pooled scratch so a
+		// cold read does not allocate (and immediately discard) a full raw
+		// buffer. The decode below copies String/Bytes payloads out before
+		// the scratch is released.
+		r, _, err := s.loader.LoadScan(int64(bl.DataOffset), bl.BlockID)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer r.Release()
+		blk = r.blk
+	} else {
+		var err error
+		blk, err = s.loader.Load(int64(bl.DataOffset), bl.BlockID)
+		if err != nil {
+			return nil, 0, err
+		}
 	}
 	ref, err := block.ParseRowAt(blk.Raw, bl.ItemCount, loc.ItemOrdinal)
 	if err != nil {
@@ -140,7 +155,7 @@ func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc *index.RowLoc
 // directory into dst (used by Scan's block cursor). Callers must already have
 // filtered tombstones. sink materializes String payloads (nil = fresh copy
 // per value).
-func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc *index.RowLoc, si *schemaIndex, dst Row, sink codec.StringSink) (Row, error) {
+func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc *index.RowLoc, si *schemaIndex, dst Row, sink *codec.Sink) (Row, error) {
 	if int(loc.ItemOrdinal) >= len(rp.Entries) {
 		return nil, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", loc.ItemOrdinal, loc.BlockID)
 	}
@@ -153,7 +168,7 @@ func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc 
 }
 
 // decodeRowInto decodes a located row into dst against its schema.
-func (s *Store) decodeRowInto(ref *block.RowRef, bl *index.BlockLoc, si *schemaIndex, dst Row) (Row, error) {
+func (s *Store) decodeRowInto(ref block.RowRef, bl *index.BlockLoc, si *schemaIndex, dst Row) (Row, error) {
 	schema, err := si.schemaFor(bl, ref.Entry.SchemaVersion)
 	if err != nil {
 		return nil, err

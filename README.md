@@ -103,13 +103,15 @@ func main() {
 
 ## 行复用
 
-读入口统一为借用/复用模式，消除每行的 Row 切片与 Decimal big.Int 分配
-（Scan 场景每行分配降 ~86%）：
+读入口统一为借用/复用模式，消除每行的 Row 切片、payload 复制与 Decimal
+big.Int 分配：
 
 - `Iterator.Next()`：无参数，行解码进迭代器内部缓冲，缓冲跨调用复用；返回
-  的 Row 到下一次 Next 前有效，整表 Scan 无逐行分配。
+  的 Row 到下一次 Next 前有效，整表 Scan 无逐行分配（100k 行 × 7 列全表
+  仅 ~135 次分配，String/Bytes 均为零复制 arena 视图）。
 - `Get(ctx, snap, table, id, dst)`：解码进调用者提供的 Row 复用其底层数组；
   Get 是并发入口，nil dst 每次分配新行，dst 是唯一跨调用复用的方式。
+  缓存热读为 2 allocs/16 B（String/Bytes 列按值复制，调用方安全持有）。
 
 需要跨调用保留的值需拷贝；通过 `String()`/`Bytes()`/`Decimal()` 访问器读
 值始终安全（返回副本）。
@@ -155,6 +157,7 @@ st := db.Stats().Batch // Calls/Rows/Blocks/RawBytes：聚合效果可量化（B
 
 - [需求规格](docs/REQUIREMENTS.md)
 - [二进制格式（v2 单文件）](docs/BINARY_FORMAT_V2.md) · [格式参考 HTML 版](docs/file-format-v2.html)
+- [v2 文件格式性能重构计划](docs/FILE_FORMAT_REFACTOR_PLAN.md)
 - [v2 Go API 设计](docs/GO_API_DESIGN_V2.md)
 - [元数据格式（TLV）](docs/METADATA_FORMAT_V1.md)
 - [IndexTxn 分 Chunk 压缩与加密](docs/INDEX_TXN_CHUNK_COMPRESSION.md)
@@ -189,14 +192,14 @@ SyncCommit（批量与缓存档另标注），数据集 100k 行 × 7 列。数�
 
 | 基准（256K/mmap/sync 档） | 吞吐量 / 延迟 |
 | --- | --- |
-| FULL 顺序写行吞吐量 | ~99.8 万行/秒（sync）· ~104.3 万行/秒（async）|
+| FULL 顺序写行吞吐量 | ~101.6 万行/秒（sync）· ~104.5 万行/秒（async）|
 | 同构行写行吞吐量 | ~186 万行/秒（sync）· ~204 万行/秒（async，压缩比 0.044）|
-| Get 热读点读吞吐量（复用 dst） | ~242 万次/秒 · ~0.41 µs · 3 allocs |
-| Get 冷读 | ~3,100 次/秒 · ~324 µs（整块解压）|
-| 并发 Get 点读吞吐量（64 goroutine） | ~170 万次/秒 · ~0.59 µs |
-| Scan 100k 扫描行吞吐量（热/冷） | ~729 / ~377 万行/秒（13.7 / 26.5 ms）|
-| Scan 1M 扫描行吞吐量 | ~418 万行/秒（239 ms）|
-| 深链（32 层）Get / Scan | ~45 万次/秒（2.2 µs）/ ~478 万行/秒（27.6 ms）|
+| Get 热读点读吞吐量（复用 dst） | ~238 万次/秒 · ~0.42 µs · 2 allocs · 16 B/op |
+| Get 冷读 | ~3,000 次/秒 · ~338 µs · 6 allocs · 160 B/op（池化瞬态解压）|
+| 并发 Get 点读吞吐量（64 goroutine） | ~157 万次/秒 · ~0.64 µs |
+| Scan 100k 扫描行吞吐量（热/冷） | ~738 / ~365 万行/秒（13.6 / 27.4 ms）· 全表 135 allocs |
+| Scan 1M 扫描行吞吐量 | ~422 万行/秒（237 ms）· 全表 2,227 allocs |
+| 深链（32 层）Get / Scan | ~45 万次/秒（2.2 µs）/ ~483 万行/秒（27.3 ms）|
 | Open 索引重放 | ~1.6 ms |
 | IndexTxn 损坏重开（内存重建） | ~19.6 ms（文件不改写）|
 | 点读延迟 p50/p95/p99（热） | 417 / 500 / 667 ns |

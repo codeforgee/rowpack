@@ -79,14 +79,33 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 	out := make([]Row, len(ids))
 	var dirScratch []fileformat.RowDirectoryEntry // reused across blocks
 	var blocks, rawBytes uint64
+	var scr *scanRef // transient scratch (cache-disabled); released per block
 	for _, bid := range blockIDs {
+		if scr != nil {
+			scr.Release()
+			scr = nil
+		}
 		bl := view.Block(bid)
 		if bl == nil {
 			return nil, fmt.Errorf("rowpack: block %d missing from view", bid)
 		}
-		blk, err := s.loader.Load(int64(bl.DataOffset), bid)
-		if err != nil {
-			return nil, err
+		var blk *block.Block
+		if s.loader.cache == nil {
+			// Cache disabled: stream through the pooled scratch; rows are
+			// decoded (copied) before the scratch is released. Early error
+			// returns may skip the release; the buffer is then GC-reclaimed.
+			r, _, err := s.loader.LoadScan(int64(bl.DataOffset), bid)
+			if err != nil {
+				return nil, err
+			}
+			scr = r
+			blk = r.blk
+		} else {
+			var err error
+			blk, err = s.loader.Load(int64(bl.DataOffset), bid)
+			if err != nil {
+				return nil, err
+			}
 		}
 		blocks++
 		rawBytes += uint64(bl.RawSize)
@@ -142,6 +161,10 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 				return nil, err
 			}
 			out[req.outIdx] = row
+		}
+		if scr != nil {
+			scr.Release()
+			scr = nil
 		}
 	}
 	s.batchCalls.Add(1)

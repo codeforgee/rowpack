@@ -21,6 +21,10 @@ type ScanOptions struct {
 // IterArenaChunkSize bounds the per-iterator string arena chunks; chunks are
 // append-only and swapped (never grown in place) so previously handed-out
 // string views stay valid even when the arena's current chunk rotates.
+// measured (M1 Pro, scan 100k×7): 16 KiB / 32 KiB / 256 KiB all within noise
+// (~14.3 ms) — the cost is mallocgc zeroing + memmove of the materialized
+// bytes themselves, invariant to chunk size; chunks cannot be recycled
+// across iterators because handed-out string views alias them.
 const iterArenaChunkSize = 32 << 10
 
 // strArena is the append-only string arena shared by the Scan and batch
@@ -98,6 +102,15 @@ type Iterator struct {
 	curPageIdx   int    // index into curContainer.Dir; -1 = none loaded
 	curPageRel   func() // returns the current page's pooled scratch
 	curPageNext  int    // block-scan: next record ordinal within page
+
+	// curSchema memoizes the codec schema resolved for the current block
+	// cursor keyed by the record's SchemaVersion: the alternative is a
+	// two-level map walk per record, while records within a block
+	// overwhelmingly share one version. Invalidated whenever the block cursor
+	// moves.
+	curSchemaVer uint32
+	curSchema    *codec.Schema
+	curSchemaOK  bool
 
 	// Block-scan mode (scanModeBlocks): the raw per-block change stream.
 	blockIDs []uint64 // blocks to visit, ascending
@@ -267,7 +280,13 @@ func (it *Iterator) nextBlockRecord() (Row, bool) {
 			if rec.ChangeType == fileformat.ChangeDelete {
 				return nil, true // tombstone: no payload
 			}
-			row, err := it.store.decodeBodyRecordInto(rec, it.curBlk, it.state.schemas, it.buf, it.sink)
+			schema, err := it.schemaFor(rec.SchemaVersion)
+			if err != nil {
+				it.err = err
+				it.releasePage()
+				return nil, false
+			}
+			row, err := codec.DecodeBodyInto(it.buf, rec.Body, schema, it.store.opts.codecLimits(), it.sink)
 			if err != nil {
 				it.err = err
 				it.releasePage()
@@ -325,6 +344,7 @@ func (it *Iterator) loadBlock(bl *index.BlockLoc) error {
 	it.curPageRel = nil
 	it.curPageIdx = -1
 	it.curPageNext = 0
+	it.curSchemaOK = false
 	return nil
 }
 
@@ -410,7 +430,28 @@ func (it *Iterator) rowAt(loc index.RowLoc, dst Row) (Row, error) {
 	if err != nil {
 		return nil, err
 	}
-	return it.store.decodeBodyRecordInto(rec, it.curBlk, it.state.schemas, dst, it.sink)
+	schema, err := it.schemaFor(rec.SchemaVersion)
+	if err != nil {
+		return nil, err
+	}
+	return codec.DecodeBodyInto(dst, rec.Body, schema, it.store.opts.codecLimits(), it.sink)
+}
+
+// schemaFor returns the codec schema for the given record schema version
+// under the current block cursor, memoizing the two-level map walk until the
+// block cursor moves or the version differs. The cursor must be loaded.
+func (it *Iterator) schemaFor(ver uint32) (*codec.Schema, error) {
+	if it.curSchemaOK && it.curSchemaVer == ver {
+		return it.curSchema, nil
+	}
+	schema, err := it.state.schemas.schemaFor(it.curBlk, ver)
+	if err != nil {
+		return nil, err
+	}
+	it.curSchemaVer = ver
+	it.curSchema = schema
+	it.curSchemaOK = true
+	return schema, nil
 }
 
 // locateBlock loads the page container of loc's block, reusing the current
@@ -434,6 +475,7 @@ func (it *Iterator) locateBlock(loc index.RowLoc) error {
 	it.curPage = nil
 	it.curPageRel = nil
 	it.curPageIdx = -1
+	it.curSchemaOK = false
 	return nil
 }
 

@@ -188,7 +188,10 @@ func appendChangeBit(dst []byte, ordinal uint32, packed uint8) []byte {
 }
 
 // RowsPage is a parsed, CRC-validated page. All views alias raw; callers must
-// not retain them beyond the page's lifetime.
+// not retain them beyond the page's lifetime. A random-access record index
+// (ids/ends/vers, one entry per record) is built at parse time so RecordAt is
+// O(1) instead of an O(ordinal) stream walk; the page is immutable afterwards,
+// so memoized pages can be shared between readers without a lock.
 type RowsPage struct {
 	h     fileformat.RowsPageHeader
 	raw   []byte
@@ -199,6 +202,12 @@ type RowsPage struct {
 	schemaRLE  []byte
 	changeBits []byte
 	tuples     []byte
+
+	// record index (len == EntryCount): ids[i] = record RowID, ends[i] =
+	// cumulative tuple-body end offset, vers[i] = schema version.
+	ids  []uint64
+	ends []uint32
+	vers []uint32
 }
 
 // ParseRowsPage validates the header geometry and the page CRC, then hands
@@ -225,11 +234,72 @@ func ParseRowsPage(raw []byte) (*RowsPage, error) {
 	if err := validateChangeBits(changeBits, h.EntryCount); err != nil {
 		return nil, err
 	}
-	return &RowsPage{
+	p := &RowsPage{
 		h: h, raw: raw, start: start,
 		rowIDs: rowIDs, offsets: offsets, schemaRLE: schemaRLE,
 		changeBits: changeBits, tuples: tuples,
-	}, nil
+	}
+	if err := p.buildIndex(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// buildIndex decodes the column streams once into the per-record arrays used
+// by RecordAt/Records. It re-validates every varint boundary, so a tampered
+// page whose CRC was recomputed is still rejected here rather than panicking.
+func (p *RowsPage) buildIndex() error {
+	count := p.h.EntryCount
+	p.ids = make([]uint64, count)
+	p.ends = make([]uint32, count)
+	p.vers = make([]uint32, count)
+	var (
+		rowID   uint64
+		idsPos  int
+		offPos  int
+		rlePos  int
+		runEnd  uint32
+		runVer  uint32
+		lastEnd uint32
+	)
+	for i := uint32(0); i < count; i++ {
+		v, n := binary.Uvarint(p.rowIDs[idsPos:])
+		if n <= 0 {
+			return errPageTruncated
+		}
+		idsPos += n
+		if i == 0 {
+			rowID = v
+		} else {
+			rowID = uint64(int64(rowID) + unzigzag64(v))
+		}
+		p.ids[i] = rowID
+
+		d, n2 := binary.Uvarint(p.offsets[offPos:])
+		if n2 <= 0 {
+			return errPageTruncated
+		}
+		offPos += n2
+		lastEnd += uint32(d)
+		p.ends[i] = lastEnd
+
+		for runEnd <= i {
+			v1, n3 := binary.Uvarint(p.schemaRLE[rlePos:])
+			if n3 <= 0 {
+				return errPageTruncated
+			}
+			rlePos += n3
+			r, n4 := binary.Uvarint(p.schemaRLE[rlePos:])
+			if n4 <= 0 {
+				return errPageTruncated
+			}
+			rlePos += n4
+			runVer = uint32(v1)
+			runEnd += uint32(r)
+		}
+		p.vers[i] = runVer
+	}
+	return nil
 }
 
 // validateChangeBits rejects the reserved packed value 3 anywhere in the
@@ -269,37 +339,17 @@ func (p *RowsPage) RowIDAt(ordinal uint32) (uint64, error) {
 }
 
 // RecordAt decodes one record: RowID, schema version, change type and the
-// body view (empty for deletes). O(ordinal) stream walk; the body aliases
-// the page bytes.
+// body view (empty for deletes). O(1) via the parse-time record index; the
+// body aliases the page bytes.
 func (p *RowsPage) RecordAt(ordinal uint32) (rec codec.PageRecord, err error) {
 	if ordinal >= p.h.EntryCount {
 		return rec, fmt.Errorf("rowpack: record ordinal %d out of range (%d)", ordinal, p.h.EntryCount)
 	}
-	// RowID walk.
-	var rowID uint64
-	pos := 0
-	for i := uint32(0); i <= ordinal; i++ {
-		v, n := binary.Uvarint(p.rowIDs[pos:])
-		if n <= 0 {
-			return rec, errPageTruncated
-		}
-		pos += n
-		if i == 0 {
-			rowID = v
-		} else {
-			rowID = uint64(int64(rowID) + unzigzag64(v))
-		}
+	startEnd := uint32(0)
+	if ordinal > 0 {
+		startEnd = p.ends[ordinal-1]
 	}
-	// End-offset walk up to and including ordinal.
-	startEnd, end, err := p.recordBounds(ordinal)
-	if err != nil {
-		return rec, err
-	}
-	// Schema RLE walk.
-	version, err := p.schemaAt(ordinal)
-	if err != nil {
-		return rec, err
-	}
+	end := p.ends[ordinal]
 	packed := (p.changeBits[ordinal/4] >> ((ordinal % 4) * 2)) & 3
 	ct, err := fileformat.UnpackChangeType(packed)
 	if err != nil {
@@ -310,8 +360,8 @@ func (p *RowsPage) RecordAt(ordinal uint32) (rec codec.PageRecord, err error) {
 		return rec, fmt.Errorf("rowpack: delete record %d carries a body", ordinal)
 	}
 	return codec.PageRecord{
-		RowID:         rowID,
-		SchemaVersion: version,
+		RowID:         p.ids[ordinal],
+		SchemaVersion: p.vers[ordinal],
 		ChangeType:    ct,
 		Body:          body,
 	}, nil
@@ -383,52 +433,6 @@ func (p *RowsPage) Records(fn func(rec codec.PageRecord) error) error {
 		}
 	}
 	return nil
-}
-
-// recordBounds returns [start, end) of the record's tuple body within the
-// tuples region.
-func (p *RowsPage) recordBounds(ordinal uint32) (uint32, uint32, error) {
-	var (
-		prev uint32
-		end  uint32
-		pos  int
-	)
-	for i := uint32(0); i <= ordinal; i++ {
-		d, n := binary.Uvarint(p.offsets[pos:])
-		if n <= 0 {
-			return 0, 0, errPageTruncated
-		}
-		pos += n
-		prev = end
-		end += uint32(d)
-	}
-	return prev, end, nil
-}
-
-// schemaAt walks the RLE pairs to the schema version of ordinal.
-func (p *RowsPage) schemaAt(ordinal uint32) (uint32, error) {
-	var version, runEnd uint32
-	pos := 0
-	for {
-		if pos >= len(p.schemaRLE) {
-			return 0, errPageTruncated
-		}
-		v, n := binary.Uvarint(p.schemaRLE[pos:])
-		if n <= 0 {
-			return 0, errPageTruncated
-		}
-		pos += n
-		r, n2 := binary.Uvarint(p.schemaRLE[pos:])
-		if n2 <= 0 {
-			return 0, errPageTruncated
-		}
-		pos += n2
-		version = uint32(v)
-		runEnd += uint32(r)
-		if ordinal < runEnd {
-			return version, nil
-		}
-	}
 }
 
 func unzigzag64(v uint64) int64 { return int64(v>>1) ^ -int64(v&1) }

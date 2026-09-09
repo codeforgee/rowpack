@@ -121,12 +121,24 @@ func (l *blockLoader) Load(offset int64, blockID uint64) (*block.Block, error) {
 	return v.(*block.Block), nil
 }
 
-// LoadRows loads a validated Rows Block page container (no page decompressed
-// yet) through the random-read cache with singleflight miss merging. Only
+// loadRowsContext reads the validated Rows Block page container for a block.
+// For a plain store it reads only the block header + container header + page
+// directory (a lazy container that reads pages on demand, so a cold single-
+// row read pulls one page); for an encrypted store it reads the whole sealed
+// container (the directory is inside the ciphertext).
+func (l *blockLoader) loadRowsContext(offset int64) (*block.RowsContainer, error) {
+	if l.reader.Encrypted() {
+		return l.reader.ReadAtRowsContainer(offset)
+	}
+	return l.reader.ReadRowsDir(offset)
+}
+
+// LoadRows loads the validated Rows Block container for a block through the
+// random-read cache with singleflight miss merging. Only
 // CRC/geometry-validated containers are cached.
 func (l *blockLoader) LoadRows(offset int64, blockID uint64) (*block.RowsContainer, error) {
 	if l.cache == nil {
-		return l.reader.ReadAtRowsContainer(offset)
+		return l.loadRowsContext(offset)
 	}
 	if v, ok := l.cache.Get(blockID); ok {
 		if rc, ok := v.(*block.RowsContainer); ok {
@@ -135,7 +147,7 @@ func (l *blockLoader) LoadRows(offset int64, blockID uint64) (*block.RowsContain
 	}
 	v, err := l.sf.Do(blockID, func() (any, error) {
 		l.cache.NoteLoad()
-		rc, err := l.reader.ReadAtRowsContainer(offset)
+		rc, err := l.loadRowsContext(offset)
 		if err != nil {
 			return nil, l.blockReadError(offset, blockID, err)
 		}
@@ -167,7 +179,7 @@ func (l *blockLoader) LoadScanRows(offset int64, blockID uint64) (*block.RowsCon
 			}
 		}
 	}
-	rc, err := l.reader.ReadAtRowsContainer(offset)
+	rc, err := l.loadRowsContext(offset)
 	if err != nil {
 		return nil, l.blockReadError(offset, blockID, err)
 	}

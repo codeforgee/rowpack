@@ -73,11 +73,74 @@ func (r *Reader) SetDecrypter(d Decrypter) {
 	r.decrypter = d
 }
 
+// Encrypted reports whether a block decrypter is installed (an encrypted
+// store). The loader uses it to choose whole-container reads (encrypted)
+// versus page-level reads (plain).
+func (r *Reader) Encrypted() bool { return r.decrypter != nil }
+
 // viewer is an optional interface for handles that can expose direct views
 // into the file (mmap-backed appenders). Views are transient: valid only
 // until done is called.
 type viewer interface {
 	View(offset, n int64) (b []byte, done func(), err error)
+}
+
+// ReadRowsDir reads a plain (non-encrypted) Rows block's header + container
+// header + page directory into a lazy RowsContainer that reads individual
+// pages on demand (R2 page-level I/O). It fails on encrypted blocks, which
+// must be read as a whole container (ReadAtRowsContainer).
+func (r *Reader) ReadRowsDir(offset int64) (*RowsContainer, error) {
+	var hdr [fileformat.BlockHeaderSize]byte
+	if _, err := r.ra.ReadAt(hdr[:], offset); err != nil {
+		return nil, fmt.Errorf("rowpack: read block header at %d: %w", offset, err)
+	}
+	var h fileformat.BlockHeader
+	if err := h.Unmarshal(hdr[:]); err != nil {
+		return nil, err
+	}
+	if err := r.checkHeader(&h); err != nil {
+		return nil, err
+	}
+	if h.BlockKind != fileformat.BlockKindRows {
+		return nil, fmt.Errorf("rowpack: block %d is kind %d, expected rows", h.BlockID, h.BlockKind)
+	}
+	if h.Encrypted {
+		return nil, fmt.Errorf("rowpack: block %d is encrypted; use ReadAtRowsContainer", h.BlockID)
+	}
+	return ParseRowsDir(offset, r, h, r.limits)
+}
+
+// ReadRowsPage reads and decompresses a single page of a lazy container. Only
+// that page's stored bytes are pulled from the file, so a cold single-row read
+// does not read the whole container. Returns an owned RowsPage (its buffer is
+// a fresh allocation and valid for the containing container's lifetime).
+func (r *Reader) ReadRowsPage(offset int64, c *RowsContainer, pageIdx int) (*RowsPage, error) {
+	dir := &c.Dir[pageIdx]
+	pgOff := offset + fileformat.BlockHeaderSize + int64(dir.StoredOffset)
+	stored := make([]byte, dir.StoredSize)
+	if _, err := r.ra.ReadAt(stored, pgOff); err != nil {
+		return nil, fmt.Errorf("rowpack: read page %d at %d: %w", pageIdx, pgOff, err)
+	}
+	r.readBytes.Add(uint64(len(stored)))
+	var raw []byte
+	if c.comp == fileformat.CompressionNone {
+		raw = stored
+	} else {
+		maxOut := c.limits.MaxRawBytes
+		if dir.RawSize < maxOut {
+			maxOut = dir.RawSize
+		}
+		var err error
+		raw, err = decompressZstd(nil, stored, maxOut)
+		if err != nil {
+			return nil, fmt.Errorf("rowpack: page %d: %w", pageIdx, err)
+		}
+	}
+	if uint32(len(raw)) != dir.RawSize {
+		return nil, fmt.Errorf("rowpack: page %d decompressed %d bytes, want %d", pageIdx, len(raw), dir.RawSize)
+	}
+	r.decompressedBytes.Add(uint64(len(raw)))
+	return c.parsePage(pageIdx, raw)
 }
 
 // ReadAtRowsContainer reads a Rows Block page container: the block header

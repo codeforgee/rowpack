@@ -1,0 +1,7 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/rowpack/rowpack
+cpu: Apple M1 Pro
+BenchmarkOpenMemory10M-8   	       3	 222591972 ns/op	        24.03 idxB/row	       229.1 idxMB	         0.09375 rssdMB	2019379392 B/op	   10259 allocs/op
+PASS
+ok  	github.com/rowpack/rowpack	21.449s

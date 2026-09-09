@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
@@ -29,6 +30,36 @@ type Reader struct {
 	// decrypter restores plaintext before decompression for encrypted
 	// blocks. Set via SetDecrypter before any reads; read-only after.
 	decrypter Decrypter
+
+	// Cumulative I/O counters (measurement instrumentation, S0 baseline):
+	// readBytes counts header+stored bytes pulled from the handle before
+	// decryption; decompressedBytes counts validated raw payload bytes.
+	// Together they quantify cold-read amplification: with a 256 KiB block
+	// a single-row read still pulls and decompresses the whole block.
+	readBytes         atomic.Uint64
+	decompressedBytes atomic.Uint64
+}
+
+// IOStats is a snapshot of the reader's cumulative I/O counters.
+type IOStats struct {
+	ReadBytes         uint64 // header + stored bytes pulled from the handle
+	DecompressedBytes uint64 // validated raw payload bytes produced
+}
+
+// Stats returns the cumulative counters since the Reader was created.
+func (r *Reader) Stats() IOStats {
+	return IOStats{
+		ReadBytes:         r.readBytes.Load(),
+		DecompressedBytes: r.decompressedBytes.Load(),
+	}
+}
+
+// count records one successful validated read: bytes pulled from the handle
+// (header + stored payload) and the raw payload produced. Called exactly
+// once per successful block read on every path.
+func (r *Reader) count(h *fileformat.BlockHeader) {
+	r.readBytes.Add(uint64(fileformat.BlockHeaderSize + int64(h.StoredSize)))
+	r.decompressedBytes.Add(uint64(h.RawSize))
 }
 
 // NewReader creates a block reader over ra.
@@ -95,6 +126,7 @@ func (r *Reader) readAtBlockView(offset int64, v viewer) (*Block, error) {
 	if fileformat.CRC32C(raw) != h.RawCRC32C {
 		return nil, fmt.Errorf("rowpack: block %d raw CRC mismatch", h.BlockID)
 	}
+	r.count(&h)
 	if h.Compression == fileformat.CompressionNone && !h.Encrypted {
 		// Plain, uncompressed: Decompress returned the view itself; copy so
 		// the returned (and potentially cached) Block never aliases the file
@@ -153,6 +185,7 @@ func (r *Reader) readAtBlockCopy(offset int64) (*Block, error) {
 	if fileformat.CRC32C(raw) != h.RawCRC32C {
 		return nil, fmt.Errorf("rowpack: block %d raw CRC mismatch", h.BlockID)
 	}
+	r.count(&h)
 	return &Block{Header: h, Raw: raw}, nil
 }
 
@@ -288,6 +321,7 @@ func (r *Reader) readAtBlockViewT(offset int64, v viewer) (*BlockScratch, error)
 		putRawBuf(buf)
 		return nil, fmt.Errorf("rowpack: block %d raw CRC mismatch", h.BlockID)
 	}
+	r.count(&h)
 	buf.data = raw // DecodeAll may have grown past the pooled buffer
 	return &BlockScratch{Block: Block{Header: h, Raw: raw}, buf: buf}, nil
 }
@@ -327,6 +361,7 @@ func (r *Reader) readAtBlockCopyT(offset int64) (*BlockScratch, error) {
 		putRawBuf(buf)
 		return nil, fmt.Errorf("rowpack: block %d raw CRC mismatch", h.BlockID)
 	}
+	r.count(&h)
 	buf.data = raw
 	return &BlockScratch{Block: Block{Header: h, Raw: raw}, buf: buf}, nil
 }

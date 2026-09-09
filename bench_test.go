@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/rowpack/rowpack/internal/block"
 )
 
 // Benchmarks are deliberately single-configuration: one dataset shape and
@@ -64,24 +66,13 @@ var testTime = timeUnix(1757400000)
 
 func timeUnix(sec int64) time.Time { return time.Unix(sec, 0).UTC() }
 
-// benchStore builds a FULL store with n rows and returns it plus the snapshot
-// ID. Marks the caller warm (stops the timer around the build).
+// benchStore builds a FULL mixed-geometry store with n rows and returns it
+// plus the snapshot ID. Marks the caller warm (stops the timer around the
+// build). All dataset construction routes through benchStoreGeom so every
+// benchmark shares the same frozen S0 geometries.
 func benchStore(tb testing.TB, opts Options, n int) (*Store, SnapshotID) {
 	tb.Helper()
-	if opts.BlockSize == 0 {
-		opts.BlockSize = 256 << 10 // README reference config
-	}
-	db, err := Create(filepath.Join(tmpdb(tb), "bench"), opts)
-	requireNilErr(tb, err)
-	w, err := db.BeginFull(context.Background())
-	requireNilErr(tb, err)
-	requireNilErr(tb, w.CreateTable("t", benchCols()))
-	for i := 1; i <= n; i++ {
-		requireNilErr(tb, w.Insert(context.Background(), "t", uint64(i), benchRow(uint64(i))))
-	}
-	snap, err := w.Commit(context.Background())
-	requireNilErr(tb, err)
-	return db, snap
+	return benchStoreGeom(tb, opts, geomMixed, n)
 }
 
 func requireNilErr(tb testing.TB, err error) {
@@ -139,11 +130,19 @@ func BenchmarkGetHot(b *testing.B) {
 
 // BenchmarkGetCold measures random reads with the decoded-block cache
 // disabled entirely (CacheBytes < 0; 0 resolves to the 64 MiB default): every
-// Get pays block load + CRC + decompress.
+// Get pays block load + CRC + decompress into the pooled scratch. Custom
+// metrics quantify the block-level read amplification (S0 frozen baselines):
+//
+//	readB/op  file bytes pulled per read (header + stored payload)
+//	rawB/op   decompressed raw bytes produced per read
+//
+// Steady-state pooled allocation is B/op; the unpooled temp-allocation view
+// is BenchmarkGetColdUnpooled.
 func BenchmarkGetCold(b *testing.B) {
 	ctx := context.Background()
 	db, snap := benchStore(b, Options{CacheBytes: -1}, 20_000)
 	b.Cleanup(func() { db.Close() })
+	before := db.Stats().Read
 	var dst Row
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -155,6 +154,42 @@ func BenchmarkGetCold(b *testing.B) {
 		}
 		dst = row[:0]
 	}
+	b.StopTimer()
+	after := db.Stats().Read
+	n := float64(b.N)
+	b.ReportMetric(float64(after.ReadBytes-before.ReadBytes)/n, "readB/op")
+	b.ReportMetric(float64(after.DecompressedBytes-before.DecompressedBytes)/n, "rawB/op")
+}
+
+// BenchmarkGetColdUnpooled is the temp-allocation twin of BenchmarkGetCold:
+// the scratch pool is bypassed for the duration, so every Get visibly
+// allocates (and drops) its full decompression buffer. B/op is the per-read
+// temporary allocation the page-format refactor must cut from ~256 KiB to
+// <= 64 KiB (FILE_FORMAT_REFACTOR_PLAN.md §3.1). The pool state is restored
+// on exit; benchmarks run sequentially so the flip is race-free.
+func BenchmarkGetColdUnpooled(b *testing.B) {
+	prev := block.SetPoolDisabled(true)
+	defer block.SetPoolDisabled(prev)
+	ctx := context.Background()
+	db, snap := benchStore(b, Options{CacheBytes: -1}, 20_000)
+	b.Cleanup(func() { db.Close() })
+	before := db.Stats().Read
+	var dst Row
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		id := RowID(i%20_000) + 1
+		row, err := db.Get(ctx, snap, "t", id, dst)
+		if err != nil {
+			b.Fatal(err)
+		}
+		dst = row[:0]
+	}
+	b.StopTimer()
+	after := db.Stats().Read
+	n := float64(b.N)
+	b.ReportMetric(float64(after.ReadBytes-before.ReadBytes)/n, "readB/op")
+	b.ReportMetric(float64(after.DecompressedBytes-before.DecompressedBytes)/n, "rawB/op")
 }
 
 // BenchmarkScan measures a full-table scan of 100k rows (single-pass,

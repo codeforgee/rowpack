@@ -1,6 +1,6 @@
 GO ?= go
 
-.PHONY: all build test race vet lint fmt clean golden bench bench-quick bench-batch
+.PHONY: all build test race vet lint fmt clean golden bench bench-quick bench-batch bench-10m bench-profile
 
 all: fmt vet test
 
@@ -30,9 +30,21 @@ BENCHCOUNT ?= 1
 bench:
 	mkdir -p docs
 	$(GO) test -run '^$$' \
-		-bench 'Benchmark(Env|MainMatrix|Latency|WriteFull|GetHot|GetCold|Scan|ReadBatch1000|GetLoop1000|OpenReplay|DeepChainGet|EncryptedWrite|EncryptedGetHot)$$' \
+		-bench 'Benchmark(Env|MainMatrix|Latency|WriteFull|GetHot|GetCold|GetColdUnpooled|Scan|ReadBatch1000|GetLoop1000|OpenReplay|OpenMemory|DeepChainGet|EncryptedWrite|EncryptedGetHot)$$' \
 		-benchtime=$(BENCHTIME) -benchmem -count=$(BENCHCOUNT) . \
 		2>&1 | tee docs/bench-results.txt
+
+# 10M 行 Open 内存档（S0 冻结的重构 KPI：idxB/row 与峰值 RSS）。
+bench-10m:
+	mkdir -p docs
+	ROWPACK_BENCH_ROWS10M=10000000 $(GO) test -run '^$$' -bench 'BenchmarkOpenMemory10M$$' \
+		-benchmem -benchtime=3x -count=1 . 2>&1 | tee docs/bench-results-10m.txt
+
+# CPU/heap profile 采集（读路径用 GetCold 覆盖冷读放大，Scan 覆盖流式分配）。
+# 产物为 *.out（gitignore），用 go tool pprof 查看；命令随仓库维护，机器相关。
+bench-profile:
+	$(GO) test -run '^$$' -bench 'BenchmarkGetCold$$' -benchtime=1000x -cpuprofile docs/bench-getcold-cpu.out -memprofile docs/bench-getcold-mem.out .
+	$(GO) test -run '^$$' -bench 'BenchmarkScan$$' -benchtime=50x -cpuprofile docs/bench-scan-cpu.out -memprofile docs/bench-scan-mem.out .
 
 # 快速档：小数据集 + 固定迭代数，~30s 跑完全矩阵；只看结构/量级，不与 100k 基线比数值。
 bench-quick:

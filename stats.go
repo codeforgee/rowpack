@@ -30,6 +30,20 @@ type RecoveryStats struct {
 	SnapshotsRebuilt uint64
 }
 
+// ReadStats reports cumulative physical read amplification since Open.
+// Every block read on the store flows through one reader, so these counters
+// quantify what a cold access actually pulls:
+//
+//	ReadBytes         header + stored bytes pulled from the file
+//	DecompressedBytes validated raw payload bytes produced
+//
+// Their ratio to the caller's logical bytes is the read amplification the
+// page-format refactor targets (256 KiB raw blocks → 16–64 KiB pages).
+type ReadStats struct {
+	ReadBytes         uint64
+	DecompressedBytes uint64
+}
+
 // Stats is an approximate read-only snapshot of store statistics. It does not
 // establish a transaction barrier.
 type Stats struct {
@@ -43,6 +57,7 @@ type Stats struct {
 	IndexMemoryBytes uint64
 	Cache            CacheStats // random-read decoded block cache
 	ScanCache        CacheStats // bounded decoded scan window
+	Read             ReadStats  // cumulative physical read amplification
 	Batch            BatchStats
 	Recovery         RecoveryStats
 }
@@ -75,6 +90,9 @@ func (s *Store) Stats() Stats {
 	if l := s.loader; l != nil {
 		stt.Cache.CapacityBytes, stt.Cache.UsedBytes, stt.Cache.Hits, stt.Cache.Misses, stt.Cache.Evictions, stt.Cache.Loads = l.cacheStats()
 		stt.ScanCache.CapacityBytes, stt.ScanCache.UsedBytes, stt.ScanCache.Hits, stt.ScanCache.Misses, stt.ScanCache.Evictions, stt.ScanCache.Loads = l.scanStats()
+		io := l.readIOStats()
+		stt.Read.ReadBytes = io.ReadBytes
+		stt.Read.DecompressedBytes = io.DecompressedBytes
 	}
 	stt.Batch.Calls = s.batchCalls.Load()
 	stt.Batch.Rows = s.batchRows.Load()

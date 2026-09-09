@@ -5,6 +5,26 @@
 > 环境：Go 1.27.0 / darwin arm64 (Apple Silicon M1 Pro) / klauspost/compress v1.20.0 (zstd)
 > 说明：本报告 §1–§2 由统一套件 `make bench` 生成，完整输出落在 `docs/bench-results.txt`
 > （gitignore，机器相关，可随时复现）。历史 v1 对照批次见 §3。
+>
+> **格式重构基线已冻结**：重构验收对照物见 `docs/baseline/`（双口径定义、方差档、
+> 固定数据集几何）。重构 KPI 起点：冷读临时分配 328,645 B/op（无池口径）、冷读
+> rawB/op 327,095（整块解压）、Eager 索引 24.03 B/row。验收门槛见
+> `FILE_FORMAT_REFACTOR_PLAN.md` §3；执行排期见 `REFACTOR_EXECUTION_PLAN.md`。
+
+## 0. 重构 KPI 基线（S0 冻结，2026-09-09）
+
+| KPI | 冻结值 | 验收门槛（§3.1） |
+| --- | --- | --- |
+| 冷读临时分配（无池） | 328,645 B/op | ≤ 64 KiB/op（期望 ≤ 40 KiB） |
+| 冷读 rawB/op（读取放大） | 327,095 B | 冷读延迟 ≥ 4x（期望 6–10x） |
+| Eager 索引常驻 | 24.03 B/row | ≤ 16 B/row（期望 ~12） |
+| Open 1M 峰值 | 68.7 MB/op 临时分配 | 最终索引 + 2 个 Index Page |
+| Scan 100k | 134 allocs（arena 已生效） | 0 alloc/row（已达标，保持） |
+| FULL 顺序写 | ~96.0 万行/s | ≥ 基线 90% |
+| 热点读 | 277 ns/op | ≤ 基线 125%（期望 110%） |
+| 冷读 CPU 构成 | zstd 51.5% + CRC 18.2% | —（佐证整块成本） |
+
+方差档 ≤ ±3.7%（`docs/baseline/bench-s0-variance.txt`），分配类指标恒定。
 
 ## 1. 基准套件与指标口径
 

@@ -173,3 +173,7 @@ func (l *blockLoader) scanStats() (capBytes, used, hits, misses, evictions, load
 	}
 	return l.scan.CapacityBytes(), l.scan.UsedBytes(), l.scan.Hits(), l.scan.Misses(), l.scan.Evictions(), l.scan.Loads()
 }
+
+// readStats returns the cumulative physical I/O counters of the underlying
+// reader (bytes pulled from the file, bytes produced by decompression).
+func (l *blockLoader) readIOStats() block.IOStats { return l.reader.Stats() }

@@ -299,6 +299,7 @@ func (w *Writer) rowBuilder(table TableID) *block.RowsBlockBuilder {
 		MaxRawBytes:    w.store.opts.Limits.MaxRawBlockBytes,
 		MaxStoredBytes: w.store.opts.Limits.MaxStoredBlockBytes,
 	}, w.rowsFlush(table))
+	b.SetPageSize(w.store.opts.PageSize)
 	w.attachZstdEncoder(b)
 	w.rowBuilders[table] = b
 	return b
@@ -590,7 +591,10 @@ func (w *Writer) put(ctx context.Context, typ ChangeType, table TableID, rowID R
 		if err != nil {
 			return err
 		}
-		w.encBuf, err = codec.EncodeInto(schema, row, w.store.opts.codecLimits(), w.encBuf)
+		// Body-only TypedTuple: the Rows Page layout carries ColumnCount and
+		// NullBitmapBytes out of band (resolved from the schema), so the page
+		// record drops the 8-byte tuple header.
+		w.encBuf, err = codec.EncodeBodyInto(schema, row, w.store.opts.codecLimits(), w.encBuf)
 		if err != nil {
 			return err
 		}
@@ -604,7 +608,7 @@ func (w *Writer) put(ctx context.Context, typ ChangeType, table TableID, rowID R
 	}
 	w.rememberRow(table, rowID)
 	w.rowRecordCount++
-	w.rawBytes += uint64(fileformat.RowRecordHeaderSize + len(encoded))
+	w.rawBytes += uint64(len(encoded))
 	return nil
 }
 

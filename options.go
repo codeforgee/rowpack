@@ -48,6 +48,7 @@ type Limits struct {
 type Options struct {
 	ReadOnly         bool
 	BlockSize        int
+	PageSize         int
 	Compression      Compression
 	CompressionLevel int
 
@@ -80,6 +81,14 @@ func (o Options) resolved() (Options, error) {
 func (o Options) applyDefaults() Options {
 	if o.BlockSize <= 0 {
 		o.BlockSize = fileformat.DefaultBlockSize
+	}
+	if o.PageSize <= 0 {
+		o.PageSize = fileformat.DefaultPageSize
+	}
+	// A page cannot exceed its enclosing block's target: small test blocks
+	// clamp the page down to the block, so a 1024 B block still makes pages.
+	if o.PageSize > o.BlockSize {
+		o.PageSize = o.BlockSize
 	}
 	if o.Compression == CompressionDefault {
 		o.Compression = CompressionZstd
@@ -118,6 +127,9 @@ func (o Options) validate() error {
 	}
 	if o.BlockSize < 64 {
 		return fmt.Errorf("%w: block size %d too small", ErrInvalidArgument, o.BlockSize)
+	}
+	if o.PageSize < 64 {
+		return fmt.Errorf("%w: page size %d too small (min 64)", ErrInvalidArgument, o.PageSize)
 	}
 	if o.BlockSize > int(o.Limits.MaxRawBlockBytes) {
 		return fmt.Errorf("%w: block size %d exceeds raw block limit %d", ErrInvalidArgument, o.BlockSize, o.Limits.MaxRawBlockBytes)

@@ -20,10 +20,13 @@ import (
 
 func TestGoldenManifest(t *testing.T) {
 	want := map[string]string{
+		// S2: Rows blocks are now page containers (v2 page layout); the
+		// full-delta, encrypted and rows-payload samples were regenerated on
+		// this format switch (see docs/REFACTOR_EXECUTION_PLAN.md §5).
 		"empty-store.rpk":            "cd0a96b72ad858d8bceb946b4ae77b1667b6bf17b9d79d72c9b282a52ddc34f7",
-		"rows-payload-all-types.bin": "db95f863c3250ee64f55e09400dd4327a790814ca2846c7accbd0b3eca1f7433",
-		"full-delta-store.rpk":       "71b2c6956c3025230f1fe99d10261c37991eb223c3dccfc766c9fea7ec348ac3",
-		"encrypted-store.rpk":        "afaefc7673d8e32e1d5d4854c956b070febc50fc3c0edcde76347984c17fd3d8",
+		"rows-payload-all-types.bin": "ae6f94f72c1b08f8c0a6727c97cb57cfad18b6f0ffc732a625db23be907b8769",
+		"full-delta-store.rpk":       "7a4b5a8ea2b1c77fd12d8d48850409007dc225f22e739055c3ef8537cccc8966",
+		"encrypted-store.rpk":        "3c6dd6adbec8550f53644c49c9e41c60f929b0c519d937a6d35e8a7aa395c003",
 	}
 	for name, digest := range want {
 		data, err := os.ReadFile(goldenPath(name))
@@ -194,7 +197,9 @@ func TestGoldenRowsPayloadAllTypes(t *testing.T) {
 		{Name: "dec", Type: codec.TypeDecimal, Scale: 4},
 		{Name: "maybe", Type: codec.TypeString, Nullable: true},
 	}}
-	row, err := codec.Encode(schema, Row{
+	// Body-only TypedTuple: the Rows Page layout carries ColumnCount and
+	// NullBitmapBytes out of band (resolved from the schema).
+	row, err := codec.EncodeBodyInto(schema, Row{
 		Bool(true),
 		Int64(-987654321012345),
 		Uint32(4294967295),
@@ -206,7 +211,7 @@ func TestGoldenRowsPayloadAllTypes(t *testing.T) {
 		DateTime(time.Unix(0, 1700000000123456789).UTC()),
 		DecimalValue(Decimal{Unscaled: bigI(-1234567890123), Scale: 4}),
 		Null(),
-	}, codec.DefaultLimits())
+	}, codec.DefaultLimits(), nil)
 	require.NoError(t, err)
 
 	var sink goldenCaptureSink
@@ -216,7 +221,7 @@ func TestGoldenRowsPayloadAllTypes(t *testing.T) {
 	}
 	require.NoError(t, b.Flush())
 	require.Len(t, sink.blocks, 1, "got %d blocks, want 1", len(sink.blocks))
-	payload := sink.blocks[0].Stored // None compression: stored == raw
+	payload := sink.blocks[0].Stored // None compression: container == (header+pages) plaintext
 
 	path := goldenPath("rows-payload-all-types.bin")
 	if *updateGolden {
@@ -228,10 +233,10 @@ func TestGoldenRowsPayloadAllTypes(t *testing.T) {
 	if !bytes.Equal(got, payload) {
 		require.Fail(t, "golden %s differs from implementation (regenerate with make golden)", path)
 	}
-	// The golden must parse back.
-	p, err := block.ParseRowsPayload(payload, 3)
+	// The golden must parse back as a valid page container with 3 records.
+	rc, err := block.ParseRowsContainer(payload, sink.blocks[0].Header, block.DefaultLimits())
 	require.NoError(t, err)
-	require.Len(t, p.Entries, 3, "golden payload has %d entries, want 3", len(p.Entries))
+	require.Equal(t, uint32(3), rc.Header.TotalRecords, "golden payload has 3 total records")
 }
 
 // fixedStoreUUID is the deterministic UUID used by the empty-store golden

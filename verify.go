@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/rowpack/rowpack/internal/metadata"
@@ -61,36 +60,40 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 	for _, bl := range view.Blocks() {
 		rep.BlocksChecked++
 		rep.DataBytesRead += uint64(bl.StoredSize)
+		if bl.Kind == fileformat.BlockKindRows {
+			// Rows blocks validate the page container (header/directory CRC
+			// and per-page bounds) without decompressing; full mode then walks
+			// every page, verifying each record's page CRC and decodability.
+			rc, err := s.loader.LoadRows(int64(bl.DataOffset), bl.BlockID)
+			if err != nil {
+				return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: err.Error()}
+			}
+			if mode == VerifyFull {
+				verr := rc.ForEach(func(rec codec.PageRecord) error {
+					rep.RowsChecked++
+					if rec.ChangeType != fileformat.ChangeDelete {
+						schema := st.schemas.schema(bl.SnapshotID, bl.TableID, rec.SchemaVersion)
+						if schema != nil {
+							if _, err := codec.DecodeBodyInto(nil, rec.Body, schema, s.opts.codecLimits(), nil); err != nil {
+								return fmt.Errorf("row %d: %v", rec.RowID, err)
+							}
+						}
+					}
+					return nil
+				})
+				if verr != nil {
+					return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Reason: verr.Error()}
+				}
+			}
+			continue
+		}
 		blk, err := s.loader.Load(int64(bl.DataOffset), bl.BlockID)
 		if err != nil {
 			return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: err.Error()}
 		}
-		if mode == VerifyFull {
-			switch bl.Kind {
-			case fileformat.BlockKindRows:
-				rp, err := block.ParseRowsPayload(blk.Raw, bl.ItemCount)
-				if err != nil {
-					return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Reason: err.Error()}
-				}
-				for i := range rp.Entries {
-					rep.RowsChecked++
-					if rp.Entries[i].ChangeType != fileformat.ChangeDelete {
-						if got := fileformat.CRC32C(rp.RowBytes(i)); got != rp.RowCRC(i) {
-							return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, TableID: bl.TableID, Kind: ErrCorruptData, Reason: fmt.Sprintf("row %d CRC mismatch", rp.Entries[i].RowID)}
-						}
-						// Decode against the schema when resolvable.
-						schema := st.schemas.schema(bl.SnapshotID, bl.TableID, rp.Entries[i].SchemaVersion)
-						if schema != nil {
-							if _, err := decodeRowBytes(rp.RowBytes(i), schema, s.opts); err != nil {
-								return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, TableID: bl.TableID, Kind: ErrCorruptData, Reason: fmt.Sprintf("row %d: %v", rp.Entries[i].RowID, err)}
-							}
-						}
-					}
-				}
-			case fileformat.BlockKindMetadata:
-				if _, err := parseMetadataPayload(blk.Raw); err != nil {
-					return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, Kind: ErrCorruptData, Reason: err.Error()}
-				}
+		if mode == VerifyFull && bl.Kind == fileformat.BlockKindMetadata {
+			if _, err := parseMetadataPayload(blk.Raw); err != nil {
+				return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, Kind: ErrCorruptData, Reason: err.Error()}
 			}
 		}
 	}

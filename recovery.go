@@ -3,7 +3,7 @@ package rowpack
 import (
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/block"
+	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/rowpack/rowpack/internal/index"
 	"github.com/rowpack/rowpack/internal/metadata"
@@ -412,10 +412,6 @@ func (s *Store) buildIndexTxnFromData(c *committedSnapshot) (*index.Txn, error) 
 		if err := bh.Unmarshal(bhBuf[:]); err != nil {
 			return nil, fmt.Errorf("rowpack: block header at %d: %w", cur, err)
 		}
-		blk, err := s.loader.Load(cur, bh.BlockID)
-		if err != nil {
-			return nil, err
-		}
 		blockEntries = append(blockEntries, fileformat.BlockIndexEntry{
 			BlockID:     bh.BlockID,
 			SnapshotID:  bh.SnapshotID,
@@ -430,22 +426,31 @@ func (s *Store) buildIndexTxnFromData(c *committedSnapshot) (*index.Txn, error) 
 		})
 		switch bh.BlockKind {
 		case fileformat.BlockKindRows:
-			// The lightweight directory view carries RowID/ChangeType per
-			// record, which is all the index needs; the full payload parse
-			// would materialize every record slice for nothing.
-			rp, err := block.ParseRowsDirectory(blk.Raw, bh.ItemCount, nil)
+			// Rebuild the row index from the page container stream: iterate
+			// every record (decompressing one page at a time) and emit the
+			// RowID/ChangeType each record carries. The whole block is never
+			// decompressed at once, so the rebuild peak stays bounded.
+			rc, err := s.loader.LoadRows(cur, bh.BlockID)
 			if err != nil {
 				return nil, err
 			}
-			for i := range rp.Entries {
+			err = rc.ForEach(func(rec codec.PageRecord) error {
 				rowEntries = append(rowEntries, fileformat.RowIndexEntry{
 					SnapshotID: bh.SnapshotID, TableID: bh.TableID,
-					ChangeType: rp.Entries[i].ChangeType, RowID: rp.Entries[i].RowID,
-					BlockID: bh.BlockID, ItemOrdinal: uint32(i),
+					ChangeType: rec.ChangeType, RowID: rec.RowID,
+					BlockID: bh.BlockID, ItemOrdinal: uint32(len(rowEntries)),
 				})
 				rowCount++
+				return nil
+			})
+			if err != nil {
+				return nil, err
 			}
 		case fileformat.BlockKindMetadata:
+			blk, err := s.loader.Load(cur, bh.BlockID)
+			if err != nil {
+				return nil, err
+			}
 			mp, err := metadata.Parse(blk.Raw)
 			if err != nil {
 				return nil, err

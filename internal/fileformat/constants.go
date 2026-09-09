@@ -254,7 +254,12 @@ const (
 
 // Default tuning values from the API design.
 const (
-	DefaultBlockSize      = 256 << 10 // 256 KiB target raw block size
-	DefaultCacheBytes     = 64 << 20  // 64 MiB block cache
-	DefaultCompressionLvl = 3         // klauspost/compress default level mapping
+	DefaultBlockSize = 256 << 10 // 256 KiB target raw block size
+	// DefaultPageSize is the target raw size of one Rows Page (the actual
+	// read/compress/cache unit inside a Rows Block). Frozen at 32 KiB from the
+	// S2 prototype matrix (docs/REFACTOR_EXECUTION_PLAN.md §9.1): it loses
+	// only ~7% compression vs 64 KiB while halving cold-read decompression.
+	DefaultPageSize        = 32 << 10
+	DefaultCacheBytes      = 64 << 20 // 64 MiB block cache
+	DefaultCompressionLvl  = 3        // klauspost/compress default level mapping
 )

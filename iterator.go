@@ -89,25 +89,20 @@ type Iterator struct {
 	sink  *codec.Sink
 	arena strArena
 
-	// Block cursor: reuses the parsed rows directory while consecutive rows
-	// fall in the same block, avoiding a per-row full-block parse. The
-	// directory entry slice is reused across blocks (ParseRowsDirectory's
-	// entries argument) to keep a whole scan allocation-free apart from the
-	// string arena.
-	curBlockID uint64
-	curBlk     *index.BlockLoc
-	curPayload *block.RowsIndex
-	dirEntries []fileformat.RowDirectoryEntry
-	// curRef is the current block reference. Cache hits are cache-owned
-	// (Release no-op); transient misses own a pooled scratch that is
-	// returned when the cursor moves to the next block or the iterator
-	// closes.
-	curRef *scanRef
+	// Page container cursor: keeps the current block's page container and the
+	// currently decompressed page, so consecutive rows inside one page reuse
+	// the same decompression instead of re-decoding the page per row.
+	curBlockID   uint64
+	curBlk       *index.BlockLoc
+	curContainer *block.RowsContainer
+	curPage      *block.RowsPage
+	curPageIdx   int          // index into curContainer.Dir; -1 = none loaded
+	curPageRel   func()       // returns the current page's pooled scratch
+	curPageNext  int          // block-scan: next record ordinal within page
 
 	// Block-scan mode (scanModeBlocks): the raw per-block change stream.
 	blockIDs []uint64 // blocks to visit, ascending
 	blockPos int      // index into blockIDs
-	recPos   int      // index into curPayload.Entries
 	err      error
 	closed   bool
 }
@@ -258,32 +253,50 @@ func (it *Iterator) Next() (Row, bool) {
 
 // nextBlockRecord yields the raw per-record change stream of the selected
 // blocks in physical write order: every record, tombstones included, no
-// parent-chain merge. DELETE records carry a nil Row.
+// parent-chain merge. DELETE records carry a nil Row. Pages are decompressed
+// once each and walked sequentially.
 func (it *Iterator) nextBlockRecord() (Row, bool) {
 	for {
-		if it.curPayload != nil && it.recPos < len(it.curPayload.Entries) {
-			ordinal := it.recPos
-			ent := &it.curPayload.Entries[ordinal]
-			it.recPos++
-			it.curRowID = RowID(ent.RowID)
-			it.curType = fileformat.ChangeType(ent.ChangeType)
-			if ent.ChangeType == fileformat.ChangeDelete {
-				return nil, true // tombstone: no payload
-			}
-			row, err := it.decodeEntry(ordinal, ent, it.buf)
+		if it.curContainer != nil && it.curPage != nil && it.curPageNext < int(it.curPage.Header().EntryCount) {
+			rec, err := it.curPage.RecordAt(uint32(it.curPageNext))
 			if err != nil {
 				it.err = err
-				it.releaseBlock()
+				it.releasePage()
+				return nil, false
+			}
+			it.curPageNext++
+			it.curRowID = RowID(rec.RowID)
+			it.curType = rec.ChangeType
+			if rec.ChangeType == fileformat.ChangeDelete {
+				return nil, true // tombstone: no payload
+			}
+			row, err := it.store.decodeBodyRecordInto(rec, it.curBlk, it.state.schemas, it.buf, it.sink)
+			if err != nil {
+				it.err = err
+				it.releasePage()
 				return nil, false
 			}
 			it.buf = row
 			return row, true
 		}
+		// Page exhausted: advance to the next page within the block, then the
+		// next block.
+		if it.curContainer != nil && it.curPageIdx+1 < it.curContainer.PageCount() {
+			it.releasePage()
+			next := it.curPageIdx + 1
+			page, release, err := it.curContainer.PageScratch(next)
+			if err != nil {
+				it.err = err
+				return nil, false
+			}
+			it.curPage = page
+			it.curPageRel = release
+			it.curPageIdx = next
+			it.curPageNext = 0
+			continue
+		}
 		// Advance to the next block.
 		it.releaseBlock()
-		it.curBlockID = 0
-		it.curPayload = nil
-		it.recPos = 0
 		if it.blockPos >= len(it.blockIDs) {
 			return nil, false
 		}
@@ -301,32 +314,21 @@ func (it *Iterator) nextBlockRecord() (Row, bool) {
 	}
 }
 
-// loadBlock loads and parses one rows block for the block-scan cursor.
+// loadBlock loads one rows block's page container for the block-scan cursor;
+// the first page is decompressed lazily on the next record.
 func (it *Iterator) loadBlock(bl *index.BlockLoc) error {
-	ref, _, err := it.store.loader.LoadScan(int64(bl.DataOffset), bl.BlockID)
+	rc, err := it.store.loader.LoadScanRows(int64(bl.DataOffset), bl.BlockID)
 	if err != nil {
 		return err
 	}
-	rp, err := block.ParseRowsDirectory(ref.Raw(), bl.ItemCount, it.dirEntries)
-	if err != nil {
-		ref.Release()
-		return err
-	}
-	it.dirEntries = rp.Entries
 	it.curBlockID = bl.BlockID
 	it.curBlk = bl
-	it.curPayload = rp
-	it.curRef = ref
+	it.curContainer = rc
+	it.curPage = nil
+	it.curPageRel = nil
+	it.curPageIdx = -1
+	it.curPageNext = 0
 	return nil
-}
-
-// decodeEntry decodes one directory entry into dst against its schema.
-func (it *Iterator) decodeEntry(ordinal int, ent *fileformat.RowDirectoryEntry, dst Row) (Row, error) {
-	schema := it.state.schemas.schema(it.curBlk.SnapshotID, it.curBlk.TableID, ent.SchemaVersion)
-	if schema == nil {
-		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, it.curBlk.TableID, ent.SchemaVersion)
-	}
-	return codec.DecodeInto(dst, it.curPayload.RowBytes(ordinal), schema, it.store.opts.codecLimits(), it.sink)
 }
 
 // nextLoc advances the k-way merge and returns the next visible row location
@@ -388,17 +390,35 @@ func (l *layerIter) advance(h *rowHeap) {
 	}
 }
 
-// rowAt resolves one row into dst, reusing the parsed payload of the current
-// block when the location is inside it.
+// rowAt resolves one row into dst, reusing the current block's page container
+// and the currently decompressed page when the location is inside it.
 func (it *Iterator) rowAt(loc *index.RowLoc, dst Row) (Row, error) {
 	if err := it.locateBlock(loc); err != nil {
 		return nil, err
 	}
-	return it.store.rowFromPayloadInto(it.curPayload, it.curBlk, loc, it.state.schemas, dst, it.sink)
+	pi, err := it.curContainer.PageIndexForOrdinal(loc.ItemOrdinal)
+	if err != nil {
+		return nil, err
+	}
+	if it.curPage == nil || it.curPageIdx != pi {
+		it.releasePage()
+		page, release, err := it.curContainer.PageScratch(pi)
+		if err != nil {
+			return nil, err
+		}
+		it.curPage = page
+		it.curPageRel = release
+		it.curPageIdx = pi
+	}
+	rec, err := it.curPage.RecordAt(loc.ItemOrdinal - it.curContainer.Dir[pi].FirstRecordOrdinal)
+	if err != nil {
+		return nil, err
+	}
+	return it.store.decodeBodyRecordInto(rec, it.curBlk, it.state.schemas, dst, it.sink)
 }
 
-// locateBlock loads and parses the rows directory of loc's block, reusing the
-// parsed payload of the current block when consecutive rows fall inside it.
+// locateBlock loads the page container of loc's block, reusing the current
+// block when consecutive rows fall inside it.
 func (it *Iterator) locateBlock(loc *index.RowLoc) error {
 	if it.curBlockID == loc.BlockID {
 		return nil
@@ -407,34 +427,38 @@ func (it *Iterator) locateBlock(loc *index.RowLoc) error {
 	if bl == nil {
 		return fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)
 	}
-	ref, _, err := it.store.loader.LoadScan(int64(bl.DataOffset), bl.BlockID)
-	if err != nil {
-		return err
-	}
-	rp, err := block.ParseRowsDirectory(ref.Raw(), bl.ItemCount, it.dirEntries)
-	if err != nil {
-		ref.Release()
-		return err
-	}
-	// The new directory is built from ref's buffer; the previous block (if
-	// any) is no longer referenced, so its scratch can be returned to the
-	// pool before the cursor moves.
 	it.releaseBlock()
-	it.dirEntries = rp.Entries
+	rc, err := it.store.loader.LoadScanRows(int64(bl.DataOffset), bl.BlockID)
+	if err != nil {
+		return err
+	}
 	it.curBlockID = loc.BlockID
 	it.curBlk = bl
-	it.curPayload = rp
-	it.curRef = ref
+	it.curContainer = rc
+	it.curPage = nil
+	it.curPageRel = nil
+	it.curPageIdx = -1
 	return nil
 }
 
-// releaseBlock returns the current block's scratch (if any) to the pool.
-// Callers must no longer reference curPayload's raw buffer. Idempotent.
-func (it *Iterator) releaseBlock() {
-	if it.curRef != nil {
-		it.curRef.Release()
-		it.curRef = nil
+// releasePage returns the current page's pooled scratch to the pool. It must
+// be called before curContainer or curBlock moves on. Idempotent.
+func (it *Iterator) releasePage() {
+	if it.curPageRel != nil {
+		it.curPageRel()
+		it.curPageRel = nil
 	}
+	it.curPage = nil
+	it.curPageIdx = -1
+}
+
+// releaseBlock releases the current page and drops the block cursor.
+// Callers must no longer reference curPage or curContainer. Idempotent.
+func (it *Iterator) releaseBlock() {
+	it.releasePage()
+	it.curContainer = nil
+	it.curBlk = nil
+	it.curBlockID = 0
 }
 
 // RowID returns the current row's RowID.

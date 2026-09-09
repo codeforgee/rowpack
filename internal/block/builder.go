@@ -28,21 +28,45 @@ type FlushedBlock struct {
 	Meta   []metadata.DirectoryEntry      // metadata blocks only
 }
 
-// RowsBlockBuilder accumulates row records of one (snapshot, table) and emits
-// Rows Blocks, flushing at the target raw size and isolating any single row
-// that exceeds it.
+// RowsBlockBuilder accumulates body-only TypedTuple records of one
+// (snapshot, table) and emits Rows Blocks as page containers (§6 of the
+// refactor plan). Each block is:
+//
+//	[RowsBlockHeader][RowsPageDirEntry × N][stored page 0][stored page 1]…
+//
+// Records accumulate into an internal RowsPageBuilder (pageSize target); a
+// page is compressed into its own independently-decompressed stored page as
+// soon as it fills, and the whole block flushes once the sum of page raw
+// sizes reaches blockSize. A single record larger than pageSize is isolated
+// as its own oversized page (Flags bit 0).
 type RowsBlockBuilder struct {
 	snapshotID uint64
 	tableID    uint32
 	blockSize  int
+	pageSize   int
 	compress   fileformat.Compression
 	level      int
 	limits     Limits
 
+	// page is the current Rows Page accumulator; it is finished (and stored)
+	// whenever it reaches pageSize.
+	page *RowsPageBuilder
+
+	// entries carries one RowDirectoryEntry per buffered record in call order
+	// (only RowID/SchemaVersion/ChangeType are meaningful in the page layout;
+	// RecordOffset/RecordLength are unused). This exact slice is handed to
+	// FlushedBlock.Rows for index building, so the writer's index build needs
+	// no change.
 	entries []fileformat.RowDirectoryEntry
-	records []byte // raw record bytes in call order
-	count   uint32
-	rawBuf  []byte // reused uncompressed payload scratch
+
+	// dirEntries + storedPages hold the finished stored pages of the current
+	// block. rawSize is the Σ page raw sizes; recordOrdinal is the count of
+	// records across finished pages (it seeds the next page's
+	// FirstRecordOrdinal and equals len(entries) once the current page flushes).
+	dirEntries    []fileformat.RowsPageDirEntry
+	storedPages   [][]byte
+	rawSize       int
+	recordOrdinal uint32
 
 	// enc is the caller-owned zstd encoder (store-level, outliving GC pool
 	// churn); nil selects the pooled encoder.
@@ -52,17 +76,39 @@ type RowsBlockBuilder struct {
 	onFlush func(*FlushedBlock) error
 }
 
-// NewRowsBlockBuilder creates a builder for the given snapshot/table.
+// NewRowsBlockBuilder creates a builder for the given snapshot/table using
+// the default page size (fileformat.DefaultPageSize); override it with
+// SetPageSize before the first Add.
 func NewRowsBlockBuilder(snapshotID uint64, tableID uint32, blockSize int, compress fileformat.Compression, level int, limits Limits, onFlush func(*FlushedBlock) error) *RowsBlockBuilder {
+	ps := fileformat.DefaultPageSize
+	if ps > blockSize {
+		ps = blockSize
+	}
 	return &RowsBlockBuilder{
 		snapshotID: snapshotID,
 		tableID:    tableID,
 		blockSize:  blockSize,
+		pageSize:   ps,
 		compress:   compress,
 		level:      level,
 		limits:     limits,
+		page:       NewRowsPageBuilder(ps),
 		onFlush:    onFlush,
 	}
+}
+
+// SetPageSize overrides the default page target. It must be called before the
+// first Add while the current page is still empty; a page never exceeds the
+// enclosing block target.
+func (b *RowsBlockBuilder) SetPageSize(n int) {
+	if n <= 0 {
+		return
+	}
+	if n > b.blockSize {
+		n = b.blockSize
+	}
+	b.pageSize = n
+	b.page = NewRowsPageBuilder(n)
 }
 
 // SetZstdEncoder attaches a caller-owned zstd encoder used at Flush time
@@ -70,29 +116,59 @@ func NewRowsBlockBuilder(snapshotID uint64, tableID uint32, blockSize int, compr
 // must keep it valid until the last Flush.
 func (b *RowsBlockBuilder) SetZstdEncoder(e *ZstdEncoder) { b.enc = e }
 
-// Add appends one row record. The directory and record header are written in
-// call order, and the record bytes are copied. A record whose encoded size
-// reaches or exceeds the target block size is flushed as its own block.
+// Add appends one record (a body-only TypedTuple). The record is encoded into
+// the current page; a page that reaches pageSize is compressed and stored.
+// A record larger than pageSize occupies its own oversized page; a record
+// larger than blockSize additionally flushes the current block first so it
+// sits in a block by itself.
 func (b *RowsBlockBuilder) Add(rowID uint64, schemaVersion uint32, change fileformat.ChangeType, row []byte) error {
 	if uint32(len(row)) > b.limits.MaxRawBytes {
 		return fmt.Errorf("rowpack: row of %d bytes exceeds limit %d", len(row), b.limits.MaxRawBytes)
 	}
-	recordLen := fileformat.RowRecordHeaderSize + len(row)
-	if recordLen >= b.blockSize {
-		// Single oversized row must occupy its own block.
-		if err := b.Flush(); err != nil {
+	if len(row) > b.pageSize {
+		// Single oversized row: flush the current page, then store this one
+		// record as its own oversized page; a row that alone exceeds the
+		// block target flushes the block so it is isolated.
+		if err := b.finishCurrentPage(); err != nil {
 			return err
 		}
-		if err := b.append(rowID, schemaVersion, change, row); err != nil {
+		if len(row) >= b.blockSize {
+			if err := b.Flush(); err != nil {
+				return err
+			}
+		}
+		if err := b.page.Add(rowID, schemaVersion, change, row); err != nil {
 			return err
 		}
-		return b.Flush()
+		b.entries = append(b.entries, fileformat.RowDirectoryEntry{RowID: rowID, SchemaVersion: schemaVersion, ChangeType: change})
+		rawPage, err := b.page.Finish()
+		if err != nil {
+			return err
+		}
+		if err := b.storePage(rawPage, true); err != nil {
+			return err
+		}
+		if b.rawSize >= b.blockSize {
+			return b.Flush()
+		}
+		return nil
 	}
-	if err := b.append(rowID, schemaVersion, change, row); err != nil {
+	if b.page.NeedsFlush() {
+		if err := b.finishCurrentPage(); err != nil {
+			return err
+		}
+	}
+	if err := b.page.Add(rowID, schemaVersion, change, row); err != nil {
 		return err
 	}
-	if len(b.records) >= b.blockSize {
-		return b.Flush()
+	b.entries = append(b.entries, fileformat.RowDirectoryEntry{RowID: rowID, SchemaVersion: schemaVersion, ChangeType: change})
+	if b.page.NeedsFlush() {
+		if err := b.finishCurrentPage(); err != nil {
+			return err
+		}
+		if b.rawSize >= b.blockSize {
+			return b.Flush()
+		}
 	}
 	return nil
 }
@@ -102,117 +178,126 @@ func (b *RowsBlockBuilder) Delete(rowID uint64, schemaVersion uint32) error {
 	return b.Add(rowID, schemaVersion, fileformat.ChangeDelete, nil)
 }
 
-func (b *RowsBlockBuilder) append(rowID uint64, schemaVersion uint32, change fileformat.ChangeType, row []byte) error {
-	recordLen := fileformat.RowRecordHeaderSize + len(row)
-	dir := fileformat.RowDirectoryEntry{
-		RowID:         rowID,
-		RecordOffset:  uint32(len(b.records)),
-		RecordLength:  uint32(recordLen),
-		ChangeType:    change,
-		SchemaVersion: schemaVersion,
-	}
-	// Validate offsets fit.
-	if dir.RecordOffset+dir.RecordLength > b.limits.MaxRawBytes {
-		return fmt.Errorf("rowpack: block payload exceeds limit %d", b.limits.MaxRawBytes)
-	}
-	var rh fileformat.RowRecordHeader
-	rh.RowID = rowID
-	rh.SchemaVersion = schemaVersion
-	rh.ChangeType = change
-	if change == fileformat.ChangeDelete {
-		rh.RowEncoding = fileformat.RowEncodingNone
-		rh.RowLength = 0
-		rh.RowCRC32C = 0
-	} else {
-		rh.RowEncoding = fileformat.RowEncodingTypedTuple
-		rh.RowLength = uint32(len(row))
-		rh.RowCRC32C = fileformat.CRC32C(row)
-	}
-	var hdr [fileformat.RowRecordHeaderSize]byte
-	if err := rh.MarshalTo(hdr[:]); err != nil {
-		return err
-	}
-	b.entries = append(b.entries, dir)
-	b.records = append(b.records, hdr[:]...)
-	b.records = append(b.records, row...)
-	b.count++
-	return nil
-}
+// Pending returns the number of buffered records (finished + current page).
+func (b *RowsBlockBuilder) Pending() int { return len(b.entries) }
 
-// Pending returns the number of buffered records.
-func (b *RowsBlockBuilder) Pending() int { return int(b.count) }
-
-// Flush emits the current pending records as one block, if any.
-func (b *RowsBlockBuilder) Flush() error {
-	if b.count == 0 {
+// finishCurrentPage compresses and stores the current (non-empty) page, if
+// any, appending its directory entry and updating the running counters.
+func (b *RowsBlockBuilder) finishCurrentPage() error {
+	if b.page.Count() == 0 {
 		return nil
 	}
-	raw := b.buildRawPayload()
-	var compressed []byte
+	rawPage, err := b.page.Finish()
+	if err != nil {
+		return err
+	}
+	return b.storePage(rawPage, false)
+}
+
+// storePage compresses one finished (uncompressed) page and records its
+// directory entry. StoredOffset is resolved at block assembly time, once the
+// directory length is known.
+func (b *RowsBlockBuilder) storePage(rawPage []byte, oversized bool) error {
+	var stored []byte
 	var err error
 	if b.enc != nil && b.compress == fileformat.CompressionZstd {
-		compressed, err = EncodeZstdWith(b.enc, raw)
+		stored, err = EncodeZstdWith(b.enc, rawPage)
 	} else {
-		compressed, err = Compress(b.compress, b.level, raw)
+		stored, err = Compress(b.compress, b.level, rawPage)
 	}
 	if err != nil {
 		return err
+	}
+	var h fileformat.RowsPageHeader
+	if err := h.Unmarshal(rawPage, len(rawPage)); err != nil {
+		// A page this builder created can never be malformed; treat as a
+		// coding error surfaced through the normal error path.
+		return fmt.Errorf("rowpack: internal page re-parse failed: %w", err)
+	}
+	dir := fileformat.RowsPageDirEntry{
+		PageOrdinal:        uint32(len(b.dirEntries)),
+		FirstRecordOrdinal: b.recordOrdinal,
+		RecordCount:        h.EntryCount,
+		StoredSize:         uint32(len(stored)),
+		RawSize:            uint32(len(rawPage)),
+		MinRowID:           h.MinRowID,
+		MaxRowID:           h.MaxRowID,
+		PageCRC32C:         h.CRC32C,
+	}
+	if oversized {
+		dir.Flags = 1
+	}
+	b.dirEntries = append(b.dirEntries, dir)
+	b.storedPages = append(b.storedPages, stored)
+	b.rawSize += len(rawPage)
+	b.recordOrdinal += h.EntryCount
+	return nil
+}
+
+// Flush emits the current pending pages as one page-container block, if any.
+func (b *RowsBlockBuilder) Flush() error {
+	if len(b.entries) == 0 {
+		return nil
+	}
+	if err := b.finishCurrentPage(); err != nil {
+		return err
+	}
+	if len(b.dirEntries) == 0 {
+		return nil
+	}
+	n := uint32(len(b.dirEntries))
+	header := fileformat.RowsBlockHeader{
+		PageCount:      n,
+		DirectoryBytes: n * fileformat.RowsPageDirEntrySize,
+		TotalRecords:   uint32(len(b.entries)),
+	}
+	// Resolve per-page StoredOffset now that the directory length is known
+	// (the directory sits between the container header and the first page).
+	dataStart := fileformat.RowsBlockHeaderSize + int(n)*fileformat.RowsPageDirEntrySize
+	off := dataStart
+	for i := range b.dirEntries {
+		b.dirEntries[i].StoredOffset = uint64(off)
+		off += int(b.dirEntries[i].StoredSize)
+	}
+	// The container is the block payload and must remain valid until commit
+	// writes it (the onFlush callback retains it), so it is a fresh
+	// allocation per block rather than a reused scratch. make zeroes it, so
+	// no clearContainer pass is needed.
+	container := make([]byte, off)
+	var hdr [fileformat.RowsBlockHeaderSize]byte
+	_ = header.MarshalTo(hdr[:])
+	copy(container[0:fileformat.RowsBlockHeaderSize], hdr[:])
+	dir := container[fileformat.RowsBlockHeaderSize:dataStart]
+	for i := range b.dirEntries {
+		var e [fileformat.RowsPageDirEntrySize]byte
+		_ = b.dirEntries[i].MarshalTo(e[:])
+		copy(dir[i*fileformat.RowsPageDirEntrySize:], e[:])
+	}
+	for i := range b.storedPages {
+		start := int(b.dirEntries[i].StoredOffset)
+		copy(container[start:start+len(b.storedPages[i])], b.storedPages[i])
 	}
 	h := fileformat.BlockHeader{
 		BlockKind:   fileformat.BlockKindRows,
 		Compression: b.compress,
 		SnapshotID:  b.snapshotID,
 		TableID:     b.tableID,
-		ItemCount:   b.count,
-		RawSize:     uint32(len(raw)),
-		StoredSize:  uint32(len(compressed)),
-		RawCRC32C:   fileformat.CRC32C(raw),
+		ItemCount:   uint32(len(b.entries)),
+		RawSize:     uint32(b.rawSize),
+		StoredSize:  uint32(len(container)),
+		RawCRC32C:   fileformat.CRC32C(container[:dataStart]),
 	}
-	if err := b.onFlush(&FlushedBlock{Header: h, Stored: compressed, Raw: raw, Rows: b.entries}); err != nil {
+	if err := b.onFlush(&FlushedBlock{Header: h, Stored: container, Raw: container, Rows: b.entries}); err != nil {
 		return err
 	}
-	// Ownership of the directory slice transferred to the callback (it backs
-	// the pending block's row index); allocate a fresh one for the next block
-	// instead of resetting in place. One allocation per flushed block, not
-	// per row.
-	b.entries = make([]fileformat.RowDirectoryEntry, 0, cap(b.entries))
-	b.records = b.records[:0]
-	b.count = 0
+	// Directory ownership transferred to the callback; fresh inputs next block.
+	b.entries = nil
+	b.dirEntries = b.dirEntries[:0]
+	b.storedPages = b.storedPages[:0]
+	b.rawSize = 0
+	b.recordOrdinal = 0
 	return nil
 }
-
-// buildRawPayload assembles the deterministic uncompressed Rows payload:
-// RowsPayloadHeader + directory + records. The returned slice aliases the
-// builder's reused scratch buffer: it is valid only until the next build, so
-// Flush must consume it synchronously (compress + onFlush).
-func (b *RowsBlockBuilder) buildRawPayload() []byte {
-	dirBytes := len(b.entries) * fileformat.RowDirectoryEntrySize
-	total := fileformat.RowsPayloadHeaderSize + dirBytes + len(b.records)
-	if cap(b.rawBuf) < total {
-		b.rawBuf = make([]byte, 0, total)
-	}
-	b.rawBuf = b.rawBuf[:0]
-	raw := b.rawBuf
-	h := fileformat.RowsPayloadHeader{
-		ItemCount:      b.count,
-		DirectoryBytes: uint32(dirBytes),
-		RecordsBytes:   uint64(len(b.records)),
-	}
-	var hdr [fileformat.RowsPayloadHeaderSize]byte
-	_ = h.MarshalTo(hdr[:])
-	raw = append(raw, hdr[:]...)
-	for i := range b.entries {
-		var e [fileformat.RowDirectoryEntrySize]byte
-		_ = b.entries[i].MarshalTo(e[:])
-		raw = append(raw, e[:]...)
-	}
-	raw = append(raw, b.records...)
-	return raw
-}
-
-// RawPayload builds the payload for the current pending records without
-// flushing (used by tests to check determinism).
-func (b *RowsBlockBuilder) RawPayload() []byte { return b.buildRawPayload() }
 
 // RowsPayload is a validated uncompressed Rows block payload.
 type RowsPayload struct {

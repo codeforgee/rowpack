@@ -6,7 +6,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/rowpack/rowpack/internal/index"
@@ -111,71 +110,40 @@ func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, r
 	return true, nil
 }
 
-// readRowInto reads and decodes a single row into dst from its block via
-// ParseRowAt, avoiding a full block directory parse for random reads.
+// readRowInto reads and decodes a single row into dst from its block via the
+// page container: the block directory locates the page, only that page is
+// decompressed, and the record is decoded against its schema version. A
+// single-row read no longer decompresses the whole block.
 func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc *index.RowLoc, dst Row) (Row, SchemaVersion, error) {
 	bl := view.Block(loc.BlockID)
 	if bl == nil {
 		return nil, 0, fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)
 	}
-	var blk *block.Block
-	if s.loader.cache == nil {
-		// Cache disabled: stream the block through the pooled scratch so a
-		// cold read does not allocate (and immediately discard) a full raw
-		// buffer. The decode below copies String/Bytes payloads out before
-		// the scratch is released.
-		r, _, err := s.loader.LoadScan(int64(bl.DataOffset), bl.BlockID)
-		if err != nil {
-			return nil, 0, err
-		}
-		defer r.Release()
-		blk = r.blk
-	} else {
-		var err error
-		blk, err = s.loader.Load(int64(bl.DataOffset), bl.BlockID)
-		if err != nil {
-			return nil, 0, err
-		}
-	}
-	ref, err := block.ParseRowAt(blk.Raw, bl.ItemCount, loc.ItemOrdinal)
+	rc, err := s.loader.LoadRows(int64(bl.DataOffset), bl.BlockID)
 	if err != nil {
 		return nil, 0, err
 	}
-	// Verify the row CRC for local diagnostics.
-	if ref.Entry.ChangeType != fileformat.ChangeDelete {
-		if got := fileformat.CRC32C(ref.Row); got != ref.Header.RowCRC32C {
-			return nil, 0, fmt.Errorf("rowpack: row CRC mismatch in block %d", bl.BlockID)
-		}
+	rec, release, err := rc.RecordAtScratch(loc.ItemOrdinal)
+	if err != nil {
+		return nil, 0, err
 	}
-	row, err := s.decodeRowInto(ref, bl, si, dst, nil)
-	return row, ref.Entry.SchemaVersion, err
+	defer release()
+	if rec.ChangeType == fileformat.ChangeDelete {
+		return nil, 0, fmt.Errorf("rowpack: row is a tombstone in block %d", bl.BlockID)
+	}
+	row, err := s.decodeBodyRecordInto(rec, bl, si, dst, nil)
+	return row, rec.SchemaVersion, err
 }
 
-// rowFromPayloadInto decodes the record at ordinal from an already-built rows
-// directory into dst (used by Scan's block cursor). Callers must already have
-// filtered tombstones. sink materializes String payloads (nil = fresh copy
-// per value).
-func (s *Store) rowFromPayloadInto(rp *block.RowsIndex, bl *index.BlockLoc, loc *index.RowLoc, si *schemaIndex, dst Row, sink *codec.Sink) (Row, error) {
-	if int(loc.ItemOrdinal) >= len(rp.Entries) {
-		return nil, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", loc.ItemOrdinal, loc.BlockID)
-	}
-	ent := &rp.Entries[loc.ItemOrdinal]
-	schema, err := si.schemaFor(bl, ent.SchemaVersion)
+// decodeBodyRecordInto decodes a page record (body-only TypedTuple) into dst
+// against its schema version. A non-nil sink materializes String/Bytes
+// payloads as arena views (batch/scan); nil keeps copy semantics (Get).
+func (s *Store) decodeBodyRecordInto(rec codec.PageRecord, bl *index.BlockLoc, si *schemaIndex, dst Row, sink *codec.Sink) (Row, error) {
+	schema, err := si.schemaFor(bl, rec.SchemaVersion)
 	if err != nil {
 		return nil, err
 	}
-	return codec.DecodeInto(dst, rp.RowBytes(int(loc.ItemOrdinal)), schema, s.opts.codecLimits(), sink)
-}
-
-// decodeRowInto decodes a located row into dst against its schema. A non-nil
-// sink materializes String/Bytes payloads as views (batch reads); nil keeps
-// copy semantics (Get).
-func (s *Store) decodeRowInto(ref block.RowRef, bl *index.BlockLoc, si *schemaIndex, dst Row, sink *codec.Sink) (Row, error) {
-	schema, err := si.schemaFor(bl, ref.Entry.SchemaVersion)
-	if err != nil {
-		return nil, err
-	}
-	return codec.DecodeInto(dst, ref.Row, schema, s.opts.codecLimits(), sink)
+	return codec.DecodeBodyInto(dst, rec.Body, schema, s.opts.codecLimits(), sink)
 }
 
 // Schema returns the schema of a table version at a snapshot. The table is

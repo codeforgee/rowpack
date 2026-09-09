@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/fileformat"
-	"github.com/rowpack/rowpack/internal/index"
 )
 
 // batchReq is one requested row located inside a target block.
@@ -87,94 +85,49 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 	// their chunk alive via GC without pinning whole block buffers.
 	var arena strArena
 	sink := strArenaSink(&arena)
-	var dirScratch []fileformat.RowDirectoryEntry // reused across blocks
 	var blocks, rawBytes uint64
-	var scr *scanRef // transient scratch (cache-disabled); released per block
 	for _, bid := range blockIDs {
-		if scr != nil {
-			scr.Release()
-			scr = nil
-		}
 		bl := view.Block(bid)
 		if bl == nil {
 			return nil, fmt.Errorf("rowpack: block %d missing from view", bid)
 		}
-		var blk *block.Block
-		if s.loader.cache == nil {
-			// Cache disabled: stream through the pooled scratch; rows are
-			// decoded (copied) before the scratch is released. Early error
-			// returns may skip the release; the buffer is then GC-reclaimed.
-			r, _, err := s.loader.LoadScan(int64(bl.DataOffset), bid)
-			if err != nil {
-				return nil, err
-			}
-			scr = r
-			blk = r.blk
-		} else {
-			var err error
-			blk, err = s.loader.Load(int64(bl.DataOffset), bid)
-			if err != nil {
-				return nil, err
-			}
-		}
-		blocks++
-		rawBytes += uint64(bl.RawSize)
-		reqs := groups[bid]
-		if len(reqs) == 1 {
-			// Single-row block: the O(1) single-record parse is cheaper than
-			// building the whole directory.
-			ref, err := block.ParseRowAt(blk.Raw, bl.ItemCount, reqs[0].ordinal)
-			if err != nil {
-				return nil, err
-			}
-			row, err := s.decodeRowInto(ref, bl, st.schemas, nil, sink)
-			if err != nil {
-				return nil, err
-			}
-			out[reqs[0].outIdx] = row
-			continue
-		}
-		// Multi-row block: parse the directory once, then decode every
-		// requested row from it (the row-level CRC is already covered by the
-		// full-payload RawCRC in the loader).
-		rp, err := block.ParseRowsDirectory(blk.Raw, bl.ItemCount, dirScratch)
+		// Load the page container (no page decompressed yet), then group the
+		// requested rows by page so each page is decompressed exactly once per
+		// batch regardless of how many requested rows fall in it.
+		rc, err := s.loader.LoadRows(int64(bl.DataOffset), bid)
 		if err != nil {
 			return nil, err
 		}
-		dirScratch = rp.Entries
-		// ReadBatch returns independently owned Row slices. Allocate one
-		// contiguous Value slab for this block instead of one backing slice per
-		// requested row; the rows still have distinct non-overlapping views and
-		// preserve the public ownership semantics.
-		maxCols := 0
-		for _, req := range reqs {
-			if int(req.ordinal) >= len(rp.Entries) {
-				return nil, fmt.Errorf("rowpack: row ordinal %d out of range in block %d", req.ordinal, bid)
-			}
-			entry := &rp.Entries[req.ordinal]
-			schema := st.schemas.schema(bl.SnapshotID, bl.TableID, entry.SchemaVersion)
-			if schema == nil {
-				return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, entry.SchemaVersion)
-			}
-			if len(schema.Columns) > maxCols {
-				maxCols = len(schema.Columns)
-			}
-		}
-		values := make([]Value, len(reqs)*maxCols)
-		for i, req := range reqs {
-			var dst Row
-			if maxCols != 0 {
-				dst = values[i*maxCols : (i+1)*maxCols]
-			}
-			row, err := s.rowFromPayloadInto(rp, bl, &index.RowLoc{BlockID: bid, ItemOrdinal: req.ordinal}, st.schemas, dst, sink)
+		blocks++
+		rawBytes += uint64(bl.RawSize)
+		reqByPage := make(map[uint32][]batchReq, 4)
+		for _, req := range groups[bid] {
+			pi, err := rc.PageIndexForOrdinal(req.ordinal)
 			if err != nil {
 				return nil, err
 			}
-			out[req.outIdx] = row
+			reqByPage[uint32(pi)] = append(reqByPage[uint32(pi)], req)
 		}
-		if scr != nil {
-			scr.Release()
-			scr = nil
+		for pi, pageReqs := range reqByPage {
+			page, release, err := rc.PageScratch(int(pi))
+			if err != nil {
+				return nil, err
+			}
+			dir := &rc.Dir[pi]
+			for _, req := range pageReqs {
+				rec, err := page.RecordAt(req.ordinal - dir.FirstRecordOrdinal)
+				if err != nil {
+					release()
+					return nil, err
+				}
+				row, err := s.decodeBodyRecordInto(rec, bl, st.schemas, nil, sink)
+				if err != nil {
+					release()
+					return nil, err
+				}
+				out[req.outIdx] = row
+			}
+			release()
 		}
 	}
 	s.batchCalls.Add(1)

@@ -121,6 +121,62 @@ func (l *blockLoader) Load(offset int64, blockID uint64) (*block.Block, error) {
 	return v.(*block.Block), nil
 }
 
+// LoadRows loads a validated Rows Block page container (no page decompressed
+// yet) through the random-read cache with singleflight miss merging. Only
+// CRC/geometry-validated containers are cached.
+func (l *blockLoader) LoadRows(offset int64, blockID uint64) (*block.RowsContainer, error) {
+	if l.cache == nil {
+		return l.reader.ReadAtRowsContainer(offset)
+	}
+	if v, ok := l.cache.Get(blockID); ok {
+		if rc, ok := v.(*block.RowsContainer); ok {
+			return rc, nil
+		}
+	}
+	v, err := l.sf.Do(blockID, func() (any, error) {
+		l.cache.NoteLoad()
+		rc, err := l.reader.ReadAtRowsContainer(offset)
+		if err != nil {
+			return nil, l.blockReadError(offset, blockID, err)
+		}
+		l.cache.Put(blockID, int64(rc.StoredLen()), rc)
+		return rc, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*block.RowsContainer), nil
+}
+
+// LoadScanRows serves streaming reads (Scan / ScanBlocks) of Rows page
+// containers. Lookup order is the random-read cache, then the scan window; a
+// miss is read once and — when the container fits the window — promoted into
+// it so a repeating scan reuses it without evicting hot random pages. An
+// uncached container owns its buffer and is GC-reclaimed after use (there is
+// no scratch to release, unlike a decompressed block).
+func (l *blockLoader) LoadScanRows(offset int64, blockID uint64) (*block.RowsContainer, error) {
+	if l.cache != nil {
+		if v, ok := l.cache.Get(blockID); ok {
+			if rc, ok := v.(*block.RowsContainer); ok {
+				return rc, nil
+			}
+		}
+		if v, ok := l.scan.Get(blockID); ok {
+			if rc, ok := v.(*block.RowsContainer); ok {
+				return rc, nil
+			}
+		}
+	}
+	rc, err := l.reader.ReadAtRowsContainer(offset)
+	if err != nil {
+		return nil, l.blockReadError(offset, blockID, err)
+	}
+	if l.scan != nil && uint64(rc.StoredLen()) <= l.scan.Remaining() {
+		l.scan.Put(blockID, int64(rc.StoredLen()), rc)
+	}
+	return rc, nil
+}
+
 // scanRef wraps a block for streamed use. Cache-owned blocks are served
 // directly (Release is a no-op); transient (uncached) blocks own a pooled
 // scratch buffer that Release returns to the pool.

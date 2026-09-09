@@ -182,6 +182,49 @@ func TestGoldenEncryptedStore(t *testing.T) {
 	}
 }
 
+// TestGoldenEncryptedStoreGenerate regenerates testdata/golden/encrypted-store.rpk
+// under -update-golden. The bytes are deterministic (fixed UUID/now/nonce +
+// a static key), and TestGoldenEncryptedStore (above) reopens the locked
+// sample with its key. Skipped unless -update-golden is set.
+func TestGoldenEncryptedStoreGenerate(t *testing.T) {
+	if !*updateGolden {
+		t.Skip("regenerate the encrypted golden with -update-golden")
+	}
+	uuid := [16]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00}
+	testUUIDOverride = &uuid
+	testNowOverride = 1757400000000000000
+	nonce := uint64(0x454E435259505444) // "ENCRYPTD"
+	testNonceOverride = &nonce
+	t.Cleanup(func() {
+		testUUIDOverride = nil
+		testNowOverride = 0
+		testNonceOverride = nil
+	})
+	base := filepath.Join(tmpdb(t), "golden-encgen")
+	opts := Options{
+		Compression: CompressionNone,
+		Encryption: &EncryptionConfig{
+			KeyProvider: &staticKeyProvider{keyID: "gk", key: testKey("gk")},
+			KeyID:       "gk",
+		},
+	}
+	db, err := Create(base, opts)
+	require.NoError(t, err)
+	ctx := context.Background()
+	w, err := db.BeginFull(ctx)
+	require.NoError(t, err)
+	require.NoError(t, w.CreateTable("t1", []Column{{Name: "id", Type: TypeUint64}, {Name: "name", Type: TypeString}}))
+	for i := uint64(1); i <= 3; i++ {
+		require.NoError(t, w.Insert(ctx, "t1", i, Row{Uint64(i), String(fmt.Sprintf("row-%d", i))}))
+	}
+	_, err = w.Commit(ctx)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	data, err := os.ReadFile(base + ".rpk")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(goldenPath("encrypted-store.rpk"), data, 0o644))
+}
+
 // TestEncryptionTamperDetect flips one ciphertext byte and requires the read
 // path to fail authentication: the AEAD is the integrity boundary, so a
 // flipped byte must never decode to a modified row.

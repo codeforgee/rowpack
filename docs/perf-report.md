@@ -26,6 +26,26 @@
 
 方差档 ≤ ±3.7%（`docs/baseline/bench-s0-variance.txt`），分配类指标恒定。
 
+## 0.5 S2 页容器重构实测（2026-09-09，20k 行直读档，同机同口径）
+
+S2 把 Rows Block 切为页容器（逻辑块 + 独立压缩 32 KiB Page），页级 I/O + 页内
+O(1) 记录索引。实测（`BenchmarkGetHot / GetCold / GetColdUnpooled / WriteFull / Scan`）：
+
+| 场景 | S0 基线 | S2 实测 | 门槛 | 结论 |
+| --- | --- | --- | --- | --- |
+| 冷读临时分配（无池） | 328,645 B/op | **57,932 B/op**（≈56.6 KiB） | ≤ 64 KiB | ✅ |
+| 冷读 readB/op | 62,843 B | **5,845 B** | —（页级 I/O） | 只拉一页 |
+| 冷读 rawB/op（读取放大） | 327,095 B | **32,778 B** | — | 只解压一页 |
+| 冷点读延迟（无池） | ~349 µs | **~48 µs** | ≥ 4x | ✅ ≈7.3x |
+| 热点读 | 277 ns | **246 ns** | ≤ 125% | ✅ ≈89% |
+| FULL 顺序写 | 104.2 ms | **87.3 ms** | ≥ 90% | ✅（更快） |
+| Scan 100k | 13.6 ms · 134 allocs | **13.5 ms · 64 allocs** | 0 alloc/row | ✅ |
+| 文件大小（golden 样本） | — | 变小（页格式去掉逐行冗余） | ≤ +10% | ✅ |
+
+> 说明：冷读临时分配由整块解压（~256 KiB raw）降为一页（~32 KiB raw）+ 目录 + 页索引
+> ≈ 57.9 KiB，高于 40 KiB 期望但仍低于 64 KiB 硬门槛。加密块本阶段保留整容器密封，
+> 加密冷读增量成本单独报告（逐页 nonce 为下一提交，见 `docs/REFACTOR_EXECUTION_PLAN.md` §5）。
+
 ## 1. 基准套件与指标口径
 
 `make bench` 一条命令复现全部基线（默认 `-benchtime=1s -count=1`，可用 `BENCHTIME`/

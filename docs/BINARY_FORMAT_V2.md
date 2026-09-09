@@ -95,18 +95,43 @@ HeaderCRC32C@120，ReservedCRC@124），仅 Magic=`ROWPACK2`、Major=2 不同。
 
 ## 5. SnapshotHeader 与 Block
 
-SnapshotHeader、BlockHeader、Rows Payload、Metadata Payload 和 TypedTuple 优先保持现有
-字段和编码不变，仅通过 Major Version 区分外层事务语义。
+SnapshotHeader、BlockHeader、Metadata Payload 和 TypedTuple 保持现有字段和编码不变。
+Rows Block 则改为**页容器**布局（见下），Metadata Block 仍为整块压缩的 Metadata Payload。
 
 Block 仍满足：
 
 - 一个 Block 只属于一个 Snapshot；
 - Rows Block 只属于一个 Table；
-- 先压缩后 AES-256-GCM 加密；
-- 独立 StoredSize、RawSize、CRC 和认证；
-- Row Directory 保存 RowID、ChangeType、SchemaVersion 和记录位置。
+- 先压缩后 AES-256-GCM 加密（阶段内先保留整容器密封；逐页 nonce 域分离为后续提交）；
+- 独立 StoredSize、RawSize、CRC 和认证。
 
-保持 Block 格式可以最大程度复用 writer、reader、cache、golden 构造逻辑和性能优化。
+### 5.1 Rows Block 页容器
+
+S2 起 Rows Block 的逻辑块（写入/统计/快照组织单位）与物理压缩页（读取/解压/缓存单位）
+分离。一个 Rows Block 的 payload 是页容器：
+
+```text
+[RowsBlockHeader]        24 B 固定：PageCount / DirectoryBytes / TotalRecords
+[RowsPageDirEntry × N]   56 B 每页（明文，供读取器定位页）
+[stored page 0]          每页独立压缩（+可选整套容器密封），由自身 PageCRC 校验
+[stored page 1]          …
+```
+
+- 外层 BlockHeader 只做聚合：`RawSize = Σ页 RawSize`、`StoredSize = 容器长`、
+  `RawCRC32C = 容器 [头+目录] 明文 CRC`；各页由自身 PageCRC 校验，块级不再有整载荷 raw CRC。
+- `RowsPageDirEntry` 含 PageOrdinal / FirstRecordOrdinal / RecordCount / StoredOffset /
+  StoredSize / RawSize / MinRowID / MaxRowID / PageCRC32C / Flags（bit0=超大连行页）。
+- 压缩页内部的 `RowsPage` 使用一次性列流（RowID zigzag delta / end-offset delta /
+  SchemaVersion RLE / ChangeType 2bit / body-only TypedTuple），去掉 v1 冗余的逐行
+  RowDirectoryEntry+RowRecordHeader；Page CRC 覆盖解压后完整页。
+- 默认 PageSize = 32 KiB（S2 原型冻结，ADR），PageSize 是建库后不可变的写时分页参数；
+  读取按容器目录定位页，不需要 PageSize。
+- 超过 PageSize 的单行使用独立 Large Row Page（Flags bit0）。
+
+### 5.2 Row Index（S2 仍为 v1 布局，S3 替换）
+
+RowIndexEntry（v1 定长 40 B）继续提供 `(SnapshotID, TableID, RowID) → BlockID, ItemOrdinal`。
+排序 Row Index Page + Fence + Eager/Lazy 模式属于 S3/S4，未在本版格式中落地。
 
 **M0 决议（R14）**：BlockHeader 保持 v1 的 64 字节布局（含 KeyEpoch@56），**不增加
 disk RowID envelope 字段**；批量 planner 的 MinRowID/MaxRowIDExclusive 由内存索引在

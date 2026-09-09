@@ -44,6 +44,20 @@
 - `BenchmarkDeepChainGet` — 32 层 DELTA 链随机读
 - `BenchmarkEncryptedWrite` / `BenchmarkEncryptedGetHot` — 加密档相对成本
 
+## 页容器格式测试（S2 新增）
+
+`internal/block/rows_container_test.go` 锁住页容器格式：
+
+- 多页容器 round-trip（300 条混合变更 + 乱序 RowID，4 KiB 页），`ForEach` 顺序与
+  `RecordAtScratch` 随机访问逐条对照；
+- Zstd 压缩页 round-trip 与 `StoredSize < RawSize` 断言；
+- 超大连行页（Flags bit0）独立成页；
+- 损坏矩阵：截断（各区域边界）、单 bit 翻转（头/目录区）、伪造 ItemCount，
+  均不得 panic 或无界分配，`ParseRowsContainer` 必须报错。
+
+搭配 `internal/block/rows_page_test.go`（页流编码）+ `internal/fileformat/rows_block_test.go`
+（块头/目录 marshaling），覆盖页容器层的字节级不变式。
+
 ## 运行
 
 ```sh

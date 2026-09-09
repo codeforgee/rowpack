@@ -72,6 +72,9 @@ func (s *Store) blocksByTable(view *index.View, snap uint64, tid TableID) ([]Blo
 			}
 			it.Next()
 		}
+		if err := view.LazyError(); err != nil {
+			return nil, err
+		}
 	}
 	for i := range out {
 		if out[i].MaxRowID == 0 { // no indexed record: keep the empty range

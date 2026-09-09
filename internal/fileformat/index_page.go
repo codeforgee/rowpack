@@ -135,6 +135,10 @@ func (h *RowIndexPageHeader) Unmarshal(src []byte, totalLen int) error {
 	if h.EntryCount == 0 {
 		return formatError("RowIndexPageHeader", 12, "index page must carry at least one entry")
 	}
+	wantBits := (uint64(h.EntryCount) + 3) / 4
+	if uint64(h.ChangeBitsBytes) != wantBits {
+		return formatError("RowIndexPageHeader", 32, "change bits %d, want %d for %d entries", h.ChangeBitsBytes, wantBits, h.EntryCount)
+	}
 	if totalLen > 0 {
 		total := uint64(IndexPageHeaderSize) + h.StreamsBytes()
 		if total != uint64(totalLen) {

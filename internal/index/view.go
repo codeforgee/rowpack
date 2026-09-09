@@ -300,16 +300,20 @@ func (v *View) IndexFenceBytes() uint64 {
 }
 
 // ResolveRow finds the row location for (snapshot, table, rowID) along the
-// parent chain. It returns nil when no record exists.
-func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool) {
+// parent chain. It reports found=false when no record exists and propagates
+// lazy index page load/corruption failures instead of treating them as absence.
+func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool, error) {
 	cur := snapshot
 	for {
 		if loc, ok := v.Row(cur, table, rowID); ok {
-			return loc, true
+			return loc, true, nil
+		}
+		if err := v.LazyError(); err != nil {
+			return RowLoc{}, false, err
 		}
 		sm := v.Snapshot(cur)
 		if sm == nil || sm.Parent == 0 {
-			return RowLoc{}, false
+			return RowLoc{}, false, nil
 		}
 		cur = sm.Parent
 	}

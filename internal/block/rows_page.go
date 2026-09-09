@@ -280,7 +280,13 @@ func (p *RowsPage) buildIndex() error {
 			return errPageTruncated
 		}
 		offPos += n2
+		if d > uint64(^uint32(0))-uint64(lastEnd) {
+			return fmt.Errorf("rowpack: page record %d end offset overflows uint32", i)
+		}
 		lastEnd += uint32(d)
+		if uint64(lastEnd) > uint64(len(p.tuples)) {
+			return fmt.Errorf("rowpack: page record %d end offset %d exceeds tuples %d", i, lastEnd, len(p.tuples))
+		}
 		p.ends[i] = lastEnd
 
 		for runEnd <= i {
@@ -294,10 +300,40 @@ func (p *RowsPage) buildIndex() error {
 				return errPageTruncated
 			}
 			rlePos += n4
+			if v1 > uint64(^uint32(0)) {
+				return fmt.Errorf("rowpack: page schema version %d exceeds uint32", v1)
+			}
+			if r == 0 || r > uint64(count-runEnd) {
+				return fmt.Errorf("rowpack: page schema run %d exceeds remaining records", r)
+			}
 			runVer = uint32(v1)
 			runEnd += uint32(r)
 		}
 		p.vers[i] = runVer
+	}
+	if idsPos != len(p.rowIDs) || offPos != len(p.offsets) || rlePos != len(p.schemaRLE) {
+		return fmt.Errorf("rowpack: page metadata streams contain trailing bytes")
+	}
+	if runEnd != count {
+		return fmt.Errorf("rowpack: page schema runs cover %d records, want %d", runEnd, count)
+	}
+	if lastEnd != uint32(len(p.tuples)) {
+		return fmt.Errorf("rowpack: page tuple ends at %d, tuples contain %d bytes", lastEnd, len(p.tuples))
+	}
+	if p.ids[0] != p.h.FirstRowID {
+		return fmt.Errorf("rowpack: page first row id %d, want %d", p.h.FirstRowID, p.ids[0])
+	}
+	minID, maxID := p.ids[0], p.ids[0]
+	for _, id := range p.ids[1:] {
+		if id < minID {
+			minID = id
+		}
+		if id > maxID {
+			maxID = id
+		}
+	}
+	if minID != p.h.MinRowID || maxID != p.h.MaxRowID {
+		return fmt.Errorf("rowpack: page row id range [%d,%d], header [%d,%d]", minID, maxID, p.h.MinRowID, p.h.MaxRowID)
 	}
 	return nil
 }

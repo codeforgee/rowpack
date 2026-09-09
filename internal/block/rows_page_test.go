@@ -1,12 +1,34 @@
 package block
 
 import (
+	"encoding/binary"
 	"fmt"
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
+
+func TestRowsPageRejectsTupleEndOutsideBody(t *testing.T) {
+	rowIDs := binary.AppendUvarint(nil, 1)
+	offsets := binary.AppendUvarint(nil, 100)
+	schema := binary.AppendUvarint(nil, 1)
+	schema = binary.AppendUvarint(schema, 1)
+	streams := append(append(append(append([]byte{}, rowIDs...), offsets...), schema...), 0)
+	h := fileformat.RowsPageHeader{
+		EntryCount: 1, RowIDsBytes: uint32(len(rowIDs)), OffsetsBytes: uint32(len(offsets)),
+		SchemaRLEBytes: uint32(len(schema)), ChangeBitsBytes: 1,
+		FirstRowID: 1, MinRowID: 1, MaxRowID: 1, CRC32C: fileformat.CRC32C(streams),
+	}
+	raw := make([]byte, fileformat.RowsPageHeaderSize)
+	if err := h.MarshalTo(raw); err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, streams...)
+	if _, err := ParseRowsPage(raw); err == nil {
+		t.Fatal("tuple end outside body accepted")
+	}
+}
 
 // pageTestSchema is a 5-column mixed schema for page prototype tests.
 func pageTestSchema() *codec.Schema {

@@ -44,7 +44,10 @@ func NewLRU(capacityBytes int64) *LRU {
 
 // Get returns the cached value for key.
 func (c *LRU) Get(key uint64) (any, bool) {
-	if c == nil || c.capacity <= 0 {
+	if c == nil {
+		return nil, false
+	}
+	if c.capacity <= 0 {
 		c.misses.Add(1)
 		return nil, false
 	}
@@ -65,11 +68,21 @@ func (c *LRU) Put(key uint64, size int64, value any) {
 	if c == nil || c.capacity <= 0 {
 		return
 	}
-	if size > c.capacity {
-		return // too large to cache
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if size > c.capacity {
+		// A cached value may grow after insertion (RowsContainer gains decoded
+		// pages). Remove the old entry instead of leaving an under-accounted
+		// value resident.
+		if el, ok := c.items[key]; ok {
+			e := el.Value.(*lruEntry)
+			c.ll.Remove(el)
+			delete(c.items, key)
+			c.used -= e.size
+			c.evictions.Add(1)
+		}
+		return
+	}
 	if el, ok := c.items[key]; ok {
 		c.ll.MoveToFront(el)
 		c.used += size - el.Value.(*lruEntry).size

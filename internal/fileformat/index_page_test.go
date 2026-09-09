@@ -41,6 +41,13 @@ func TestRowIndexPageHeaderGeometry(t *testing.T) {
 	if err := (&RowIndexPageHeader{}).Unmarshal(b[:], total+1); err == nil {
 		t.Fatal("wrong geometry accepted")
 	}
+	// The change stream is indexed directly by entry ordinal, so its exact
+	// geometry is a safety invariant, not merely a compression detail.
+	b[0] = 'R'
+	putU32(b[32:], 0)
+	if err := (&RowIndexPageHeader{}).Unmarshal(b[:], 0); err == nil {
+		t.Fatal("undersized change-bit stream accepted")
+	}
 	// Bad magic must be rejected.
 	b[0] = 'X'
 	if err := (&RowIndexPageHeader{}).Unmarshal(b[:], total); err == nil {

@@ -246,6 +246,9 @@ func (it *Iterator) Next() (Row, bool) {
 	}
 	rowID, loc, ok := it.nextLoc()
 	if !ok {
+		if err := it.state.view.LazyError(); err != nil {
+			it.err = err
+		}
 		it.releaseBlock()
 		return nil, false
 	}

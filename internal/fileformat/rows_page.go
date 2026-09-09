@@ -95,8 +95,8 @@ func (h *RowsPageHeader) Unmarshal(src []byte, totalLen int) error {
 	if v := src[8]; v != RowsPageVersion {
 		return formatError("RowsPageHeader", 8, "unsupported page version %d", v)
 	}
-	if v, ok := getU16(src[10:]); !ok || v != 0 {
-		return formatError("RowsPageHeader", 10, "reserved bytes must be zero")
+	if src[9] != 0 || src[10] != 0 || src[11] != 0 {
+		return formatError("RowsPageHeader", 9, "reserved bytes must be zero")
 	}
 	var ok bool
 	if h.EntryCount, ok = getU32(src[12:]); !ok {

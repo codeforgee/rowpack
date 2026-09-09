@@ -1,7 +1,10 @@
 package rowpack
 
 import (
+	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestSplitCacheBudget verifies the S1 hard-budget invariant: data + scan
@@ -32,6 +35,42 @@ func TestSplitCacheBudget(t *testing.T) {
 			t.Errorf("total=%d: data+scan = %d, must equal total", c.total, data+scan)
 		}
 	}
+}
+
+func TestDisabledScanCacheAndGrowingPageCacheStayBounded(t *testing.T) {
+	const budget = 128 << 10
+	db := testDB(t, Options{
+		BlockSize:      256 << 10,
+		PageSize:       32 << 10,
+		CacheBytes:     budget,
+		ScanCacheBytes: -1,
+	})
+	w, err := db.BeginFull(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, w.CreateTable("users", usersSchema()))
+	insertUsers(t, w, 5000)
+	snap, err := w.Commit(context.Background())
+	require.NoError(t, err)
+
+	// Exercise both the nil scan-cache path and enough distinct decoded pages
+	// to force dynamic container growth and LRU eviction.
+	it, err := db.Scan(context.Background(), snap, "users", ScanOptions{})
+	require.NoError(t, err)
+	for {
+		_, ok := it.Next()
+		if !ok {
+			break
+		}
+	}
+	require.NoError(t, it.Err())
+	require.NoError(t, it.Close())
+	for id := RowID(1); id <= 5000; id += 250 {
+		_, err := db.Get(context.Background(), snap, "users", id, nil)
+		require.NoError(t, err)
+	}
+	st := db.Stats()
+	require.LessOrEqual(t, st.Cache.UsedBytes, st.Cache.CapacityBytes)
+	require.Equal(t, uint64(0), st.ScanCache.CapacityBytes)
 }
 
 // TestOptionsScanCacheValidation covers the explicit scan-budget validation.

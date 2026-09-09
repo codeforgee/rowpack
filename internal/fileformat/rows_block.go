@@ -1,5 +1,7 @@
 package fileformat
 
+import "math"
+
 // Rows Block v2 page-container layout (the payload behind a BlockKindRows
 // block header):
 //
@@ -55,7 +57,8 @@ func (h *RowsBlockHeader) MarshalTo(dst []byte) error {
 	putU32(dst[12:], h.PageCount)
 	putU32(dst[16:], h.DirectoryBytes)
 	putU32(dst[20:], h.TotalRecords)
-	if h.DirectoryBytes != h.PageCount*RowsPageDirEntrySize {
+	want, ok := rowsDirectoryBytes(h.PageCount)
+	if !ok || h.DirectoryBytes != want {
 		return formatError("RowsBlockHeader", 16, "directory bytes %d != pageCount %d * %d", h.DirectoryBytes, h.PageCount, RowsPageDirEntrySize)
 	}
 	return nil
@@ -86,19 +89,31 @@ func (h *RowsBlockHeader) Unmarshal(src []byte) error {
 	if h.TotalRecords, ok = getU32(src[20:]); !ok {
 		return formatError("RowsBlockHeader", 20, errShortInput)
 	}
-	if h.DirectoryBytes != h.PageCount*RowsPageDirEntrySize {
+	want, valid := rowsDirectoryBytes(h.PageCount)
+	if !valid || h.DirectoryBytes != want {
 		return formatError("RowsBlockHeader", 16, "directory bytes %d != pageCount %d * %d", h.DirectoryBytes, h.PageCount, RowsPageDirEntrySize)
 	}
 	return nil
 }
 
+// rowsDirectoryBytes computes PageCount*entrySize without allowing the
+// uint32 wraparound that an untrusted header could otherwise use to pass the
+// geometry check and trigger a huge allocation later.
+func rowsDirectoryBytes(pageCount uint32) (uint32, bool) {
+	n := uint64(pageCount) * uint64(RowsPageDirEntrySize)
+	if n > math.MaxUint32 {
+		return 0, false
+	}
+	return uint32(n), true
+}
+
 // StoredDataBytes returns the total stored bytes of the page region (the sum
 // of per-page stored sizes). This is what the outer block payload must
 // contain beyond the header + directory.
-func (h *RowsBlockHeader) StoredDataBytes(dir []RowsPageDirEntry) uint32 {
-	var n uint32
+func (h *RowsBlockHeader) StoredDataBytes(dir []RowsPageDirEntry) uint64 {
+	var n uint64
 	for _, e := range dir {
-		n += e.StoredSize
+		n += uint64(e.StoredSize)
 	}
 	return n
 }

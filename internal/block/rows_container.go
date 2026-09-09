@@ -56,6 +56,12 @@ type RowsContainer struct {
 	// not serialized across goroutines; only the memoization is.
 	pagesMu sync.RWMutex
 	pages   map[int]*RowsPage
+	// retainedBytes is the value-byte footprint charged to the owning LRU:
+	// container header/directory plus every memoized page raw buffer and its
+	// O(1) record-index arrays. onRetainedChange updates the LRU entry whenever
+	// a page is installed, so page memoization cannot bypass CacheBytes.
+	retainedBytes    int64
+	onRetainedChange func(int64)
 
 	// decompCounter is the reader's cumulative decompression counter; page
 	// decompression (the work that used to be a whole-block decode) is
@@ -78,6 +84,30 @@ func (c *RowsContainer) StoredLen() int {
 		return len(c.stored)
 	}
 	return fileformat.RowsBlockHeaderSize + len(c.Dir)*fileformat.RowsPageDirEntrySize
+}
+
+// SetCacheAccounting installs the owning cache's size updater. It must be
+// called before the container is published in that cache.
+func (c *RowsContainer) SetCacheAccounting(update func(int64)) {
+	c.pagesMu.Lock()
+	c.retainedBytes = int64(c.StoredLen())
+	c.onRetainedChange = update
+	c.pagesMu.Unlock()
+}
+
+// RetainedLen returns the bytes currently owned by this container and its
+// memoized decoded pages.
+func (c *RowsContainer) RetainedLen() int64 {
+	c.pagesMu.RLock()
+	defer c.pagesMu.RUnlock()
+	if c.retainedBytes == 0 {
+		return int64(c.StoredLen())
+	}
+	return c.retainedBytes
+}
+
+func rowsPageRetainedBytes(p *RowsPage) int64 {
+	return int64(len(p.raw)) + int64(len(p.ids))*8 + int64(len(p.ends))*4 + int64(len(p.vers))*4
 }
 
 // SetDecompCounter attaches the reader's decompression counter.
@@ -196,7 +226,8 @@ func validateRowCounts(rh *fileformat.RowsBlockHeader, h fileformat.BlockHeader,
 	if rh.TotalRecords != h.ItemCount {
 		return fmt.Errorf("rowpack: container total records %d != block item count %d", rh.TotalRecords, h.ItemCount)
 	}
-	if rh.DirectoryBytes != rh.PageCount*fileformat.RowsPageDirEntrySize {
+	wantDir := uint64(rh.PageCount) * uint64(fileformat.RowsPageDirEntrySize)
+	if wantDir > uint64(h.StoredSize) || uint64(rh.DirectoryBytes) != wantDir {
 		return fmt.Errorf("rowpack: container directory %d != pageCount %d * %d", rh.DirectoryBytes, rh.PageCount, fileformat.RowsPageDirEntrySize)
 	}
 	return nil
@@ -379,7 +410,13 @@ func (c *RowsContainer) pageOwned(i int) (*RowsPage, error) {
 		return existing, nil
 	}
 	c.pages[i] = p
+	c.retainedBytes += rowsPageRetainedBytes(p)
+	retained := c.retainedBytes
+	update := c.onRetainedChange
 	c.pagesMu.Unlock()
+	if update != nil {
+		update(retained)
+	}
 	return p, nil
 }
 

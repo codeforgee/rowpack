@@ -657,7 +657,10 @@ func (w *Writer) checkStrictParent(table TableID, rowID RowID, typ ChangeType) e
 	}
 	// Parent-view existence is resolved along the whole parent chain, not just
 	// the immediate parent layer.
-	loc, ok := st.view.ResolveRow(w.parent, table, rowID)
+	loc, ok, err := st.view.ResolveRow(w.parent, table, rowID)
+	if err != nil {
+		return err
+	}
 	exists := ok && loc.ChangeType != fileformat.ChangeDelete
 	switch typ {
 	case ChangeInsert:

@@ -168,7 +168,8 @@ func (l *blockLoader) LoadRows(offset int64, blockID uint64) (*block.RowsContain
 		if err != nil {
 			return nil, l.blockReadError(offset, blockID, err)
 		}
-		l.cache.Put(blockID, int64(rc.StoredLen()), rc)
+		rc.SetCacheAccounting(func(size int64) { l.cache.Put(blockID, size, rc) })
+		l.cache.Put(blockID, rc.RetainedLen(), rc)
 		return rc, nil
 	})
 	if err != nil {
@@ -201,7 +202,8 @@ func (l *blockLoader) LoadScanRows(offset int64, blockID uint64) (*block.RowsCon
 		return nil, l.blockReadError(offset, blockID, err)
 	}
 	if l.scan != nil && uint64(rc.StoredLen()) <= l.scan.Remaining() {
-		l.scan.Put(blockID, int64(rc.StoredLen()), rc)
+		rc.SetCacheAccounting(func(size int64) { l.scan.Put(blockID, size, rc) })
+		l.scan.Put(blockID, rc.RetainedLen(), rc)
 	}
 	return rc, nil
 }

@@ -74,7 +74,10 @@ func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowI
 		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
 	}
 	view := st.view
-	loc, ok := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
+	loc, ok, err := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, fmt.Errorf("%w: (table %d, row %d) in snapshot %d", ErrNotFound, tid, rowID, snapshot)
 	}
@@ -103,7 +106,10 @@ func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, r
 		return false, nil
 	}
 	view := st.view
-	loc, ok := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
+	loc, ok, err := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
+	if err != nil {
+		return false, err
+	}
 	if !ok || loc.ChangeType == fileformat.ChangeDelete {
 		return false, nil
 	}

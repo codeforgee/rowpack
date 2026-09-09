@@ -35,6 +35,14 @@ func TestRowsBlockHeaderRejectsBadGeometry(t *testing.T) {
 	if err := got.Unmarshal(b2[:]); err == nil {
 		t.Fatal("bad magic accepted")
 	}
+	// Multiplication must be checked in uint64: this count wraps to zero when
+	// multiplied by the 56-byte entry size in uint32 arithmetic.
+	putU32(b2[12:], 1<<29)
+	putU32(b2[16:], 0)
+	b2[0] = 'R'
+	if err := got.Unmarshal(b2[:]); err == nil {
+		t.Fatal("overflowing page count accepted")
+	}
 }
 
 func TestRowsPageDirEntryRoundTrip(t *testing.T) {

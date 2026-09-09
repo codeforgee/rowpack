@@ -259,7 +259,7 @@ const (
 	// read/compress/cache unit inside a Rows Block). Frozen at 32 KiB from the
 	// S2 prototype matrix (docs/REFACTOR_EXECUTION_PLAN.md §9.1): it loses
 	// only ~7% compression vs 64 KiB while halving cold-read decompression.
-	DefaultPageSize        = 32 << 10
-	DefaultCacheBytes      = 64 << 20 // 64 MiB block cache
-	DefaultCompressionLvl  = 3        // klauspost/compress default level mapping
+	DefaultPageSize       = 32 << 10
+	DefaultCacheBytes     = 64 << 20 // 64 MiB block cache
+	DefaultCompressionLvl = 3        // klauspost/compress default level mapping
 )

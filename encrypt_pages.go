@@ -34,7 +34,7 @@ func sealRowContainerPages(h *fileformat.BlockHeader, container []byte, c *seal.
 	sealedPages := make([][]byte, n)
 	for i := 0; i < n; i++ {
 		d := &rc.Dir[i]
-		src := container[int(d.StoredOffset):int(d.StoredOffset)+int(d.StoredSize)]
+		src := container[int(d.StoredOffset) : int(d.StoredOffset)+int(d.StoredSize)]
 		// The AAD binds the on-disk (sealed) StoredSize, so set it before sealing.
 		sealedD := *d
 		sealedD.StoredSize = d.StoredSize + fileformat.AESGCMTagLen

@@ -253,6 +253,28 @@ RecordOrdinal, ChangeType)`。
 
 规则：未经测量不得冻结常量；每个检查点记录候选实现、数据、结果与选择。
 
+### 9.1.4 S3-⑦ 落盘② 测量（提交⑩，2026-09-09，1M 行 Open，同机同口径）
+
+本提交把 IndexTxn 正文行索引从 chunk delta 切换为**排序 Row Index Page + Fence
+Directory**，并接入 Eager 读路径（从 Index Page 解码直建 SoA/block-run shard）。
+复现：`go test -run '^$' -bench 'Benchmark(OpenMemory|GetHot|Scan|GetColdUnpooled|
+WriteFull)$' -benchmem .`（默认 1M 行档），原始输出 `docs/baseline/`。
+
+| 场景 | S0 基线 | S3-⑧ | 本提交（S3-⑦ 落盘②） | 门槛 | 结论 |
+| --- | --- | --- | --- | --- | --- |
+| Open 1M `idxB/row` | — | 13.02 | **13.02**（页+Fence 解码直写 shard） | ≤16 | ✅ 保持 |
+| 热点读 ns/op | 277 | 256 | **250.3** | ≤125% (~260ns) | ✅ |
+| 冷读无池 `readB/op` | — | — | **5870**（<64KiB 门槛，~58KiB 参考） | ≤64KiB | ✅ |
+| FULL 写 MB/s | ~基线 | — | **70.9**（块写路径未变，仅 IndexTxn 体变更） | ≥基线 90% | ✅ |
+
+关键点：
+- Open `idxB/row` 未回归（13.02），因为 Eager 读路径仍直建同一 SoA/block-run shard，
+  只是数据来源从 chunk delta 换成 Index Page 解码（用 `decodeRowIndexPage` + 流式
+  `TxnSink`，不物化 `[]RowIndexEntry`）。
+- 文件大小变化：`full-delta-store.rpk` 4601→**4588 B**，`encrypted-store.rpk` 2047→
+  **2035 B**（设计编码比 chunk delta 更紧凑，ADR-005：seq/delta 省 ~43%、rand 省 ~13%）。
+- 热点/冷读/写吞吐未变（块数据面未动）；只有 IndexTxn 正文与解码路径切换。
+
 ## 10. 测试与质量门（贯穿所有阶段）
 
 - **每提交**：`go test ./...` + `go vet`；每阶段收尾加 `-race`。

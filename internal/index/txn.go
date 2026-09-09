@@ -160,7 +160,15 @@ func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC
 }
 
 // header assembles the IndexTxnHeader fields from the builder state.
+// RowIndexPageCount is the number of sorted Row Index Pages (0 when there are
+// no row entries); each page carries indexPageEntryCount entries except the
+// last, so the count is exactly ceil(n / indexPageEntryCount).
 func (b *Builder) header(dataSnapshotStart, dataSnapshotEnd uint64) fileformat.IndexTxnHeader {
+	n := len(b.rows)
+	pages := uint32(0)
+	if n > 0 {
+		pages = uint32((n + indexPageEntryCount - 1) / indexPageEntryCount)
+	}
 	return fileformat.IndexTxnHeader{
 		TxnSequence:        b.sequence,
 		SnapshotID:         b.snapshot.SnapshotID,
@@ -168,7 +176,8 @@ func (b *Builder) header(dataSnapshotStart, dataSnapshotEnd uint64) fileformat.I
 		DataSnapshotEnd:    dataSnapshotEnd,
 		MetadataEntryCount: uint32(len(b.metadata)),
 		BlockEntryCount:    uint32(len(b.blocks)),
-		RowEntryCount:      uint64(len(b.rows)),
+		RowEntryCount:      uint64(n),
+		RowIndexPageCount:  pages,
 	}
 }
 
@@ -281,7 +290,7 @@ func parseTxnChunked(data []byte, crypto *ChunkCrypto, sink TxnSink) (*Txn, erro
 	sb, err := parseStoredBody(region, h.SnapshotID,
 		boundedCap(uint64(h.MetadataEntryCount), fileformat.MetadataIndexEntrySize),
 		boundedCap(uint64(h.BlockEntryCount), fileformat.BlockIndexEntrySize),
-		boundedCap(h.RowEntryCount, fileformat.RowIndexEntrySize), crypto, sink)
+		boundedCap(h.RowEntryCount, fileformat.RowIndexEntrySize), h.RowIndexPageCount, crypto, sink)
 	if err != nil {
 		return nil, err
 	}

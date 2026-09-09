@@ -10,19 +10,20 @@
 | --- | --- | --- |
 | `empty-store.rpk` | 仅 128 字节 FileHeader 的空 Store（确定性 UUID/时间） | M0 |
 | `rows-payload-all-types.bin` | 覆盖全类型值 + NULL 的确定性未压缩 Rows Payload | M3 |
-| `full-delta-store.rpk` | FULL + DELTA + 空 DELTA + 超大行（单文件，含内嵌 IndexTxn） | M2 |
-| `encrypted-store.rpk` | 加密 FULL Store（None 压缩 + 固定 key，锁定 Header 加密字段/块 Flags/KeyEpoch/密文布局） | M6 |
+| `full-delta-store.rpk` | FULL + DELTA + 空 DELTA + 超大行（单文件，含内嵌 IndexTxn；IndexTxn 正文为排序 Row Index Page + Fence Directory，S3-⑦） | M2 / S3-⑦ |
+| `encrypted-store.rpk` | 加密 FULL Store（None 压缩 + 固定 key，锁定 Header 加密字段/块 Flags/KeyEpoch/密文布局；IndexTxn 页按 Index 域 chunk-nonce/AAD 密封） | M6 / S3-⑦ |
 
 ## 锁定摘要（SHA-256）
 
 | 文件 | SHA-256 |
 | --- | --- |
 | `empty-store.rpk` | `cd0a96b72ad858d8bceb946b4ae77b1667b6bf17b9d79d72c9b282a52ddc34f7` |
-| `rows-payload-all-types.bin` | `db95f863c3250ee64f55e09400dd4327a790814ca2846c7accbd0b3eca1f7433` |
-| `full-delta-store.rpk` | `71b2c6956c3025230f1fe99d10261c37991eb223c3dccfc766c9fea7ec348ac3` |
-| `encrypted-store.rpk` | `afaefc7673d8e32e1d5d4854c956b070febc50fc3c0edcde76347984c17fd3d8` |
+| `rows-payload-all-types.bin` | `ae6f94f72c1b08f8c0a6727c97cb57cfad18b6f0ffc732a625db23be907b8769` |
+| `full-delta-store.rpk` | `88f04ea38e6475bbffd804a95e503d424acb91b99bdceb0ca0bc49f83eb8f596` |
+| `encrypted-store.rpk` | `c098a6ab6183ca6683d54455027bb3954d80157cc23770336cb65cf9a92b2349` |
 
-这些摘要描述当前冻结的 v2 IndexTxn Chunk 格式。修改任一摘要均视为有意的磁盘格式变更，
+这些摘要描述当前冻结的 v2 IndexTxn 格式（S3-⑦ 起为排序 Row Index Page + Fence
+Directory，不再是 chunk delta 行索引）。修改任一摘要均视为有意的磁盘格式变更，
 必须经过格式审查并按版本策略建立新的 golden 样本族。
 
 损坏样本由 `TestM10CorruptSamples` 从健康 Store 动态构建（坏 Magic、未知主版本、
@@ -37,9 +38,9 @@ make golden     # 一条命令再生 empty-store / rows-payload-all-types / full
 生成后必须人工 diff 审查（`git diff --stat testdata/golden`），确认字节变化只来自
 有意的格式变更。
 
-> 注：单元测试精简后，仅 `encrypted-store.rpk` 无仓库内生成器（原生成器随
-> encryption_test 旧版删除），由 `TestGoldenManifest` 哈希锁定，视为不可变样本；
-> 重写它需要恢复对应生成器并走格式审查。
+> 注：`encrypted-store.rpk` 由 `encryption_test.go` 的 `TestGoldenEncryptedStoreGenerate`
+> 在 `-update-golden` 下重新生成（固定 UUID/now/nonce + 静态 key），哈希由
+> `TestGoldenManifest` 锁定；重写它需要走格式审查。
 
 ## 校验命令
 

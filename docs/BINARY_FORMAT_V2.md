@@ -156,16 +156,31 @@ MaxRowID=MaxUint64 时用 0（无上界）表达，metadata block 无 envelope�
 
 ## 6. 内嵌 IndexTxn
 
-v2 直接复用现有 IndexTxn 的逻辑内容：
+v2 直接复用现有 IndexTxn 的逻辑内容。自 S3-⑦ 起，行索引部分从 v1 的
+`RowIndexEntry` chunk delta 切换为**排序 Row Index Page + Fence Directory**（ADR-005）。
+正文布局：
 
 ```text
-IndexTxnHeader
-SnapshotIndexEntry × 1
-MetadataIndexEntry × N
-BlockIndexEntry × B
-RowIndexEntry × R
-IndexTxnFooter
+IndexTxnHeader (80B, RowIndexPageCount @ offset 12..16)
+SnapshotChunk                // 定长 SnapshotIndexEntry，chunk seq 0
+MetadataChunk × A            // 定长条目，chunk seq 1..A
+BlockChunk × B               // 定长条目，chunk seq A+1..A+B
+ChunkDirectory               // 明文 (A+B+1) × 32B，chunk 定位
+IndexPage × N                // 每页独立 zstd(level=3)，加密 +16B tag
+RowIndexFenceEntry × N       // 明文 52B，由正文 CRC 认证
+IndexTxnFooter (80B)
 ```
+
+- `RowIndexPageCount`（N）存于 `IndexTxnHeader` offset 12..16 的 reserved 字；页数
+  必须 ≤ `RowEntryCount`（每页 ≥1 条）。offset 76..80 的 reserved 字留给加密 store 的
+  `KeyEpoch`，二者互不冲突（与 ADR-005 落盘决策一致）。
+- 每个 `RowIndexPage` 是 `(TableID, RowID)` 升序的 4096 条记录（末页可少），页头为
+  冻结 `RowIndexPageHeader`，五条流（TableID run / RowID 非负 uvarint delta /
+  BlockID run / ItemOrdinal zigzag delta / ChangeType 2bit），页 CRC 覆盖流区。
+- 每个 `RowIndexFenceEntry`（52B）带 `SnapshotID/TableID/Min/MaxRowID/StoredOffset
+  (正文内)/StoredSize(压缩+tag)/RawSize/EntryCount/PageCRC32C`；Fence 明文，按
+  `StoredOffset` 递增排列，用于按 RowID 二分定位页后 OPEN+decompress+decode。
+- `RowIndexPageCount == 0` 表示快照无行条目。
 
 主要变化：
 

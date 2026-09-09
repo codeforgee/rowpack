@@ -288,7 +288,7 @@ func (c *RowsContainer) PageIndexForOrdinal(ordinal uint32) (int, error) {
 // page's uncompressed bytes. buf must have capacity for at least RawSize.
 func (c *RowsContainer) decompressPageInto(i int, buf *rawBuf) ([]byte, error) {
 	dir := &c.Dir[i]
-	stored := c.stored[int(dir.StoredOffset):int(dir.StoredOffset)+int(dir.StoredSize)]
+	stored := c.stored[int(dir.StoredOffset) : int(dir.StoredOffset)+int(dir.StoredSize)]
 	var raw []byte
 	if c.comp == fileformat.CompressionNone {
 		if uint32(len(stored)) > c.limits.MaxRawBytes {

@@ -82,11 +82,11 @@ type View struct {
 // not repeat the block id. Residential cost ~13 B/row (vs 24 B/row for a
 // []RowKeyLoc), meeting the Eager index memory gate. Immutable once built.
 type rowShard struct {
-	rowIDs   []uint64  // sorted by RowID, len n
-	ordinals []uint32  // ItemOrdinal per row
-	changes  []uint8   // ChangeType per row
-	runStart []uint32  // runStart[r] = first row index of run r; runStart[len]=n
-	blockIDs []uint64  // BlockID of each run
+	rowIDs   []uint64 // sorted by RowID, len n
+	ordinals []uint32 // ItemOrdinal per row
+	changes  []uint8  // ChangeType per row
+	runStart []uint32 // runStart[r] = first row index of run r; runStart[len]=n
+	blockIDs []uint64 // BlockID of each run
 }
 
 // len returns the number of rows.

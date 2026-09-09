@@ -62,6 +62,24 @@ O(1) 记录索引。实测（`BenchmarkGetHot / GetCold / GetColdUnpooled / Writ
 热点读 256ns 不变，Scan 100k 65 allocs（0 alloc/row）。详细决策见
 `REFACTOR_EXECUTION_PLAN.md` §9.1.2。
 
+**S3-⑦ 落盘②：IndexTxn 正文行索引切换到排序 Row Index Page + Fence**（2026-09-09，
+同机同口径，1M 行 Open 档）。本提交把行索引从 chunk delta 二进制改为排序页+Fence，并把
+Eager 读路径改为从 Index Page 解码直建 SoA/block-run shard（S3-⑧ 的 13.02 B/row 不变）。
+
+| 场景 | S3-⑧ | 本提交（S3-⑦ 落盘②） | 门槛 | 结论 |
+| --- | --- | --- | --- | --- |
+| Open 1M `idxB/row` | 13.02 | **13.02**（页+Fence 解码直写 shard） | ≤16 | ✅ |
+| 热点读 ns/op | 256 | **250.3** | ≤125% (~260ns) | ✅ |
+| 冷读无池 `readB/op` | — | **5,870** | ≤64 KiB | ✅ |
+| FULL 写 MB/s | — | **70.9**（块写路径未变） | ≥基线 90% | ✅ |
+| 文件大小 golden | — | `full-delta` 4601→**4588 B** / `encrypted` 2047→**2035 B** | ≤+10% | ✅ 变小 |
+
+关键点：Open `idxB/row` 未回归，因为 Eager 读路径仍直建同一 SoA/block-run shard，只是
+数据源从 chunk delta 换成 Index Page 解码（`decodeRowIndexPage` + 流式 `TxnSink`，不物化
+`[]RowIndexEntry`）。块数据面写/读路径未动，热点/冷读/写吞吐不变；设计编码比 chunk delta
+更紧凑（ADR-005：seq/delta 省 ~43%、rand 省 ~13%），golden 文件变小。加密 store 的
+Index Page 按 R11 走 Index 域 chunk-nonce/AAD 密封，冷读/热点加密档与 S2/S3-⑧ 一致。
+
 ## 1. 基准套件与指标口径
 
 `make bench` 一条命令复现全部基线（默认 `-benchtime=1s -count=1`，可用 `BENCHTIME`/

@@ -95,9 +95,9 @@ type Iterator struct {
 	curBlk       *index.BlockLoc
 	curContainer *block.RowsContainer
 	curPage      *block.RowsPage
-	curPageIdx   int          // index into curContainer.Dir; -1 = none loaded
-	curPageRel   func()       // returns the current page's pooled scratch
-	curPageNext  int          // block-scan: next record ordinal within page
+	curPageIdx   int    // index into curContainer.Dir; -1 = none loaded
+	curPageRel   func() // returns the current page's pooled scratch
+	curPageNext  int    // block-scan: next record ordinal within page
 
 	// Block-scan mode (scanModeBlocks): the raw per-block change stream.
 	blockIDs []uint64 // blocks to visit, ascending

@@ -41,6 +41,22 @@ func IndexTxnHeaderKeyEpoch(hdr []byte) uint32 {
 // IndexTxnHeader is the fixed 80-byte header of one index transaction. Each
 // committed snapshot has exactly one index transaction, embedded in the
 // single store file between the blocks and the SnapshotFooter.
+//
+// Field layout (Little Endian):
+//
+//	0..8   MagicIndexTxnHdr
+//	8..12  size (=80)
+//	12..16 RowIndexPageCount (reserved word reused for the sorted index pages)
+//	16..24 TxnSequence
+//	24..32 SnapshotID
+//	32..40 DataSnapshotStart
+//	40..48 DataSnapshotEnd
+//	48..52 MetadataEntryCount
+//	52..56 BlockEntryCount
+//	56..64 RowEntryCount
+//	64..72 BodyBytes (stored body length)
+//	72..76 header CRC
+//	76..80 KeyEpoch (encrypted stores; zero for plain)
 type IndexTxnHeader struct {
 	TxnSequence        uint64
 	SnapshotID         uint64
@@ -50,6 +66,12 @@ type IndexTxnHeader struct {
 	BlockEntryCount    uint32
 	RowEntryCount      uint64
 	BodyBytes          uint64 // length between header and footer
+	// RowIndexPageCount is the number of sorted Row Index Pages in the txn
+	// body (S3-⑦). It lives in the 12..16 reserved word, which is separate
+	// from the 76..80 KeyEpoch word, so plain and encrypted stores agree on
+	// where to find it. Zero means the snapshot has no row entries (pages ==
+	// fences == 0).
+	RowIndexPageCount uint32
 }
 
 // Size returns the serialized size.
@@ -65,6 +87,7 @@ func (h *IndexTxnHeader) MarshalTo(dst []byte) error {
 	}
 	copy(dst[0:8], MagicIndexTxnHdr)
 	putU32(dst[8:], IndexTxnHeaderSize)
+	putU32(dst[12:], h.RowIndexPageCount)
 	putU64(dst[16:], h.TxnSequence)
 	putU64(dst[24:], h.SnapshotID)
 	putU64(dst[32:], h.DataSnapshotStart)
@@ -93,6 +116,7 @@ func (h *IndexTxnHeader) Unmarshal(src []byte) error {
 	if _, err := verifyCRC(src[:IndexTxnHeaderSize], 72); err != nil {
 		return formatError("IndexTxnHeader", 72, "%v", err)
 	}
+	h.RowIndexPageCount = binary.LittleEndian.Uint32(src[12:])
 	h.TxnSequence = binary.LittleEndian.Uint64(src[16:])
 	h.SnapshotID = binary.LittleEndian.Uint64(src[24:])
 	h.DataSnapshotStart = binary.LittleEndian.Uint64(src[32:])

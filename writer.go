@@ -121,11 +121,13 @@ type pendingBlock struct {
 
 // BeginFull starts a new FULL snapshot: a complete baseline that may be
 // committed at any time (checkpointing resets the chain depth).
+// Deprecated: use Begin(ctx, NoParent).
 func (s *Store) BeginFull(ctx context.Context) (*Writer, error) {
 	return s.newWriter(ctx, SnapshotFull, 0)
 }
 
 // BeginDelta starts a DELTA snapshot on top of a committed parent.
+// Deprecated: use Begin(ctx, parent).
 func (s *Store) BeginDelta(ctx context.Context, parent SnapshotID) (*Writer, error) {
 	if parent == 0 {
 		return nil, fmt.Errorf("%w: DELTA snapshot needs a parent", ErrInvalidParent)

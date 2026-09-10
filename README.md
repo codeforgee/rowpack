@@ -6,14 +6,15 @@ RowPack 是一个使用 Go 实现的轻量级嵌入式二维表存储引擎，�
 - **单文件格式**：`<base>.rpk` 一个文件承载全部数据与索引，数据块与每快照
   IndexTxn 交错追加，由扩展 SnapshotFooter 一次性原子提交（一次 fsync）。
   备份/迁移/复制即拷贝单个文件。
-- **核心 API 按表名寻址**：`BeginFull/BeginDelta` 开启快照，`CreateTable(表名, 列)` 后
-  内部 TableID/SchemaVersion 全部由引擎分配；`Insert/Update/Delete` 逐条流式写入，
+- **核心 API 按表名寻址**：`Begin(ctx, NoParent)` 创建首个 FULL 快照，
+  `Begin(ctx, parent)` 创建 DELTA；`DefineTable` 后可用
+  `Insert/Update/Delete/ApplyBatch` 流式写入，
   `Blocks`/`ScanBlocks` 暴露块级主键范围与原始变更流，支撑"块扫描批量比对"场景。
 - 支持 FULL / DELTA 快照以及 INSERT / UPDATE / DELETE 变更；任意时刻可提交
   新 FULL checkpoint（快照 ID 全局递增，深度重置）。
 - Zstandard 块压缩（默认 256 KiB 目标块）。
 - 按快照、表和行随机访问，历史快照不可变、不受后续提交影响。
-- 多读单写：读操作无锁并发，写操作单写者串行，提交原子可见。
+- 多读单写：读操作可并发，写操作单写者串行，提交原子可见；Close 会等待在途读取。
 - 校验与崩溃恢复不依赖独立 WAL：未提交尾部打开时截断；单个 IndexTxn 损坏
   时从该快照自身的数据块在内存重建索引，后续快照照常重放。
 - Schema 与源数据库设计元信息分层：`DefineSchema` 把 RowPack 自身的 Canonical
@@ -43,27 +44,27 @@ func main() {
 	}
 	defer db.Close()
 
-	w, err := db.BeginFull(ctx)
+	tx, err := db.Begin(ctx, rowpack.NoParent)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer w.Abort()
+	defer tx.Rollback()
 
-	if err := w.CreateTable("users", []rowpack.Column{
+	if err := tx.DefineTable("users", []rowpack.Column{
 		{Name: "id", Type: rowpack.TypeUint64},
 		{Name: "name", Type: rowpack.TypeString},
 		{Name: "created_at", Type: rowpack.TypeDateTime},
 	}); err != nil {
 		log.Fatal(err)
 	}
-	if err := w.Insert(ctx, "users", 1001, rowpack.Row{
+	if err := tx.Insert("users", 1001, rowpack.Row{
 		rowpack.Uint64(1001),
 		rowpack.String("张三"),
 		rowpack.DateTime(time.Now()),
 	}); err != nil {
 		log.Fatal(err)
 	}
-	full, err := w.Commit(ctx)
+	full, err := tx.Commit(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -76,21 +77,34 @@ func main() {
 	fmt.Println("row:", name)
 
 	// DELTA 增量快照
-	d, err := db.BeginDelta(ctx, full)
+	d, err := db.Begin(ctx, full)
 	if err != nil {
 		log.Fatal(err)
 	}
-	_ = d.Update(ctx, "users", 1001, rowpack.Row{
+	_ = d.Update("users", 1001, rowpack.Row{
 		rowpack.Uint64(1001),
 		rowpack.String("张三 (更新)"),
 		rowpack.DateTime(time.Now()),
 	})
-	_ = d.Delete(ctx, "users", 1002)
+	_ = d.Delete("users", 1002)
 	_, err = d.Commit(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 }
+```
+
+批量写入按顺序消费且不持有调用方的 slice，返回后可立即复用缓冲：
+
+```go
+changes := []rowpack.Change{
+	{Type: rowpack.Update, Table: "users", RowID: 1001, Row: updated},
+	{Type: rowpack.Delete, Table: "users", RowID: 1002},
+}
+if err := d.ApplyBatch(changes); err != nil {
+	log.Fatal(err)
+}
+changes = changes[:0]
 ```
 
 ## 关键概念

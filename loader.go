@@ -171,7 +171,10 @@ func (l *blockLoader) LoadScanRows(offset int64, blockID uint64) (*block.RowsCon
 	if err != nil {
 		return nil, l.blockReadError(offset, blockID, err)
 	}
-	if l.scan != nil && uint64(rc.StoredLen()) <= l.scan.Remaining() {
+	// RetainedLen is the actual initial resident footprint. StoredLen can be
+	// only the header+directory for lazy containers and is not a safe budget
+	// admission metric.
+	if l.scan != nil && uint64(rc.RetainedLen()) <= l.scan.Remaining() {
 		rc.SetCacheAccounting(func(size int64) { l.scan.Put(blockID, size, rc) })
 		l.scan.Put(blockID, rc.RetainedLen(), rc)
 	}

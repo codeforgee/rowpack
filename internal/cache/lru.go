@@ -88,6 +88,7 @@ func (c *LRU) Put(key uint64, size int64, value any) {
 		c.used += size - el.Value.(*lruEntry).size
 		el.Value.(*lruEntry).size = size
 		el.Value.(*lruEntry).value = value
+		c.evictLocked()
 		return
 	}
 	el := c.ll.PushFront(&lruEntry{key: key, size: size, value: value})

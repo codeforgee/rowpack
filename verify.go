@@ -32,6 +32,8 @@ type VerifyReport struct {
 // additionally decompresses every block and verifies every row's CRC and
 // decodability. Any failure returns a structured CorruptionError.
 func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, error) {
+	s.readMu.RLock()
+	defer s.readMu.RUnlock()
 	start := time.Now()
 	var rep VerifyReport
 	st, err := s.captureState()

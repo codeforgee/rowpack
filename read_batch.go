@@ -37,6 +37,8 @@ type batchReq struct {
 // clustered ids, Blocks << len(ids) and the same payload is decompressed
 // once per batch instead of once per row).
 func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string, ids []RowID) ([]Row, error) {
+	s.readMu.RLock()
+	defer s.readMu.RUnlock()
 	st, err := s.captureState()
 	if err != nil {
 		return nil, err

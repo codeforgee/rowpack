@@ -95,7 +95,21 @@ func (s *Store) buildSchemaIndex(view *index.View) (*schemaIndex, error) {
 func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRecKey]*metadata.Record) (map[uint32]*tableSchemas, error) {
 	result := make(map[uint32]*tableSchemas)
 	walk := func(snap uint64) error {
-		// Gather table + column records of this snapshot layer.
+		// Decode and group the layer's columns once. Previously every table
+		// rescanned every column, making schema derivation quadratic in tables.
+		columnsByParent := make(map[uint64][]*metadata.Record)
+		for _, cid := range view.MetadataByType(snap, uint32(fileformat.RecordColumn)) {
+			loc := view.Metadata(snap, cid)
+			if loc == nil || loc.Operation == fileformat.OperationDelete || loc.RecordType != uint32(fileformat.RecordColumn) {
+				continue
+			}
+			rec, err := s.readMetadataRecordMemo(view, snap, cid, memo)
+			if err != nil {
+				return err
+			}
+			columnsByParent[rec.ParentID] = append(columnsByParent[rec.ParentID], rec)
+		}
+		// Gather table records of this snapshot layer.
 		tableIDs := view.MetadataByType(snap, uint32(fileformat.RecordTable))
 		for _, oid := range tableIDs {
 			loc := view.Metadata(snap, oid)
@@ -116,7 +130,7 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 				result[tableID] = ts
 			}
 			before := len(ts.versions)
-			if err := s.addDerivedSchema(view, snap, ts, rec, memo); err != nil {
+			if err := s.addDerivedSchema(ts, rec, columnsByParent[rec.ObjectID]); err != nil {
 				if errors.Is(err, errUnknownColumnType) {
 					// The engine does not interpret this table's column type
 					// strings: the records are plain stored data. Skip the
@@ -155,7 +169,7 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 
 // addDerivedSchema resolves one Table record and its columns into a
 // codec.Schema for the given schema version (Table Revision).
-func (s *Store) addDerivedSchema(view *index.View, snapshot uint64, ts *tableSchemas, tableRec *metadata.Record, memo map[metaRecKey]*metadata.Record) error {
+func (s *Store) addDerivedSchema(ts *tableSchemas, tableRec *metadata.Record, columnRecords []*metadata.Record) error {
 	version := tableRec.Revision
 	if version == 0 {
 		return nil
@@ -166,29 +180,12 @@ func (s *Store) addDerivedSchema(view *index.View, snapshot uint64, ts *tableSch
 		return nil
 	}
 	name := fieldString(tableRec, metadata.TableTableName)
-	colIDs := view.MetadataByType(snapshot, uint32(fileformat.RecordColumn))
 	schema := &codec.Schema{TableID: mustTableID(tableRec.ObjectID), Version: version, Name: name}
 	var derived []derivedColumn
-	for _, cid := range colIDs {
-		loc := view.Metadata(snapshot, cid)
-		if loc == nil || loc.Operation == fileformat.OperationDelete {
-			continue
-		}
-		rec, err := s.readMetadataRecordMemo(view, snapshot, cid, memo)
-		if err != nil {
-			return err
-		}
-		// The column must belong to this table (ParentID == table object) and
-		// be a Column (not a VirtualColumn) record.
-		if rec.ParentID != tableRec.ObjectID {
-			continue
-		}
-		if loc.RecordType != uint32(fileformat.RecordColumn) {
-			continue
-		}
+	for _, rec := range columnRecords {
 		col, err := deriveColumn(rec)
 		if err != nil {
-			return fmt.Errorf("rowpack: derive column %d: %w", cid, err)
+			return fmt.Errorf("rowpack: derive column %d: %w", rec.ObjectID, err)
 		}
 		derived = append(derived, col)
 	}
@@ -415,7 +412,7 @@ func (s *Store) decodeMetadataRecord(view *index.View, loc *index.MetadataLoc, o
 	if bl == nil {
 		return nil, fmt.Errorf("rowpack: metadata object %d block %d missing", objectID, loc.BlockID)
 	}
-	blk, err := s.reader.ReadAtBlock(int64(bl.DataOffset))
+	blk, err := s.loader.Load(int64(bl.DataOffset), bl.BlockID)
 	if err != nil {
 		return nil, err
 	}

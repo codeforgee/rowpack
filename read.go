@@ -27,6 +27,8 @@ func (s *Store) captureState() (*publishedState, error) {
 
 // ListSnapshots returns committed snapshots sorted by ID.
 func (s *Store) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
+	s.readMu.RLock()
+	defer s.readMu.RUnlock()
 	st, err := s.captureState()
 	if err != nil {
 		return nil, err
@@ -62,6 +64,8 @@ func snapshotInfoFromMeta(sm *index.SnapshotMeta) SnapshotInfo {
 // next call. The contents of dst are unspecified if an error is returned.
 // A DELETE tombstone or an absent row returns ErrNotFound.
 func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowID RowID, dst Row) (Row, error) {
+	s.readMu.RLock()
+	defer s.readMu.RUnlock()
 	st, err := s.captureState()
 	if err != nil {
 		return nil, err
@@ -91,6 +95,8 @@ func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowI
 // Exists reports whether a row is visible (not deleted) at the snapshot.
 // It resolves only the index/tombstone chain and does not read a block.
 func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, rowID RowID) (bool, error) {
+	s.readMu.RLock()
+	defer s.readMu.RUnlock()
 	st, err := s.captureState()
 	if err != nil {
 		return false, err
@@ -149,6 +155,8 @@ func (s *Store) decodeBodyRecordInto(rec codec.PageRecord, bl *index.BlockLoc, s
 // Schema returns the schema of a table version at a snapshot. The table is
 // addressed by name, like the other read paths.
 func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table string, version SchemaVersion) (Schema, error) {
+	s.readMu.RLock()
+	defer s.readMu.RUnlock()
 	st, err := s.captureState()
 	if err != nil {
 		return Schema{}, err
@@ -169,6 +177,8 @@ func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table string, v
 
 // Tables lists the tables visible at a snapshot.
 func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error) {
+	s.readMu.RLock()
+	defer s.readMu.RUnlock()
 	st, err := s.captureState()
 	if err != nil {
 		return nil, err
@@ -176,28 +186,21 @@ func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error
 	if st.view.Snapshot(snapshot) == nil {
 		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	tableIDs := st.view.MetadataByType(snapshot, uint32(fileformat.RecordTable))
-	// Resolve along parent chain for tables defined in ancestors.
+	// Gather candidates strictly along the target's parent chain. tableRecord
+	// below resolves deletes/overrides on that same chain.
 	seen := make(map[TableID]bool)
-	out := make([]Table, 0, len(tableIDs))
-	for _, oid := range tableIDs {
-		tid := TableID(oid)
-		seen[tid] = true
-	}
-	// Include ancestor tables not overridden.
-	for _, sm := range st.view.Snapshots() {
-		if sm.ID > snapshot {
-			continue
-		}
-		ids := st.view.MetadataByType(sm.ID, uint32(fileformat.RecordTable))
+	for cur := uint64(snapshot); ; {
+		ids := st.view.MetadataByType(cur, uint32(fileformat.RecordTable))
 		for _, oid := range ids {
-			tid := TableID(oid)
-			if seen[tid] {
-				continue
-			}
-			seen[tid] = true
+			seen[TableID(oid)] = true
 		}
+		sm := st.view.Snapshot(cur)
+		if sm == nil || sm.Parent == 0 {
+			break
+		}
+		cur = sm.Parent
 	}
+	out := make([]Table, 0, len(seen))
 	for tid := range seen {
 		rec, err := s.tableRecord(st.view, snapshot, uint64(tid))
 		if err != nil {

@@ -131,6 +131,7 @@ type rowIter interface {
 	RowID() uint64
 	Loc() RowLoc
 	Next()
+	Seek(uint64)
 }
 
 // RowKeyIter is a forward iterator over rows of one (snapshot, table) in
@@ -157,6 +158,9 @@ func (it *RowKeyIter) Loc() RowLoc { return it.it.Loc() }
 // Next advances to the next position.
 func (it *RowKeyIter) Next() { it.it.Next() }
 
+// Seek advances to the first RowID greater than or equal to target.
+func (it *RowKeyIter) Seek(target uint64) { it.it.Seek(target) }
+
 // rowShardIter is the Eager rowIter over a compact rowShard.
 type rowShardIter struct {
 	sh  *rowShard
@@ -168,6 +172,9 @@ func (it *rowShardIter) Done() bool    { return it.pos >= it.sh.len() }
 func (it *rowShardIter) RowID() uint64 { return it.sh.rowIDAt(it.pos) }
 func (it *rowShardIter) Loc() RowLoc   { return it.sh.rowLocAt(it.pos) }
 func (it *rowShardIter) Next()         { it.pos++ }
+func (it *rowShardIter) Seek(target uint64) {
+	it.pos = sort.Search(len(it.sh.rowIDs), func(i int) bool { return it.sh.rowIDs[i] >= target })
+}
 
 // RowIter returns a fresh iterator over rows for (snapshot, table), or nil
 // when there are no rows.

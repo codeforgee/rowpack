@@ -93,6 +93,7 @@ type Writer struct {
 	metaRecords []*metadata.Record
 
 	allocator *metadata.ObjectIDAllocator
+	maxObject uint64
 
 	rowRecordCount uint64
 	rawBytes       uint64
@@ -139,23 +140,16 @@ func (s *Store) BeginDelta(ctx context.Context, parent SnapshotID) (*Writer, err
 // newWriter constructs the single active writer. A Store allows at most one
 // active writer; a concurrent begin returns ErrWriterBusy.
 func (s *Store) newWriter(ctx context.Context, typ SnapshotType, parent SnapshotID) (*Writer, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	if err := s.checkOpen(); err != nil {
 		return nil, err
 	}
 	if s.readOnly {
 		return nil, ErrReadOnly
 	}
-	if s.writer.Load() != nil {
-		return nil, ErrWriterBusy
-	}
-	id := s.lastSnapshotID.Add(1)
-	// v2 checkpoint semantics (R7): every FULL takes the next global ID — the
-	// first snapshot of an empty store is a FULL with id 1 naturally, and a
-	// later FULL checkpoint continues the counter (Depth resets to 1 in
-	// View.Apply; its visibility no longer follows any ancestor chain).
 	w := &Writer{
 		store:       s,
-		id:          id,
 		typ:         typ,
 		parent:      parent,
 		created:     effectiveNow(),
@@ -166,29 +160,19 @@ func (s *Store) newWriter(ctx context.Context, typ SnapshotType, parent Snapshot
 		tableIDs:    make(map[string]TableID),
 		allocator:   metadata.NewObjectIDAllocator(),
 	}
-	w.allocator = s.seedAllocator()
-	w.nextTableID = s.maxCommittedTableID() + 1
 	if !s.writer.CompareAndSwap(nil, w) {
 		return nil, ErrWriterBusy
 	}
-	return w, nil
-}
-
-// seedAllocator seeds the writer's object allocator with every object ID
-// already present in the committed view, so new IDs never collide.
-func (s *Store) seedAllocator() *metadata.ObjectIDAllocator {
-	alloc := metadata.NewObjectIDAllocator()
-	if st := s.state.Load(); st != nil {
-		for _, sm := range st.view.Snapshots() {
-			for _, t := range st.view.MetadataByType(sm.ID, uint32(fileformat.RecordTable)) {
-				alloc.Force(t, "table")
-			}
-			for _, c := range st.view.MetadataByType(sm.ID, uint32(fileformat.RecordColumn)) {
-				alloc.Force(c, "column")
-			}
-		}
+	// Only the winner performs history-dependent initialization and consumes
+	// a snapshot ID. Losing concurrent Begin calls are cheap and leave no ID
+	// holes.
+	w.id = SnapshotID(s.lastSnapshotID.Add(1))
+	if maxObject := s.maxObjectID.Load(); maxObject >= metadata.TableSpaceEnd {
+		w.allocator.Force(maxObject, "reserved")
+		w.maxObject = maxObject
 	}
-	return alloc
+	w.nextTableID = s.maxTableID.Load() + 1
+	return w, nil
 }
 
 // ID returns the assigned snapshot ID.
@@ -404,9 +388,13 @@ func (w *Writer) writeTableRecords(tid uint32, version uint32, name string, colu
 		return err
 	}
 	for i, col := range schema.Columns {
+		objectID := w.allocator.Alloc(fileformat.NamespaceCore, fmt.Sprintf("%s:%d:%s", schema.Name, schema.Version, col.Name))
+		if objectID > w.maxObject {
+			w.maxObject = objectID
+		}
 		colRec := &metadata.Record{
 			RecordType: uint32(fileformat.RecordColumn),
-			ObjectID:   w.allocator.Alloc(fileformat.NamespaceCore, fmt.Sprintf("%s:%d:%s", schema.Name, schema.Version, col.Name)),
+			ObjectID:   objectID,
 			ParentID:   tableOID,
 			Revision:   1,
 			Namespace:  fileformat.NamespaceCore,
@@ -468,24 +456,6 @@ func schemaColumnsEqual(s *codec.Schema, columns []Column) bool {
 	return true
 }
 
-// maxCommittedTableID returns the highest internal table ID in the committed
-// view (0 when the store is empty).
-func (s *Store) maxCommittedTableID() uint32 {
-	st := s.state.Load()
-	if st == nil {
-		return 0
-	}
-	var maxID uint32
-	for _, sm := range st.view.Snapshots() {
-		for _, oid := range st.view.MetadataByType(sm.ID, uint32(fileformat.RecordTable)) {
-			if tid, err := metadata.TableID(oid); err == nil && tid > maxID {
-				maxID = tid
-			}
-		}
-	}
-	return maxID
-}
-
 // resolveTableForWrite resolves a table name to (internal ID, schema
 // version) for a write: tables created in this transaction first, then the
 // committed parent chain; the schema version is the table's latest — the
@@ -526,6 +496,9 @@ func (w *Writer) latestTxnVersion(tid TableID) SchemaVersion {
 // Insert appends an INSERT change. The table is addressed by name; the row
 // is encoded against the table's latest schema.
 func (w *Writer) Insert(ctx context.Context, table string, rowID RowID, row Row) error {
+	if err := w.checkState(); err != nil {
+		return err
+	}
 	if rowID == 0 {
 		return fmt.Errorf("%w: row id is zero", ErrInvalidArgument)
 	}
@@ -538,6 +511,9 @@ func (w *Writer) Insert(ctx context.Context, table string, rowID RowID, row Row)
 
 // Update appends an UPDATE change (DELTA snapshots only).
 func (w *Writer) Update(ctx context.Context, table string, rowID RowID, row Row) error {
+	if err := w.checkState(); err != nil {
+		return err
+	}
 	if rowID == 0 {
 		return fmt.Errorf("%w: row id is zero", ErrInvalidArgument)
 	}
@@ -550,6 +526,9 @@ func (w *Writer) Update(ctx context.Context, table string, rowID RowID, row Row)
 
 // Delete appends a DELETE tombstone (DELTA snapshots only).
 func (w *Writer) Delete(ctx context.Context, table string, rowID RowID) error {
+	if err := w.checkState(); err != nil {
+		return err
+	}
 	if rowID == 0 {
 		return fmt.Errorf("%w: row id is zero", ErrInvalidArgument)
 	}
@@ -590,6 +569,9 @@ func (w *Writer) put(ctx context.Context, typ ChangeType, table TableID, rowID R
 			return err
 		}
 	} else {
+		if err := w.checkStrictParent(table, rowID, typ); err != nil {
+			return err
+		}
 		schema, err := w.resolveSchema(table, schemaVersion)
 		if err != nil {
 			return err
@@ -602,9 +584,6 @@ func (w *Writer) put(ctx context.Context, typ ChangeType, table TableID, rowID R
 			return err
 		}
 		encoded = w.encBuf
-		if err := w.checkStrictParent(table, rowID, typ); err != nil {
-			return err
-		}
 	}
 	if err := w.rowBuilder(table).Add(rowID, schemaVersion, fileformat.ChangeType(typ), encoded); err != nil {
 		return err
@@ -675,6 +654,8 @@ func (w *Writer) checkStrictParent(table TableID, rowID RowID, typ ChangeType) e
 // Abort discards the snapshot. It is idempotent; Abort on a committed writer
 // returns ErrSnapshotCommitted.
 func (w *Writer) Abort() error {
+	w.store.writeMu.Lock()
+	defer w.store.writeMu.Unlock()
 	switch w.state {
 	case writerCommitted:
 		return ErrSnapshotCommitted
@@ -718,6 +699,7 @@ func (w *Writer) Commit(ctx context.Context) (SnapshotID, error) {
 	info, commitErr := w.commitLocked(ctx)
 	if commitErr != nil {
 		w.state = writerFailed
+		w.store.writer.CompareAndSwap(w, nil)
 	}
 	return info.ID, commitErr
 }
@@ -981,6 +963,8 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 	}
 	fault.Check("commit.publish.before")
 	w.store.state.Store(&publishedState{view: newView, schemas: newSchemas})
+	w.store.maxTableID.Store(w.nextTableID - 1)
+	w.store.maxObjectID.Store(w.maxObject)
 	w.store.lastFooterOffset = uint64(txnEnd)
 	fault.Check("commit.publish.after")
 	w.state = writerCommitted

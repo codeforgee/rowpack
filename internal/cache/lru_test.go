@@ -153,6 +153,20 @@ func TestLRUValueLargerThanCapacity(t *testing.T) {
 	require.Equal(t, uint64(0), lru.UsedBytes())
 }
 
+func TestLRUGrowingEntryEvictsToCapacity(t *testing.T) {
+	lru := NewLRU(100)
+	lru.Put(1, 40, "one")
+	lru.Put(2, 40, "two")
+	lru.Put(1, 80, "grown")
+
+	require.LessOrEqual(t, lru.UsedBytes(), lru.CapacityBytes())
+	_, ok := lru.Get(2)
+	require.False(t, ok)
+	v, ok := lru.Get(1)
+	require.True(t, ok)
+	require.Equal(t, "grown", v)
+}
+
 func TestLRUDelete(t *testing.T) {
 	lru := NewLRU(1024)
 

@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -105,6 +106,8 @@ type Store struct {
 
 	lastSnapshotID atomic.Uint64
 	lastBlockID    atomic.Uint64
+	maxTableID     atomic.Uint32
+	maxObjectID    atomic.Uint64
 	txnSeq         atomic.Uint64
 	// lastFooterOffset is the file offset of the most recently committed
 	// SnapshotFooter. Written under writeMu / recover; read by Commit to fill
@@ -180,7 +183,14 @@ func Create(basePath string, opts Options) (*Store, error) {
 	if err := iofile.CreateSingle(dataPath, dh[:]); err != nil {
 		return nil, err
 	}
-	return openStore(basePath, dataPath, resolved, uuid, dataHdr, false)
+	s, err := openStore(basePath, dataPath, resolved, uuid, dataHdr, false)
+	if err != nil {
+		if removeErr := os.Remove(dataPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return nil, errors.Join(err, fmt.Errorf("rowpack: clean up failed create %s: %w", dataPath, removeErr))
+		}
+		return nil, err
+	}
+	return s, nil
 }
 
 // Open opens an existing single-file store read-write (or read-only with
@@ -337,6 +347,24 @@ func (s *Store) initOpen() error {
 	}
 	s.uuid = dataHdr.StoreUUID
 	s.header = dataHdr
+	// Creation-time defaults are file properties. An Open caller may tune
+	// runtime-only options, but must not silently change future block geometry
+	// or compression within an existing store.
+	if dataHdr.DefaultBlockSize < 64 || dataHdr.DefaultBlockSize > s.opts.Limits.MaxRawBlockBytes {
+		return fmt.Errorf("%w: default block size %d outside [64,%d]", ErrCorruptData, dataHdr.DefaultBlockSize, s.opts.Limits.MaxRawBlockBytes)
+	}
+	s.opts.BlockSize = int(dataHdr.DefaultBlockSize)
+	if s.opts.PageSize > s.opts.BlockSize {
+		s.opts.PageSize = s.opts.BlockSize
+	}
+	switch dataHdr.DefaultCompression {
+	case fileformat.CompressionNone:
+		s.opts.Compression = CompressionNone
+	case fileformat.CompressionZstd:
+		s.opts.Compression = CompressionZstd
+	default:
+		return fmt.Errorf("%w: default compression %d", ErrVersionUnsupported, dataHdr.DefaultCompression)
+	}
 	if err := s.initEncryption(dataHdr); err != nil {
 		return err
 	}

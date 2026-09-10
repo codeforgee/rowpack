@@ -72,6 +72,8 @@ type Stats struct {
 
 // Stats returns a snapshot of the store's statistics.
 func (s *Store) Stats() Stats {
+	s.readMu.RLock()
+	defer s.readMu.RUnlock()
 	st, err := s.captureState()
 	var stt Stats
 	if err != nil {

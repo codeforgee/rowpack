@@ -135,6 +135,22 @@ func (s *Store) recover() error {
 
 	s.lastSnapshotID.Store(lastSnapshot)
 	s.lastBlockID.Store(maxBlock)
+	var maxTableID uint32
+	var maxObjectID uint64
+	for _, sm := range view.Snapshots() {
+		for _, oid := range view.MetadataByType(sm.ID, uint32(fileformat.RecordTable)) {
+			if tid, err := metadata.TableID(oid); err == nil && tid > maxTableID {
+				maxTableID = tid
+			}
+		}
+		for _, oid := range view.MetadataByType(sm.ID, uint32(fileformat.RecordColumn)) {
+			if oid > maxObjectID {
+				maxObjectID = oid
+			}
+		}
+	}
+	s.maxTableID.Store(maxTableID)
+	s.maxObjectID.Store(maxObjectID)
 	if len(committed) > 0 {
 		s.lastFooterOffset = uint64(committed[len(committed)-1].footerOff)
 	}

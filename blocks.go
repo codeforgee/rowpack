@@ -15,6 +15,8 @@ import (
 // blocks are not included. All fields are derived from the in-memory index;
 // no block is read from disk.
 func (s *Store) Blocks(ctx context.Context, snap SnapshotID, table string) ([]Block, error) {
+	s.readMu.RLock()
+	defer s.readMu.RUnlock()
 	st, err := s.captureState()
 	if err != nil {
 		return nil, err
@@ -87,6 +89,13 @@ func (s *Store) blocksByTable(view *index.View, snap uint64, tid TableID) ([]Blo
 // order with its raw ChangeType (DELETE records carry a nil Row). lo/hi must
 // intersect the snapshot's own block range, otherwise ErrInvalidArgument.
 func (s *Store) ScanBlocks(ctx context.Context, snap SnapshotID, table string, lo, hi uint64) (*Iterator, error) {
+	s.readMu.RLock()
+	keepLock := false
+	defer func() {
+		if !keepLock {
+			s.readMu.RUnlock()
+		}
+	}()
 	st, err := s.captureState()
 	if err != nil {
 		return nil, err
@@ -124,7 +133,9 @@ func (s *Store) ScanBlocks(ctx context.Context, snap SnapshotID, table string, l
 		table:    tid,
 		mode:     scanModeBlocks,
 		blockIDs: ids,
+		readHeld: true,
 	}
 	it.sink = strArenaSink(&it.arena)
+	keepLock = true
 	return it, nil
 }

@@ -117,6 +117,7 @@ type Iterator struct {
 	blockPos int      // index into blockIDs
 	err      error
 	closed   bool
+	readHeld bool
 }
 
 // strArenaSink binds an append-only arena as the decode Sink: String and
@@ -176,6 +177,13 @@ func (h *rowHeap) Pop() any     { old := *h; n := len(old); x := old[n-1]; *h = 
 // Scan opens an iterator over the visible rows of the named table at
 // snapshot: the parent-chain merged view with tombstones filtered out.
 func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opts ScanOptions) (*Iterator, error) {
+	s.readMu.RLock()
+	keepLock := false
+	defer func() {
+		if !keepLock {
+			s.readMu.RUnlock()
+		}
+	}()
 	st, err := s.captureState()
 	if err != nil {
 		return nil, err
@@ -191,12 +199,15 @@ func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opt
 	if opts.Start > 0 && opts.End > 0 && opts.Start >= opts.End {
 		return nil, fmt.Errorf("%w: scan start %d >= end %d", ErrInvalidArgument, opts.Start, opts.End)
 	}
-	it := &Iterator{store: s, state: st, ctx: ctx, snapshot: snapshot, table: tid, opts: opts, mode: scanModeMerge}
+	it := &Iterator{store: s, state: st, ctx: ctx, snapshot: snapshot, table: tid, opts: opts, mode: scanModeMerge, readHeld: true}
 	// Build the parent chain layers (target snapshot first).
 	cur := snapshot
 	for depth := 0; ; depth++ {
 		keys := view.RowIter(cur, uint32(tid))
 		if keys != nil && keys.Len() > 0 {
+			if opts.Start > 0 {
+				keys.Seek(uint64(opts.Start))
+			}
 			it.layers = append(it.layers, &layerIter{keys: keys, depth: depth})
 		}
 		sm := view.Snapshot(cur)
@@ -216,6 +227,7 @@ func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opt
 			}
 		}
 	}
+	keepLock = true
 	return it, nil
 }
 
@@ -242,17 +254,21 @@ func (it *Iterator) Next() (Row, bool) {
 		}
 	}
 	if it.mode == scanModeBlocks {
-		return it.nextBlockRecord()
+		row, ok := it.nextBlockRecord()
+		if !ok {
+			it.finish()
+		}
+		return row, ok
 	}
 	rowID, loc, ok := it.nextLoc()
 	if !ok {
-		it.releaseBlock()
+		it.finish()
 		return nil, false
 	}
 	row, err := it.rowAt(loc, it.buf)
 	if err != nil {
 		it.err = err
-		it.releaseBlock()
+		it.finish()
 		return nil, false
 	}
 	it.curRowID = rowID
@@ -511,7 +527,18 @@ func (it *Iterator) Err() error { return it.err }
 
 // Close releases the iterator. It is idempotent.
 func (it *Iterator) Close() error {
+	it.finish()
+	return nil
+}
+
+func (it *Iterator) finish() {
+	if it.closed {
+		return
+	}
 	it.closed = true
 	it.releaseBlock()
-	return nil
+	if it.readHeld {
+		it.readHeld = false
+		it.store.readMu.RUnlock()
+	}
 }

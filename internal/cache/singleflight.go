@@ -12,9 +12,10 @@ type Group struct {
 }
 
 type call struct {
-	wg  sync.WaitGroup
-	val any
-	err error
+	wg       sync.WaitGroup
+	val      any
+	err      error
+	panicVal any
 }
 
 // Do runs fn once for key while concurrent callers wait for the same result.
@@ -26,6 +27,9 @@ func (g *Group) Do(key any, fn func() (any, error)) (any, error) {
 	if c, ok := g.m[key]; ok {
 		g.mu.Unlock()
 		c.wg.Wait()
+		if c.panicVal != nil {
+			panic(c.panicVal)
+		}
 		return c.val, c.err
 	}
 	c := &call{}
@@ -33,11 +37,23 @@ func (g *Group) Do(key any, fn func() (any, error)) (any, error) {
 	g.m[key] = c
 	g.mu.Unlock()
 
-	c.val, c.err = fn()
-	c.wg.Done()
-
-	g.mu.Lock()
-	delete(g.m, key)
-	g.mu.Unlock()
+	// Always release waiters and remove the entry, including when fn panics.
+	// The original panic is propagated to the leader and all current waiters;
+	// later calls see no stale map entry and may retry.
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				c.panicVal = p
+			}
+			c.wg.Done()
+			g.mu.Lock()
+			delete(g.m, key)
+			g.mu.Unlock()
+			if c.panicVal != nil {
+				panic(c.panicVal)
+			}
+		}()
+		c.val, c.err = fn()
+	}()
 	return c.val, c.err
 }

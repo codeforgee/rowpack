@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"runtime"
 	"unsafe"
 
 	"github.com/rowpack/rowpack/internal/block"
@@ -89,8 +90,14 @@ type Iterator struct {
 	// sink materializes decoded String/Bytes payloads as append-only views
 	// into the arena (strArena), eliminating per-row payload copy
 	// allocations. See strArena for the view-lifetime guarantee.
+	//
+	// The arena is a separate heap object, NOT an inline field: the sink's
+	// closures capture &arena, and a back-pointer into this finalizer-bearing
+	// struct would form a cycle that includes the finalizer block — such
+	// cycles are not guaranteed to be collected (runtime.SetFinalizer), so a
+	// leaked iterator would pin the store's read lock forever.
 	sink  *codec.Sink
-	arena strArena
+	arena *strArena
 
 	// Page container cursor: keeps the current block's page container and the
 	// currently decompressed page, so consecutive rows inside one page reuse
@@ -176,6 +183,11 @@ func (h *rowHeap) Pop() any     { old := *h; n := len(old); x := old[n-1]; *h = 
 
 // Scan opens an iterator over the visible rows of the named table at
 // snapshot: the parent-chain merged view with tombstones filtered out.
+//
+// The iterator holds the store's read lock until Close: Store.Close waits for
+// open iterators. A leaked (never-closed) iterator is eventually released by
+// its GC finalizer, which unblocks a blocked Store.Close — but never rely on
+// finalization: defer Close immediately after Scan.
 func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opts ScanOptions) (*Iterator, error) {
 	s.readMu.RLock()
 	keepLock := false
@@ -218,7 +230,12 @@ func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opt
 	}
 	// Pre-bind the string-arena sink once (a method value allocated per
 	// expression evaluation would otherwise cost one allocation per Next).
-	it.sink = strArenaSink(&it.arena)
+	// The arena must live outside the Iterator allocation: strArenaSink's
+	// closures capture &arena, and an inline arena would create a
+	// self-reference cycle through the finalizer-bearing object, which the
+	// GC is not guaranteed to collect (see the field comment above).
+	it.arena = &strArena{}
+	it.sink = strArenaSink(it.arena)
 	if len(it.layers) > 1 {
 		heap.Init(&it.heap)
 		for _, l := range it.layers {
@@ -228,6 +245,7 @@ func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opt
 		}
 	}
 	keepLock = true
+	runtime.SetFinalizer(it, (*Iterator).finish)
 	return it, nil
 }
 
@@ -527,10 +545,13 @@ func (it *Iterator) Err() error { return it.err }
 
 // Close releases the iterator. It is idempotent.
 func (it *Iterator) Close() error {
+	runtime.SetFinalizer(it, nil)
 	it.finish()
 	return nil
 }
 
+// finish releases the read lock and block cursor exactly once. It is
+// finalizer-safe: it only touches the store's readMu and iterator state.
 func (it *Iterator) finish() {
 	if it.closed {
 		return

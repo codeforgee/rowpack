@@ -182,12 +182,12 @@ func benchWriteFull(b *testing.B, c benchCtx) {
 		base := filepath.Join(tmpdb(b), "w")
 		db, err := Create(base, c.opts())
 		require.NoError(b, err)
-		w, err := db.BeginFull(ctx)
+		w, err := db.Begin(ctx, NoParent)
 		require.NoError(b, err)
-		require.NoError(b, w.CreateTable("t", benchCols()))
+		require.NoError(b, w.DefineTable("t", benchCols()))
 		b.StartTimer()
 		for j := uint64(0); j < uint64(rows); j++ {
-			require.NoError(b, w.Insert(ctx, "t", j+1, benchRow(j+1)))
+			require.NoError(b, w.Insert("t", j+1, benchRow(j+1)))
 		}
 		_, err = w.Commit(ctx)
 		require.NoError(b, err)
@@ -211,12 +211,12 @@ func benchWriteIsolated(b *testing.B, c benchCtx) {
 		base := filepath.Join(tmpdb(b), "wi")
 		db, err := Create(base, c.opts())
 		require.NoError(b, err)
-		w, err := db.BeginFull(ctx)
+		w, err := db.Begin(ctx, NoParent)
 		require.NoError(b, err)
-		require.NoError(b, w.CreateTable("t", benchCols()))
+		require.NoError(b, w.DefineTable("t", benchCols()))
 		b.StartTimer()
 		for j := uint64(0); j < uint64(rows); j++ {
-			require.NoError(b, w.Insert(ctx, "t", j+1, isoRow))
+			require.NoError(b, w.Insert("t", j+1, isoRow))
 		}
 		_, err = w.Commit(ctx)
 		require.NoError(b, err)
@@ -401,10 +401,10 @@ func buildDeltaChainStore(b *testing.B, base string, depth, deltaRows, rows, bs 
 	parent := full
 	nextID := uint64(rows + 1)
 	for d := 0; d < depth; d++ {
-		w, err := db.BeginDelta(ctx, parent)
+		w, err := db.Begin(ctx, parent)
 		require.NoError(b, err)
 		for i := 0; i < deltaRows; i++ {
-			require.NoError(b, w.Insert(ctx, "t", nextID, deltaRow(nextID, i)))
+			require.NoError(b, w.Insert("t", nextID, deltaRow(nextID, i)))
 			nextID++
 		}
 		parent, err = w.Commit(ctx)

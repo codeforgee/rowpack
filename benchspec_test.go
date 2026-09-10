@@ -82,12 +82,12 @@ func benchStoreGeom(tb testing.TB, opts Options, geom benchGeom, n int) (*Store,
 	}
 	db, err := Create(filepath.Join(tmpdb(tb), "geom"), opts)
 	requireNilErr(tb, err)
-	w, err := db.BeginFull(context.Background())
+	w, err := db.Begin(context.Background(), NoParent)
 	requireNilErr(tb, err)
-	requireNilErr(tb, w.CreateTable("t", benchCols()))
+	requireNilErr(tb, w.DefineTable("t", benchCols()))
 	ids := benchIDs(geom, n)
 	for _, id := range ids {
-		requireNilErr(tb, w.Insert(context.Background(), "t", uint64(id), benchRowFor(geom, id)))
+		requireNilErr(tb, w.Insert("t", uint64(id), benchRowFor(geom, id)))
 	}
 	snap, err := w.Commit(context.Background())
 	requireNilErr(tb, err)

@@ -3,6 +3,7 @@ package rowpack
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -119,26 +120,6 @@ type pendingBlock struct {
 	meta    []fileformat.MetadataIndexEntry
 }
 
-// BeginFull starts a new FULL snapshot: a complete baseline that may be
-// committed at any time (checkpointing resets the chain depth).
-// Deprecated: use Begin(ctx, NoParent).
-func (s *Store) BeginFull(ctx context.Context) (*Writer, error) {
-	return s.newWriter(ctx, SnapshotFull, 0)
-}
-
-// BeginDelta starts a DELTA snapshot on top of a committed parent.
-// Deprecated: use Begin(ctx, parent).
-func (s *Store) BeginDelta(ctx context.Context, parent SnapshotID) (*Writer, error) {
-	if parent == 0 {
-		return nil, fmt.Errorf("%w: DELTA snapshot needs a parent", ErrInvalidParent)
-	}
-	st := s.state.Load()
-	if st == nil || st.view.Snapshot(uint64(parent)) == nil {
-		return nil, fmt.Errorf("%w: DELTA parent %d not committed", ErrInvalidParent, parent)
-	}
-	return s.newWriter(ctx, SnapshotDelta, parent)
-}
-
 // newWriter constructs the single active writer. A Store allows at most one
 // active writer; a concurrent begin returns ErrWriterBusy.
 func (s *Store) newWriter(ctx context.Context, typ SnapshotType, parent SnapshotID) (*Writer, error) {
@@ -149,6 +130,9 @@ func (s *Store) newWriter(ctx context.Context, typ SnapshotType, parent Snapshot
 	}
 	if s.readOnly {
 		return nil, ErrReadOnly
+	}
+	if s.mustReopen.Load() {
+		return nil, fmt.Errorf("%w: an earlier commit failed with unknown outcome; close and open %q to recover", ErrMustReopen, s.basePath)
 	}
 	w := &Writer{
 		store:       s,
@@ -702,6 +686,14 @@ func (w *Writer) Commit(ctx context.Context) (SnapshotID, error) {
 	if commitErr != nil {
 		w.state = writerFailed
 		w.store.writer.CompareAndSwap(w, nil)
+		var ce *CommitError
+		if errors.As(commitErr, &ce) && ce.Unknown {
+			// The snapshot may or may not be durably committed: the in-memory
+			// view can no longer be trusted for writes. Refuse new writers
+			// until the store is reopened and recovery aligns the view with
+			// the file.
+			w.store.mustReopen.Store(true)
+		}
 	}
 	return info.ID, commitErr
 }

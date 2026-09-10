@@ -64,15 +64,15 @@ func buildFullDeltaStore(t *testing.T, base string) {
 	db, err := Create(base, opts)
 	require.NoError(t, err)
 	// FULL with three tables.
-	w, _ := db.BeginFull(context.Background())
-	w.CreateTable("users", []Column{
+	w, _ := db.Begin(context.Background(), NoParent)
+	w.DefineTable("users", []Column{
 		{Name: "id", Type: TypeUint64}, {Name: "name", Type: TypeString}, {Name: "active", Type: TypeBool},
 		{Name: "balance", Type: TypeDecimal, Scale: 2},
 	})
-	w.CreateTable("empty", []Column{{Name: "x", Type: TypeInt64}})
-	w.CreateTable("oversize", []Column{{Name: "blob", Type: TypeBytes}})
+	w.DefineTable("empty", []Column{{Name: "x", Type: TypeInt64}})
+	w.DefineTable("oversize", []Column{{Name: "blob", Type: TypeBytes}})
 	for i := uint64(1); i <= 30; i++ {
-		if err := w.Insert(context.Background(), "users", i, Row{
+		if err := w.Insert("users", i, Row{
 			Uint64(i), String(fmt.Sprintf("user-%d", i)), Bool(i%2 == 0),
 			DecimalValue(Decimal{Unscaled: bigI(int64(i * 100)), Scale: 2}),
 		}); err != nil {
@@ -84,18 +84,18 @@ func buildFullDeltaStore(t *testing.T, base string) {
 	for i := range big {
 		big[i] = byte(i)
 	}
-	require.NoError(t, w.Insert(context.Background(), "oversize", 1, Row{Bytes(big)}))
+	require.NoError(t, w.Insert("oversize", 1, Row{Bytes(big)}))
 	full, err := w.Commit(context.Background())
 	require.NoError(t, err)
 	// DELTA: update + delete + insert.
-	d, _ := db.BeginDelta(context.Background(), full)
-	require.NoError(t, d.Update(context.Background(), "users", 2, Row{Uint64(2), String("updated-2"), Bool(true), DecimalValue(Decimal{Unscaled: bigI(777), Scale: 2})}))
-	require.NoError(t, d.Delete(context.Background(), "users", 3))
-	require.NoError(t, d.Insert(context.Background(), "users", 31, Row{Uint64(31), String("new-31"), Bool(false), DecimalValue(Decimal{Unscaled: bigI(1), Scale: 2})}))
+	d, _ := db.Begin(context.Background(), full)
+	require.NoError(t, d.Update("users", 2, Row{Uint64(2), String("updated-2"), Bool(true), DecimalValue(Decimal{Unscaled: bigI(777), Scale: 2})}))
+	require.NoError(t, d.Delete("users", 3))
+	require.NoError(t, d.Insert("users", 31, Row{Uint64(31), String("new-31"), Bool(false), DecimalValue(Decimal{Unscaled: bigI(1), Scale: 2})}))
 	delta, err := d.Commit(context.Background())
 	require.NoError(t, err)
 	// Empty DELTA.
-	e, _ := db.BeginDelta(context.Background(), delta)
+	e, _ := db.Begin(context.Background(), delta)
 	empty, err := e.Commit(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, db.Close())

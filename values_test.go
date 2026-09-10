@@ -35,8 +35,8 @@ func allTypesSchema() []Column {
 func TestAllTypesRoundTrip(t *testing.T) {
 	db := testDB(t, Options{})
 	ctx := context.Background()
-	w, _ := db.BeginFull(ctx)
-	require.NoError(t, w.CreateTable("t", allTypesSchema()))
+	w, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w.DefineTable("t", allTypesSchema()))
 
 	bigDec := new(big.Int).Mul(big.NewInt(123456789), big.NewInt(1_000_000_000_000))
 	bigDec = bigDec.Mul(bigDec, big.NewInt(1_000_000_000_000)).Neg(bigDec) // -1.23456789e33
@@ -54,13 +54,13 @@ func TestAllTypesRoundTrip(t *testing.T) {
 		DecimalValue(Decimal{Unscaled: bigDec, Scale: 6}),
 		Null(),
 	}
-	require.NoError(t, w.Insert(ctx, "t", 1, row))
+	require.NoError(t, w.Insert("t", 1, row))
 
 	// NaN and ±Inf bit patterns must be preserved exactly.
 	row[0] = Uint64(2)
 	row[10] = Float32(float32(math.NaN()))
 	row[11] = Float64(math.Inf(-1))
-	require.NoError(t, w.Insert(ctx, "t", 2, row))
+	require.NoError(t, w.Insert("t", 2, row))
 	snap, err := w.Commit(ctx)
 	require.NoError(t, err)
 
@@ -136,9 +136,9 @@ func TestDecimalRoundTrip(t *testing.T) {
 			require.True(t, ok)
 			db := testDB(t, Options{})
 			ctx := context.Background()
-			w, _ := db.BeginFull(ctx)
-			require.NoError(t, w.CreateTable("d", []Column{{Name: "v", Type: TypeDecimal, Scale: 0}}))
-			require.NoError(t, w.Insert(ctx, "d", 1, Row{DecimalValue(Decimal{Unscaled: new(big.Int).Set(u), Scale: 0})}))
+			w, _ := db.Begin(ctx, NoParent)
+			require.NoError(t, w.DefineTable("d", []Column{{Name: "v", Type: TypeDecimal, Scale: 0}}))
+			require.NoError(t, w.Insert("d", 1, Row{DecimalValue(Decimal{Unscaled: new(big.Int).Set(u), Scale: 0})}))
 			snap, err := w.Commit(ctx)
 			require.NoError(t, err)
 			got, err := db.Get(ctx, snap, "d", 1, nil)
@@ -179,8 +179,8 @@ func TestValueCopies(t *testing.T) {
 func TestRowReuse(t *testing.T) {
 	db := testDB(t, Options{})
 	ctx := context.Background()
-	w, _ := db.BeginFull(ctx)
-	require.NoError(t, w.CreateTable("users", usersSchema()))
+	w, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w.DefineTable("users", usersSchema()))
 	insertUsers(t, w, 3)
 	snap, _ := w.Commit(ctx)
 
@@ -204,9 +204,9 @@ func TestReadOnlyOpen(t *testing.T) {
 	db, err := Create(base, Options{BlockSize: 1024})
 	require.NoError(t, err)
 	ctx := context.Background()
-	w, _ := db.BeginFull(ctx)
-	require.NoError(t, w.CreateTable("t", []Column{{Name: "v", Type: TypeUint64}}))
-	require.NoError(t, w.Insert(ctx, "t", 1, Row{Uint64(100)}))
+	w, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w.DefineTable("t", []Column{{Name: "v", Type: TypeUint64}}))
+	require.NoError(t, w.Insert("t", 1, Row{Uint64(100)}))
 	snap, _ := w.Commit(ctx)
 	require.NoError(t, db.Close())
 
@@ -218,6 +218,6 @@ func TestReadOnlyOpen(t *testing.T) {
 	require.NoError(t, err)
 	v, _ := row[0].Uint64()
 	require.Equal(t, uint64(100), v)
-	_, err = ro.BeginFull(ctx)
+	_, err = ro.Begin(ctx, NoParent)
 	require.ErrorIs(t, err, ErrReadOnly)
 }

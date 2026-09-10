@@ -14,7 +14,7 @@ import (
 
 // crashCommit runs Commit with a crash injected at the fault point; the
 // injected panic simulates process death at exactly that position.
-func crashCommit(ctx context.Context, w *Writer, point string) (crashed bool, err error) {
+func crashCommit(ctx context.Context, tx *Tx, point string) (crashed bool, err error) {
 	fault.Inject(point, func() { panic("injected crash at " + point) })
 	defer fault.Clear()
 	defer func() {
@@ -22,7 +22,7 @@ func crashCommit(ctx context.Context, w *Writer, point string) (crashed bool, er
 			crashed = true
 		}
 	}()
-	_, err = w.Commit(ctx)
+	_, err = tx.Commit(ctx)
 	return crashed, err
 }
 
@@ -40,24 +40,24 @@ func scratchStore(t *testing.T) *Store {
 func buildTwoSnapshots(t *testing.T, db *Store) SnapshotID {
 	t.Helper()
 	ctx := context.Background()
-	w, _ := db.BeginFull(ctx)
-	require.NoError(t, w.CreateTable("users", usersSchema()))
+	w, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w.DefineTable("users", usersSchema()))
 	insertUsers(t, w, 20)
 	full, err := w.Commit(ctx)
 	require.NoError(t, err)
-	d, _ := db.BeginDelta(ctx, full)
-	require.NoError(t, d.Delete(ctx, "users", 5))
+	d, _ := db.Begin(ctx, full)
+	require.NoError(t, d.Delete("users", 5))
 	delta, err := d.Commit(ctx)
 	require.NoError(t, err)
 	return delta
 }
 
 // beginThird opens a FULL writer for snapshot 3.
-func beginThird(t *testing.T, db *Store) *Writer {
+func beginThird(t *testing.T, db *Store) *Tx {
 	t.Helper()
-	w, err := db.BeginFull(context.Background())
+	w, err := db.Begin(context.Background(), NoParent)
 	require.NoError(t, err)
-	require.NoError(t, w.CreateTable("users", usersSchema()))
+	require.NoError(t, w.DefineTable("users", usersSchema()))
 	insertUsers(t, w, 3)
 	return w
 }
@@ -140,8 +140,8 @@ func TestTornTailTruncation(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "torn")
 	db, err := Create(base, Options{BlockSize: 1024})
 	require.NoError(t, err)
-	w, _ := db.BeginFull(ctx)
-	require.NoError(t, w.CreateTable("users", usersSchema()))
+	w, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w.DefineTable("users", usersSchema()))
 	insertUsers(t, w, 5)
 	full, _ := w.Commit(ctx)
 	sizeBefore, err := db.data.Size()
@@ -331,8 +331,8 @@ func TestEncryptedRecovery(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "enc-rec")
 	db, err := Create(base, encOptions("k1"))
 	require.NoError(t, err)
-	w, _ := db.BeginFull(ctx)
-	require.NoError(t, w.CreateTable("users", usersSchema()))
+	w, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w.DefineTable("users", usersSchema()))
 	insertUsers(t, w, 8)
 	full, _ := w.Commit(ctx)
 	w2 := beginThird(t, db)

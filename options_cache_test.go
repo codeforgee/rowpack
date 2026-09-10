@@ -45,9 +45,9 @@ func TestDisabledScanCacheAndGrowingPageCacheStayBounded(t *testing.T) {
 		CacheBytes:     budget,
 		ScanCacheBytes: -1,
 	})
-	w, err := db.BeginFull(context.Background())
+	w, err := db.Begin(context.Background(), NoParent)
 	require.NoError(t, err)
-	require.NoError(t, w.CreateTable("users", usersSchema()))
+	require.NoError(t, w.DefineTable("users", usersSchema()))
 	insertUsers(t, w, 5000)
 	snap, err := w.Commit(context.Background())
 	require.NoError(t, err)

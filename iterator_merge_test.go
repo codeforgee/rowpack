@@ -18,16 +18,15 @@ func mergeSchema() []Column {
 	}
 }
 
-func insertMergeRow(t testing.TB, w *Writer, id uint64, name string, blob []byte, ct string) {
+func insertMergeRow(t testing.TB, tx *Tx, id uint64, name string, blob []byte, ct string) {
 	t.Helper()
-	ctx := context.Background()
 	switch ct {
 	case "insert":
-		require.NoError(t, w.Insert(ctx, "t", id, Row{Uint64(id), String(name), Bytes(blob)}))
+		require.NoError(t, tx.Insert("t", id, Row{Uint64(id), String(name), Bytes(blob)}))
 	case "update":
-		require.NoError(t, w.Update(ctx, "t", id, Row{Uint64(id), String(name), Bytes(blob)}))
+		require.NoError(t, tx.Update("t", id, Row{Uint64(id), String(name), Bytes(blob)}))
 	case "delete":
-		require.NoError(t, w.Delete(ctx, "t", id))
+		require.NoError(t, tx.Delete("t", id))
 	}
 }
 
@@ -38,9 +37,9 @@ func TestScanMergeLayers(t *testing.T) {
 	db := testDB(t, Options{})
 	ctx := context.Background()
 
-	w, err := db.BeginFull(ctx)
+	w, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
-	require.NoError(t, w.CreateTable("t", mergeSchema()))
+	require.NoError(t, w.DefineTable("t", mergeSchema()))
 	require.EqualValues(t, 0, w.Parent(), "FULL snapshot has no parent")
 	for i := 1; i <= 10; i++ {
 		insertMergeRow(t, w, uint64(i), "v1", []byte{byte(i), 1}, "insert")
@@ -49,7 +48,7 @@ func TestScanMergeLayers(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, full, w.ID(), "Writer.ID reports the committed snapshot")
 
-	d, err := db.BeginDelta(ctx, full)
+	d, err := db.Begin(ctx, full)
 	require.NoError(t, err)
 	require.EqualValues(t, full, d.Parent(), "DELTA parent is the base snapshot")
 	// Update row 5, delete row 7, insert row 11.

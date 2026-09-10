@@ -55,15 +55,15 @@ func (s *Store) Begin(ctx context.Context, parent SnapshotID) (*Tx, error) {
 		}
 		parent = SnapshotID(latest.ID)
 	}
-	var (
-		w   *Writer
-		err error
-	)
+	typ := SnapshotDelta
 	if parent == NoParent {
-		w, err = s.BeginFull(ctx)
-	} else {
-		w, err = s.BeginDelta(ctx, parent)
+		// FULL baseline: a complete snapshot that may be committed at any
+		// time (checkpointing resets the chain depth).
+		typ = SnapshotFull
+	} else if st := s.state.Load(); st == nil || st.view.Snapshot(uint64(parent)) == nil {
+		return nil, fmt.Errorf("%w: DELTA parent %d not committed", ErrInvalidParent, parent)
 	}
+	w, err := s.newWriter(ctx, typ, parent)
 	if err != nil {
 		return nil, err
 	}

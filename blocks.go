@@ -3,6 +3,7 @@ package rowpack
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sort"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -88,6 +89,8 @@ func (s *Store) blocksByTable(view *index.View, snap uint64, tid TableID) ([]Blo
 // merge, no tombstone filtering — every record is emitted in physical write
 // order with its raw ChangeType (DELETE records carry a nil Row). lo/hi must
 // intersect the snapshot's own block range, otherwise ErrInvalidArgument.
+// Like Scan, the iterator holds the store's read lock until Close; a leaked
+// iterator is released by its GC finalizer, but defer Close regardless.
 func (s *Store) ScanBlocks(ctx context.Context, snap SnapshotID, table string, lo, hi uint64) (*Iterator, error) {
 	s.readMu.RLock()
 	keepLock := false
@@ -135,7 +138,9 @@ func (s *Store) ScanBlocks(ctx context.Context, snap SnapshotID, table string, l
 		blockIDs: ids,
 		readHeld: true,
 	}
-	it.sink = strArenaSink(&it.arena)
+	it.arena = &strArena{} // heap-allocated: see the arena field comment in iterator.go
+	it.sink = strArenaSink(it.arena)
 	keepLock = true
+	runtime.SetFinalizer(it, (*Iterator).finish)
 	return it, nil
 }

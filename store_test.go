@@ -34,10 +34,10 @@ func usersSchema() []Column {
 	}
 }
 
-func insertUsers(t testing.TB, w *Writer, n int) {
+func insertUsers(t testing.TB, tx *Tx, n int) {
 	t.Helper()
 	for i := 1; i <= n; i++ {
-		require.NoError(t, w.Insert(context.Background(), "users", uint64(i), Row{
+		require.NoError(t, tx.Insert("users", uint64(i), Row{
 			Uint64(uint64(i)), String(fmt.Sprintf("user-%d", i)), Bool(i%2 == 0),
 			DecimalValue(Decimal{Unscaled: big.NewInt(int64(i * 100)), Scale: 2}),
 		}))
@@ -85,10 +85,10 @@ func TestFullDeltaRoundTrip(t *testing.T) {
 	db := testDB(t, Options{})
 	ctx := context.Background()
 
-	w, err := db.BeginFull(ctx)
+	w, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
-	require.NoError(t, w.CreateTable("users", usersSchema()))
-	require.NoError(t, w.CreateTable("events", []Column{{Name: "seq", Type: TypeUint64}}))
+	require.NoError(t, w.DefineTable("users", usersSchema()))
+	require.NoError(t, w.DefineTable("events", []Column{{Name: "seq", Type: TypeUint64}}))
 	insertUsers(t, w, 10)
 	full, err := w.Commit(ctx)
 	require.NoError(t, err)
@@ -103,12 +103,12 @@ func TestFullDeltaRoundTrip(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound)
 
 	// DELTA: update 2, delete 3, insert 11.
-	d, err := db.BeginDelta(ctx, full)
+	d, err := db.Begin(ctx, full)
 	require.NoError(t, err)
-	require.NoError(t, d.Update(ctx, "users", 2, Row{Uint64(2), String("updated-2"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(999), Scale: 2})}))
-	require.NoError(t, d.Delete(ctx, "users", 3))
-	require.NoError(t, d.Insert(ctx, "users", 11, Row{Uint64(11), String("new-11"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(1), Scale: 2})}))
-	require.NoError(t, d.Insert(ctx, "events", 1, Row{Uint64(1)}))
+	require.NoError(t, d.Update("users", 2, Row{Uint64(2), String("updated-2"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(999), Scale: 2})}))
+	require.NoError(t, d.Delete("users", 3))
+	require.NoError(t, d.Insert("users", 11, Row{Uint64(11), String("new-11"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(1), Scale: 2})}))
+	require.NoError(t, d.Insert("events", 1, Row{Uint64(1)}))
 	delta, err := d.Commit(ctx)
 	require.NoError(t, err)
 
@@ -163,8 +163,8 @@ func TestFullDeltaRoundTrip(t *testing.T) {
 func TestReadByTableName(t *testing.T) {
 	db := testDB(t, Options{})
 	ctx := context.Background()
-	w, _ := db.BeginFull(ctx)
-	require.NoError(t, w.CreateTable("users", usersSchema()))
+	w, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w.DefineTable("users", usersSchema()))
 	insertUsers(t, w, 100)
 	full, err := w.Commit(ctx)
 	require.NoError(t, err)
@@ -247,79 +247,78 @@ func TestWriterErrors(t *testing.T) {
 	db := testDB(t, Options{})
 	ctx := context.Background()
 
-	w, _ := db.BeginFull(ctx)
+	w, _ := db.Begin(ctx, NoParent)
 	// Argument validation.
-	require.ErrorIs(t, w.Insert(ctx, "users", 0, Row{Uint64(0)}), ErrInvalidArgument)
-	require.ErrorIs(t, w.Delete(ctx, "users", 0), ErrInvalidArgument)
-	require.ErrorIs(t, w.CreateTable("", nil), ErrInvalidArgument)
-	require.Error(t, w.CreateTable("x", []Column{{Name: "a", Type: TypeUint64}, {Name: "a", Type: TypeUint64}}), "duplicate column names must be rejected")
+	require.ErrorIs(t, w.Insert("users", 0, Row{Uint64(0)}), ErrInvalidArgument)
+	require.ErrorIs(t, w.Delete("users", 0), ErrInvalidArgument)
+	require.ErrorIs(t, w.DefineTable("", nil), ErrInvalidArgument)
+	require.Error(t, w.DefineTable("x", []Column{{Name: "a", Type: TypeUint64}, {Name: "a", Type: TypeUint64}}), "duplicate column names must be rejected")
 
 	// FULL snapshots reject UPDATE/DELETE.
-	require.NoError(t, w.CreateTable("users", usersSchema()))
-	require.ErrorIs(t, w.Update(ctx, "users", 1, Row{}), ErrInvalidArgument)
-	require.ErrorIs(t, w.Delete(ctx, "users", 1), ErrInvalidArgument)
+	require.NoError(t, w.DefineTable("users", usersSchema()))
+	require.ErrorIs(t, w.Update("users", 1, Row{}), ErrInvalidArgument)
+	require.ErrorIs(t, w.Delete("users", 1), ErrInvalidArgument)
 
 	// Unknown table.
-	require.ErrorIs(t, w.Insert(ctx, "ghost", 1, Row{Uint64(1)}), ErrNotFound)
+	require.ErrorIs(t, w.Insert("ghost", 1, Row{Uint64(1)}), ErrNotFound)
 
 	// Duplicate row within the snapshot.
-	require.NoError(t, w.Insert(ctx, "users", 1, Row{Uint64(1), String("a"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(1), Scale: 2})}))
-	require.ErrorIs(t, w.Insert(ctx, "users", 1, Row{}), ErrAlreadyExists)
+	require.NoError(t, w.Insert("users", 1, Row{Uint64(1), String("a"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(1), Scale: 2})}))
+	require.ErrorIs(t, w.Insert("users", 1, Row{}), ErrAlreadyExists)
 
 	// CreateTable idempotence vs conflict.
-	require.NoError(t, w.CreateTable("users", usersSchema()), "identical redefinition is a no-op")
-	require.ErrorIs(t, w.CreateTable("users", []Column{{Name: "id", Type: TypeUint64}}), ErrSchemaConflict)
+	require.NoError(t, w.DefineTable("users", usersSchema()), "identical redefinition is a no-op")
+	require.ErrorIs(t, w.DefineTable("users", []Column{{Name: "id", Type: TypeUint64}}), ErrSchemaConflict)
 	full, err := w.Commit(ctx)
 	require.NoError(t, err)
 
 	// After commit, the writer rejects further use.
-	require.ErrorIs(t, w.Insert(ctx, "users", 2, Row{}), ErrSnapshotCommitted)
+	require.ErrorIs(t, w.Insert("users", 2, Row{}), ErrSnapshotCommitted)
 	_, err = w.Commit(ctx)
 	require.ErrorIs(t, err, ErrSnapshotCommitted)
-	require.ErrorIs(t, w.Abort(), ErrSnapshotCommitted)
+	require.ErrorIs(t, w.Rollback(), ErrSnapshotCommitted)
 
 	// Abort is idempotent and frees the writer slot.
-	w2, _ := db.BeginFull(ctx)
-	require.NoError(t, w2.Abort())
-	require.NoError(t, w2.Abort())
+	w2, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w2.Rollback())
+	require.NoError(t, w2.Rollback())
 
 	// Empty FULL cannot be committed; a failed writer must be aborted to
 	// release the single-writer slot (like a rolled-back transaction).
-	wEmpty, _ := db.BeginFull(ctx)
+	wEmpty, _ := db.Begin(ctx, NoParent)
 	_, err = wEmpty.Commit(ctx)
 	require.ErrorIs(t, err, ErrInvalidArgument)
-	require.NoError(t, wEmpty.Abort())
+	require.NoError(t, wEmpty.Rollback())
 
-	// BeginDelta requires a committed parent.
-	_, err = db.BeginDelta(ctx, 0)
-	require.ErrorIs(t, err, ErrInvalidParent)
-	_, err = db.BeginDelta(ctx, 9999)
+	// Begin refuses a DELTA whose parent is not committed. (Zero now means
+	// NoParent, i.e. a FULL baseline — there is no zero-parent DELTA anymore.)
+	_, err = db.Begin(ctx, 9999)
 	require.ErrorIs(t, err, ErrInvalidParent)
 
 	// Single active writer.
-	w3, _ := db.BeginFull(ctx)
+	w3, _ := db.Begin(ctx, NoParent)
 	require.NotNil(t, w3)
-	_, err = db.BeginFull(ctx)
+	_, err = db.Begin(ctx, NoParent)
 	require.ErrorIs(t, err, ErrWriterBusy)
-	_, err = db.BeginDelta(ctx, full)
+	_, err = db.Begin(ctx, full)
 	require.ErrorIs(t, err, ErrWriterBusy)
-	require.NoError(t, w3.Abort())
+	require.NoError(t, w3.Rollback())
 
 	// Strict parent check: DELTA insert of an existing row, update of a
 	// missing row.
-	d, err := db.BeginDelta(ctx, full)
+	d, err := db.Begin(ctx, full)
 	require.NoError(t, err)
 	validRow := Row{Uint64(1), String("x"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(0), Scale: 2})}
-	require.ErrorIs(t, d.Insert(ctx, "users", 1, validRow), ErrAlreadyExists, "strict: row exists in parent")
-	require.ErrorIs(t, d.Update(ctx, "users", 500, validRow), ErrNotFound, "strict: row missing in parent")
-	require.ErrorIs(t, d.Delete(ctx, "users", 500), ErrNotFound)
-	require.NoError(t, d.Abort())
+	require.ErrorIs(t, d.Insert("users", 1, validRow), ErrAlreadyExists, "strict: row exists in parent")
+	require.ErrorIs(t, d.Update("users", 500, validRow), ErrNotFound, "strict: row missing in parent")
+	require.ErrorIs(t, d.Delete("users", 500), ErrNotFound)
+	require.NoError(t, d.Rollback())
 
 	// Read-only store rejects writes.
 	ro, err := Open(db.Path(), Options{ReadOnly: true, BlockSize: 1024})
 	require.NoError(t, err)
 	t.Cleanup(func() { ro.Close() })
-	_, err = ro.BeginFull(ctx)
+	_, err = ro.Begin(ctx, NoParent)
 	require.ErrorIs(t, err, ErrReadOnly)
 }
 
@@ -327,14 +326,14 @@ func TestWriterErrors(t *testing.T) {
 func TestValidationNone(t *testing.T) {
 	db := testDB(t, Options{Validation: ValidationNone})
 	ctx := context.Background()
-	w, _ := db.BeginFull(ctx)
-	require.NoError(t, w.CreateTable("users", usersSchema()))
+	w, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w.DefineTable("users", usersSchema()))
 	insertUsers(t, w, 5)
 	full, _ := w.Commit(ctx)
-	d, _ := db.BeginDelta(ctx, full)
+	d, _ := db.Begin(ctx, full)
 	// Strict would reject; ValidationNone allows the stale-write pattern.
-	require.NoError(t, d.Insert(ctx, "users", 1, Row{Uint64(1), String("dup"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(0), Scale: 2})}))
-	require.NoError(t, d.Update(ctx, "users", 500, Row{Uint64(500), String("x"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(0), Scale: 2})}))
+	require.NoError(t, d.Insert("users", 1, Row{Uint64(1), String("dup"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(0), Scale: 2})}))
+	require.NoError(t, d.Update("users", 500, Row{Uint64(500), String("x"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(0), Scale: 2})}))
 	_, err := d.Commit(ctx)
 	require.NoError(t, err)
 }
@@ -344,18 +343,18 @@ func TestValidationNone(t *testing.T) {
 func TestSchemaVersioning(t *testing.T) {
 	db := testDB(t, Options{})
 	ctx := context.Background()
-	w, _ := db.BeginFull(ctx)
-	require.NoError(t, w.CreateTable("users", usersSchema()))
+	w, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w.DefineTable("users", usersSchema()))
 	insertUsers(t, w, 3)
 	full1, _ := w.Commit(ctx)
 
-	d, _ := db.BeginDelta(ctx, full1)
-	require.NoError(t, d.Insert(ctx, "users", 4, Row{Uint64(4), String("u4"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(4), Scale: 2})}))
+	d, _ := db.Begin(ctx, full1)
+	require.NoError(t, d.Insert("users", 4, Row{Uint64(4), String("u4"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(4), Scale: 2})}))
 	delta, _ := d.Commit(ctx)
 
 	// New FULL checkpoint: same schema is re-emitted for its own layer.
-	w2, _ := db.BeginFull(ctx)
-	require.NoError(t, w2.CreateTable("users", usersSchema()))
+	w2, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w2.DefineTable("users", usersSchema()))
 	insertUsers(t, w2, 6)
 	full2, _ := w2.Commit(ctx)
 	require.Equal(t, SnapshotID(3), full2)
@@ -377,12 +376,12 @@ func TestSchemaVersioning(t *testing.T) {
 func TestStatsSanity(t *testing.T) {
 	db := testDB(t, Options{})
 	ctx := context.Background()
-	w, _ := db.BeginFull(ctx)
-	require.NoError(t, w.CreateTable("users", usersSchema()))
+	w, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w.DefineTable("users", usersSchema()))
 	insertUsers(t, w, 10)
 	full, _ := w.Commit(ctx)
-	d, _ := db.BeginDelta(ctx, full)
-	require.NoError(t, d.Delete(ctx, "users", 1))
+	d, _ := db.Begin(ctx, full)
+	require.NoError(t, d.Delete("users", 1))
 	_, err := d.Commit(ctx)
 	require.NoError(t, err)
 
@@ -459,9 +458,9 @@ func TestConcurrentGetSharedPage(t *testing.T) {
 	db, err := Create(base, Options{})
 	require.NoError(t, err)
 	ctx := context.Background()
-	w, err := db.BeginFull(ctx)
+	w, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
-	require.NoError(t, w.CreateTable("users", usersSchema()))
+	require.NoError(t, w.DefineTable("users", usersSchema()))
 	insertUsers(t, w, 2000)
 	full, err := w.Commit(ctx)
 	require.NoError(t, err)

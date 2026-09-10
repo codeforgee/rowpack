@@ -26,6 +26,15 @@ var (
 	ErrStoreMismatch      = errors.New("rowpack: store files do not match")
 	ErrClosed             = errors.New("rowpack: closed")
 
+	// ErrMustReopen reports that an earlier commit failed with an unknown
+	// outcome (the failure happened at or after the durability sync, so the
+	// snapshot may or may not be durably committed). The in-memory view can
+	// no longer be trusted for writes: the store refuses new writers with
+	// this error until it is closed and reopened, letting recovery align the
+	// view with the file. Reads remain allowed and stay self-consistent (they
+	// see the last fully published state).
+	ErrMustReopen = errors.New("rowpack: store must be reopened after unknown-outcome commit failure")
+
 	// Encryption errors.
 	ErrKeyRequired    = errors.New("rowpack: encryption key required")
 	ErrKeyUnavailable = errors.New("rowpack: encryption key unavailable")
@@ -66,7 +75,10 @@ func (e *CorruptionError) Unwrap() []error {
 // CommitError reports a snapshot commit failure. Unknown is true when the
 // failure happened after the data file sync began, so the caller cannot know
 // whether the snapshot was durably committed; it must query the snapshot ID
-// instead of blindly replaying non-idempotent business logic.
+// (by closing and reopening the store) instead of blindly replaying
+// non-idempotent business logic. On an unknown failure the store also latches
+// its must-reopen state: new writers are refused with ErrMustReopen until the
+// store is reopened.
 type CommitError struct {
 	SnapshotID SnapshotID
 	Unknown    bool

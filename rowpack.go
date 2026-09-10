@@ -104,6 +104,13 @@ type Store struct {
 	writer atomic.Pointer[Writer]
 	closed atomic.Bool
 
+	// mustReopen latches when a commit fails with an unknown outcome
+	// (failure at or after the durability sync): the file may already contain
+	// the snapshot while the in-memory view does not. New writers are refused
+	// with ErrMustReopen until Close+Open replays the file and realigns the
+	// view. Reads stay allowed and self-consistent.
+	mustReopen atomic.Bool
+
 	lastSnapshotID atomic.Uint64
 	lastBlockID    atomic.Uint64
 	maxTableID     atomic.Uint32
@@ -259,8 +266,12 @@ func (s *Store) ReadOnly() bool { return s.readOnly }
 func (s *Store) UUID() [16]byte { return s.uuid }
 
 // Close aborts any active writer, flushes, and closes the files. It is
-// idempotent and safe to call concurrently; in-flight reads are allowed to
-// finish.
+// idempotent and safe to call concurrently. In-flight reads are allowed to
+// finish: open iterators (Scan/ScanBlocks) hold the read lock until their
+// Close, so a leaked iterator is only released once the GC runs its
+// finalizer — always defer Iterator.Close. New writers are refused with
+// ErrMustReopen once a commit has failed with an unknown outcome; reopening
+// the store runs recovery and realigns the in-memory view with the file.
 // zstdEncoder lazily creates and returns the store's persistent zstd
 // encoder. Callers must hold the writer slot (single writer) or otherwise
 // serialize writes; concurrent EncodeAll is safe but internally serialized.

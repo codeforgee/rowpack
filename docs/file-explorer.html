@@ -4,44 +4,57 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RowPack 文件结构查看器 · File Explorer</title>
+<script>/* 主题预置:避免刷新闪烁 */try{var _t=localStorage.getItem('rpk-theme');if(_t)document.documentElement.setAttribute('data-theme',_t);else if(matchMedia('(prefers-color-scheme: light)').matches)document.documentElement.setAttribute('data-theme','light')}catch(e){}</script>
 <style>
 :root[data-theme="dark"] {
-  --bg:#0a0e17; --bg-soft:#0d1424; --panel:#101a2e; --panel-2:#0c1424;
-  --border:rgba(148,163,184,.14); --border-strong:rgba(148,163,184,.28);
-  --text:#e6ebf4; --text-dim:#9aa7bd; --text-faint:#5d6a84;
-  --accent:#818cf8; --accent-2:#22d3ee;
-  --grad:linear-gradient(135deg,#818cf8 0%,#22d3ee 100%);
-  --code-bg:rgba(148,163,184,.09);
-  --ok:#34d399; --bad:#fb7185; --warn:#fbbf24;
-  --c-magic:#f59e0b; --c-ver:#94a3b8;  --c-id:#a78bfa;  --c-cnt:#34d399;
-  --c-off:#60a5fa;  --c-crc:#fb7185;   --c-flg:#f472b6; --c-enum:#fbbf24;
-  --c-ts:#fb923c;   --c-nnc:#e879f9;   --c-rsv:#334155; --c-pay:#22d3ee;
-  --sel:rgba(129,140,248,.16);
-  --shadow:0 14px 44px -14px rgba(0,0,0,.6);
+  --bg:#070b15; --bg-soft:#0a101f; --panel:#101a30; --panel-2:#0c1428;
+  --border:rgba(120,146,220,.15); --border-strong:rgba(122,150,225,.34);
+  --text:#f0f4fd; --text-dim:#a9b8d8; --text-faint:#6b7aa3;
+  --accent:#7e8cff; --accent-2:#2fd6f7;
+  --grad:linear-gradient(135deg,#7e8cff 0%,#2fd6f7 100%);
+  --code-bg:rgba(122,150,225,.10);
+  --ok:#3ae6a8; --bad:#ff7590; --warn:#ffc53d;
+  --c-magic:#ffb224; --c-ver:#9fb3d9;  --c-id:#af92ff;  --c-cnt:#3ae6a8;
+  --c-off:#5ba1ff;  --c-crc:#ff7590;   --c-flg:#ff7ac2; --c-enum:#ffc53d;
+  --c-ts:#ff9a45;   --c-nnc:#f28cff;   --c-rsv:#3c4c70; --c-pay:#2fd6f7;
+  --sel:rgba(126,140,255,.19);
+  --shadow:0 18px 50px -16px rgba(2,6,20,.75);
 }
 :root[data-theme="light"] {
   --bg:#f4f6fb; --bg-soft:#ecf0f8; --panel:#ffffff; --panel-2:#f8fafd;
   --border:rgba(15,23,42,.10); --border-strong:rgba(15,23,42,.22);
   --text:#17233b; --text-dim:#4c5a72; --text-faint:#8b98af;
-  --accent:#4f46e5; --accent-2:#0891b2;
-  --grad:linear-gradient(135deg,#4f46e5 0%,#0891b2 100%);
+  --accent:#5558eb; --accent-2:#0e9db8;
+  --grad:linear-gradient(135deg,#5558eb 0%,#0e9db8 100%);
   --code-bg:rgba(15,23,42,.06);
   --ok:#059669; --bad:#e11d48; --warn:#b45309;
   --c-magic:#d97706; --c-ver:#64748b;  --c-id:#7c3aed;  --c-cnt:#0d9488;
   --c-off:#2563eb;  --c-crc:#e11d48;   --c-flg:#db2777; --c-enum:#b45309;
   --c-ts:#ea580c;   --c-nnc:#a21caf;   --c-rsv:#cbd5e1; --c-pay:#0891b2;
-  --sel:rgba(79,70,229,.10);
+  --sel:rgba(85,88,235,.12);
   --shadow:0 12px 34px -16px rgba(15,23,42,.25);
 }
 *{margin:0;padding:0;box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{height:100%}
+::selection{background:color-mix(in srgb,var(--accent) 30%,transparent)}
 body{
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans SC",sans-serif;
   background:var(--bg);color:var(--text);font-size:14px;line-height:1.6;
   display:flex;flex-direction:column;overflow:hidden;
   -webkit-font-smoothing:antialiased;
 }
-.mono,.hex,td.off,td.sz,td.val,.chip,.tree-meta,.crumb,.seg-tip,button,input{
+body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:-1;
+  background:
+    radial-gradient(1000px 520px at 18% -12%, color-mix(in srgb,var(--accent) 22%,transparent), transparent 64%),
+    radial-gradient(840px 460px at 88% -18%, color-mix(in srgb,var(--accent-2) 15%,transparent), transparent 62%);
+}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--text-faint) 30%,transparent);border-radius:99px;border:2.5px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--text-faint) 52%,transparent);border:2.5px solid transparent;background-clip:padding-box}
+.mono,.hex,.hexwrap,td.off,td.sz,td.val,.chip,.tree-meta,.crumb,.seg-tip,button,input{
   font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,"JetBrains Mono",Consolas,monospace;
 }
 /* ================= Top bar ================= */
@@ -58,34 +71,41 @@ body{
 .pill{font-size:11.5px;padding:2px 9px;border-radius:999px;border:1px solid var(--border-strong);color:var(--text-dim);white-space:nowrap}
 .spacer{flex:1}
 button{
-  border:1px solid var(--border-strong);background:var(--panel);color:var(--text-dim);
-  border-radius:9px;padding:6px 13px;font-size:12.5px;cursor:pointer;transition:all .16s ease;white-space:nowrap;
+  border:1px solid var(--border-strong);background:color-mix(in srgb,var(--panel) 88%,transparent);color:var(--text-dim);
+  border-radius:9px;padding:6px 13px;font-size:12.5px;cursor:pointer;white-space:nowrap;
+  transition:color .15s,border-color .15s,background .15s,box-shadow .15s,transform .12s;
 }
-button:hover:not(:disabled){color:var(--text);border-color:var(--accent);transform:translateY(-1px)}
+button:hover:not(:disabled){color:var(--text);border-color:color-mix(in srgb,var(--accent) 55%,transparent);background:var(--panel);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 11%,transparent);transform:translateY(-1px)}
+button:active:not(:disabled){transform:translateY(0)}
 button:disabled{opacity:.4;cursor:not-allowed}
-button.primary{background:var(--grad);border:none;color:#fff;font-weight:700}
-button.primary:hover:not(:disabled){filter:brightness(1.12)}
+button:focus-visible,.trow:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:1.5px}
+button.primary{background:var(--grad);border:none;color:#fff;font-weight:700;box-shadow:0 4px 18px -6px color-mix(in srgb,var(--accent) 55%,transparent)}
+button.primary:hover:not(:disabled){filter:brightness(1.1);box-shadow:0 6px 24px -6px color-mix(in srgb,var(--accent) 70%,transparent)}
+button.icon{width:33px;padding:6px 0;text-align:center;font-size:14px}
 .jump{display:flex;align-items:center;gap:6px}
 .jump input{
   width:110px;background:var(--panel-2);border:1px solid var(--border-strong);border-radius:8px;
   color:var(--text);padding:5px 9px;font-size:12px;outline:none;
 }
-.jump input:focus{border-color:var(--accent)}
+.jump input:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 14%,transparent)}
 /* ================= Layout ================= */
-.app{flex:1;display:grid;grid-template-columns:290px minmax(0,1fr);min-height:0}
+.app{flex:1;display:grid;grid-template-columns:340px minmax(0,1fr);min-height:0}
 aside{
   border-right:1px solid var(--border);overflow:auto;padding:12px 10px 30px;background:var(--bg-soft);
 }
 .center{overflow:auto;padding:16px 22px 60px;display:flex;flex-direction:column;gap:16px;min-width:0}
+#detailGrid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:16px}
 /* ================= Tree ================= */
 .tree-title{font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--text-faint);font-weight:700;margin:6px 8px 10px}
 .tnode{user-select:none}
 .trow{
-  display:flex;align-items:center;gap:7px;padding:4.5px 8px;border-radius:8px;cursor:pointer;
-  color:var(--text-dim);font-size:12.5px;border:1px solid transparent;transition:background .12s;
+  display:flex;align-items:center;gap:7px;padding:5px 8px;border-radius:8px;cursor:pointer;
+  color:var(--text-dim);font-size:12.5px;border:1px solid transparent;position:relative;
+  transition:background .14s,color .14s,border-color .14s;
 }
 .trow:hover{background:var(--code-bg);color:var(--text)}
-.trow.sel{background:var(--sel);color:var(--text);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.trow.sel{background:var(--sel);color:var(--text);border-color:color-mix(in srgb,var(--accent) 38%,transparent)}
+.trow.sel::before{content:'';position:absolute;left:-1px;top:5px;bottom:5px;width:2.5px;border-radius:99px;background:var(--grad)}
 .trow .chev{width:14px;text-align:center;color:var(--text-faint);font-size:10px;flex:none;transition:transform .15s}
 .tnode.open>.trow .chev{transform:rotate(90deg)}
 .trow .tw{width:9px;height:9px;border-radius:2.5px;flex:none}
@@ -97,7 +117,7 @@ aside{
 .dot-ok{background:var(--ok)}.dot-bad{background:var(--bad)}
 /* ================= Panels ================= */
 .card{
-  background:var(--panel);border:1px solid var(--border);border-radius:14px;
+  background:var(--panel);border:1px solid var(--border);border-radius:16px;
   box-shadow:var(--shadow);overflow:hidden;flex:none;
 }
 .card-h{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap}
@@ -115,10 +135,11 @@ aside{
 .bymap{display:flex;height:52px;border-radius:9px;overflow:hidden;border:1px solid var(--border-strong);background:
   repeating-linear-gradient(45deg,transparent 0 7px,rgba(148,163,184,.045) 7px 14px)}
 .seg{
-  position:relative;min-width:2px;cursor:pointer;transition:filter .12s,transform .12s;
+  position:relative;min-width:2px;cursor:pointer;transition:filter .12s;
   display:flex;align-items:center;justify-content:center;overflow:hidden;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.09),inset -1px 0 0 rgba(0,0,0,.07);
 }
-.seg:hover{filter:brightness(1.25);z-index:2;box-shadow:inset 0 0 0 1.5px var(--accent-2)}
+.seg:hover{filter:brightness(1.16) saturate(1.12);z-index:2;box-shadow:inset 0 0 0 1.5px var(--accent-2)}
 .seg.sel{box-shadow:inset 0 0 0 2px var(--accent-2);z-index:3;filter:brightness(1.18)}
 .seg .sl{font-size:9.5px;color:#0b1020;font-weight:800;white-space:nowrap;pointer-events:none;letter-spacing:.02em}
 .seg-tip{
@@ -132,8 +153,8 @@ aside{
 .maplegend i{display:inline-block;width:8px;height:8px;border-radius:2.5px;margin-right:5px;vertical-align:-1px}
 /* ---- Detail ---- */
 .strip{display:flex;height:34px;border-radius:8px;overflow:hidden;border:1px solid var(--border-strong);margin:12px 16px 4px}
-.strip .f{min-width:2px;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer;transition:filter .1s}
-.strip .f:hover,.strip .f.hl{filter:brightness(1.3);box-shadow:inset 0 0 0 1.5px var(--accent-2);z-index:2}
+.strip .f{min-width:2px;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer;transition:filter .1s;box-shadow:inset 0 1px 0 rgba(255,255,255,.09),inset -1px 0 0 rgba(0,0,0,.07)}
+.strip .f:hover,.strip .f.hl{filter:brightness(1.22);box-shadow:inset 0 0 0 1.5px var(--accent-2);z-index:2}
 .strip .f span{font-size:9px;color:#0b1020;font-weight:800;white-space:nowrap}
 table.fields{width:100%;border-collapse:collapse;font-size:12.5px}
 table.fields th{
@@ -159,16 +180,16 @@ table.rows-t td:first-child{color:var(--text-faint)}
 table.rows-t tbody tr{cursor:pointer;transition:background .1s}
 table.rows-t tbody tr:hover{background:var(--sel);color:var(--text)}
 /* ---- Hex ---- */
-.hexwrap{padding:10px 16px 14px;overflow:auto}
-.hexrow{display:flex;gap:14px;white-space:nowrap;font-size:12px;line-height:1.75}
+.hexwrap{padding:10px 14px 14px;overflow:auto;font-variant-ligatures:none;font-feature-settings:"calt" 0,"liga" 0}
+.hexrow{display:flex;gap:12px;white-space:nowrap;font-size:11.5px;line-height:1.8}
 .hexrow .ho{color:var(--text-faint);min-width:9ch;text-align:right}
 .hexrow .hb{display:flex}
 .hb b{
-  font-weight:400;color:var(--text-dim);width:2.35ch;text-align:center;border-radius:4px;cursor:default;
+  font-weight:400;color:var(--text-dim);width:2.3ch;text-align:center;border-radius:4px;cursor:default;
   transition:background .08s;
 }
 .hb b.cmagic{color:var(--c-magic)}.hb b.coff{color:var(--c-off)}.hb b.ccrc{color:var(--c-crc)}
-.hb b.on{background:var(--accent);color:#fff;font-weight:700}
+.hb b.on{background:var(--accent);color:#fff}
 .hb b.dimmed{opacity:.28}
 .hexrow .ha{color:var(--text-faint)}
 .trunc{color:var(--text-faint);font-size:11.5px;padding:4px 2px 0}
@@ -177,16 +198,28 @@ table.rows-t tbody tr:hover{background:var(--sel);color:var(--text)}
 .empty .glyph{
   width:74px;height:74px;margin:0 auto 22px;border-radius:20px;background:var(--grad);
   display:grid;place-items:center;font-size:30px;color:#fff;box-shadow:0 18px 50px -12px color-mix(in srgb,var(--accent) 55%,transparent);
+  animation:glyphGlow 3.6s ease-in-out infinite;
 }
-.empty h1{font-size:26px;font-weight:800;letter-spacing:-.01em;margin-bottom:10px}
+@keyframes glyphGlow{
+  0%,100%{box-shadow:0 18px 50px -12px color-mix(in srgb,var(--accent) 55%,transparent)}
+  50%{box-shadow:0 20px 64px -10px color-mix(in srgb,var(--accent-2) 50%,transparent)}
+}
+.empty h1{
+  font-size:30px;font-weight:800;letter-spacing:-.02em;margin-bottom:12px;
+  background:linear-gradient(115deg,var(--text) 20%,var(--accent) 62%,var(--accent-2));
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+}
 .empty p{color:var(--text-dim);max-width:520px;margin:0 auto 8px}
 .empty .acts{display:flex;gap:12px;justify-content:center;margin:26px 0 30px}
 .empty .acts button{padding:10px 22px;font-size:13.5px}
 .magics{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin-top:8px}
-.magics .chip{font-size:11px}
+.magics .chip{font-size:11px;padding:4.5px 11px;border-radius:8px;border:1px solid var(--border);background:color-mix(in srgb,var(--panel) 72%,transparent)}
 /* ================= Verify panel ================= */
 .vmask{position:fixed;inset:0;background:rgba(4,8,16,.55);backdrop-filter:blur(3px);z-index:90;display:none;align-items:center;justify-content:center}
-.vmask.on{display:flex}
+.vmask.on{display:flex;animation:fadeIn .16s ease}
+.vmask.on .vpanel{animation:pop .22s cubic-bezier(.2,.85,.3,1.15)}
+@keyframes fadeIn{from{opacity:0}}
+@keyframes pop{from{opacity:0;transform:scale(.96) translateY(10px)}}
 .vpanel{
   width:min(720px,92vw);max-height:80vh;display:flex;flex-direction:column;
   background:var(--panel);border:1px solid var(--border-strong);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;
@@ -211,7 +244,7 @@ table.rows-t tbody tr:hover{background:var(--sel);color:var(--text)}
 }
 .toast{
   position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);opacity:0;z-index:150;
-  background:var(--panel);border:1px solid var(--border-strong);border-radius:11px;padding:9px 18px;
+  background:color-mix(in srgb,var(--panel) 88%,transparent);backdrop-filter:blur(10px);border:1px solid var(--border-strong);border-radius:12px;padding:10px 18px;
   font-size:12.5px;box-shadow:var(--shadow);transition:all .22s ease;pointer-events:none;max-width:70vw;
 }
 .toast.on{opacity:1;transform:translateX(-50%)}
@@ -220,6 +253,10 @@ table.rows-t tbody tr:hover{background:var(--sel);color:var(--text)}
 .crumb a{color:var(--text-dim);cursor:pointer;text-decoration:none;padding:2px 8px;border-radius:7px}
 .crumb a:hover{background:var(--code-bg);color:var(--text)}
 .crumb .cur{color:var(--accent-2);padding:2px 8px}
+#work{animation:rise .34s ease}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}}
+@media (max-width:1240px){#detailGrid{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 @media (max-width:980px){
   .app{grid-template-columns:1fr}
   aside{display:none}
@@ -241,7 +278,7 @@ table.rows-t tbody tr:hover{background:var(--sel);color:var(--text)}
   <button id="demoBtn">载入演示文件</button>
   <button id="openBtn" class="primary">打开 .rpk</button>
   <input type="file" id="fileInput" hidden>
-  <button id="themeBtn" title="切换主题">◐</button>
+  <button id="themeBtn" class="icon" title="切换主题（深色/浅色）" aria-label="切换主题">◐</button>
 </header>
 
 <div class="app">
@@ -269,7 +306,7 @@ table.rows-t tbody tr:hover{background:var(--sel);color:var(--text)}
         <div class="bymap-wrap"><div class="bymap" id="bymap"></div><div class="ruler" id="ruler"></div></div>
         <div class="maplegend" id="mapLegend"></div>
       </div>
-      <div style="display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:16px" id="detailGrid">
+      <div id="detailGrid">
         <div class="card" id="detailCard">
           <div class="card-h"><span class="t" id="detailTitle">—</span><div class="r" id="detailMeta"></div></div>
           <div id="detailBody"></div>
@@ -810,7 +847,6 @@ function verifyStore(buf, m) {
     const x = t.indexTxn;
     if (x) {
       add(`IndexTxn · Header CRC`, x.header.crc.ok, '', id('idx'));
-      const enc = x.header.info.keyEpoch > 0 || x.chunks.some(c => c.fields[4].val.indexOf('AES') === 0);
       x.chunks.forEach((c, ci) => add(`IndexTxn · Chunk[${c.info.seq}] CRC`, c.crc.ok && (!c.payload || c.payload.ok),
         c.errs.join('；'), id(`ch${ci}`)));
       if (x.dir.length) {
@@ -1146,6 +1182,7 @@ const MAPCOL = {
   idx:'var(--c-off)', ftr:'var(--c-crc)', tail:'var(--c-rsv)'
 };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const soft = c => `color-mix(in srgb, ${c} 92%, var(--panel))`; /* 字节图/字段条底色：近似全饱和，仅轻微融入面板色 */
 
 function reg(id, e){ e.id = id; S.reg[id] = e; return e; }
 
@@ -1244,13 +1281,29 @@ function renderTree() {
   });
   if (m.tail) html += leaf('tail');
   $('tree').innerHTML = html;
+  $('tree').setAttribute('role', 'tree');
   $('tree').querySelectorAll('.trow[data-sel]').forEach(row => {
+    row.tabIndex = 0; row.setAttribute('role', 'treeitem');
     row.addEventListener('click', ev => {
       const id = row.getAttribute('data-sel');
       const tnode = row.parentElement;
       const isGroup = tnode.querySelector(':scope > .tkids');
       if (isGroup && ev.target.classList.contains('chev')) { tnode.classList.toggle('open'); return; }
       select(id);
+    });
+    row.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); row.click(); return; }
+      const tn = row.parentElement;
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        const rows = [...$('tree').querySelectorAll('.trow[data-sel]')];
+        const next = rows[rows.indexOf(row) + (ev.key === 'ArrowDown' ? 1 : -1)];
+        if (next) next.focus();
+      } else if (ev.key === 'ArrowRight' && tn.querySelector(':scope > .tkids')) tn.classList.add('open');
+      else if (ev.key === 'ArrowLeft') {
+        if (tn.querySelector(':scope > .tkids') && tn.classList.contains('open')) tn.classList.remove('open');
+        else { const up = tn.parentElement.closest('.tnode'); if (up) up.querySelector(':scope > .trow').focus(); }
+      }
     });
   });
 }
@@ -1311,12 +1364,15 @@ function renderMap() {
   map.innerHTML = segs.map(s => {
     const size = Math.max(1, s.end - s.start);
     const wide = size / (r1 - r0) > 0.055;
-    return `<div class="seg${S.sel===s.sel?' sel':''}${s.dim?' dimseg':''}" data-sel="${s.sel}" data-tip="${esc(s.tip)}"
-      style="flex:${size};background:${s.color};${s.dim?'opacity:.62':''}">${wide?`<span class="sl">${esc(s.label)}</span>`:''}</div>`;
+    const zoomHint = (S.zoom < 0 ? /^t\d+-/.test(s.sel) : true) ? (S.zoom < 0 ? ' · 双击聚焦' : ' · 双击返回') : '';
+    return `<div class="seg${S.sel===s.sel?' sel':''}" data-sel="${s.sel}" data-tip="${esc(s.tip + zoomHint)}"
+      style="flex:${size};background:${soft(s.color)}">${wide?`<span class="sl">${esc(s.label)}</span>`:''}</div>`;
   }).join('');
-  /* 标尺 */
-  const ticks = [0, .25, .5, .75, 1].map(f =>
-    `<span style="left:${f*100}%">${(r0 + (r1-r0)*f >= 1073741824 ? fmtBytes(r0+(r1-r0)*f) : fmtBytes(Math.round(r0+(r1-r0)*f)))}</span>`).join('');
+  /* 标尺（首尾刻度内收，避免溢出裁剪） */
+  const ticks = [0, .25, .5, .75, 1].map((f, i) => {
+    const tx = i === 0 ? 'translateX(0)' : i === 4 ? 'translateX(-100%)' : 'translateX(-50%)';
+    return `<span style="left:${f*100}%;transform:${tx}">${fmtBytes(Math.round(r0 + (r1-r0)*f))}</span>`;
+  }).join('');
   $('ruler').innerHTML = ticks;
   $('mapLegend').innerHTML =
     `<span><i style="background:${MAPCOL.fh}"></i>文件头</span><span><i style="background:${MAPCOL.sh}"></i>快照头</span>
@@ -1340,18 +1396,23 @@ function renderCrumbs() {
   const parts = [`<a data-zoom="-1">整文件 (${fmtBytes(S.buf.length)})</a>`];
   if (S.zoom >= 0) {
     const t = S.model.txns[S.zoom];
-    parts.push(`<span>›</span><a data-zoom="-1">快照 ${t.header.info.snapID}</a>`);
-    parts.push(`<span>›</span><span class="cur">内部布局 · 双击段可返回</span>`);
+    parts.push(`<span>›</span><a data-zoom="${S.zoom}">快照 ${t.header.info.snapID} 内部布局</a>`);
   }
   if (S.sel) parts.push(`<span>›</span><span class="cur">${esc(S.reg[S.sel] ? (S.reg[S.sel].node.title || S.reg[S.sel].label) : '')}</span>`);
   $('crumbs').innerHTML = parts.join('');
   $('crumbs').querySelectorAll('a[data-zoom]').forEach(a => a.addEventListener('click', () => {
-    S.zoom = -1; renderMap();
+    S.zoom = +a.getAttribute('data-zoom'); renderMap();
   }));
 }
 /* ---------------- 气泡提示 ---------------- */
 function showTip(el, ev) { const tip = $('segTip'); tip.textContent = el.getAttribute('data-tip'); tip.classList.add('on'); moveTip(ev); }
-function moveTip(ev) { const tip = $('segTip'); tip.style.left = ev.clientX + 'px'; tip.style.top = ev.clientY + 'px'; }
+function moveTip(ev) {
+  const tip = $('segTip');
+  const below = ev.clientY < 140; /* 顶部区域改为下方弹出，避免裁剪 */
+  tip.style.left = Math.min(Math.max(ev.clientX, 120), window.innerWidth - 120) + 'px';
+  tip.style.top = ev.clientY + 'px';
+  tip.style.transform = below ? 'translate(-50%, 16px)' : 'translate(-50%, calc(-100% - 12px))';
+}
 function hideTip() { $('segTip').classList.remove('on'); }
 
 /* ---------------- 详情 ---------------- */
@@ -1370,23 +1431,27 @@ function stripHTML(node) {
   return `<div class="strip">` + node.fields.map((f, i) => {
     const c = CATS[f.cat] || CATS.rsv;
     const wide = f.size / total > 0.12;
-    return `<div class="f" data-f="${i}" style="flex:${f.size};background:${c[1]}">${wide?`<span>${esc(f.name)}</span>`:''}</div>`;
+    return `<div class="f" data-f="${i}" style="flex:${f.size};background:${soft(c[1])}">${wide?`<span>${esc(f.name)}</span>`:''}</div>`;
   }).join('') + `</div>`;
 }
 function pagesTableHTML(e) {
   const b = e.block, c = b.container;
   if (!c || !c.dir.length) return '';
-  const base = S.reg[e.id.replace(/-pg\d+$/, '')] ? e.id.replace(/-pg\d+$/, '') : e.id;
   const blkId = e.id.match(/^(t\d+-b\d+)/)[1];
   let h = `<div class="subtbl"><h4>Rows 页目录（明文 · ${c.dir.length} 页 · 容器数据区起点 0x${(c.dataStart).toString(16)}）</h4><table class="rows-t">
     <thead><tr><th>#</th><th>行数</th><th>RowID 范围</th><th>StoredOff</th><th>Stored</th><th>Raw</th><th>Flags</th><th>PageCRC</th></tr></thead><tbody>`;
   c.dir.forEach((d, di) => {
+    let crcCell = hexn(u32(S.buf, d.start+44));
+    if (d.info.rawSize === d.info.storedSize) { /* 未压缩页：PageCRC 覆盖解压后整页，此处可直接验证 */
+      const ps = c.dataStart + d.info.storedOffset;
+      if (ps >= 0 && ps + d.info.rawSize <= S.buf.length)
+        crcCell += crc32c(S.buf, ps, ps + d.info.rawSize) === u32(S.buf, d.start+44) ? ' ✓' : ' ✗';
+    }
     h += `<tr data-sel="${blkId}-pg${di}"><td>${d.info.ordinal}</td><td>${d.info.recCount}</td>
       <td>${d.info.minRow} – ${d.info.maxRow}</td><td>${d.info.storedOffset}</td>
       <td>${fmtBytes(d.info.storedSize)}</td><td>${fmtBytes(d.info.rawSize)}</td>
-      <td>${d.info.flags & 1 ? '超大连行' : '—'}</td><td>${hexn(u32(S.buf, d.start+44))}${(d.info.rawSize===d.info.storedSize && crc32c(S.buf, S.reg[blkId+'-pg'+di].node.start - 0, 0)) ? '' : ''}</td></tr>`;
+      <td>${d.info.flags & 1 ? '超大连行' : '—'}</td><td>${crcCell}</td></tr>`;
   });
-  void base;
   return h + '</tbody></table></div>';
 }
 function itxnTablesHTML(e) {
@@ -1572,7 +1637,12 @@ $('vcloseBtn').addEventListener('click', () => $('vmask').classList.remove('on')
 $('vmask').addEventListener('click', ev => { if (ev.target === $('vmask')) $('vmask').classList.remove('on'); });
 $('themeBtn').addEventListener('click', () => {
   const cur = document.documentElement.getAttribute('data-theme');
-  document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('rpk-theme', next); } catch (e) {}
+});
+window.addEventListener('keydown', ev => {
+  if (ev.key === 'Escape') { $('vmask').classList.remove('on'); hideTip(); }
 });
 function doJump() {
   const v = $('jumpInput').value.trim(); if (!v) return;

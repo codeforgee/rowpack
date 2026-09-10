@@ -108,9 +108,10 @@ func TestBuildAADIndexLayout(t *testing.T) {
 	}
 }
 
-func TestBuildAADIndexChunkLayout(t *testing.T) {
+func TestIndexChunkAADLayout(t *testing.T) {
 	uuid := testUUID
-	aad := BuildAADIndexChunk(&uuid, 11, 22, 33, 44, 55, 66, 7, 88)
+	aad := (ChunkContext{UUID: &uuid, TxnSequence: 11, SnapshotID: 22, ChunkSequence: 33,
+		FirstOrdinal: 44, RawBytes: 55, StoredBytes: 66, Kind: 7, Epoch: 88}).AAD()
 	if string(aad[0:12]) != "RowPackIChkV" {
 		t.Fatalf("AAD magic %q", aad[0:12])
 	}
@@ -152,9 +153,10 @@ func TestSealOpenBlockRoundtrip(t *testing.T) {
 	c := testCipher(t)
 	uuid := testUUID
 	h := blockHdr(42, 7, 3)
+	h.KeyEpoch = 5
 	plaintext := []byte("the quick brown fox jumps over the lazy dog")
 
-	ct, err := c.Seal(5, 42, &uuid, &h, plaintext)
+	ct, err := c.Seal(&uuid, &h, plaintext)
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -165,7 +167,7 @@ func TestSealOpenBlockRoundtrip(t *testing.T) {
 		t.Fatal("ciphertext leaks plaintext")
 	}
 
-	pt, err := c.Open(5, 42, &uuid, &h, ct)
+	pt, err := c.Open(&uuid, &h, ct)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -178,7 +180,8 @@ func TestSealOpenBlockAuthFailures(t *testing.T) {
 	c := testCipher(t)
 	uuid := testUUID
 	h := blockHdr(42, 7, 3)
-	ct, err := c.Seal(5, 42, &uuid, &h, []byte("payload"))
+	h.KeyEpoch = 5
+	ct, err := c.Seal(&uuid, &h, []byte("payload"))
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -186,24 +189,26 @@ func TestSealOpenBlockAuthFailures(t *testing.T) {
 	// Tampered ciphertext.
 	bad := append([]byte(nil), ct...)
 	bad[0] ^= 0xFF
-	if _, err := c.Open(5, 42, &uuid, &h, bad); !errors.Is(err, ErrAuth) {
+	if _, err := c.Open(&uuid, &h, bad); !errors.Is(err, ErrAuth) {
 		t.Fatalf("tampered ciphertext: err %v, want ErrAuth", err)
 	}
 
 	// Moved block: same payload under a different block ID / store.
-	if _, err := c.Open(5, 43, &uuid, &h, ct); !errors.Is(err, ErrAuth) {
+	hBlock := h
+	hBlock.BlockID = 43
+	if _, err := c.Open(&uuid, &hBlock, ct); !errors.Is(err, ErrAuth) {
 		t.Fatalf("moved block id: err %v, want ErrAuth", err)
 	}
 	otherUUID := testUUID
 	otherUUID[0] ^= 0xFF
-	if _, err := c.Open(5, 42, &otherUUID, &h, ct); !errors.Is(err, ErrAuth) {
+	if _, err := c.Open(&otherUUID, &h, ct); !errors.Is(err, ErrAuth) {
 		t.Fatalf("cross-store move: err %v, want ErrAuth", err)
 	}
 
 	// Tampered header field (ItemCount is bound by the AAD).
 	h2 := h
 	h2.ItemCount++
-	if _, err := c.Open(5, 42, &uuid, &h2, ct); !errors.Is(err, ErrAuth) {
+	if _, err := c.Open(&uuid, &h2, ct); !errors.Is(err, ErrAuth) {
 		t.Fatalf("header drift: err %v, want ErrAuth", err)
 	}
 
@@ -216,7 +221,7 @@ func TestSealOpenBlockAuthFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := other.Open(5, 42, &uuid, &h, ct); !errors.Is(err, ErrAuth) {
+	if _, err := other.Open(&uuid, &h, ct); !errors.Is(err, ErrAuth) {
 		t.Fatalf("wrong key: err %v, want ErrAuth", err)
 	}
 }
@@ -260,14 +265,23 @@ func TestSealOpenIndexChunk(t *testing.T) {
 		epoch                  uint32
 	}{11, 22, 33, 44, 55, 55 + fileformat.AESGCMTagLen, 7, 88}
 	pt := []byte("chunk payload")
+	ctx := ChunkContext{
+		UUID:          &uuid,
+		TxnSequence:   args.txnSeq,
+		SnapshotID:    args.snapshotID,
+		ChunkSequence: args.chunkSeq,
+		FirstOrdinal:  args.firstOrdinal,
+		RawBytes:      args.rawBytes,
+		StoredBytes:   args.storedBytes,
+		Kind:          args.kind,
+		Epoch:         args.epoch,
+	}
 
-	ct, err := c.SealIndexChunk(&uuid, args.txnSeq, args.snapshotID, args.chunkSeq,
-		args.firstOrdinal, args.rawBytes, args.storedBytes, args.kind, args.epoch, pt)
+	ct, err := c.SealIndexChunk(ctx, pt)
 	if err != nil {
 		t.Fatalf("SealIndexChunk: %v", err)
 	}
-	got, err := c.OpenIndexChunk(&uuid, args.txnSeq, args.snapshotID, args.chunkSeq,
-		args.firstOrdinal, args.rawBytes, args.storedBytes, args.kind, args.epoch, ct)
+	got, err := c.OpenIndexChunk(ctx, ct)
 	if err != nil {
 		t.Fatalf("OpenIndexChunk: %v", err)
 	}
@@ -276,8 +290,9 @@ func TestSealOpenIndexChunk(t *testing.T) {
 	}
 
 	// Chunk identity is bound: changing any AAD field breaks authentication.
-	if _, err := c.OpenIndexChunk(&uuid, args.txnSeq, args.snapshotID, args.chunkSeq+1,
-		args.firstOrdinal, args.rawBytes, args.storedBytes, args.kind, args.epoch, ct); !errors.Is(err, ErrAuth) {
+	drift := ctx
+	drift.ChunkSequence++
+	if _, err := c.OpenIndexChunk(drift, ct); !errors.Is(err, ErrAuth) {
 		t.Fatalf("chunk identity drift: err %v, want ErrAuth", err)
 	}
 }
@@ -293,7 +308,10 @@ func TestNonceIndexChunkDeterministic(t *testing.T) {
 		t.Fatal("(txnSeq, chunkSeq) pairs must not collide")
 	}
 	// Page and chunk nonce domains must be separated.
-	if c.NonceIndexChunk(1, 2) == c.NoncePage(&testUUID, 1, 2, 3, 4) {
+	if c.NonceIndexChunk(1, 2) == c.NoncePage(PageContext{
+		UUID: &testUUID, SnapshotID: 1, BlockID: 2,
+		Page: fileformat.RowsPageDirEntry{PageOrdinal: 3}, Epoch: 4,
+	}) {
 		t.Fatal("chunk nonce collides with page nonce domain")
 	}
 }

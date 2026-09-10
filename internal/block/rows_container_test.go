@@ -29,7 +29,7 @@ func buildContainer(tb testing.TB, pageSize, blockSize int, alg fileformat.Compr
 		blockSize = 1 << 20
 	}
 	var sink containerSink
-	b := NewRowsBlockBuilder(1, 1, blockSize, alg, 0, DefaultLimits(), sink.flush)
+	b := NewRowsBuilder(1, 1, Config{BlockSize: blockSize, Compression: alg, Level: 0, Limits: DefaultLimits(), OnFlush: sink.flush})
 	b.SetPageSize(pageSize)
 	for i := range want {
 		var body []byte
@@ -47,7 +47,7 @@ func buildContainer(tb testing.TB, pageSize, blockSize int, alg fileformat.Compr
 		tb.Fatalf("got %d blocks, want 1", len(sink.blocks))
 	}
 	fb := sink.blocks[0]
-	rc, err := ParseRowsContainer(fb.Stored, fb.Header, DefaultLimits())
+	rc, err := ParseContainer(fb.Stored, fb.Header, DefaultLimits())
 	if err != nil {
 		tb.Fatalf("parse container: %v", err)
 	}
@@ -117,20 +117,20 @@ func TestRowsContainerRoundTripMultiPage(t *testing.T) {
 
 	// Random single-record access (the Get path) must match.
 	for _, ord := range []uint32{0, 1, 50, 149, 250, 299} {
-		rec, release, err := rc.RecordAtScratch(ord)
+		rec, release, err := rc.RecordAt(ord)
 		if err != nil {
-			t.Fatalf("RecordAtScratch(%d): %v", ord, err)
+			t.Fatalf("RecordAt(%d): %v", ord, err)
 		}
 		w := want[ord]
 		if rec.RowID != w.rowID || rec.SchemaVersion != w.version || rec.ChangeType != w.ct {
-			t.Fatalf("RecordAtScratch(%d) = {%d v%d ct%d}, want {%d v%d ct%d}", ord, rec.RowID, rec.SchemaVersion, rec.ChangeType, w.rowID, w.version, w.ct)
+			t.Fatalf("RecordAt(%d) = {%d v%d ct%d}, want {%d v%d ct%d}", ord, rec.RowID, rec.SchemaVersion, rec.ChangeType, w.rowID, w.version, w.ct)
 		}
 		if w.ct == fileformat.ChangeDelete {
 			if len(rec.Body) != 0 {
-				t.Fatalf("RecordAtScratch(%d): delete carries body", ord)
+				t.Fatalf("RecordAt(%d): delete carries body", ord)
 			}
 		} else if len(rec.Body) != w.bodyLen {
-			t.Fatalf("RecordAtScratch(%d) body %d bytes, want %d", ord, len(rec.Body), w.bodyLen)
+			t.Fatalf("RecordAt(%d) body %d bytes, want %d", ord, len(rec.Body), w.bodyLen)
 		}
 		release()
 	}
@@ -181,7 +181,7 @@ func TestRowsContainerOversizedPage(t *testing.T) {
 		codec.Uint64(1), codec.Int64(2), codec.Float64(0.5),
 		codec.String("big"), codec.Bytes(big),
 	}
-	body, err := codec.EncodeBodyInto(schema, row, codec.Limits{MaxRowBytes: 1 << 20, MaxColumns: 100, MaxValueBytes: 1 << 20}, nil)
+	body, err := testCodec.EncodeInto(schema, row, nil)
 	requireNoErr(t, err)
 	// A single >16 KiB row in a 16 KiB page must form its own oversized page.
 	var want []expectedPageRow
@@ -190,7 +190,7 @@ func TestRowsContainerOversizedPage(t *testing.T) {
 	if rc.Dir[0].Flags&1 == 0 {
 		t.Fatalf("oversized page flag not set")
 	}
-	rec, release, err := rc.RecordAtScratch(0)
+	rec, release, err := rc.RecordAt(0)
 	requireNoErr(t, err)
 	if len(rec.Body) != len(body) {
 		t.Fatalf("oversized row body %d, want %d", len(rec.Body), len(body))
@@ -213,7 +213,7 @@ func TestRowsContainerCorruption(t *testing.T) {
 
 	// Truncation at region boundaries must fail cleanly, never panic.
 	for _, cut := range []int{0, 1, fileformat.RowsBlockHeaderSize - 1, fileformat.RowsBlockHeaderSize, fileformat.RowsBlockHeaderSize + 24, len(payload) - 2, len(payload) - 1} {
-		if _, err := ParseRowsContainer(payload[:cut], fb.Header, DefaultLimits()); err == nil {
+		if _, err := ParseContainer(payload[:cut], fb.Header, DefaultLimits()); err == nil {
 			t.Fatalf("truncated container at %d accepted", cut)
 		}
 	}
@@ -223,7 +223,7 @@ func TestRowsContainerCorruption(t *testing.T) {
 	for _, off := range []int{2, 12, 30, fileformat.RowsBlockHeaderSize + 5} {
 		bad := append([]byte(nil), payload...)
 		bad[off] ^= 0x01
-		if _, err := ParseRowsContainer(bad, fb.Header, DefaultLimits()); err == nil {
+		if _, err := ParseContainer(bad, fb.Header, DefaultLimits()); err == nil {
 			t.Fatalf("bit flip at %d accepted", off)
 		}
 	}
@@ -231,7 +231,7 @@ func TestRowsContainerCorruption(t *testing.T) {
 	// A forged ItemCount must be rejected (TotalRecords vs header).
 	badHdr := fb.Header
 	badHdr.ItemCount = fb.Header.ItemCount + 1
-	if _, err := ParseRowsContainer(payload, badHdr, DefaultLimits()); err == nil {
+	if _, err := ParseContainer(payload, badHdr, DefaultLimits()); err == nil {
 		t.Fatal("forged item count accepted")
 	}
 }

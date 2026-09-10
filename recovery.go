@@ -7,6 +7,7 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 	"github.com/rowpack/rowpack/internal/index"
 	"github.com/rowpack/rowpack/internal/metadata"
+	"github.com/rowpack/rowpack/internal/seal"
 )
 
 // committedSnapshot is one validated, committed snapshot in the single data
@@ -103,7 +104,7 @@ func (s *Store) recover() error {
 		// IndexTxn missing/corrupt: rebuild from this snapshot's blocks. The
 		// rebuilt txn is applied eagerly (its row shards are materialized) — in
 		// The rebuilt txn is applied eagerly from the snapshot's data pages.
-		rtxn, err := s.buildIndexTxnFromData(&c)
+		rtxn, err := s.rebuildIndex(&c)
 		if err != nil {
 			return fmt.Errorf("rowpack: rebuild snapshot %d: %w", c.snapshotID, err)
 		}
@@ -155,7 +156,7 @@ func (s *Store) recover() error {
 		s.lastFooterOffset = uint64(committed[len(committed)-1].footerOff)
 	}
 
-	schemas, err := s.buildSchemaIndex(view)
+	schemas, err := s.buildIndex(view)
 	if err != nil {
 		return err
 	}
@@ -197,7 +198,16 @@ func (s *Store) readIndexTxn(c *committedSnapshot) (data []byte, crypto *index.C
 			SnapshotID:  h.SnapshotID,
 			Epoch:       epoch,
 			Open: func(chunkSeq uint32, kind uint8, firstOrdinal uint32, rawBytes int, stored []byte) ([]byte, error) {
-				return s.decrypter.OpenIndexChunk(epoch, h.TxnSequence, h.SnapshotID, chunkSeq, kind, firstOrdinal, uint32(rawBytes), uint32(len(stored)), stored)
+				return s.decrypter.OpenIndexChunk(seal.ChunkContext{
+					TxnSequence:   h.TxnSequence,
+					SnapshotID:    h.SnapshotID,
+					ChunkSequence: chunkSeq,
+					FirstOrdinal:  firstOrdinal,
+					RawBytes:      uint32(rawBytes),
+					StoredBytes:   uint32(len(stored)),
+					Kind:          kind,
+					Epoch:         epoch,
+				}, stored)
 			},
 		}
 	}
@@ -234,7 +244,7 @@ func (s *Store) scanDataFile() ([]committedSnapshot, int64, error) {
 		}
 		// The snapshot at pos broke: a valid Footer later means mid-file
 		// corruption; otherwise this is the recoverable tail.
-		if s.hasLaterValidFooter(pos, size) {
+		if s.hasValidFooterAfter(pos, size) {
 			return nil, 0, fmt.Errorf("rowpack: mid-file corruption at offset %d", pos)
 		}
 		break
@@ -364,7 +374,7 @@ func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, n
 	return c, false, 0, nil // ran out of file without a footer
 }
 
-// hasLaterValidFooter reports whether a valid SnapshotFooter exists at or
+// hasValidFooterAfter reports whether a valid SnapshotFooter exists at or
 // after offset. Footer positions are NOT 8-aligned (block payload lengths are
 // arbitrary), so this walks byte-by-byte; it runs only on the corrupt/tail
 // path, and a false positive requires an 8-byte magic collision plus a
@@ -372,7 +382,7 @@ func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, n
 // negligible. The footer is the commit authority: its presence means earlier
 // bytes in this region are mid-file corruption, never an uncommitted tail
 // (R3).
-func (s *Store) hasLaterValidFooter(from, size int64) bool {
+func (s *Store) hasValidFooterAfter(from, size int64) bool {
 	for p := from; p+fileformat.SnapshotFooterSize <= size; p++ {
 		var magic [8]byte
 		if _, err := s.data.ReadAt(magic[:], p); err != nil {
@@ -397,10 +407,10 @@ func (s *Store) hasLaterValidFooter(from, size int64) bool {
 	return false
 }
 
-// buildIndexTxnFromData reconstructs the index transaction for a committed
+// rebuildIndex reconstructs the index transaction for a committed
 // snapshot whose IndexTxn is missing or corrupt, by reading and parsing its
 // blocks in [BlocksStartOffset, BlocksEndOffset).
-func (s *Store) buildIndexTxnFromData(c *committedSnapshot) (*index.Txn, error) {
+func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
 	var blockEntries []fileformat.BlockIndexEntry
 	var metaEntries []fileformat.MetadataIndexEntry
 	var rowEntries []fileformat.RowIndexEntry
@@ -524,7 +534,10 @@ func (s *Store) buildIndexTxnFromData(c *committedSnapshot) (*index.Txn, error) 
 			return nil, err
 		}
 	}
-	_, txn, err := builder.Build(uint64(c.start), uint64(c.end), c.footerCRC, c.txnStart, c.txnEnd)
+	_, txn, err := builder.Build(index.BodyBounds{
+		DataStart: uint64(c.start), DataEnd: uint64(c.end),
+		TxnStart: c.txnStart, TxnEnd: c.txnEnd,
+	}, c.footerCRC)
 	if err != nil {
 		return nil, err
 	}

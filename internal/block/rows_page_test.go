@@ -9,6 +9,10 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
+// testCodec is the row codec shared by the block tests: a roomy limit so
+// generated rows are never rejected for size.
+var testCodec = codec.Codec{Limits: codec.Limits{MaxRowBytes: 1 << 20, MaxColumns: 100, MaxValueBytes: 1 << 20}}
+
 func TestRowsPageRejectsTupleEndOutsideBody(t *testing.T) {
 	rowIDs := binary.AppendUvarint(nil, 1)
 	offsets := binary.AppendUvarint(nil, 100)
@@ -74,7 +78,7 @@ func pageTestRow(tb testing.TB, schema *codec.Schema, i uint64) []byte {
 		}
 		row[4] = codec.Bytes(big)
 	}
-	body, err := codec.EncodeBodyInto(schema, row, codec.Limits{MaxRowBytes: 1 << 20, MaxColumns: 100, MaxValueBytes: 1 << 20}, nil)
+	body, err := testCodec.EncodeInto(schema, row, nil)
 	if err != nil {
 		tb.Fatalf("encode row %d: %v", i, err)
 	}
@@ -93,7 +97,7 @@ type expectedPageRow struct {
 // oracle decodes back identically (random access and sequential).
 func buildAndVerifyPage(tb testing.TB, target int, want []expectedPageRow, bodies [][]byte) *RowsPage {
 	tb.Helper()
-	b := NewRowsPageBuilder(target)
+	b := NewPageBuilder(target)
 	for i := range want {
 		var body []byte
 		if want[i].ct != fileformat.ChangeDelete {
@@ -247,7 +251,7 @@ func TestRowsPageOversizedRowOwnPage(t *testing.T) {
 		codec.String("big"),
 		codec.Bytes(big),
 	}
-	body, err := codec.EncodeBodyInto(schema, row, codec.Limits{MaxRowBytes: 1 << 20, MaxColumns: 100, MaxValueBytes: 1 << 20}, nil)
+	body, err := testCodec.EncodeInto(schema, row, nil)
 	requireNoErr(t, err)
 	if len(body) <= 32<<10 {
 		t.Fatalf("payload too small: %d", len(body))
@@ -261,7 +265,7 @@ func TestRowsPageOversizedRowOwnPage(t *testing.T) {
 
 func TestRowsPageCorruption(t *testing.T) {
 	schema := pageTestSchema()
-	b := NewRowsPageBuilder(64 << 10)
+	b := NewPageBuilder(64 << 10)
 	for i := uint64(1); i <= 50; i++ {
 		ct := fileformat.ChangeInsert
 		if i%9 == 0 {
@@ -335,7 +339,7 @@ func lePutU32(b []byte, v uint32) {
 
 func TestRowsPageBuilderReuse(t *testing.T) {
 	schema := pageTestSchema()
-	b := NewRowsPageBuilder(8 << 10)
+	b := NewPageBuilder(8 << 10)
 	for round := 0; round < 3; round++ {
 		for i := uint64(1); i <= 100; i++ {
 			body := pageTestRow(t, schema, i)
@@ -359,7 +363,7 @@ func TestRowsPageFlushBoundary(t *testing.T) {
 	// Simulate the writer loop: flush when NeedsFlush before each Add; the
 	// builder must never emit pages wildly below target except for the
 	// oversized-row rule.
-	b := NewRowsPageBuilder(16 << 10)
+	b := NewPageBuilder(16 << 10)
 	var pages int
 	rows := 0
 	for i := uint64(1); i <= 2000; i++ {

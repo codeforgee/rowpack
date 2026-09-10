@@ -320,7 +320,7 @@ func (it *Iterator) nextBlockRecord() (Row, bool) {
 				it.releasePage()
 				return nil, false
 			}
-			row, err := codec.DecodeBodyInto(it.buf, rec.Body, schema, it.store.opts.codecLimits(), it.sink)
+			row, err := it.store.rowCodec().DecodeInto(it.buf, rec.Body, schema, it.sink)
 			if err != nil {
 				it.err = err
 				it.releasePage()
@@ -446,7 +446,7 @@ func (it *Iterator) rowAt(loc index.RowLoc, dst Row) (Row, error) {
 	if err := it.locateBlock(loc); err != nil {
 		return nil, err
 	}
-	pi, err := it.curContainer.PageIndexForOrdinal(loc.ItemOrdinal)
+	pi, err := it.curContainer.PageFor(loc.ItemOrdinal)
 	if err != nil {
 		return nil, err
 	}
@@ -468,7 +468,7 @@ func (it *Iterator) rowAt(loc index.RowLoc, dst Row) (Row, error) {
 	if err != nil {
 		return nil, err
 	}
-	return codec.DecodeBodyInto(dst, rec.Body, schema, it.store.opts.codecLimits(), it.sink)
+	return it.store.rowCodec().DecodeInto(dst, rec.Body, schema, it.sink)
 }
 
 // schemaFor returns the codec schema for the given record schema version

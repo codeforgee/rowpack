@@ -292,7 +292,7 @@ func TestReaderReadAtBlockView(t *testing.T) {
 func TestReaderReadRowsDir(t *testing.T) {
 	// Build a minimal rows block with container header and page directory
 	// Create a page with one record using the page builder
-	pageBuilder := NewRowsPageBuilder(32 << 10)
+	pageBuilder := NewPageBuilder(32 << 10)
 	simpleTuple := []byte{0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 	require.NoError(t, pageBuilder.Add(1, 1, fileformat.ChangeInsert, simpleTuple))
 	pageRaw, err := pageBuilder.Finish()
@@ -363,7 +363,7 @@ func TestReaderReadRowsDir(t *testing.T) {
 func TestReaderReadRowsPage(t *testing.T) {
 	// Build a minimal rows block with one page
 	// Create a page with one record using the page builder
-	pageBuilder := NewRowsPageBuilder(32 << 10)
+	pageBuilder := NewPageBuilder(32 << 10)
 	simpleTuple := []byte{0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 	require.NoError(t, pageBuilder.Add(1, 1, fileformat.ChangeInsert, simpleTuple))
 	pageRaw, err := pageBuilder.Finish()
@@ -439,7 +439,7 @@ func TestReaderReadRowsPage(t *testing.T) {
 
 func TestReaderReadRowsPageEncryptedNoDecrypter(t *testing.T) {
 	// Build a minimal rows block with one page (with one record)
-	pageBuilder := NewRowsPageBuilder(32 << 10)
+	pageBuilder := NewPageBuilder(32 << 10)
 	simpleTuple := []byte{0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 	require.NoError(t, pageBuilder.Add(1, 1, fileformat.ChangeInsert, simpleTuple))
 	pageRaw, err := pageBuilder.Finish()

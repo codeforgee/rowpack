@@ -24,8 +24,8 @@ import (
 // errPageTruncated is returned when a stream read runs past its end.
 var errPageTruncated = errors.New("rowpack: page stream truncated")
 
-// RowsPageBuilder accumulates records until Finish produces one page.
-type RowsPageBuilder struct {
+// PageBuilder accumulates records until Finish produces one page.
+type PageBuilder struct {
 	target int
 
 	rowIDs     []byte
@@ -47,17 +47,17 @@ type RowsPageBuilder struct {
 	started    bool
 }
 
-// NewRowsPageBuilder creates a page builder flushing at target raw bytes.
+// NewPageBuilder creates a page builder flushing at target raw bytes.
 // A single record larger than target still forms an (oversized) page.
-func NewRowsPageBuilder(targetBytes int) *RowsPageBuilder {
-	return &RowsPageBuilder{target: targetBytes}
+func NewPageBuilder(targetBytes int) *PageBuilder {
+	return &PageBuilder{target: targetBytes}
 }
 
 // Add appends one record. tuple is the body-only TypedTuple encoding
-// (codec.EncodeBodyInto); for deletes pass nil or an empty slice. Call-order
+// (codec.EncodeInto); for deletes pass nil or an empty slice. Call-order
 // semantics are preserved exactly like the v1 change stream; RowIDs need not
 // be sorted.
-func (b *RowsPageBuilder) Add(rowID uint64, schemaVersion uint32, changeType fileformat.ChangeType, tuple []byte) error {
+func (b *PageBuilder) Add(rowID uint64, schemaVersion uint32, changeType fileformat.ChangeType, tuple []byte) error {
 	packed, err := fileformat.PackChangeType(changeType)
 	if err != nil {
 		return err
@@ -76,14 +76,14 @@ func (b *RowsPageBuilder) Add(rowID uint64, schemaVersion uint32, changeType fil
 	b.lastEnd += uint32(len(tuple))
 	// Schema version RLE: accumulate the run, emit pairs on change/finish.
 	if b.curRun == 0 || b.curSchema != schemaVersion {
-		b.flushSchemaRun()
+		b.flushRun()
 		b.curSchema = schemaVersion
 		b.curRun = 1
 	} else {
 		b.curRun++
 	}
 	// Change-type 2-bit stream.
-	b.changeBits = appendChangeBit(b.changeBits, b.count, packed)
+	b.changeBits = appendChange(b.changeBits, b.count, packed)
 	// Tuple body.
 	b.tuples = append(b.tuples, tuple...)
 
@@ -103,26 +103,26 @@ func (b *RowsPageBuilder) Add(rowID uint64, schemaVersion uint32, changeType fil
 }
 
 // RawBytes returns the current uncompressed page size if flushed now.
-func (b *RowsPageBuilder) RawBytes() int {
+func (b *PageBuilder) RawBytes() int {
 	return fileformat.RowsPageHeaderSize + len(b.rowIDs) + len(b.offsets) +
 		len(b.schemaRLE) + len(b.changeBits) + len(b.tuples)
 }
 
 // Count returns the number of buffered records.
-func (b *RowsPageBuilder) Count() uint32 { return b.count }
+func (b *PageBuilder) Count() uint32 { return b.count }
 
 // NeedsFlush reports whether the pending page has reached the target size.
-func (b *RowsPageBuilder) NeedsFlush() bool {
+func (b *PageBuilder) NeedsFlush() bool {
 	return b.count > 0 && b.RawBytes() >= b.target
 }
 
 // Finish serializes the buffered records into one page and resets the
 // builder. Returns nil when nothing is buffered.
-func (b *RowsPageBuilder) Finish() ([]byte, error) {
+func (b *PageBuilder) Finish() ([]byte, error) {
 	if b.count == 0 {
 		return nil, nil
 	}
-	b.flushSchemaRun()
+	b.flushRun()
 
 	h := fileformat.RowsPageHeader{
 		EntryCount:      b.count,
@@ -152,9 +152,9 @@ func (b *RowsPageBuilder) Finish() ([]byte, error) {
 }
 
 // Reset clears all buffers for reuse.
-func (b *RowsPageBuilder) Reset() { b.reset() }
+func (b *PageBuilder) Reset() { b.reset() }
 
-func (b *RowsPageBuilder) reset() {
+func (b *PageBuilder) reset() {
 	b.rowIDs = b.rowIDs[:0]
 	b.offsets = b.offsets[:0]
 	b.schemaRLE = b.schemaRLE[:0]
@@ -166,7 +166,7 @@ func (b *RowsPageBuilder) reset() {
 	b.started = false
 }
 
-func (b *RowsPageBuilder) flushSchemaRun() {
+func (b *PageBuilder) flushRun() {
 	if b.curRun == 0 {
 		return
 	}
@@ -175,9 +175,9 @@ func (b *RowsPageBuilder) flushSchemaRun() {
 	b.curRun = 0
 }
 
-// appendChangeBit sets the 2-bit value for entry ordinal i, growing the bit
+// appendChange sets the 2-bit value for entry ordinal i, growing the bit
 // stream as needed.
-func appendChangeBit(dst []byte, ordinal uint32, packed uint8) []byte {
+func appendChange(dst []byte, ordinal uint32, packed uint8) []byte {
 	byteIdx := ordinal / 4
 	for uint32(len(dst)) <= byteIdx {
 		dst = append(dst, 0)

@@ -268,7 +268,7 @@ func TestDecimalInt64Len(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run("", func(t *testing.T) {
-			got := decimalInt64Len(tc.v)
+			got := intLen(tc.v)
 			require.Equal(t, tc.want, got, "value=%d", tc.v)
 		})
 	}
@@ -294,7 +294,7 @@ func TestAppendDecimalInt64Into(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			buf := appendDecimalInt64Into(nil, tc.v)
+			buf := appendInt64(nil, tc.v)
 			require.Equal(t, tc.want, buf)
 		})
 	}
@@ -303,35 +303,35 @@ func TestAppendDecimalInt64Into(t *testing.T) {
 func TestEncodeDecimalBig(t *testing.T) {
 	t.Run("zero", func(t *testing.T) {
 		u := big.NewInt(0)
-		raw, err := encodeDecimalBig(u)
+		raw, err := encodeBig(u)
 		require.NoError(t, err)
 		require.Equal(t, []byte{0x00}, raw)
 	})
 
 	t.Run("positive no leading 0x80", func(t *testing.T) {
 		u := big.NewInt(12345)
-		raw, err := encodeDecimalBig(u)
+		raw, err := encodeBig(u)
 		require.NoError(t, err)
 		require.Equal(t, []byte{0x30, 0x39}, raw)
 	})
 
 	t.Run("positive with leading 0x80", func(t *testing.T) {
 		u := big.NewInt(128)
-		raw, err := encodeDecimalBig(u)
+		raw, err := encodeBig(u)
 		require.NoError(t, err)
 		require.Equal(t, []byte{0x00, 0x80}, raw)
 	})
 
 	t.Run("negative", func(t *testing.T) {
 		u := big.NewInt(-1)
-		raw, err := encodeDecimalBig(u)
+		raw, err := encodeBig(u)
 		require.NoError(t, err)
 		require.Equal(t, []byte{0xff}, raw)
 	})
 
 	t.Run("negative multi-byte", func(t *testing.T) {
 		u := big.NewInt(-129)
-		raw, err := encodeDecimalBig(u)
+		raw, err := encodeBig(u)
 		require.NoError(t, err)
 		require.Equal(t, []byte{0xff, 0x7f}, raw)
 	})
@@ -356,7 +356,7 @@ func TestCanonicalDecimalBytes(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := canonicalDecimalBytes(tc.b)
+			got := canonicalBytes(tc.b)
 			require.Equal(t, tc.valid, got)
 		})
 	}
@@ -365,60 +365,60 @@ func TestCanonicalDecimalBytes(t *testing.T) {
 func TestDecodeDecimalBytesInto(t *testing.T) {
 	t.Run("zero", func(t *testing.T) {
 		dst := new(big.Int)
-		err := decodeDecimalBytesInto(dst, []byte{0x00})
+		err := decodeBytesInto(dst, []byte{0x00})
 		require.NoError(t, err)
 		require.Equal(t, int64(0), dst.Int64())
 	})
 
 	t.Run("positive", func(t *testing.T) {
 		dst := new(big.Int)
-		err := decodeDecimalBytesInto(dst, []byte{0x30, 0x39})
+		err := decodeBytesInto(dst, []byte{0x30, 0x39})
 		require.NoError(t, err)
 		require.Equal(t, int64(12345), dst.Int64())
 	})
 
 	t.Run("negative", func(t *testing.T) {
 		dst := new(big.Int)
-		err := decodeDecimalBytesInto(dst, []byte{0xff})
+		err := decodeBytesInto(dst, []byte{0xff})
 		require.NoError(t, err)
 		require.Equal(t, int64(-1), dst.Int64())
 	})
 
 	t.Run("negative multi-byte", func(t *testing.T) {
 		dst := new(big.Int)
-		err := decodeDecimalBytesInto(dst, []byte{0xff, 0x7f})
+		err := decodeBytesInto(dst, []byte{0xff, 0x7f})
 		require.NoError(t, err)
 		require.Equal(t, int64(-129), dst.Int64())
 	})
 
 	t.Run("large positive", func(t *testing.T) {
 		u := new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil)
-		raw, _ := encodeDecimalBig(u)
+		raw, _ := encodeBig(u)
 		dst := new(big.Int)
-		err := decodeDecimalBytesInto(dst, raw)
+		err := decodeBytesInto(dst, raw)
 		require.NoError(t, err)
 		require.Equal(t, u, dst)
 	})
 
 	t.Run("large negative", func(t *testing.T) {
 		u := new(big.Int).Neg(new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil))
-		raw, _ := encodeDecimalBig(u)
+		raw, _ := encodeBig(u)
 		dst := new(big.Int)
-		err := decodeDecimalBytesInto(dst, raw)
+		err := decodeBytesInto(dst, raw)
 		require.NoError(t, err)
 		require.Equal(t, u, dst)
 	})
 
 	t.Run("empty", func(t *testing.T) {
 		dst := new(big.Int)
-		err := decodeDecimalBytesInto(dst, []byte{})
+		err := decodeBytesInto(dst, []byte{})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "empty")
 	})
 
 	t.Run("non-canonical", func(t *testing.T) {
 		dst := new(big.Int)
-		err := decodeDecimalBytesInto(dst, []byte{0x00, 0x12})
+		err := decodeBytesInto(dst, []byte{0x00, 0x12})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "non-canonical")
 	})

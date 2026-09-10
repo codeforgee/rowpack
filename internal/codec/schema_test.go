@@ -119,9 +119,9 @@ func TestValidValueType(t *testing.T) {
 		TypeDate, TypeTime, TypeDateTime, TypeDecimal,
 	}
 	for _, tt := range validTypes {
-		require.True(t, validValueType(tt), "type %d should be valid", tt)
+		require.True(t, isValidType(tt), "type %d should be valid", tt)
 	}
-	require.False(t, validValueType(999))
+	require.False(t, isValidType(999))
 }
 
 func TestDefaultLimits(t *testing.T) {

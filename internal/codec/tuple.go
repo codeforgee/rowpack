@@ -7,6 +7,8 @@ import (
 	"math"
 	"math/big"
 	"unicode/utf8"
+
+	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
 // TypedTuple v1 row encoding:
@@ -23,28 +25,45 @@ import (
 var ErrSchemaMismatch = errors.New("rowpack: schema mismatch")
 
 // bitmapScratch is a zeroed stack buffer used to zero-fill the null bitmap in
-// EncodeInto without a per-row allocation. 2 KiB covers the 16384-column
+// EncodeTupleInto without a per-row allocation. 2 KiB covers the 16384-column
 // default limit; larger schemas fall back to make().
 var bitmapScratch [2048]byte
+
+// Codec is the row codec of one store: the encode/decode policy (Limits)
+// exposed as methods. Putting Limits on the codec keeps it off every encode
+// and decode call site and gives the write path (Store.rowCodec) and the read
+// paths the same policy object.
+//
+// Sink stays a per-call decode argument: it shapes how String/Bytes payloads
+// are materialized (zero-copy arena view vs fresh copy) and differs per call
+// site; a nil *Sink keeps copy semantics.
+type Codec struct {
+	Limits Limits
+}
+
+// DefaultCodec returns the codec with the v1 default safety limits, for callers
+// that have no store policy of their own (the public Schema.Validate path and
+// tests).
+func DefaultCodec() Codec { return Codec{Limits: DefaultLimits()} }
 
 // Encode serializes row against schema into a freshly allocated slice.
 // The schema must already be validated (see Schema.Validate) before it is
 // first used; Encode itself only enforces per-value and per-row limits.
-func Encode(schema *Schema, row []Value, limits Limits) ([]byte, error) {
-	return EncodeInto(schema, row, limits, nil)
+func (c Codec) Encode(schema *Schema, row []Value) ([]byte, error) {
+	return c.EncodeTupleInto(schema, row, nil)
 }
 
-// EncodeInto is Encode with a caller-provided scratch buffer that is reused
+// EncodeTupleInto is Encode with a caller-provided scratch buffer that is reused
 // across calls (the returned slice may alias reuse). The caller must not hold
-// the returned slice across the next EncodeInto call unless it copies it.
+// the returned slice across the next EncodeTupleInto call unless it copies it.
 // Like Encode it requires an already-validated schema; per-value
 // type/null/scale/UTF-8/time/limit checks are still performed on every call.
-func EncodeInto(schema *Schema, row []Value, limits Limits, reuse []byte) ([]byte, error) {
+func (c Codec) EncodeTupleInto(schema *Schema, row []Value, reuse []byte) ([]byte, error) {
 	if schema == nil {
 		return nil, errors.New("rowpack: nil schema")
 	}
-	if len(schema.Columns) > int(limits.MaxColumns) {
-		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), limits.MaxColumns)
+	if len(schema.Columns) > int(c.Limits.MaxColumns) {
+		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), c.Limits.MaxColumns)
 	}
 	if len(row) != len(schema.Columns) {
 		return nil, fmt.Errorf("%w: row has %d values, schema has %d columns", ErrSchemaMismatch, len(row), len(schema.Columns))
@@ -61,21 +80,21 @@ func EncodeInto(schema *Schema, row []Value, limits Limits, reuse []byte) ([]byt
 	}
 	buf = appendU32(buf, uint32(len(schema.Columns)))
 	buf = appendU32(buf, uint32(bitmapBytes))
-	return encodeBodyInto(buf, schema, row, limits)
+	return c.encodeBodyInto(buf, schema, row)
 }
 
-// EncodeBodyInto encodes the body of a TypedTuple — null bitmap + values,
+// EncodeInto encodes the body of a TypedTuple — null bitmap + values,
 // without the 8-byte ColumnCount/NullBitmapBytes header — for page layouts
 // that carry the schema out of band (Rows Page v2). The returned slice may
-// alias reuse; per-value checks are identical to EncodeInto except that the
+// alias reuse; per-value checks are identical to EncodeTupleInto except that the
 // MaxRowBytes intermediate check counts body bytes only (8-byte header slack
 // is immaterial at the 64 MiB default limit).
-func EncodeBodyInto(schema *Schema, row []Value, limits Limits, reuse []byte) ([]byte, error) {
+func (c Codec) EncodeInto(schema *Schema, row []Value, reuse []byte) ([]byte, error) {
 	if schema == nil {
 		return nil, errors.New("rowpack: nil schema")
 	}
-	if len(schema.Columns) > int(limits.MaxColumns) {
-		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), limits.MaxColumns)
+	if len(schema.Columns) > int(c.Limits.MaxColumns) {
+		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), c.Limits.MaxColumns)
 	}
 	if len(row) != len(schema.Columns) {
 		return nil, fmt.Errorf("%w: row has %d values, schema has %d columns", ErrSchemaMismatch, len(row), len(schema.Columns))
@@ -88,13 +107,13 @@ func EncodeBodyInto(schema *Schema, row []Value, limits Limits, reuse []byte) ([
 	} else {
 		buf = make([]byte, 0, need)
 	}
-	return encodeBodyInto(buf, schema, row, limits)
+	return c.encodeBodyInto(buf, schema, row)
 }
 
 // encodeBodyInto appends the null bitmap and the per-column values to buf.
 // The bitmap region is zero-filled from a stack array (bitmapBytes <= 2 KiB
 // even at the 16384-column limit) so the hot write path stays allocation-free.
-func encodeBodyInto(buf []byte, schema *Schema, row []Value, limits Limits) ([]byte, error) {
+func (c Codec) encodeBodyInto(buf []byte, schema *Schema, row []Value) ([]byte, error) {
 	bitmapBytes := (len(schema.Columns) + 7) / 8
 	if bitmapBytes <= len(bitmapScratch) {
 		buf = append(buf, bitmapScratch[:bitmapBytes]...)
@@ -121,12 +140,12 @@ func encodeBodyInto(buf []byte, schema *Schema, row []Value, limits Limits) ([]b
 			}
 		}
 		var err error
-		buf, err = appendValue(buf, v, limits)
+		buf, err = appendValue(buf, v, c.Limits)
 		if err != nil {
 			return nil, fmt.Errorf("rowpack: encode column %d (%q): %w", i, col.Name, err)
 		}
-		if uint32(len(buf)) > limits.MaxRowBytes {
-			return nil, fmt.Errorf("rowpack: encoded row of %d bytes exceeds limit %d", len(buf), limits.MaxRowBytes)
+		if uint32(len(buf)) > c.Limits.MaxRowBytes {
+			return nil, fmt.Errorf("rowpack: encoded row of %d bytes exceeds limit %d", len(buf), c.Limits.MaxRowBytes)
 		}
 	}
 	return buf, nil
@@ -137,8 +156,8 @@ func encodeBodyInto(buf []byte, schema *Schema, row []Value, limits Limits) ([]b
 // expected bitmap size, rejects trailing bytes and unused bitmap bits, and
 // enforces limits, so malformed payloads can never panic. The schema must
 // already be validated (see Schema.Validate).
-func Decode(data []byte, schema *Schema, limits Limits) ([]Value, error) {
-	return DecodeInto(nil, data, schema, limits, nil)
+func (c Codec) Decode(data []byte, schema *Schema) ([]Value, error) {
+	return c.DecodeTupleInto(nil, data, schema, nil)
 }
 
 // Sink lets decode paths that control payload-buffer lifetime (iterators)
@@ -155,7 +174,7 @@ type Sink struct {
 	Bytes func(payload []byte) []byte
 }
 
-// DecodeInto is the single decode entry: it writes the decoded values into
+// DecodeTupleInto is the single decode entry: it writes the decoded values into
 // dst (growing it when the schema has more columns than dst can hold) and the
 // returned Row aliases dst; the caller owns it and must not retain it across
 // the next reuses of dst. Column values are copied with the same ownership
@@ -164,12 +183,12 @@ type Sink struct {
 // column already holds one). Like Decode it requires an already-validated
 // schema and enforces all length/bounds/limit checks, so malformed payloads
 // never panic.
-func DecodeInto(dst []Value, data []byte, schema *Schema, limits Limits, sink *Sink) ([]Value, error) {
+func (c Codec) DecodeTupleInto(dst []Value, data []byte, schema *Schema, sink *Sink) ([]Value, error) {
 	if schema == nil {
 		return nil, errors.New("rowpack: nil schema")
 	}
-	if len(schema.Columns) > int(limits.MaxColumns) {
-		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), limits.MaxColumns)
+	if len(schema.Columns) > int(c.Limits.MaxColumns) {
+		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), c.Limits.MaxColumns)
 	}
 	if len(data) < 8 {
 		return nil, fmt.Errorf("rowpack: truncated tuple header")
@@ -183,27 +202,39 @@ func DecodeInto(dst []Value, data []byte, schema *Schema, limits Limits, sink *S
 	if int(bitmapBytes) != expectBitmap {
 		return nil, fmt.Errorf("rowpack: bitmap bytes = %d, want %d", bitmapBytes, expectBitmap)
 	}
-	return decodeBodyInto(dst, data[8:], schema, limits, sink)
+	return c.decodeBodyInto(dst, data[8:], schema, sink)
 }
 
-// DecodeBodyInto decodes a body-only TypedTuple — null bitmap + values,
+// DecodeInto decodes a body-only TypedTuple — null bitmap + values,
 // without the 8-byte ColumnCount/NullBitmapBytes header — against schema.
 // Semantics (dst reuse, sink materialization, boundary checks) are identical
-// to DecodeInto; the bitmap size is derived from the schema rather than read
+// to DecodeTupleInto; the bitmap size is derived from the schema rather than read
 // from the payload, and decoding must end exactly at the body boundary.
-func DecodeBodyInto(dst []Value, body []byte, schema *Schema, limits Limits, sink *Sink) ([]Value, error) {
+func (c Codec) DecodeInto(dst []Value, body []byte, schema *Schema, sink *Sink) ([]Value, error) {
 	if schema == nil {
 		return nil, errors.New("rowpack: nil schema")
 	}
-	if len(schema.Columns) > int(limits.MaxColumns) {
-		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), limits.MaxColumns)
+	if len(schema.Columns) > int(c.Limits.MaxColumns) {
+		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), c.Limits.MaxColumns)
 	}
-	return decodeBodyInto(dst, body, schema, limits, sink)
+	return c.decodeBodyInto(dst, body, schema, sink)
 }
 
-// decodeBodyInto is the shared bitmap+values decoder behind DecodeInto and
-// DecodeBodyInto.
-func decodeBodyInto(dst []Value, body []byte, schema *Schema, limits Limits, sink *Sink) ([]Value, error) {
+// PageRecord is one decoded Rows Page record (v2 page layout): identity and
+// metadata from the page streams plus a view of the body-only TypedTuple.
+// Body aliases the page buffer and is empty for deletes; callers decode it
+// against the record's schema version via Codec.DecodeInto and must not
+// retain it beyond the page's lifetime.
+type PageRecord struct {
+	RowID         uint64
+	SchemaVersion uint32
+	ChangeType    fileformat.ChangeType
+	Body          []byte
+}
+
+// decodeBodyInto is the shared bitmap+values decoder behind DecodeTupleInto and
+// DecodeInto.
+func (c Codec) decodeBodyInto(dst []Value, body []byte, schema *Schema, sink *Sink) ([]Value, error) {
 	expectBitmap := (len(schema.Columns) + 7) / 8
 	if len(body) < expectBitmap {
 		return nil, fmt.Errorf("rowpack: truncated null bitmap")
@@ -229,7 +260,7 @@ func decodeBodyInto(dst []Value, body []byte, schema *Schema, limits Limits, sin
 			row[i] = Null()
 			continue
 		}
-		v, n, err := readValueInto(row[i], body[pos:], col, limits, sink)
+		v, n, err := c.readValueInto(row[i], body[pos:], col, sink)
 		if err != nil {
 			return nil, fmt.Errorf("rowpack: decode column %d (%q): %w", i, col.Name, err)
 		}
@@ -248,7 +279,7 @@ func decodeBodyInto(dst []Value, body []byte, schema *Schema, limits Limits, sin
 // the same row slice across rows), avoiding a big.Int allocation per row. For
 // all other types the value is freshly built. When sink is non-nil, String
 // payloads are materialized through it instead of being copied.
-func readValueInto(reuse Value, b []byte, col Column, limits Limits, sink *Sink) (Value, int, error) {
+func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Value, int, error) {
 	need := func(n int) ([]byte, bool) {
 		if len(b) < n {
 			return nil, false
@@ -315,8 +346,8 @@ func readValueInto(reuse Value, b []byte, col Column, limits Limits, sink *Sink)
 		if !ok {
 			return Value{}, 0, fmt.Errorf("truncated type %d length", col.Type)
 		}
-		if uint32(ln) > limits.MaxValueBytes {
-			return Value{}, 0, fmt.Errorf("type %d value of %d bytes exceeds limit %d", col.Type, ln, limits.MaxValueBytes)
+		if uint32(ln) > c.Limits.MaxValueBytes {
+			return Value{}, 0, fmt.Errorf("type %d value of %d bytes exceeds limit %d", col.Type, ln, c.Limits.MaxValueBytes)
 		}
 		raw, ok := need(4 + ln)
 		if !ok {
@@ -363,8 +394,8 @@ func readValueInto(reuse Value, b []byte, col Column, limits Limits, sink *Sink)
 		if !ok {
 			return Value{}, 0, errors.New("truncated decimal length")
 		}
-		if uint32(ln) > limits.MaxValueBytes {
-			return Value{}, 0, fmt.Errorf("decimal unscaled of %d bytes exceeds limit %d", ln, limits.MaxValueBytes)
+		if uint32(ln) > c.Limits.MaxValueBytes {
+			return Value{}, 0, fmt.Errorf("decimal unscaled of %d bytes exceeds limit %d", ln, c.Limits.MaxValueBytes)
 		}
 		raw, ok := need(4 + ln)
 		if !ok {
@@ -374,7 +405,7 @@ func readValueInto(reuse Value, b []byte, col Column, limits Limits, sink *Sink)
 		if u == nil {
 			u = new(big.Int)
 		}
-		if err := decodeDecimalBytesInto(u, raw[4:4+ln]); err != nil {
+		if err := decodeBytesInto(u, raw[4:4+ln]); err != nil {
 			return Value{}, 0, err
 		}
 		return Value{typ: TypeDecimal, d: Decimal{Unscaled: u, Scale: col.Scale}}, 4 + ln, nil

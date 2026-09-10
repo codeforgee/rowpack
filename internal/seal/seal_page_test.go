@@ -58,7 +58,13 @@ func TestPageNonceDomainSeparation(t *testing.T) {
 	blockID := uint64(42)
 	snap := uint64(7)
 	epoch := uint32(0)
-	pageN := c.NoncePage(&testUUID, snap, blockID, 0, epoch)
+	ctx := func(uuid *[16]byte, snapshotID, block uint64, pageOrdinal, keyEpoch uint32) PageContext {
+		return PageContext{
+			UUID: uuid, BlockID: block, SnapshotID: snapshotID,
+			Page: fileformat.RowsPageDirEntry{PageOrdinal: pageOrdinal}, Epoch: keyEpoch,
+		}
+	}
+	pageN := c.NoncePage(ctx(&testUUID, snap, blockID, 0, epoch))
 
 	if pageN == Nonce(epoch, blockID) {
 		t.Fatal("page nonce equals block nonce")
@@ -70,16 +76,16 @@ func TestPageNonceDomainSeparation(t *testing.T) {
 		t.Fatal("page nonce equals index chunk nonce")
 	}
 	// Different pages / blocks / snapshots / epochs all differ.
-	if c.NoncePage(&testUUID, snap, blockID, 0, epoch) == c.NoncePage(&testUUID, snap, blockID, 1, epoch) {
+	if c.NoncePage(ctx(&testUUID, snap, blockID, 0, epoch)) == c.NoncePage(ctx(&testUUID, snap, blockID, 1, epoch)) {
 		t.Fatal("page 0 and page 1 share a nonce")
 	}
-	if c.NoncePage(&testUUID, snap, blockID, 0, epoch) == c.NoncePage(&testUUID, snap, blockID+1, 0, epoch) {
+	if c.NoncePage(ctx(&testUUID, snap, blockID, 0, epoch)) == c.NoncePage(ctx(&testUUID, snap, blockID+1, 0, epoch)) {
 		t.Fatal("block 42 and block 43 share a page nonce")
 	}
 	// Different store UUIDs differ.
 	var uuid2 [16]byte
 	uuid2[0] = 0xFF
-	if c.NoncePage(&testUUID, snap, blockID, 0, epoch) == c.NoncePage(&uuid2, snap, blockID, 0, epoch) {
+	if c.NoncePage(ctx(&testUUID, snap, blockID, 0, epoch)) == c.NoncePage(ctx(&uuid2, snap, blockID, 0, epoch)) {
 		t.Fatal("two store UUIDs share a page nonce")
 	}
 }
@@ -88,13 +94,24 @@ func TestPageNonceDomainSeparation(t *testing.T) {
 // identity and parse semantics, so a sealed page moved to another block,
 // page ordinal, table, or sealed size cannot authenticate.
 func TestPageAADBinding(t *testing.T) {
-	baseAAD := BuildAADPage(&testUUID, 42, 7, 1, fileformat.CompressionZstd, pageDir(0, 0, 32, 16000, 8000, 1, 32), 0)
+	ctx := func(uuid *[16]byte, p fileformat.RowsPageDirEntry, h fileformat.BlockHeader) PageContext {
+		return PageContext{
+			UUID:        uuid,
+			BlockID:     h.BlockID,
+			SnapshotID:  h.SnapshotID,
+			TableID:     h.TableID,
+			Compression: h.Compression,
+			Page:        p,
+			Epoch:       h.KeyEpoch,
+		}
+	}
+	baseAAD := ctx(&testUUID, pageDir(0, 0, 32, 16000, 8000, 1, 32), blockHdr(42, 7, 1)).AAD()
 	// Any single-field change must flip the AAD.
 	mutate := func(f func(*fileformat.RowsPageDirEntry, *fileformat.BlockHeader)) {
 		page := pageDir(0, 0, 32, 16000, 8000, 1, 32)
 		h := blockHdr(42, 7, 1)
 		f(&page, &h)
-		aad := BuildAADPage(&testUUID, h.BlockID, h.SnapshotID, h.TableID, h.Compression, page, h.KeyEpoch)
+		aad := ctx(&testUUID, page, h).AAD()
 		if aad == baseAAD {
 			t.Fatal("AAD did not bind the mutated field")
 		}
@@ -117,15 +134,26 @@ func TestPageAADBinding(t *testing.T) {
 func TestPageSealOpenRoundTrip(t *testing.T) {
 	c := testCipher(t)
 	page := pageDir(0, 0, 32, 16000+fileformat.AESGCMTagLen, 8000, 1, 32)
+	ctx := func(uuid *[16]byte, blockID, snap uint64, table uint32, p fileformat.RowsPageDirEntry, epoch uint32) PageContext {
+		return PageContext{
+			UUID:        uuid,
+			BlockID:     blockID,
+			SnapshotID:  snap,
+			TableID:     table,
+			Compression: fileformat.CompressionZstd,
+			Page:        p,
+			Epoch:       epoch,
+		}
+	}
 	// AAD binds the on-disk (sealed) StoredSize.
-	sealed, err := c.SealPage(&testUUID, 42, 7, 1, fileformat.CompressionZstd, page, 0, []byte("compressed page payload"))
+	sealed, err := c.SealPage(ctx(&testUUID, 42, 7, 1, page, 0), []byte("compressed page payload"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(sealed) != len("compressed page payload")+fileformat.AESGCMTagLen {
 		t.Fatalf("sealed %d bytes, want %d", len(sealed), len("compressed page payload")+fileformat.AESGCMTagLen)
 	}
-	pt, err := c.OpenPage(&testUUID, 42, 7, 1, fileformat.CompressionZstd, page, 0, sealed)
+	pt, err := c.OpenPage(ctx(&testUUID, 42, 7, 1, page, 0), sealed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,33 +164,33 @@ func TestPageSealOpenRoundTrip(t *testing.T) {
 	// Tampered ciphertext must fail authentication.
 	bad := append([]byte(nil), sealed...)
 	bad[0] ^= 0x01
-	if _, err := c.OpenPage(&testUUID, 42, 7, 1, fileformat.CompressionZstd, page, 0, bad); err == nil {
+	if _, err := c.OpenPage(ctx(&testUUID, 42, 7, 1, page, 0), bad); err == nil {
 		t.Fatal("tampered page accepted")
 	}
 
 	// Same ciphertext with a different page ordinal / block / epoch must fail.
 	page1 := page
 	page1.PageOrdinal = 1
-	if _, err := c.OpenPage(&testUUID, 42, 7, 1, fileformat.CompressionZstd, page1, 0, sealed); err == nil {
+	if _, err := c.OpenPage(ctx(&testUUID, 42, 7, 1, page1, 0), sealed); err == nil {
 		t.Fatal("page moved to another ordinal authenticated")
 	}
-	if _, err := c.OpenPage(&testUUID, 43, 7, 1, fileformat.CompressionZstd, page, 0, sealed); err == nil {
+	if _, err := c.OpenPage(ctx(&testUUID, 43, 7, 1, page, 0), sealed); err == nil {
 		t.Fatal("page moved to another block authenticated")
 	}
-	if _, err := c.OpenPage(&testUUID, 42, 7, 1, fileformat.CompressionZstd, page, 1, sealed); err == nil {
+	if _, err := c.OpenPage(ctx(&testUUID, 42, 7, 1, page, 1), sealed); err == nil {
 		t.Fatal("page authenticated under another epoch")
 	}
 	var wrong [16]byte
 	wrong[0] = 0xAA
-	if _, err := c.OpenPage(&wrong, 42, 7, 1, fileformat.CompressionZstd, page, 0, sealed); err == nil {
+	if _, err := c.OpenPage(ctx(&wrong, 42, 7, 1, page, 0), sealed); err == nil {
 		t.Fatal("page authenticated under another store")
 	}
-	if _, err := c.OpenPage(&testUUID, 42, 7, 2, fileformat.CompressionZstd, page, 0, sealed); err == nil {
+	if _, err := c.OpenPage(ctx(&testUUID, 42, 7, 2, page, 0), sealed); err == nil {
 		t.Fatal("page authenticated under another table")
 	}
 	// Wrong key.
 	c2, _ := NewCipher(bytes.Repeat([]byte{0x11}, 32))
-	if _, err := c2.OpenPage(&testUUID, 42, 7, 1, fileformat.CompressionZstd, page, 0, sealed); err == nil {
+	if _, err := c2.OpenPage(ctx(&testUUID, 42, 7, 1, page, 0), sealed); err == nil {
 		t.Fatal("page authenticated under another key")
 	}
 }

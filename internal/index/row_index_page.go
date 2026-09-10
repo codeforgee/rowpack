@@ -10,13 +10,6 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
-// row_index_page.go — S3-⑦ 落盘②：把 IndexTxn 正文的行索引从 chunk delta 编码切换为
-// 排序 Row Index Page + Fence Directory（FILE_FORMAT_REFACTOR_PLAN §7.1/§7.2、
-// ADR-005）。本文件把原型 page_proto.go 的 encodePage/decodePage/fenceFor 从
-// ProtoRowEntry 泛化到 fileformat.RowIndexEntry（RecordOrdinal 语义 == ItemOrdinal，
-// 块内序号、块边界重置），并改用已冻结的 fileformat.RowIndexPageHeader /
-// fileformat.RowIndexFenceEntry。原型文件保持不变（测量工件），本文件才是生产实现。
-
 // maxUint32 is used for width checks (a TableID/ItemOrdinal exceeding uint32
 // is rejected).
 const maxUint32 = uint64(0xFFFFFFFF)
@@ -30,34 +23,33 @@ const indexPageEntryCount = 4096
 // chunk sequences beyond every chunk, so no nonce collision occurs.
 const rowIndexPageChunkKind = fileformat.IndexChunkKindRow
 
-// errIndexPageCorrupt 表示页内容损坏。
 var errIndexPageCorrupt = errors.New("rowpack: index page corrupt")
 
-// rowIndexPageBuild is one encoded (and optionally compressed/sealed) index
+// pageBuild is one encoded (and optionally compressed/sealed) index
 // page plus its fence directory entry, produced by the builder for the txn
 // body. raw is the uncompressed page (for the plaintext-body CRC); stored is
 // the compressed (and, when encrypted, sealed) page bytes written to disk.
-type rowIndexPageBuild struct {
+type pageBuild struct {
 	raw    []byte
 	stored []byte
 	fence  fileformat.RowIndexFenceEntry
 }
 
-// buildRowIndexPages sorts the builder's rows by (TableID, RowID), partitions
+// buildPages sorts the builder's rows by (TableID, RowID), partitions
 // them into indexPageEntryCount-entry pages, encodes/compresses (and, when
 // crypto != nil, seals) each page, and returns the pages plus their fence
 // entries. Fence.StoredOffset is zero here and patched by the caller once the
 // body layout (chunk region + directory) is known. pageSeqBase is the first
 // free chunk sequence in the surrounding txn so pages seal under distinct
 // nonces (ADR-005 / R11).
-func (b *Builder) buildRowIndexPages(crypto *ChunkCrypto, level int, pageSeqBase uint32) ([]rowIndexPageBuild, error) {
+func (b *Builder) buildPages(crypto *ChunkCrypto, level int, pageSeqBase uint32) ([]pageBuild, error) {
 	n := len(b.rows)
 	if n == 0 {
 		b.pageCount = 0
 		return nil, nil
 	}
 	sortRowIndexEntries(b.rows)
-	out := make([]rowIndexPageBuild, 0, (n+indexPageEntryCount-1)/indexPageEntryCount)
+	out := make([]pageBuild, 0, (n+indexPageEntryCount-1)/indexPageEntryCount)
 	// Partition into SINGLE-TABLE pages: a page never splits a table run. This
 	// makes each RowIndexFenceEntry a per-table key (TableID + Min/Max RowID fall
 	// within one table), so the fence is a correct monotonic binary-search index
@@ -73,7 +65,7 @@ func (b *Builder) buildRowIndexPages(crypto *ChunkCrypto, level int, pageSeqBase
 			if e > j {
 				e = j
 			}
-			page, _, _, _, err := encodeRowIndexPage(b.rows[s:e], indexPageEntryCount)
+			page, _, _, _, err := encodePage(b.rows[s:e], indexPageEntryCount)
 			if err != nil {
 				return nil, err
 			}
@@ -90,11 +82,11 @@ func (b *Builder) buildRowIndexPages(crypto *ChunkCrypto, level int, pageSeqBase
 				stored = sealed
 				storedSize = uint32(len(sealed))
 			}
-			fence, err := fenceForRowIndexPage(page, storedSize, b.snapshot.SnapshotID, 0)
+			fence, err := pageFence(page, storedSize, b.snapshot.SnapshotID, 0)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, rowIndexPageBuild{raw: page, stored: stored, fence: fence})
+			out = append(out, pageBuild{raw: page, stored: stored, fence: fence})
 		}
 		i = j
 	}
@@ -102,9 +94,9 @@ func (b *Builder) buildRowIndexPages(crypto *ChunkCrypto, level int, pageSeqBase
 	return out, nil
 }
 
-// appendChangeBit appends the 2-bit changeType for entry ordinal into a packed
+// appendChange appends the 2-bit changeType for entry ordinal into a packed
 // byte stream, zero-extending as needed.
-func appendChangeBit(dst []byte, ordinal uint32, packed uint8) []byte {
+func appendChange(dst []byte, ordinal uint32, packed uint8) []byte {
 	byteIdx := ordinal / 4
 	for uint32(len(dst)) <= byteIdx {
 		dst = append(dst, 0)
@@ -114,9 +106,6 @@ func appendChangeBit(dst []byte, ordinal uint32, packed uint8) []byte {
 	return dst
 }
 
-// sortRowIndexEntries 把行索引条目就地按 (TableID, RowID) 升序排序（决定 #1：
-// 逻辑位序保留 ItemOrdinal，排序键仍是 (TableID, RowID)）。用 sort.Slice 而非
-// 手写插入排序，避免恢复重建路径在完全乱序的大快照上退化到 O(n^2)。
 func sortRowIndexEntries(entries []fileformat.RowIndexEntry) {
 	sort.Slice(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
@@ -127,14 +116,7 @@ func sortRowIndexEntries(entries []fileformat.RowIndexEntry) {
 	})
 }
 
-// encodeRowIndexPage 把【已按 (TableID, RowID) 升序】的 entries 编码成一个 Row Index
-// Page，页头为冻结的 fileformat.RowIndexPageHeader。pageSize 是每页最大条目数；
-// len(entries) 必须 <= pageSize 且非空。返回未压缩页字节、实际条目数、跨表全局
-// Min/Max RowID（排序键是 (TableID, RowID)，表切换会让全局 RowID 非单调，故显式扫描）。
-//
-// 布局与原型 encodePage 一致：TableID run、RowID 表内非负 uvarint delta、BlockID run、
-// ItemOrdinal zigzag delta、ChangeType 2bit；页 CRC 覆盖流区。
-func encodeRowIndexPage(entries []fileformat.RowIndexEntry, pageSize int) (page []byte, entryCount int, minRowID, maxRowID uint64, err error) {
+func encodePage(entries []fileformat.RowIndexEntry, pageSize int) (page []byte, entryCount int, minRowID, maxRowID uint64, err error) {
 	if pageSize <= 0 {
 		return nil, 0, 0, 0, errors.New("rowpack: page size must be positive")
 	}
@@ -144,7 +126,6 @@ func encodeRowIndexPage(entries []fileformat.RowIndexEntry, pageSize int) (page 
 	if len(entries) > pageSize {
 		return nil, 0, 0, 0, fmt.Errorf("rowpack: page has %d entries, exceeds page size %d", len(entries), pageSize)
 	}
-	// 校验 (TableID, RowID) 严格升序：TableID 非降，表内 RowID 严格递增。
 	for i := 1; i < len(entries); i++ {
 		if entries[i].TableID < entries[i-1].TableID {
 			return nil, 0, 0, 0, fmt.Errorf("rowpack: table ids not ascending at %d", i)
@@ -154,7 +135,6 @@ func encodeRowIndexPage(entries []fileformat.RowIndexEntry, pageSize int) (page 
 		}
 	}
 
-	// TableID run + 逐表 RowID 分段起点。
 	tableRunBytes := make([]byte, 0)
 	type run struct{ start, length int }
 	tableRuns := make([]run, 0, 8)
@@ -170,7 +150,6 @@ func encodeRowIndexPage(entries []fileformat.RowIndexEntry, pageSize int) (page 
 		tpos = j
 	}
 
-	// RowID stream：按表内 run 分段，run 首条绝对、其后非负 uvarint 增量。
 	rowIDBytes := make([]byte, 0)
 	for _, tr := range tableRuns {
 		b, e := tr.start, tr.start+tr.length
@@ -180,7 +159,6 @@ func encodeRowIndexPage(entries []fileformat.RowIndexEntry, pageSize int) (page 
 		}
 	}
 
-	// BlockID run：连续相同 BlockID 一段，绝对 blockID + runLen。
 	blockRunBytes := make([]byte, 0)
 	for bpos := 0; bpos < len(entries); {
 		bid := entries[bpos].BlockID
@@ -193,7 +171,6 @@ func encodeRowIndexPage(entries []fileformat.RowIndexEntry, pageSize int) (page 
 		bpos = j
 	}
 
-	// ItemOrdinal：首条绝对，其后 zigzag delta（可负，块边界会重置）。
 	ordinalBytes := make([]byte, 0)
 	ordinalBytes = binary.AppendUvarint(ordinalBytes, uint64(entries[0].ItemOrdinal))
 	for i := 1; i < len(entries); i++ {
@@ -208,10 +185,9 @@ func encodeRowIndexPage(entries []fileformat.RowIndexEntry, pageSize int) (page 
 		if err != nil {
 			return nil, 0, 0, 0, err
 		}
-		changeBits = appendChangeBit(changeBits, uint32(i), packed)
+		changeBits = appendChange(changeBits, uint32(i), packed)
 	}
 
-	// 全局 Min/Max RowID（排序键跨表非单调，显式扫描）。
 	minRowID, maxRowID = entries[0].RowID, entries[0].RowID
 	for _, r := range entries {
 		if r.RowID < minRowID {
@@ -234,7 +210,6 @@ func encodeRowIndexPage(entries []fileformat.RowIndexEntry, pageSize int) (page 
 		MaxRowID:        maxRowID,
 	}
 
-	// 组装：头 + 流；CRC 覆盖流区。
 	page = make([]byte, 0, fileformat.IndexPageHeaderSize+len(tableRunBytes)+len(rowIDBytes)+len(blockRunBytes)+len(ordinalBytes)+len(changeBits))
 	page = append(page, make([]byte, fileformat.IndexPageHeaderSize)...)
 	page = append(page, tableRunBytes...)
@@ -250,31 +225,31 @@ func encodeRowIndexPage(entries []fileformat.RowIndexEntry, pageSize int) (page 
 	return page, len(entries), minRowID, maxRowID, nil
 }
 
-// walkRowIndexPage 严格解码一个 Row Index Page，把每条目通过 emit 流式吐出。
-// 任何截断/伪造长度/CRC 失败/非法 changeType/排序破坏都返回错误，绝不 panic、绝不做
-// 无界分配。输出顺序保证 (TableID, RowID) 升序，与 encodeRowIndexPage 输入一致。
-// 与 decodeRowIndexPage 相比，它不物化整页 []RowIndexEntry，也不分配中间列数组，
-// 因此 Eager 建 shard 时把条目直接喂给 rowShard 构建器（S3-⑦ 落盘② Open 峰值优化）。
-func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) error {
+type pageStreams struct {
+	header                    fileformat.RowIndexPageHeader
+	count                     int
+	tableRun, rowID, blockRun []byte
+	ordinal, changeBits       []byte
+}
+
+func splitPage(raw []byte) (pageStreams, error) {
+	var out pageStreams
 	n := len(raw)
 	if n < fileformat.IndexPageHeaderSize {
-		return errIndexPageCorrupt
+		return out, errIndexPageCorrupt
 	}
-	var h fileformat.RowIndexPageHeader
-	if err := h.Unmarshal(raw, n); err != nil {
-		return err
+	if err := out.header.Unmarshal(raw, n); err != nil {
+		return out, err
 	}
-	count := int(h.EntryCount)
+	out.count = int(out.header.EntryCount)
 	start := fileformat.IndexPageHeaderSize
-	if fileformat.CRC32C(raw[start:]) != h.CRC32C {
-		return fmt.Errorf("rowpack: index page CRC mismatch")
+	if fileformat.CRC32C(raw[start:]) != out.header.CRC32C {
+		return out, fmt.Errorf("rowpack: index page CRC mismatch")
 	}
-	wantBits := (uint64(count) + 3) / 4
-	if uint64(h.ChangeBitsBytes) != wantBits {
-		return fmt.Errorf("rowpack: index page change bits %d, want %d for %d entries", h.ChangeBitsBytes, wantBits, count)
+	wantBits := (uint64(out.count) + 3) / 4
+	if uint64(out.header.ChangeBitsBytes) != wantBits {
+		return out, fmt.Errorf("rowpack: index page change bits %d, want %d for %d entries", out.header.ChangeBitsBytes, wantBits, out.count)
 	}
-
-	// 切流（严格边界）。
 	off := start
 	take := func(byteLen uint32) ([]byte, error) {
 		if byteLen > uint32(n-off) {
@@ -284,34 +259,39 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 		off += int(byteLen)
 		return s, nil
 	}
-	tableRun, err := take(h.TableRunBytes)
-	if err != nil {
-		return err
+	var err error
+	if out.tableRun, err = take(out.header.TableRunBytes); err != nil {
+		return out, err
 	}
-	rowIDStream, err := take(h.RowIDBytes)
-	if err != nil {
-		return err
+	if out.rowID, err = take(out.header.RowIDBytes); err != nil {
+		return out, err
 	}
-	blockRun, err := take(h.BlockRunBytes)
-	if err != nil {
-		return err
+	if out.blockRun, err = take(out.header.BlockRunBytes); err != nil {
+		return out, err
 	}
-	ordinalStream, err := take(h.OrdinalBytes)
-	if err != nil {
-		return err
+	if out.ordinal, err = take(out.header.OrdinalBytes); err != nil {
+		return out, err
 	}
-	changeBits, err := take(h.ChangeBitsBytes)
-	if err != nil {
-		return err
+	if out.changeBits, err = take(out.header.ChangeBitsBytes); err != nil {
+		return out, err
 	}
 	if off != n {
-		return fmt.Errorf("rowpack: index page has %d trailing bytes", n-off)
+		return out, fmt.Errorf("rowpack: index page has %d trailing bytes", n-off)
 	}
-	// 安全边界：每条目在 RowID 流至少占 1 字节，故条目数不得超过 RowID 流长度，
-	// 防止伪造 EntryCount 触发无界分配。
-	if uint64(count) > uint64(len(rowIDStream)) {
-		return fmt.Errorf("rowpack: index page entry count %d exceeds row id stream %d", count, len(rowIDStream))
+	if uint64(out.count) > uint64(len(out.rowID)) {
+		return out, fmt.Errorf("rowpack: index page entry count %d exceeds row id stream %d", out.count, len(out.rowID))
 	}
+	return out, nil
+}
+
+func walkPage(raw []byte, emit func(fileformat.RowIndexEntry) error) error {
+	streams, err := splitPage(raw)
+	if err != nil {
+		return err
+	}
+	h, count := streams.header, streams.count
+	tableRun, rowIDStream := streams.tableRun, streams.rowID
+	blockRun, ordinalStream, changeBits := streams.blockRun, streams.ordinal, streams.changeBits
 
 	readVar := func(s []byte, pos *int) (uint64, error) {
 		v, num := binary.Uvarint(s[*pos:])
@@ -322,8 +302,6 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 		return v, nil
 	}
 
-	// 五路流在同一条目下标 i 上锁步推进：tableRun/rowIDStream 共享 run 分段，
-	// blockRun/ordinalStream/changeBits 各自独立。
 	var (
 		tp, rp, bp, op, ti   int
 		currentTable         uint32
@@ -342,7 +320,6 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 	)
 	firstOrdinal = true
 	for ti < count {
-		// 表 run：边界处读取下一段 (tableID, runLen)。
 		if tableRunLeft == 0 {
 			tv, err := readVar(tableRun, &tp)
 			if err != nil {
@@ -362,7 +339,6 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 			tableRunLeft = int(rl)
 			rowRunFirst = true
 		}
-		// RowID：run 首条绝对、其后非负 uvarint 增量。
 		var rowID uint64
 		if rowRunFirst {
 			abs, err := readVar(rowIDStream, &rp)
@@ -379,7 +355,6 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 			rowID = prevRowID + d
 		}
 		prevRowID = rowID
-		// BlockID：run 边界处读取下一段 (blockID, runLen)。
 		if curBlockLeft == 0 {
 			bid, err := readVar(blockRun, &bp)
 			if err != nil {
@@ -396,7 +371,6 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 			curBlockLeft = int(rl)
 		}
 		curBlockLeft--
-		// ItemOrdinal：首条绝对、其后 zigzag delta。
 		var ordinal uint32
 		if firstOrdinal {
 			ov, err := readVar(ordinalStream, &op)
@@ -426,7 +400,6 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 		if err != nil {
 			return fmt.Errorf("rowpack: index page entry %d: %w", ti, err)
 		}
-		// 排序一致性。
 		if ti > 0 {
 			if currentTable < lastTable {
 				return fmt.Errorf("rowpack: index page table ids not sorted at %d", ti)
@@ -437,7 +410,6 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 		}
 		lastTable = currentTable
 		lastRowID = rowID
-		// 全局 Min/Max RowID（跨表非单调）。
 		if !haveFirst {
 			globalMin, globalMax, firstRowID = rowID, rowID, rowID
 			haveFirst = true
@@ -461,7 +433,6 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 		tableRunLeft--
 		ti++
 	}
-	// 各流必须恰好耗尽（防伪造长度）。
 	if tp != len(tableRun) {
 		return fmt.Errorf("rowpack: index page table run has %d trailing bytes", len(tableRun)-tp)
 	}
@@ -474,7 +445,6 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 	if op != len(ordinalStream) {
 		return fmt.Errorf("rowpack: index page record ordinal stream has %d trailing bytes", len(ordinalStream)-op)
 	}
-	// 交叉校验 header 导出的锚点值与解码结果一致（防单 bit 翻转构造伪页）。
 	if h.FirstRowID != firstRowID {
 		return fmt.Errorf("rowpack: index page first row id %d, want %d", h.FirstRowID, firstRowID)
 	}
@@ -487,27 +457,16 @@ func walkRowIndexPage(raw []byte, emit func(fileformat.RowIndexEntry) error) err
 	return nil
 }
 
-// DecodeIndexPage decodes a Row Index Page into a []RowIndexEntry. It is the
-// exported form of decodeRowIndexPage, used by the store's LazySource to
-// materialize a validated index page for diagnostics and tests.
-func DecodeIndexPage(raw []byte) ([]fileformat.RowIndexEntry, error) {
-	return decodeRowIndexPage(raw)
-}
-
-// decodeRowIndexPage 严格解码一个 Row Index Page，物化整页 []RowIndexEntry。
-// 大多数生产路径应当使用 walkRowIndexPage 流式吐出；本函数保留给需要整页切片的
-// 调用方（单元测试 / 非流式读取），并在结尾做全部 header 锚点交叉校验。
-func decodeRowIndexPage(raw []byte) ([]fileformat.RowIndexEntry, error) {
+func decodePage(raw []byte) ([]fileformat.RowIndexEntry, error) {
 	count := 0
 	if len(raw) >= fileformat.IndexPageHeaderSize {
 		var h fileformat.RowIndexPageHeader
-		// 仅在大致可读时用 header 预分配；任何解析错误交给 walker 报告。
 		if err := h.Unmarshal(raw, len(raw)); err == nil {
 			count = int(h.EntryCount)
 		}
 	}
 	out := make([]fileformat.RowIndexEntry, 0, count)
-	if err := walkRowIndexPage(raw, func(e fileformat.RowIndexEntry) error {
+	if err := walkPage(raw, func(e fileformat.RowIndexEntry) error {
 		out = append(out, e)
 		return nil
 	}); err != nil {
@@ -516,11 +475,7 @@ func decodeRowIndexPage(raw []byte) ([]fileformat.RowIndexEntry, error) {
 	return out, nil
 }
 
-// fenceForRowIndexPage 从原始（未压缩）页字节构造 RowIndexFenceEntry（§7.2）。
-// storedSize 是压缩/密封后的大小；storedOffset 是页在 txn 正文内的偏移；
-// snapshotID 是该 txn 的 SnapshotID。多表页取首表的 TableID（单表页占绝大多数）。
-// PageCRC32C 与页内 CRC 一致（流区 CRC）。
-func fenceForRowIndexPage(raw []byte, storedSize uint32, snapshotID uint64, storedOffset uint64) (fileformat.RowIndexFenceEntry, error) {
+func pageFence(raw []byte, storedSize uint32, snapshotID uint64, storedOffset uint64) (fileformat.RowIndexFenceEntry, error) {
 	if len(raw) < fileformat.IndexPageHeaderSize {
 		return fileformat.RowIndexFenceEntry{}, errIndexPageCorrupt
 	}
@@ -545,7 +500,6 @@ func fenceForRowIndexPage(raw []byte, storedSize uint32, snapshotID uint64, stor
 	}, nil
 }
 
-// firstTableIDOfPage 读取页 table run 的首个 tableID（用于 Fence）。
 func firstTableIDOfPage(raw []byte) (uint32, bool) {
 	if len(raw) < fileformat.IndexPageHeaderSize {
 		return 0, false

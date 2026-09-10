@@ -6,7 +6,15 @@ import (
 	"github.com/rowpack/rowpack/internal/seal"
 )
 
-// sealRowContainerPages re-encrypts a Rows page container for an encrypted
+// pageSealer carries the store's encryption context across the pages of a Rows
+// block container: the cipher, the store UUID, and the container limits.
+type pageSealer struct {
+	cipher *seal.Cipher
+	uuid   *[16]byte
+	limits block.Limits
+}
+
+// seal re-encrypts a Rows page container for an encrypted
 // store: instead of sealing the whole container as one blob, each stored page
 // is sealed independently (BINARY_FORMAT_V2 §5.1). It parses the container's
 // page directory, seals each page's stored (compressed) bytes with a
@@ -18,15 +26,15 @@ import (
 // keeps describing the sum of page raw sizes, the per-page CRC still covers the
 // uncompressed page, and the page directory stays plaintext so a reader can
 // locate a page without decrypting the whole container.
-func sealRowContainerPages(h *fileformat.BlockHeader, container []byte, c *seal.Cipher, uuid *[16]byte, limits block.Limits) ([]byte, error) {
+func (s *pageSealer) seal(h *fileformat.BlockHeader, container []byte) ([]byte, error) {
 	// The incoming container is the unsealed builder output: pages are
 	// compressed (not sealed), so it must be parsed as a plain container
 	// (Encrypted=false). The caller marks h.Encrypted true for the final
-	// sealed block; ParseRowsContainer's StoredSize interpretation differs
+	// sealed block; ParseContainer's StoredSize interpretation differs
 	// (whole-seal subtracts the tag, per-page does not).
 	inputH := *h
 	inputH.Encrypted = false
-	rc, err := block.ParseRowsContainer(container, inputH, limits)
+	rc, err := block.ParseContainer(container, inputH, s.limits)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +46,15 @@ func sealRowContainerPages(h *fileformat.BlockHeader, container []byte, c *seal.
 		// The AAD binds the on-disk (sealed) StoredSize, so set it before sealing.
 		sealedD := *d
 		sealedD.StoredSize = d.StoredSize + fileformat.AESGCMTagLen
-		sealed, err := c.SealPage(uuid, h.BlockID, h.SnapshotID, h.TableID, h.Compression, sealedD, h.KeyEpoch, src)
+		sealed, err := s.cipher.SealPage(seal.PageContext{
+			UUID:        s.uuid,
+			BlockID:     h.BlockID,
+			SnapshotID:  h.SnapshotID,
+			TableID:     h.TableID,
+			Compression: h.Compression,
+			Page:        sealedD,
+			Epoch:       h.KeyEpoch,
+		}, src)
 		if err != nil {
 			return nil, err
 		}

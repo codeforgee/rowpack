@@ -238,7 +238,7 @@ func TestPayloadBuildErrors(t *testing.T) {
 }
 
 func TestObjectIDAllocatorStableIDs(t *testing.T) {
-	a := NewObjectIDAllocator()
+	a := NewIDAllocator()
 	if a.next != TableSpaceEnd {
 		t.Fatalf("allocator must start at TableSpaceEnd, got %d", a.next)
 	}
@@ -261,7 +261,7 @@ func TestObjectIDAllocatorStableIDs(t *testing.T) {
 }
 
 func TestObjectIDAllocatorForce(t *testing.T) {
-	a := NewObjectIDAllocator()
+	a := NewIDAllocator()
 	a.Force(TableSpaceEnd+10, "existing")
 	if got := a.Alloc("", "existing"); got != TableSpaceEnd+10 {
 		t.Fatalf("Force should pin the key to its ID, got %d", got)

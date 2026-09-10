@@ -64,7 +64,7 @@ func snapWithRows(id, parent uint64, rows []fileformat.RowIndexEntry) *Txn {
 			panic(err)
 		}
 	}
-	_, txn, err := b.Build(0, 0, 0, 0, 0)
+	_, txn, err := b.Build(BodyBounds{}, 0)
 	if err != nil {
 		panic(err)
 	}
@@ -193,7 +193,7 @@ func TestBuildParseTxnRoundtrip(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	data, txn, err := b.Build(500, 900, 42, 1000, 2000)
+	data, txn, err := b.Build(BodyBounds{DataStart: 500, DataEnd: 900, TxnStart: 1000, TxnEnd: 2000}, 42)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestBuildParseTxnRoundtrip(t *testing.T) {
 		t.Fatalf("footer mismatch: %+v", txn.Footer)
 	}
 
-	parsed, err := ParseTxn(data)
+	parsed, err := ParseTxn(data, nil)
 	if err != nil {
 		t.Fatalf("ParseTxn: %v", err)
 	}
@@ -230,13 +230,13 @@ func TestBuildParseTxnRoundtrip(t *testing.T) {
 		t.Fatalf("parsed footer: %+v", parsed.Footer)
 	}
 
-	// ParseTxnChunked without crypto must behave identically.
-	parsed2, err := ParseTxnChunked(data, nil)
+	// Parsing the same bytes again must be deterministic.
+	parsed2, err := ParseTxn(data, nil)
 	if err != nil {
-		t.Fatalf("ParseTxnChunked: %v", err)
+		t.Fatalf("ParseTxn: %v", err)
 	}
 	if !bytes.Equal(rowBytes(parsed.Rows[0]), rowBytes(parsed2.Rows[0])) {
-		t.Fatal("ParseTxnChunked result diverges from ParseTxn")
+		t.Fatal("repeated ParseTxn diverges")
 	}
 }
 
@@ -263,7 +263,7 @@ func TestParseTxnErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		data, _, err := b.Build(0, 0, 0, 0, 0)
+		data, _, err := b.Build(BodyBounds{}, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -271,20 +271,20 @@ func TestParseTxnErrors(t *testing.T) {
 	}
 	data := build()
 
-	if _, err := ParseTxn(nil); err == nil {
+	if _, err := ParseTxn(nil, nil); err == nil {
 		t.Fatal("nil input should error")
 	}
-	if _, err := ParseTxn(data[:fileformat.IndexTxnHeaderSize+fileformat.IndexTxnFooterSize-1]); err == nil {
+	if _, err := ParseTxn(data[:fileformat.IndexTxnHeaderSize+fileformat.IndexTxnFooterSize-1], nil); err == nil {
 		t.Fatal("short input should error")
 	}
-	if _, err := ParseTxn(append(append([]byte(nil), data...), 0x00)); err == nil {
+	if _, err := ParseTxn(append(append([]byte(nil), data...), 0x00), nil); err == nil {
 		t.Fatal("trailing bytes should error")
 	}
 
 	// Bad header magic.
 	bad := append([]byte(nil), data...)
 	bad[0] ^= 0xFF
-	if _, err := ParseTxn(bad); err == nil {
+	if _, err := ParseTxn(bad, nil); err == nil {
 		t.Fatal("bad header magic should error")
 	}
 
@@ -296,7 +296,7 @@ func TestParseTxnErrors(t *testing.T) {
 	}
 	h.BodyBytes = 1 << 20
 	h.MarshalTo(bad)
-	if _, err := ParseTxn(bad); err == nil {
+	if _, err := ParseTxn(bad, nil); err == nil {
 		t.Fatal("body exceeding input should error")
 	}
 
@@ -312,14 +312,14 @@ func TestParseTxnErrors(t *testing.T) {
 	if err := f.MarshalTo(ftr); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ParseTxn(bad); err == nil {
+	if _, err := ParseTxn(bad, nil); err == nil {
 		t.Fatal("header/footer id mismatch should error")
 	}
 
 	// Corrupted body byte must break a chunk payload check.
 	bad = append([]byte(nil), data...)
 	bad[fileformat.IndexTxnHeaderSize+10] ^= 0xFF
-	if _, err := ParseTxn(bad); err == nil {
+	if _, err := ParseTxn(bad, nil); err == nil {
 		t.Fatal("corrupt body should error")
 	}
 }
@@ -333,9 +333,9 @@ func TestBuildStoredPlainMatchesBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	var gotBodyLen int
-	data, txn, err := b.BuildStored(nil, 0, func(bodyLen int) (uint64, uint64, int64, int64) {
+	data, txn, err := b.BuildStored(nil, 0, func(bodyLen int) BodyBounds {
 		gotBodyLen = bodyLen
-		return 10, 20, 30, 40
+		return BodyBounds{DataStart: 10, DataEnd: 20, TxnStart: 30, TxnEnd: 40}
 	}, 55, 0)
 	if err != nil {
 		t.Fatalf("BuildStored: %v", err)
@@ -346,7 +346,7 @@ func TestBuildStoredPlainMatchesBuild(t *testing.T) {
 	if txn.dataStart != 10 || txn.dataEnd != 20 || txn.txnStart != 30 || txn.txnEnd != 40 {
 		t.Fatalf("resolved bounds not captured: %+v", txn)
 	}
-	parsed, err := ParseTxn(data)
+	parsed, err := ParseTxn(data, nil)
 	if err != nil {
 		t.Fatalf("ParseTxn: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestViewAccessorsAndChain(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, txn1, err := b.Build(0, 0, 0, 0, 0)
+	_, txn1, err := b.Build(BodyBounds{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +415,7 @@ func TestViewAccessorsAndChain(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, txn2, err := b2.Build(0, 0, 0, 0, 0)
+	_, txn2, err := b2.Build(BodyBounds{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +533,7 @@ func TestApplyStreamingWithBlocksAndMeta(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	data, txn, err := b.Build(0, 0, 0, 0, 0)
+	data, txn, err := b.Build(BodyBounds{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,39 +569,39 @@ func TestSortHelpers(t *testing.T) {
 	locs := []RowKeyLoc{
 		{RowID: 3}, {RowID: 1}, {RowID: 2},
 	}
-	sortRowKeyLocs(locs)
+	sortKeys(locs)
 	if locs[0].RowID != 1 || locs[2].RowID != 3 {
-		t.Fatalf("sortRowKeyLocs = %v", locs)
+		t.Fatalf("sortKeys = %v", locs)
 	}
 
 	metas := []*SnapshotMeta{{ID: 5}, {ID: 2}, {ID: 9}}
-	sortSnapshotMetas(metas)
+	sortSnapshots(metas)
 	if metas[0].ID != 2 || metas[2].ID != 9 {
-		t.Fatalf("sortSnapshotMetas = %v", metas)
+		t.Fatalf("sortSnapshots = %v", metas)
 	}
 }
 
-func TestDecodeIndexPageExported(t *testing.T) {
+func TestDecodeIndexPage(t *testing.T) {
 	rows := riSeq(64, 8)
-	page, n, _, _, err := encodeRowIndexPage(rows, indexPageEntryCount)
+	page, n, _, _, err := encodePage(rows, indexPageEntryCount)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 	if n != len(rows) {
 		t.Fatalf("entryCount = %d, want %d", n, len(rows))
 	}
-	got, err := DecodeIndexPage(page)
+	got, err := decodePage(page)
 	if err != nil {
-		t.Fatalf("DecodeIndexPage: %v", err)
+		t.Fatalf("decodePage: %v", err)
 	}
 	if !rowsEq(got, rows) {
 		t.Fatalf("roundtrip mismatch: got %d rows, want %d", len(got), len(rows))
 	}
 
-	if _, err := DecodeIndexPage(nil); err == nil {
+	if _, err := decodePage(nil); err == nil {
 		t.Fatal("nil page should error")
 	}
-	if _, err := DecodeIndexPage([]byte{1, 2, 3}); err == nil {
+	if _, err := decodePage([]byte{1, 2, 3}); err == nil {
 		t.Fatal("garbage page should error")
 	}
 }

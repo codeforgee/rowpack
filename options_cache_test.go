@@ -26,9 +26,9 @@ func TestSplitCacheBudget(t *testing.T) {
 		{2 * MiB, 0, 1 * MiB, 1 * MiB},           // small total: no 1 MiB floor, sum preserved
 	}
 	for _, c := range cases {
-		data, scan := splitCacheBudget(c.total, c.scan)
+		data, scan := cacheBudget(c.total, c.scan)
 		if data != c.wantData || scan != c.wantScan {
-			t.Errorf("splitCacheBudget(total=%d, scan=%d) = (%d, %d), want (%d, %d)",
+			t.Errorf("cacheBudget(total=%d, scan=%d) = (%d, %d), want (%d, %d)",
 				c.total, c.scan, data, scan, c.wantData, c.wantScan)
 		}
 		if c.total > 0 && data+scan != c.total {

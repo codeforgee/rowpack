@@ -11,18 +11,18 @@ import (
 // can never collide.
 const TableSpaceEnd = uint64(1) << 32
 
-// ObjectIDAllocator assigns stable Store-wide ObjectIDs for non-table objects.
+// IDAllocator assigns stable Store-wide ObjectIDs for non-table objects.
 // Objects start at TableSpaceEnd. The same natural key always maps to the
 // same ObjectID, so identity is stable across snapshots and does not depend
 // on hashing or case policy.
-type ObjectIDAllocator struct {
+type IDAllocator struct {
 	next  uint64
 	byKey map[string]uint64
 }
 
-// NewObjectIDAllocator creates an allocator.
-func NewObjectIDAllocator() *ObjectIDAllocator {
-	return &ObjectIDAllocator{
+// NewIDAllocator creates an allocator.
+func NewIDAllocator() *IDAllocator {
+	return &IDAllocator{
 		next:  TableSpaceEnd,
 		byKey: make(map[string]uint64),
 	}
@@ -35,7 +35,7 @@ func naturalKey(namespace, key string) string {
 
 // Alloc returns the stable ObjectID for (namespace, key), assigning a new one
 // on first use.
-func (a *ObjectIDAllocator) Alloc(namespace, key string) uint64 {
+func (a *IDAllocator) Alloc(namespace, key string) uint64 {
 	k := naturalKey(namespace, key)
 	if id, ok := a.byKey[k]; ok {
 		return id
@@ -48,7 +48,7 @@ func (a *ObjectIDAllocator) Alloc(namespace, key string) uint64 {
 
 // Force registers an already-assigned ObjectID (e.g. from a previous snapshot)
 // so future allocations never collide with it.
-func (a *ObjectIDAllocator) Force(id uint64, key string) {
+func (a *IDAllocator) Force(id uint64, key string) {
 	if id >= a.next {
 		a.next = id + 1
 	}

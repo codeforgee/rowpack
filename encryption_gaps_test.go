@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/seal"
 )
 
 // TestEncryptionConfigValidate covers every rejection branch of validate.
@@ -30,7 +31,7 @@ func TestEncryptionConfigValidate(t *testing.T) {
 
 // TestBuildEncryptorErrors covers key-provider failure and bad key length.
 func TestBuildEncryptorErrors(t *testing.T) {
-	if c, err := buildEncryptor(nil); c != nil || err != nil {
+	if c, err := newEncryptor(nil); c != nil || err != nil {
 		t.Fatalf("nil config must yield nil cipher, got %v, %v", c, err)
 	}
 
@@ -39,7 +40,7 @@ func TestBuildEncryptorErrors(t *testing.T) {
 		KeyProvider: &staticKeyProvider{keyID: "k1", fail: boom},
 		KeyID:       "k1",
 	}
-	if _, err := buildEncryptor(cfg); !errors.Is(err, ErrKeyUnavailable) {
+	if _, err := newEncryptor(cfg); !errors.Is(err, ErrKeyUnavailable) {
 		t.Fatalf("provider failure: %v, want ErrKeyUnavailable", err)
 	}
 
@@ -47,7 +48,7 @@ func TestBuildEncryptorErrors(t *testing.T) {
 		KeyProvider: &staticKeyProvider{keyID: "k1", key: []byte("short key")},
 		KeyID:       "k1",
 	}
-	if _, err := buildEncryptor(cfg); err == nil || strings.Contains(err.Error(), "ErrKeyUnavailable") {
+	if _, err := newEncryptor(cfg); err == nil || strings.Contains(err.Error(), "ErrKeyUnavailable") {
 		t.Fatalf("bad key length should fail with cipher error, got %v", err)
 	}
 }
@@ -112,9 +113,9 @@ func TestStoreDecrypterWrapsAuthFailure(t *testing.T) {
 	key := testKey("k1")
 	prov := &staticKeyProvider{keyID: "k1", key: key}
 	uuid := [16]byte{1, 2, 3}
-	d := newStoreDecrypter(prov, "k1", uuid)
+	d := newDecrypter(prov, "k1", uuid)
 
-	cipher, err := buildEncryptor(&EncryptionConfig{KeyProvider: prov, KeyID: "k1"})
+	cipher, err := newEncryptor(&EncryptionConfig{KeyProvider: prov, KeyID: "k1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +126,7 @@ func TestStoreDecrypterWrapsAuthFailure(t *testing.T) {
 		BlockID: 9, SnapshotID: 1, TableID: 2, ItemCount: 1,
 		RawSize: 4, StoredSize: 4, KeyEpoch: 0,
 	}
-	ct, err := cipher.Seal(0, 9, &uuid, &h, []byte("data"))
+	ct, err := cipher.Seal(&uuid, &h, []byte("data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,10 @@ func TestStoreDecrypterWrapsAuthFailure(t *testing.T) {
 
 	// Rows page path.
 	page := fileformat.RowsPageDirEntry{PageOrdinal: 1, RecordCount: 1, StoredSize: 8, RawSize: 4}
-	pct, err := cipher.SealPage(&uuid, 9, 1, 2, fileformat.CompressionNone, page, 0, []byte("pagedata"))
+	pct, err := cipher.SealPage(seal.PageContext{
+		UUID: &uuid, BlockID: 9, SnapshotID: 1, TableID: 2,
+		Compression: fileformat.CompressionNone, Page: page, Epoch: 0,
+	}, []byte("pagedata"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,16 +158,25 @@ func TestStoreDecrypterWrapsAuthFailure(t *testing.T) {
 	}
 
 	// Index chunk path.
-	cct, err := cipher.SealIndexChunk(&uuid, 1, 1, 0, 0, 4, 4+fileformat.AESGCMTagLen, uint8(fileformat.IndexChunkKindRow), 0, []byte("indx"))
+	cct, err := cipher.SealIndexChunk(seal.ChunkContext{
+		UUID: &uuid, TxnSequence: 1, SnapshotID: 1, ChunkSequence: 0, FirstOrdinal: 0,
+		RawBytes: 4, StoredBytes: 4 + fileformat.AESGCMTagLen,
+		Kind: uint8(fileformat.IndexChunkKindRow), Epoch: 0,
+	}, []byte("indx"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.OpenIndexChunk(0, 1, 1, 0, uint8(fileformat.IndexChunkKindRow), 0, 4, 4+fileformat.AESGCMTagLen, cct); err != nil {
+	chunkCtx := seal.ChunkContext{
+		TxnSequence: 1, SnapshotID: 1, ChunkSequence: 0, FirstOrdinal: 0,
+		RawBytes: 4, StoredBytes: 4 + fileformat.AESGCMTagLen,
+		Kind: uint8(fileformat.IndexChunkKindRow), Epoch: 0,
+	}
+	if _, err := d.OpenIndexChunk(chunkCtx, cct); err != nil {
 		t.Fatalf("honest chunk should decrypt: %v", err)
 	}
 	bad = append([]byte(nil), cct...)
 	bad[1] ^= 0x01
-	if _, err := d.OpenIndexChunk(0, 1, 1, 0, uint8(fileformat.IndexChunkKindRow), 0, 4, 4+fileformat.AESGCMTagLen, bad); !errors.Is(err, ErrAuthFailed) {
+	if _, err := d.OpenIndexChunk(chunkCtx, bad); !errors.Is(err, ErrAuthFailed) {
 		t.Fatalf("tampered chunk: %v, want ErrAuthFailed", err)
 	}
 

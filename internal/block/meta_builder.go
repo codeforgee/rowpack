@@ -7,10 +7,10 @@ import (
 	"github.com/rowpack/rowpack/internal/metadata"
 )
 
-// MetadataBlockBuilder accumulates metadata records of one snapshot and emits
+// MetadataBuilder accumulates metadata records of one snapshot and emits
 // Metadata Blocks. A Metadata Block belongs to one snapshot; its TableID is
 // the single-table object or 0.
-type MetadataBlockBuilder struct {
+type MetadataBuilder struct {
 	snapshotID uint64
 	tableID    uint32
 	blockSize  int
@@ -29,26 +29,27 @@ type MetadataBlockBuilder struct {
 	onFlush func(*FlushedBlock) error
 }
 
-// NewMetadataBlockBuilder creates a builder for the given snapshot.
-func NewMetadataBlockBuilder(snapshotID uint64, tableID uint32, blockSize int, compress fileformat.Compression, level int, limits Limits, onFlush func(*FlushedBlock) error) *MetadataBlockBuilder {
-	return &MetadataBlockBuilder{
+// NewMetadataBuilder creates a builder for the given snapshot, using the
+// shared Config.
+func NewMetadataBuilder(snapshotID uint64, tableID uint32, cfg Config) *MetadataBuilder {
+	return &MetadataBuilder{
 		snapshotID: snapshotID,
 		tableID:    tableID,
-		blockSize:  blockSize,
-		compress:   compress,
-		level:      level,
-		limits:     limits,
-		onFlush:    onFlush,
+		blockSize:  cfg.BlockSize,
+		compress:   cfg.Compression,
+		level:      cfg.Level,
+		limits:     cfg.Limits,
+		onFlush:    cfg.OnFlush,
 	}
 }
 
 // SetZstdEncoder attaches a caller-owned zstd encoder used at Flush time
 // instead of the pooled one.
-func (b *MetadataBlockBuilder) SetZstdEncoder(e *ZstdEncoder) { b.enc = e }
+func (b *MetadataBuilder) SetZstdEncoder(e *ZstdEncoder) { b.enc = e }
 
 // Add appends one metadata record body with its directory entry, flushing
 // when the pending payload reaches the target size.
-func (b *MetadataBlockBuilder) Add(e metadata.DirectoryEntry, rec []byte) error {
+func (b *MetadataBuilder) Add(e metadata.DirectoryEntry, rec []byte) error {
 	if uint32(len(rec)) > b.limits.MaxRawBytes {
 		return fmt.Errorf("rowpack: metadata record of %d bytes exceeds limit %d", len(rec), b.limits.MaxRawBytes)
 	}
@@ -62,7 +63,7 @@ func (b *MetadataBlockBuilder) Add(e metadata.DirectoryEntry, rec []byte) error 
 	return nil
 }
 
-func (b *MetadataBlockBuilder) rawSize() int {
+func (b *MetadataBuilder) rawSize() int {
 	n := metadata.PayloadHeaderSize + len(b.entries)*metadata.DirectoryEntrySize
 	for _, r := range b.records {
 		n += len(r)
@@ -71,7 +72,7 @@ func (b *MetadataBlockBuilder) rawSize() int {
 }
 
 // Flush emits the pending records as one block, if any.
-func (b *MetadataBlockBuilder) Flush() error {
+func (b *MetadataBuilder) Flush() error {
 	if b.count == 0 {
 		return nil
 	}
@@ -108,4 +109,4 @@ func (b *MetadataBlockBuilder) Flush() error {
 }
 
 // Pending returns the number of buffered records.
-func (b *MetadataBlockBuilder) Pending() int { return int(b.count) }
+func (b *MetadataBuilder) Pending() int { return int(b.count) }

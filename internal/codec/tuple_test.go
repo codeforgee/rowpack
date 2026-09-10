@@ -8,6 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testCodec is the row codec shared by the tests (all encode/decode cases here
+// run under the default limits).
+var testCodec = DefaultCodec()
+
 func TestEncodeDecodeRoundTrip(t *testing.T) {
 	schema := &Schema{
 		Name: "test",
@@ -31,10 +35,10 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 			Bytes([]byte{1, 2, 3}),
 			Float64(3.14),
 		}
-		encoded, err := Encode(schema, row, DefaultLimits())
+		encoded, err := testCodec.Encode(schema, row)
 		require.NoError(t, err)
 
-		decoded, err := Decode(encoded, schema, DefaultLimits())
+		decoded, err := testCodec.Decode(encoded, schema)
 		require.NoError(t, err)
 		require.Equal(t, len(row), len(decoded))
 		for i := range row {
@@ -66,10 +70,10 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 			Null(),
 			Null(),
 		}
-		encoded, err := Encode(schema, row, DefaultLimits())
+		encoded, err := testCodec.Encode(schema, row)
 		require.NoError(t, err)
 
-		decoded, err := Decode(encoded, schema, DefaultLimits())
+		decoded, err := testCodec.Decode(encoded, schema)
 		require.NoError(t, err)
 		require.Equal(t, len(row), len(decoded))
 		require.True(t, decoded[1].IsNull())
@@ -92,11 +96,11 @@ func TestEncodeIntoReuse(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		row := []Value{Uint64(uint64(i)), Int64(int64(i * 10))}
 		var err error
-		buf, err = EncodeInto(schema, row, DefaultLimits(), buf)
+		buf, err = testCodec.EncodeTupleInto(schema, row, buf)
 		require.NoError(t, err)
 		require.Greater(t, len(buf), 0)
 
-		decoded, err := Decode(buf, schema, DefaultLimits())
+		decoded, err := testCodec.Decode(buf, schema)
 		require.NoError(t, err)
 		require.Equal(t, uint64(i), decoded[0].u)
 		require.Equal(t, int64(i*10), decoded[1].i)
@@ -114,10 +118,10 @@ func TestEncodeBodyInto(t *testing.T) {
 	require.NoError(t, schema.Validate(DefaultLimits()))
 
 	row := []Value{Uint64(100), String("test-value")}
-	body, err := EncodeBodyInto(schema, row, DefaultLimits(), nil)
+	body, err := testCodec.EncodeInto(schema, row, nil)
 	require.NoError(t, err)
 
-	decoded, err := DecodeBodyInto(nil, body, schema, DefaultLimits(), nil)
+	decoded, err := testCodec.DecodeInto(nil, body, schema, nil)
 	require.NoError(t, err)
 	require.Equal(t, uint64(100), decoded[0].u)
 	require.Equal(t, "test-value", decoded[1].s)
@@ -134,12 +138,12 @@ func TestDecodeIntoReuse(t *testing.T) {
 	require.NoError(t, schema.Validate(DefaultLimits()))
 
 	row := []Value{Uint64(42), Int64(100)}
-	encoded, err := Encode(schema, row, DefaultLimits())
+	encoded, err := testCodec.Encode(schema, row)
 	require.NoError(t, err)
 
 	var dst []Value
 	for i := 0; i < 5; i++ {
-		decoded, err := DecodeInto(dst, encoded, schema, DefaultLimits(), nil)
+		decoded, err := testCodec.DecodeTupleInto(dst, encoded, schema, nil)
 		require.NoError(t, err)
 		require.Equal(t, uint64(42), decoded[0].u)
 		require.Equal(t, int64(100), decoded[1].i)
@@ -158,25 +162,25 @@ func TestEncodeErrors(t *testing.T) {
 	require.NoError(t, schema.Validate(DefaultLimits()))
 
 	t.Run("nil schema", func(t *testing.T) {
-		_, err := Encode(nil, []Value{Uint64(1)}, DefaultLimits())
+		_, err := testCodec.Encode(nil, []Value{Uint64(1)})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "nil schema")
 	})
 
 	t.Run("column count mismatch", func(t *testing.T) {
-		_, err := Encode(schema, []Value{Uint64(1)}, DefaultLimits())
+		_, err := testCodec.Encode(schema, []Value{Uint64(1)})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "schema mismatch")
 	})
 
 	t.Run("not nullable but null", func(t *testing.T) {
-		_, err := Encode(schema, []Value{Uint64(1), Null()}, DefaultLimits())
+		_, err := testCodec.Encode(schema, []Value{Uint64(1), Null()})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "not nullable")
 	})
 
 	t.Run("type mismatch", func(t *testing.T) {
-		_, err := Encode(schema, []Value{Uint64(1), Int64(2)}, DefaultLimits())
+		_, err := testCodec.Encode(schema, []Value{Uint64(1), Int64(2)})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "wants type")
 	})
@@ -190,7 +194,7 @@ func TestEncodeErrors(t *testing.T) {
 			},
 		}
 		require.NoError(t, schemaWithDecimal.Validate(DefaultLimits()))
-		_, err := Encode(schemaWithDecimal, []Value{Uint64(1), DecimalValue(Decimal{Unscaled: big.NewInt(100), Scale: 3})}, DefaultLimits())
+		_, err := testCodec.Encode(schemaWithDecimal, []Value{Uint64(1), DecimalValue(Decimal{Unscaled: big.NewInt(100), Scale: 3})})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "scale")
 	})
@@ -207,22 +211,22 @@ func TestDecodeErrors(t *testing.T) {
 	require.NoError(t, schema.Validate(DefaultLimits()))
 
 	validRow := []Value{Uint64(1), String("test")}
-	encoded, _ := Encode(schema, validRow, DefaultLimits())
+	encoded, _ := testCodec.Encode(schema, validRow)
 
 	t.Run("nil schema", func(t *testing.T) {
-		_, err := Decode(encoded, nil, DefaultLimits())
+		_, err := testCodec.Decode(encoded, nil)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "nil schema")
 	})
 
 	t.Run("truncated header", func(t *testing.T) {
-		_, err := Decode([]byte{1, 2, 3}, schema, DefaultLimits())
+		_, err := testCodec.Decode([]byte{1, 2, 3}, schema)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "truncated tuple header")
 	})
 
 	t.Run("column count mismatch", func(t *testing.T) {
-		_, err := Decode(encoded, &Schema{Name: "t", Columns: []Column{{Name: "a", Type: TypeInt64}}}, DefaultLimits())
+		_, err := testCodec.Decode(encoded, &Schema{Name: "t", Columns: []Column{{Name: "a", Type: TypeInt64}}})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "tuple has")
 	})
@@ -231,7 +235,7 @@ func TestDecodeErrors(t *testing.T) {
 		bad := make([]byte, len(encoded))
 		copy(bad, encoded)
 		bad[4] = 99
-		_, err := Decode(bad, schema, DefaultLimits())
+		_, err := testCodec.Decode(bad, schema)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "bitmap bytes")
 	})
@@ -241,22 +245,22 @@ func TestDecodeErrors(t *testing.T) {
 		copy(bad, encoded)
 		// bitmap starts at offset 8, first bitmap byte is at index 8
 		bad[8] |= 0x80
-		_, err := Decode(bad, schema, DefaultLimits())
+		_, err := testCodec.Decode(bad, schema)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "non-zero unused null bitmap bits")
 	})
 
 	t.Run("truncated null bitmap", func(t *testing.T) {
 		// Body-only decode with only 1 byte (need at least 1 byte for bitmap)
-		_, err := DecodeBodyInto(nil, []byte{0}, schema, DefaultLimits(), nil)
+		_, err := testCodec.DecodeInto(nil, []byte{0}, schema, nil)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "truncated")
 	})
 
 	t.Run("trailing bytes", func(t *testing.T) {
-		body, _ := EncodeBodyInto(schema, validRow, DefaultLimits(), nil)
+		body, _ := testCodec.EncodeInto(schema, validRow, nil)
 		body = append(body, 0xFF)
-		_, err := DecodeBodyInto(nil, body, schema, DefaultLimits(), nil)
+		_, err := testCodec.DecodeInto(nil, body, schema, nil)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "trailing bytes")
 	})
@@ -273,10 +277,10 @@ func TestDecodeBodyInto(t *testing.T) {
 	require.NoError(t, schema.Validate(DefaultLimits()))
 
 	row := []Value{Uint64(100), String("test-value")}
-	body, err := EncodeBodyInto(schema, row, DefaultLimits(), nil)
+	body, err := testCodec.EncodeInto(schema, row, nil)
 	require.NoError(t, err)
 
-	decoded, err := DecodeBodyInto(nil, body, schema, DefaultLimits(), nil)
+	decoded, err := testCodec.DecodeInto(nil, body, schema, nil)
 	require.NoError(t, err)
 	require.Equal(t, uint64(100), decoded[0].u)
 	require.Equal(t, "test-value", decoded[1].s)
@@ -288,6 +292,7 @@ func TestMaxLimits(t *testing.T) {
 		MaxValueBytes: 1024,
 		MaxRowBytes:   4096,
 	}
+	c := Codec{Limits: lim}
 
 	schema := &Schema{
 		Name: "test",
@@ -300,14 +305,14 @@ func TestMaxLimits(t *testing.T) {
 
 	t.Run("value exceeds limit", func(t *testing.T) {
 		row := []Value{Uint64(1), String(string(make([]byte, 2048)))}
-		_, err := Encode(schema, row, lim)
+		_, err := c.Encode(schema, row)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "exceeds limit")
 	})
 
 	t.Run("row exceeds limit", func(t *testing.T) {
 		row := []Value{Uint64(1), String(string(make([]byte, 3000)))}
-		_, err := Encode(schema, row, lim)
+		_, err := c.Encode(schema, row)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "exceeds limit")
 	})
@@ -358,10 +363,10 @@ func TestAllTypes(t *testing.T) {
 		DecimalValue(Decimal{Unscaled: big.NewInt(123456), Scale: 3}),
 	}
 
-	encoded, err := Encode(schema, row, DefaultLimits())
+	encoded, err := testCodec.Encode(schema, row)
 	require.NoError(t, err)
 
-	decoded, err := Decode(encoded, schema, DefaultLimits())
+	decoded, err := testCodec.Decode(encoded, schema)
 	require.NoError(t, err)
 
 	for i := range row {

@@ -217,7 +217,7 @@ func (v *View) Snapshots() []*SnapshotMeta {
 	for _, s := range v.snapshots {
 		out = append(out, s)
 	}
-	sortSnapshotMetas(out)
+	sortSnapshots(out)
 	return out
 }
 
@@ -401,23 +401,46 @@ func (v *View) Apply(t *Txn, maxDepth uint32) (*View, error) {
 	if t == nil {
 		return nil, fmt.Errorf("rowpack: nil txn")
 	}
-	nv, meta, err := v.beginApply(t.Snapshot, maxDepth)
+	a, err := v.newViewApply(t.Snapshot, maxDepth)
 	if err != nil {
 		return nil, err
 	}
-	if err := applyBlocks(v, nv, meta, t.Snapshot.SnapshotID, t.Blocks); err != nil {
+	if err := a.applyBlocks(t.Blocks); err != nil {
 		return nil, err
 	}
-	if err := applyMetadata(nv, t.Snapshot.SnapshotID, t.Metadata); err != nil {
+	if err := a.applyMetadata(t.Metadata); err != nil {
 		return nil, err
 	}
-	rowMap, err := buildRowShards(t, t.Snapshot.SnapshotID)
+	rowMap, err := buildShards(t, a.snapID)
 	if err != nil {
 		return nil, err
 	}
-	nv.rows[t.Snapshot.SnapshotID] = rowMap
-	finishApplyMemory(v, nv, len(t.Metadata), len(t.Blocks), rowMap)
-	return nv, nil
+	a.next.rows[a.snapID] = rowMap
+	a.finishMemory(len(t.Metadata), len(t.Blocks), rowMap)
+	return a.next, nil
+}
+
+// viewApply is the install context of one snapshot application: the view
+// being copied (old), the copy under construction (next), and the snapshot
+// entry being installed (snapID/meta). The buffered Apply path and the
+// streaming sink both funnel their blocks, metadata and row shards through it,
+// so the copy-on-write pair never travels as loose arguments.
+type viewApply struct {
+	old    *View
+	next   *View
+	meta   *SnapshotMeta
+	snapID uint64
+}
+
+// newViewApply validates the snapshot entry against v (chain, uniqueness,
+// depth) and installs it into the new view copy, returning the install
+// context.
+func (v *View) newViewApply(se fileformat.SnapshotIndexEntry, maxDepth uint32) (*viewApply, error) {
+	nv, meta, err := v.beginApply(se, maxDepth)
+	if err != nil {
+		return nil, err
+	}
+	return &viewApply{old: v, next: nv, meta: meta, snapID: se.SnapshotID}, nil
 }
 
 // beginApply validates the snapshot entry against v (chain, uniqueness,
@@ -463,15 +486,15 @@ func (v *View) beginApply(se fileformat.SnapshotIndexEntry, maxDepth uint32) (*V
 	return nv, meta, nil
 }
 
-// applyBlocks validates and installs the txn's block entries into nv,
-// accumulating stored bytes into meta. Shared by Apply and the streaming sink.
-func applyBlocks(old, nv *View, meta *SnapshotMeta, snapshotID uint64, blocks []fileformat.BlockIndexEntry) error {
+// applyBlocks validates and installs the txn's block entries into next,
+// accumulating stored bytes into meta.
+func (a *viewApply) applyBlocks(blocks []fileformat.BlockIndexEntry) error {
 	for i := range blocks {
 		be := &blocks[i]
-		if be.SnapshotID != snapshotID {
-			return fmt.Errorf("rowpack: block %d belongs to snapshot %d, want %d", be.BlockID, be.SnapshotID, snapshotID)
+		if be.SnapshotID != a.snapID {
+			return fmt.Errorf("rowpack: block %d belongs to snapshot %d, want %d", be.BlockID, be.SnapshotID, a.snapID)
 		}
-		if _, dup := old.blocks[be.BlockID]; dup {
+		if _, dup := a.old.blocks[be.BlockID]; dup {
 			return fmt.Errorf("rowpack: block %d already exists", be.BlockID)
 		}
 		bl := &BlockLoc{
@@ -480,24 +503,24 @@ func applyBlocks(old, nv *View, meta *SnapshotMeta, snapshotID uint64, blocks []
 			RawSize: be.RawSize, StoredSize: be.StoredSize, ItemCount: be.ItemCount,
 			RawCRC32C: be.RawCRC32C,
 		}
-		nv.blocks[be.BlockID] = bl
-		meta.StoredBytes += uint64(be.StoredSize)
+		a.next.blocks[be.BlockID] = bl
+		a.meta.StoredBytes += uint64(be.StoredSize)
 	}
 	return nil
 }
 
-// applyMetadata builds and installs the metadata location maps for one
-// snapshot. Shared by Apply and the streaming sink.
-func applyMetadata(nv *View, snapshotID uint64, metadata []fileformat.MetadataIndexEntry) error {
+// applyMetadata builds and installs the metadata location maps for the
+// snapshot being applied.
+func (a *viewApply) applyMetadata(metadata []fileformat.MetadataIndexEntry) error {
 	metaMap := make(map[uint64]*MetadataLoc)
 	typeMap := make(map[uint32][]uint64)
 	for i := range metadata {
 		me := &metadata[i]
-		if me.SnapshotID != snapshotID {
+		if me.SnapshotID != a.snapID {
 			return fmt.Errorf("rowpack: metadata entry %d wrong snapshot", me.ObjectID)
 		}
 		if _, dup := metaMap[me.ObjectID]; dup {
-			return fmt.Errorf("rowpack: metadata object %d duplicated in snapshot %d", me.ObjectID, snapshotID)
+			return fmt.Errorf("rowpack: metadata object %d duplicated in snapshot %d", me.ObjectID, a.snapID)
 		}
 		metaMap[me.ObjectID] = &MetadataLoc{
 			ObjectID: me.ObjectID, Revision: me.Revision, RecordType: me.RecordType,
@@ -508,20 +531,20 @@ func applyMetadata(nv *View, snapshotID uint64, metadata []fileformat.MetadataIn
 	for k := range typeMap {
 		sortU64s(typeMap[k])
 	}
-	nv.metadata[snapshotID] = metaMap
-	nv.metadataByType[snapshotID] = typeMap
+	a.next.metadata[a.snapID] = metaMap
+	a.next.metadataByType[a.snapID] = typeMap
 	return nil
 }
 
-// finishApplyMemory applies the per-txn memory estimate to nv: rough
+// finishMemory applies the per-txn memory estimate to next: rough
 // per-entry overhead plus map cells and packed row-shard entries (24 B/row).
-func finishApplyMemory(old, nv *View, nMeta, nBlocks int, rowMap map[uint32]*rowShard) {
-	nv.memoryBytes = old.memoryBytes
-	nv.memoryBytes += 64 + uint64(nMeta)*56 + uint64(nBlocks)*72
+func (a *viewApply) finishMemory(nMeta, nBlocks int, rowMap map[uint32]*rowShard) {
+	a.next.memoryBytes = a.old.memoryBytes
+	a.next.memoryBytes += 64 + uint64(nMeta)*56 + uint64(nBlocks)*72
 	for _, sh := range rowMap {
 		// Columnar storage: RowID (8) + ItemOrdinal (4) + ChangeType (1) per row,
 		// plus the block-run directory (BlockID + runStart per run).
-		nv.memoryBytes += 48 +
+		a.next.memoryBytes += 48 +
 			uint64(len(sh.rowIDs))*8 +
 			uint64(len(sh.ordinals))*4 +
 			uint64(len(sh.changes))*1 +
@@ -533,17 +556,17 @@ func finishApplyMemory(old, nv *View, nMeta, nBlocks int, rowMap map[uint32]*row
 // ApplyStreaming parses the serialized IndexTxn at data and applies it in one
 // fused pass: entries stream from the parser straight into the new view's
 // compact shard slices, never materializing Txn.Rows (~40 B/row off the Open
-// peak). Validation semantics are identical to Apply(ParseTxnChunked(data)).
+// peak). Validation semantics are identical to Apply(ParseTxn(data, nil)).
 func (v *View) ApplyStreaming(data []byte, crypto *ChunkCrypto, maxDepth uint32) (*View, error) {
 	ap := &streamApply{old: v, maxDepth: maxDepth}
-	t, err := ParseTxnChunkedStreaming(data, crypto, ap)
+	_, err := parseStream(data, crypto, ap)
 	if err != nil {
 		return nil, err
 	}
-	if err := ap.finish(t); err != nil {
+	if err := ap.finish(); err != nil {
 		return nil, err
 	}
-	return ap.nv, nil
+	return ap.ap.next, nil
 }
 
 // streamApply is the TxnSink behind ApplyStreaming. Blocks and metadata are
@@ -553,38 +576,32 @@ func (v *View) ApplyStreaming(data []byte, crypto *ChunkCrypto, maxDepth uint32)
 // first (single-table) shard preallocates exactly from the header's row count.
 type streamApply struct {
 	old      *View
-	nv       *View
 	maxDepth uint32
-
-	meta   *SnapshotMeta
-	snapID uint64
+	ap       *viewApply // set by SetSnapshot
 
 	blocks   []fileformat.BlockIndexEntry
 	metadata []fileformat.MetadataIndexEntry
 
-	shards   *rowShardBuilder
-	hint     int
-	rowCount uint64
+	shards *rowShardBuilder
+	hint   int
 }
 
 func (a *streamApply) ReserveRows(hint int) { a.hint = hint }
 
 func (a *streamApply) SetSnapshot(e fileformat.SnapshotIndexEntry) error {
-	if a.meta != nil {
+	if a.ap != nil {
 		return fmt.Errorf("rowpack: duplicate snapshot chunk")
 	}
-	nv, meta, err := a.old.beginApply(e, a.maxDepth)
+	ap, err := a.old.newViewApply(e, a.maxDepth)
 	if err != nil {
 		return err
 	}
-	a.nv = nv
-	a.meta = meta
-	a.snapID = e.SnapshotID
+	a.ap = ap
 	return nil
 }
 
 func (a *streamApply) AddBlock(e fileformat.BlockIndexEntry) error {
-	if a.meta == nil {
+	if a.ap == nil {
 		return fmt.Errorf("rowpack: block entry before snapshot")
 	}
 	a.blocks = append(a.blocks, e)
@@ -592,28 +609,24 @@ func (a *streamApply) AddBlock(e fileformat.BlockIndexEntry) error {
 }
 
 func (a *streamApply) AddMetadata(e fileformat.MetadataIndexEntry) error {
-	if a.meta == nil {
+	if a.ap == nil {
 		return fmt.Errorf("rowpack: metadata entry before snapshot")
 	}
 	a.metadata = append(a.metadata, e)
 	return nil
 }
 
-// AddRowEntry implements RowEntrySink: the page parser (via walkRowIndexPage)
+// AddRowEntry implements RowEntrySink: the page parser (via walkPage)
 // hands each decoded entry straight to the shard builder, one at a time, so
 // no per-page []RowIndexEntry is materialized.
 func (a *streamApply) AddRowEntry(e fileformat.RowIndexEntry) error {
-	if a.meta == nil {
+	if a.ap == nil {
 		return fmt.Errorf("rowpack: row entry before snapshot")
 	}
 	if a.shards == nil {
-		a.shards = newRowShardBuilder(a.snapID, a.hint)
+		a.shards = newRowShardBuilder(a.ap.snapID, a.hint)
 	}
-	if err := a.shards.AddRowEntry(e); err != nil {
-		return err
-	}
-	a.rowCount++
-	return nil
+	return a.shards.AddRowEntry(e)
 }
 
 // AddRows implements TxnSink. On the Open path the parser uses AddRowEntry
@@ -631,14 +644,14 @@ func (a *streamApply) AddRows(batch []fileformat.RowIndexEntry) error {
 // finish installs the buffered blocks/metadata and the accumulated shards
 // into the new view. Called after the parser validated header/footer CRCs
 // and all entry counts.
-func (a *streamApply) finish(t *Txn) error {
-	if a.meta == nil {
+func (a *streamApply) finish() error {
+	if a.ap == nil {
 		return fmt.Errorf("rowpack: index txn has no snapshot chunk")
 	}
-	if err := applyBlocks(a.old, a.nv, a.meta, a.snapID, a.blocks); err != nil {
+	if err := a.ap.applyBlocks(a.blocks); err != nil {
 		return err
 	}
-	if err := applyMetadata(a.nv, a.snapID, a.metadata); err != nil {
+	if err := a.ap.applyMetadata(a.metadata); err != nil {
 		return err
 	}
 	var rowMap map[uint32]*rowShard
@@ -649,15 +662,15 @@ func (a *streamApply) finish(t *Txn) error {
 			return err
 		}
 	}
-	a.nv.rows[a.snapID] = rowMap
-	finishApplyMemory(a.old, a.nv, len(a.metadata), len(a.blocks), rowMap)
+	a.ap.next.rows[a.ap.snapID] = rowMap
+	a.ap.finishMemory(len(a.metadata), len(a.blocks), rowMap)
 	return nil
 }
 
-// buildRowShards converts t.Rows into one sorted rowShard per table. It
+// buildShards converts t.Rows into one sorted rowShard per table. It
 // returns (nil, nil) when t has no row entries. Duplicates within a
 // (snapshot, table) and entries owned by another snapshot are rejected.
-func buildRowShards(t *Txn, snapshot uint64) (map[uint32]*rowShard, error) {
+func buildShards(t *Txn, snapshot uint64) (map[uint32]*rowShard, error) {
 	n := len(t.Rows)
 	if n == 0 {
 		return nil, nil
@@ -742,7 +755,7 @@ func (sh *rowShard) prepare(entries []RowKeyLoc) error {
 		}
 	}
 	if !sorted {
-		sortRowKeyLocs(entries)
+		sortKeys(entries)
 	}
 	n := len(entries)
 	sh.rowIDs = make([]uint64, n)
@@ -794,4 +807,28 @@ func (v *View) shallowCopy() *View {
 	}
 	nv.memoryBytes = v.memoryBytes
 	return nv
+}
+
+func sortU64s(s []uint64) {
+	sort.Slice(s, func(i, j int) bool {
+		return s[i] < s[j]
+	})
+}
+
+func sortU32s(s []uint32) {
+	sort.Slice(s, func(i, j int) bool {
+		return s[i] < s[j]
+	})
+}
+
+func sortSnapshots(s []*SnapshotMeta) {
+	sort.Slice(s, func(i, j int) bool {
+		return s[i].ID < s[j].ID
+	})
+}
+
+func sortKeys(s []RowKeyLoc) {
+	sort.Slice(s, func(i, j int) bool {
+		return s[i].RowID < s[j].RowID
+	})
 }

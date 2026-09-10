@@ -199,7 +199,7 @@ func TestGoldenRowsPayloadAllTypes(t *testing.T) {
 	}}
 	// Body-only TypedTuple: the Rows Page layout carries ColumnCount and
 	// NullBitmapBytes out of band (resolved from the schema).
-	row, err := codec.EncodeBodyInto(schema, Row{
+	row, err := codec.DefaultCodec().EncodeInto(schema, Row{
 		Bool(true),
 		Int64(-987654321012345),
 		Uint32(4294967295),
@@ -211,11 +211,11 @@ func TestGoldenRowsPayloadAllTypes(t *testing.T) {
 		DateTime(time.Unix(0, 1700000000123456789).UTC()),
 		DecimalValue(Decimal{Unscaled: bigI(-1234567890123), Scale: 4}),
 		Null(),
-	}, codec.DefaultLimits(), nil)
+	}, nil)
 	require.NoError(t, err)
 
 	var sink goldenCaptureSink
-	b := block.NewRowsBlockBuilder(1, 1, 1<<20, fileformat.CompressionNone, 0, block.DefaultLimits(), sink.flush)
+	b := block.NewRowsBuilder(1, 1, block.Config{BlockSize: 1 << 20, Compression: fileformat.CompressionNone, Level: 0, Limits: block.DefaultLimits(), OnFlush: sink.flush})
 	for i := 0; i < 3; i++ {
 		require.NoError(t, b.Add(uint64(100+i), 1, fileformat.ChangeInsert, row))
 	}
@@ -234,7 +234,7 @@ func TestGoldenRowsPayloadAllTypes(t *testing.T) {
 		require.Fail(t, "golden %s differs from implementation (regenerate with make golden)", path)
 	}
 	// The golden must parse back as a valid page container with 3 records.
-	rc, err := block.ParseRowsContainer(payload, sink.blocks[0].Header, block.DefaultLimits())
+	rc, err := block.ParseContainer(payload, sink.blocks[0].Header, block.DefaultLimits())
 	require.NoError(t, err)
 	require.Equal(t, uint32(3), rc.Header.TotalRecords, "golden payload has 3 total records")
 }

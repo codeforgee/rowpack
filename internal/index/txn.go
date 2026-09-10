@@ -32,7 +32,7 @@ type Builder struct {
 	metadata []fileformat.MetadataIndexEntry
 	blocks   []fileformat.BlockIndexEntry
 	rows     []fileformat.RowIndexEntry
-	// pageCount is the number of Row Index Pages produced by buildRowIndexPages
+	// pageCount is the number of Row Index Pages produced by buildPages
 	// (single-table pages; 0 when there are no rows). header() uses it so a
 	// multi-table snapshot's RowIndexPageCount matches the fence directory.
 	pageCount uint32
@@ -142,19 +142,17 @@ func (b *Builder) Reserve(meta, blocks, rows int) {
 // Build serializes the complete index transaction (chunked body layout:
 // chunk headers + payloads + directory) wrapped in the IndexTxnHeader and
 // IndexTxnFooter. Plain stores only — encrypted writers go through
-// BuildStored with a ChunkCrypto. The snapshot entry's DataStart/DataEnd are
-// taken from the entry passed to SetSnapshot; the offset arguments only fill
-// the footer fields.
-func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC uint32, txnStart, txnEnd int64) ([]byte, *Txn, error) {
-	body, plainCRC, txn, err := b.BuildStoredBody(nil, 0, func(int) (uint64, uint64, int64, int64) {
-		return dataSnapshotStart, dataSnapshotEnd, txnStart, txnEnd
-	})
+// BuildStored with a ChunkCrypto. bounds carries the snapshot's data range
+// (from the entry passed to SetSnapshot) and the txn's own file offsets, which
+// only fill the header/footer fields.
+func (b *Builder) Build(bounds BodyBounds, dataFooterCRC uint32) ([]byte, *Txn, error) {
+	body, plainCRC, txn, err := b.BuildStoredBody(nil, 0, func(int) BodyBounds { return bounds })
 	if err != nil {
 		return nil, nil, err
 	}
-	h := b.header(dataSnapshotStart, dataSnapshotEnd)
-	f := b.footer(dataSnapshotEnd, dataFooterCRC, plainCRC, txnStart, txnEnd)
-	out, err := AssembleIndexTxn(h, 0, body, f)
+	h := b.header(bounds.DataStart, bounds.DataEnd)
+	f := b.footer(bounds, dataFooterCRC, plainCRC)
+	out, err := AssembleTxn(h, 0, body, f)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -165,7 +163,7 @@ func (b *Builder) Build(dataSnapshotStart, dataSnapshotEnd uint64, dataFooterCRC
 
 // header assembles the IndexTxnHeader fields from the builder state.
 // RowIndexPageCount is the count of sorted Row Index Pages produced by
-// buildRowIndexPages (single-table pages, so the count equals the fence
+// buildPages (single-table pages, so the count equals the fence
 // directory size; 0 when there are no row entries).
 func (b *Builder) header(dataSnapshotStart, dataSnapshotEnd uint64) fileformat.IndexTxnHeader {
 	n := len(b.rows)
@@ -182,26 +180,27 @@ func (b *Builder) header(dataSnapshotStart, dataSnapshotEnd uint64) fileformat.I
 	}
 }
 
-// footer assembles the IndexTxnFooter fields from the builder state.
-func (b *Builder) footer(dataSnapshotEnd uint64, dataFooterCRC, plainCRC uint32, txnStart, txnEnd int64) fileformat.IndexTxnFooter {
+// footer assembles the IndexTxnFooter fields from the builder state and the
+// txn's resolved bounds.
+func (b *Builder) footer(bounds BodyBounds, dataFooterCRC, plainCRC uint32) fileformat.IndexTxnFooter {
 	return fileformat.IndexTxnFooter{
 		TxnSequence:      b.sequence,
 		SnapshotID:       b.snapshot.SnapshotID,
-		TxnStartOffset:   uint64(txnStart),
-		TxnEndOffset:     uint64(txnEnd),
-		DataSnapshotEnd:  dataSnapshotEnd,
+		TxnStartOffset:   uint64(bounds.TxnStart),
+		TxnEndOffset:     uint64(bounds.TxnEnd),
+		DataSnapshotEnd:  bounds.DataEnd,
 		BodyCRC32C:       plainCRC,
 		DataFooterCRC32C: dataFooterCRC,
 	}
 }
 
 // BuildStored serializes the chunked index transaction with an optional
-// chunk-crypto context (nil = plain). resolveDataBounds is called with the
-// final stored body length to fix the snapshot entry's [DataStart, DataEnd]
-// (the snapshot chunk's stored size is content-independent, so one pass
-// suffices); nil passes the entry's own values through. keyEpoch is stamped
-// into the header reserved word for encrypted stores.
-func (b *Builder) BuildStored(crypto *ChunkCrypto, level int, resolveBounds func(bodyLen int) (dataStart, dataEnd uint64, txnStart, txnEnd int64),
+// chunk-crypto context (nil = plain). resolveBounds is called with the final
+// stored body length to fix the snapshot entry's bounds (the snapshot chunk's
+// stored size is content-independent, so one pass suffices); nil passes the
+// entry's own values through. keyEpoch is stamped into the header reserved word
+// for encrypted stores.
+func (b *Builder) BuildStored(crypto *ChunkCrypto, level int, resolveBounds BoundsResolver,
 	dataFooterCRC uint32, keyEpoch uint32,
 ) ([]byte, *Txn, error) {
 	body, plainCRC, txn, err := b.BuildStoredBody(crypto, level, resolveBounds)
@@ -209,8 +208,8 @@ func (b *Builder) BuildStored(crypto *ChunkCrypto, level int, resolveBounds func
 		return nil, nil, err
 	}
 	h := b.header(txn.dataStart, txn.dataEnd)
-	f := b.footer(txn.dataEnd, dataFooterCRC, plainCRC, txn.txnStart, txn.txnEnd)
-	out, err := AssembleIndexTxn(h, keyEpoch, body, f)
+	f := b.footer(BodyBounds{DataStart: txn.dataStart, DataEnd: txn.dataEnd, TxnStart: txn.txnStart, TxnEnd: txn.txnEnd}, dataFooterCRC, plainCRC)
+	out, err := AssembleTxn(h, keyEpoch, body, f)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -222,24 +221,19 @@ func (b *Builder) BuildStored(crypto *ChunkCrypto, level int, resolveBounds func
 // ParseTxn parses and validates one index transaction from data, which must
 // contain exactly one txn (header + chunked body + footer). It verifies
 // header/footer magic, sizes, CRCs, the chunk directory, per-chunk payload
-// CRCs, and entry decoding.
-func ParseTxn(data []byte) (*Txn, error) {
-	return ParseTxnChunked(data, nil)
-}
-
-// ParseTxnChunked parses and validates one chunked index transaction from
-// data (header + chunked body + footer), materializing all entries into the
-// returned Txn. crypto must be non-nil iff the txn's chunks are encrypted.
-func ParseTxnChunked(data []byte, crypto *ChunkCrypto) (*Txn, error) {
+// CRCs, and entry decoding. crypto must be non-nil iff the txn's chunks are
+// encrypted; all entries are materialized into the returned Txn.
+func ParseTxn(data []byte, crypto *ChunkCrypto) (*Txn, error) {
 	return parseTxnChunked(data, crypto, nil)
 }
 
-// ParseTxnChunkedStreaming parses like ParseTxnChunked but hands every entry
-// to sink as it is decoded instead of buffering them in Txn.Rows. Row-count
-// validation still runs against the header, so a sink that drops entries
-// cannot forge a valid txn. Use this on the Open path to build final
-// structures directly and skip the ~40 B/row intermediate slice.
-func ParseTxnChunkedStreaming(data []byte, crypto *ChunkCrypto, sink TxnSink) (*Txn, error) {
+// parseStream parses like ParseTxn but hands every entry to sink as it is
+// decoded instead of buffering them in Txn.Rows. Row-count validation still
+// runs against the header, so a sink that drops entries cannot forge a valid
+// txn. Use this on the Open path to build final structures directly and skip
+// the ~40 B/row intermediate slice. It is package-internal: only
+// View.ApplyStreaming drives it.
+func parseStream(data []byte, crypto *ChunkCrypto, sink TxnSink) (*Txn, error) {
 	return parseTxnChunked(data, crypto, sink)
 }
 
@@ -288,10 +282,16 @@ func parseTxnChunked(data []byte, crypto *ChunkCrypto, sink TxnSink) (*Txn, erro
 			hs.ReserveRows(boundedCap(h.RowEntryCount, fileformat.RowIndexEntrySize))
 		}
 	}
-	sb, err := parseStoredBody(region, h.SnapshotID,
-		boundedCap(uint64(h.MetadataEntryCount), fileformat.MetadataIndexEntrySize),
-		boundedCap(uint64(h.BlockEntryCount), fileformat.BlockIndexEntrySize),
-		boundedCap(h.RowEntryCount, fileformat.RowIndexEntrySize), h.RowIndexPageCount, crypto, sink)
+	sb, err := (&bodyParser{
+		region:            region,
+		snapshotID:        h.SnapshotID,
+		metadataCount:     boundedCap(uint64(h.MetadataEntryCount), fileformat.MetadataIndexEntrySize),
+		blockCount:        boundedCap(uint64(h.BlockEntryCount), fileformat.BlockIndexEntrySize),
+		rowCount:          boundedCap(h.RowEntryCount, fileformat.RowIndexEntrySize),
+		rowIndexPageCount: h.RowIndexPageCount,
+		crypto:            crypto,
+		sink:              sink,
+	}).parse()
 	if err != nil {
 		return nil, err
 	}

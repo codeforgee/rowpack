@@ -8,7 +8,7 @@ import (
 
 // rowShardBuilder incrementally builds per-table rowShards from a stream of
 // RowIndexEntry values that arrive sorted by (TableID, RowID) — the order the
-// sorted Row Index Pages are decoded (encodeRowIndexPage guarantees this). Each
+// sorted Row Index Pages are decoded (encodePage guarantees this). Each
 // entry is appended directly into the columnar (rowIDs/ordinals/changes) and
 // block-run (runStart/blockIDs) arrays, so no []RowKeyLoc intermediate and no
 // fully materialized []RowIndexEntry page ever exists (S3-⑦ 落盘② Open peak).

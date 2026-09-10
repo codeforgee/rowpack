@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestEncodeIntoGuards covers the guard branches of EncodeInto: nil schema,
+// TestEncodeIntoGuards covers the guard branches of EncodeTupleInto: nil schema,
 // column-limit, row-length mismatch, and the reuse-capacity fast path.
 func TestEncodeIntoGuards(t *testing.T) {
 	schema := &Schema{
@@ -22,7 +22,7 @@ func TestEncodeIntoGuards(t *testing.T) {
 	row := []Value{Uint64(1), String("x")}
 	lim := DefaultLimits()
 
-	if _, err := EncodeInto(nil, row, lim, nil); err == nil {
+	if _, err := testCodec.EncodeTupleInto(nil, row, nil); err == nil {
 		t.Fatal("nil schema should error")
 	}
 
@@ -30,21 +30,21 @@ func TestEncodeIntoGuards(t *testing.T) {
 	for i := range over.Columns {
 		over.Columns[i] = Column{Name: fmt.Sprintf("c%d", i), Type: TypeUint64}
 	}
-	if _, err := EncodeInto(over, make([]Value, len(over.Columns)), lim, nil); err == nil {
+	if _, err := testCodec.EncodeTupleInto(over, make([]Value, len(over.Columns)), nil); err == nil {
 		t.Fatal("column limit should error")
 	}
 
-	if _, err := EncodeInto(schema, []Value{Uint64(1)}, lim, nil); !errors.Is(err, ErrSchemaMismatch) {
+	if _, err := testCodec.EncodeTupleInto(schema, []Value{Uint64(1)}, nil); !errors.Is(err, ErrSchemaMismatch) {
 		t.Fatalf("row length mismatch: err %v, want ErrSchemaMismatch", err)
 	}
 
 	// reuse with sufficient capacity must be used (len(cap) path).
 	reuse := make([]byte, 0, 4096)
-	enc, err := EncodeInto(schema, row, lim, reuse)
+	enc, err := testCodec.EncodeTupleInto(schema, row, reuse)
 	if err != nil {
-		t.Fatalf("EncodeInto reuse: %v", err)
+		t.Fatalf("EncodeTupleInto reuse: %v", err)
 	}
-	ref, err := Encode(schema, row, lim)
+	ref, err := testCodec.Encode(schema, row)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -60,12 +60,12 @@ func TestDecodeBodyIntoGuards(t *testing.T) {
 			{Name: "name", Type: TypeString},
 		},
 	}
-	body, err := EncodeBodyInto(schema, []Value{Uint64(7), String("y")}, DefaultLimits(), nil)
+	body, err := testCodec.EncodeInto(schema, []Value{Uint64(7), String("y")}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := DecodeBodyInto(nil, body, nil, DefaultLimits(), nil); err == nil {
+	if _, err := testCodec.DecodeInto(nil, body, nil, nil); err == nil {
 		t.Fatal("nil schema should error")
 	}
 
@@ -73,7 +73,7 @@ func TestDecodeBodyIntoGuards(t *testing.T) {
 	for i := range over.Columns {
 		over.Columns[i] = Column{Name: fmt.Sprintf("c%d", i), Type: TypeUint64}
 	}
-	if _, err := DecodeBodyInto(nil, body, over, DefaultLimits(), nil); err == nil {
+	if _, err := testCodec.DecodeInto(nil, body, over, nil); err == nil {
 		t.Fatal("column limit should error")
 	}
 }
@@ -141,12 +141,12 @@ func TestDecodeTruncatedString(t *testing.T) {
 			{Name: "s", Type: TypeString},
 		},
 	}
-	body, err := Encode(schema, []Value{String("abcdef")}, DefaultLimits())
+	body, err := testCodec.Encode(schema, []Value{String("abcdef")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Chop bytes off the end; the decoder must report a column error.
-	_, err = Decode(body[:len(body)-2], schema, DefaultLimits())
+	_, err = testCodec.Decode(body[:len(body)-2], schema)
 	if err == nil {
 		t.Fatal("truncated string value should error")
 	}

@@ -22,7 +22,7 @@ func TestRowsBlockBuilder(t *testing.T) {
 	mock := &mockFlushedBlock{}
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
-	builder := NewRowsBlockBuilder(1, 1, 1024, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewRowsBuilder(1, 1, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	// Add some records
 	for i := uint64(1); i <= 10; i++ {
@@ -50,7 +50,7 @@ func TestRowsBlockBuilderFlushEmpty(t *testing.T) {
 	mock := &mockFlushedBlock{}
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
-	builder := NewRowsBlockBuilder(1, 1, 1024, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewRowsBuilder(1, 1, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	// Flush without adding any records
 	err := builder.Flush()
@@ -63,7 +63,7 @@ func TestRowsBlockBuilderPending(t *testing.T) {
 	mock := &mockFlushedBlock{}
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
-	builder := NewRowsBlockBuilder(1, 1, 1024, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewRowsBuilder(1, 1, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	require.Equal(t, 0, builder.Pending())
 
@@ -80,7 +80,7 @@ func TestRowsBlockBuilderOversizedRow(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
 	// Small block size to force flush
-	builder := NewRowsBlockBuilder(1, 1, 512, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewRowsBuilder(1, 1, Config{BlockSize: 512, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	// Add a row larger than page size but smaller than block size
 	largeTuple := bytes.Repeat([]byte{0xFF}, 300)
@@ -104,7 +104,7 @@ func TestRowsBlockBuilderOversizedRowLargerThanBlock(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
 	// Small block size
-	builder := NewRowsBlockBuilder(1, 1, 512, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewRowsBuilder(1, 1, Config{BlockSize: 512, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	// Add a row larger than block size - should flush current block first
 	largeTuple := bytes.Repeat([]byte{0xFF}, 600)
@@ -123,7 +123,7 @@ func TestRowsBlockBuilderMultiplePages(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
 	// Small page size to force multiple pages
-	builder := NewRowsBlockBuilder(1, 1, 2048, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewRowsBuilder(1, 1, Config{BlockSize: 2048, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 	builder.SetPageSize(256)
 
 	// Add many records to fill multiple pages
@@ -149,7 +149,7 @@ func TestRowsBlockBuilderSetZstdEncoder(t *testing.T) {
 	mock := &mockFlushedBlock{}
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
-	builder := NewRowsBlockBuilder(1, 1, 1024, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewRowsBuilder(1, 1, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	// Create a ZstdEncoder and set it
 	enc := NewZstdEncoder(3)
@@ -171,7 +171,7 @@ func TestRowsBlockBuilderAddErrors(t *testing.T) {
 	mock := &mockFlushedBlock{}
 	limits := Limits{MaxStoredBytes: 100, MaxRawBytes: 100} // Small limits
 
-	builder := NewRowsBlockBuilder(1, 1, 1024, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewRowsBuilder(1, 1, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	// Row exceeds MaxRawBytes
 	largeTuple := bytes.Repeat([]byte{0xFF}, 200)
@@ -184,7 +184,7 @@ func TestMetadataBlockBuilder(t *testing.T) {
 	mock := &mockFlushedBlock{}
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
-	builder := NewMetadataBlockBuilder(1, 0, 1024, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewMetadataBuilder(1, 0, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	// Add some metadata records
 	for i := uint32(1); i <= 5; i++ {
@@ -217,7 +217,7 @@ func TestMetadataBlockBuilderFlushEmpty(t *testing.T) {
 	mock := &mockFlushedBlock{}
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
-	builder := NewMetadataBlockBuilder(1, 0, 1024, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewMetadataBuilder(1, 0, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	err := builder.Flush()
 	require.NoError(t, err)
@@ -229,7 +229,7 @@ func TestMetadataBlockBuilderPending(t *testing.T) {
 	mock := &mockFlushedBlock{}
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
-	builder := NewMetadataBlockBuilder(1, 0, 1024, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewMetadataBuilder(1, 0, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	require.Equal(t, 0, builder.Pending())
 
@@ -247,7 +247,7 @@ func TestMetadataBlockBuilderAutoFlush(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
 	// Small block size to trigger auto-flush
-	builder := NewMetadataBlockBuilder(1, 0, 200, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewMetadataBuilder(1, 0, Config{BlockSize: 200, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	// Add records that will exceed block size
 	for i := uint32(1); i <= 10; i++ {
@@ -268,7 +268,7 @@ func TestMetadataBlockBuilderSetZstdEncoder(t *testing.T) {
 	mock := &mockFlushedBlock{}
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
-	builder := NewMetadataBlockBuilder(1, 0, 1024, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewMetadataBuilder(1, 0, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	enc := NewZstdEncoder(3)
 	builder.SetZstdEncoder(enc)
@@ -288,7 +288,7 @@ func TestMetadataBlockBuilderAddErrors(t *testing.T) {
 	mock := &mockFlushedBlock{}
 	limits := Limits{MaxStoredBytes: 100, MaxRawBytes: 100}
 
-	builder := NewMetadataBlockBuilder(1, 0, 1024, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewMetadataBuilder(1, 0, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	// Record exceeds MaxRawBytes
 	entry := metadata.DirectoryEntry{ObjectID: 1, Revision: 1, RecordType: 2, Operation: 1}
@@ -302,7 +302,7 @@ func TestRowsBlockBuilderChangeTypes(t *testing.T) {
 	mock := &mockFlushedBlock{}
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
-	builder := NewRowsBlockBuilder(1, 1, 1024, fileformat.CompressionZstd, 3, limits, mock.onFlush)
+	builder := NewRowsBuilder(1, 1, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
 	// Test all change types
 	changes := []fileformat.ChangeType{

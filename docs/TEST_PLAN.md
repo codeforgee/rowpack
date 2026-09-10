@@ -68,7 +68,7 @@
   分配前报错）、非法 changeType（2bit=3 保留）、CRC 错误、排序破坏——均报错且绝不
   panic/无界分配；RowID 边界（0 / MaxUint64 / 跨 delta 溢出）、多表 run、ordinal 负 delta。
 - **Fence 目录层**（`internal/index/row_index_page_corrupt_test.go`，直接针对
-  `parseRowIndexPages`）：伪造 `RowIndexPageCount`（巨值，分配前拒绝；0 且空区）、Fence
+  `pageParser.parse`）：伪造 `RowIndexPageCount`（巨值，分配前拒绝；0 且空区）、Fence
   越界 `StoredOffset`、零 `StoredSize`、错误 `SnapshotID` 归属、重叠/重复页、页压缩负载
   损坏——均报错且无 panic/无界分配。
 - **Header `RowIndexPageCount` 字**（`internal/fileformat/indextxn_test.go`）：offset

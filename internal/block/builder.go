@@ -29,18 +29,18 @@ type FlushedBlock struct {
 	OversizedPages uint32
 }
 
-// RowsBlockBuilder accumulates body-only TypedTuple records of one
+// RowsBuilder accumulates body-only TypedTuple records of one
 // (snapshot, table) and emits Rows Blocks as page containers (§6 of the
 // refactor plan). Each block is:
 //
 //	[RowsBlockHeader][RowsPageDirEntry × N][stored page 0][stored page 1]…
 //
-// Records accumulate into an internal RowsPageBuilder (pageSize target); a
+// Records accumulate into an internal PageBuilder (pageSize target); a
 // page is compressed into its own independently-decompressed stored page as
 // soon as it fills, and the whole block flushes once the sum of page raw
 // sizes reaches blockSize. A single record larger than pageSize is isolated
 // as its own oversized page (Flags bit 0).
-type RowsBlockBuilder struct {
+type RowsBuilder struct {
 	snapshotID uint64
 	tableID    uint32
 	blockSize  int
@@ -51,7 +51,7 @@ type RowsBlockBuilder struct {
 
 	// page is the current Rows Page accumulator; it is finished (and stored)
 	// whenever it reaches pageSize.
-	page *RowsPageBuilder
+	page *PageBuilder
 
 	// entries carries one RowDirectoryEntry per buffered record in call order
 	// (only RowID/SchemaVersion/ChangeType are meaningful in the page layout;
@@ -80,31 +80,43 @@ type RowsBlockBuilder struct {
 	onFlush func(*FlushedBlock) error
 }
 
-// NewRowsBlockBuilder creates a builder for the given snapshot/table using
+// Config is the shared configuration of the Rows and Metadata block
+// builders: how large a block may grow, how it is compressed, and where the
+// finished block goes. snapshotID/tableID are deliberately NOT part of it —
+// they are the builder's identity, not its configuration.
+type Config struct {
+	BlockSize   int
+	Compression fileformat.Compression
+	Level       int
+	Limits      Limits
+	OnFlush     func(*FlushedBlock) error
+}
+
+// NewRowsBuilder creates a builder for the given snapshot/table using
 // the default page size (fileformat.DefaultPageSize); override it with
 // SetPageSize before the first Add.
-func NewRowsBlockBuilder(snapshotID uint64, tableID uint32, blockSize int, compress fileformat.Compression, level int, limits Limits, onFlush func(*FlushedBlock) error) *RowsBlockBuilder {
+func NewRowsBuilder(snapshotID uint64, tableID uint32, cfg Config) *RowsBuilder {
 	ps := fileformat.DefaultPageSize
-	if ps > blockSize {
-		ps = blockSize
+	if ps > cfg.BlockSize {
+		ps = cfg.BlockSize
 	}
-	return &RowsBlockBuilder{
+	return &RowsBuilder{
 		snapshotID: snapshotID,
 		tableID:    tableID,
-		blockSize:  blockSize,
+		blockSize:  cfg.BlockSize,
 		pageSize:   ps,
-		compress:   compress,
-		level:      level,
-		limits:     limits,
-		page:       NewRowsPageBuilder(ps),
-		onFlush:    onFlush,
+		compress:   cfg.Compression,
+		level:      cfg.Level,
+		limits:     cfg.Limits,
+		page:       NewPageBuilder(ps),
+		onFlush:    cfg.OnFlush,
 	}
 }
 
 // SetPageSize overrides the default page target. It must be called before the
 // first Add while the current page is still empty; a page never exceeds the
 // enclosing block target.
-func (b *RowsBlockBuilder) SetPageSize(n int) {
+func (b *RowsBuilder) SetPageSize(n int) {
 	if n <= 0 {
 		return
 	}
@@ -112,20 +124,20 @@ func (b *RowsBlockBuilder) SetPageSize(n int) {
 		n = b.blockSize
 	}
 	b.pageSize = n
-	b.page = NewRowsPageBuilder(n)
+	b.page = NewPageBuilder(n)
 }
 
 // SetZstdEncoder attaches a caller-owned zstd encoder used at Flush time
 // instead of the pooled one. The caller owns the encoder's lifecycle and
 // must keep it valid until the last Flush.
-func (b *RowsBlockBuilder) SetZstdEncoder(e *ZstdEncoder) { b.enc = e }
+func (b *RowsBuilder) SetZstdEncoder(e *ZstdEncoder) { b.enc = e }
 
 // Add appends one record (a body-only TypedTuple). The record is encoded into
 // the current page; a page that reaches pageSize is compressed and stored.
 // A record larger than pageSize occupies its own oversized page; a record
 // larger than blockSize additionally flushes the current block first so it
 // sits in a block by itself.
-func (b *RowsBlockBuilder) Add(rowID uint64, schemaVersion uint32, change fileformat.ChangeType, row []byte) error {
+func (b *RowsBuilder) Add(rowID uint64, schemaVersion uint32, change fileformat.ChangeType, row []byte) error {
 	if uint32(len(row)) > b.limits.MaxRawBytes {
 		return fmt.Errorf("rowpack: row of %d bytes exceeds limit %d", len(row), b.limits.MaxRawBytes)
 	}
@@ -133,7 +145,7 @@ func (b *RowsBlockBuilder) Add(rowID uint64, schemaVersion uint32, change filefo
 		// Single oversized row: flush the current page, then store this one
 		// record as its own oversized page; a row that alone exceeds the
 		// block target flushes the block so it is isolated.
-		if err := b.finishCurrentPage(); err != nil {
+		if err := b.finishPage(); err != nil {
 			return err
 		}
 		if len(row) >= b.blockSize {
@@ -158,7 +170,7 @@ func (b *RowsBlockBuilder) Add(rowID uint64, schemaVersion uint32, change filefo
 		return nil
 	}
 	if b.page.NeedsFlush() {
-		if err := b.finishCurrentPage(); err != nil {
+		if err := b.finishPage(); err != nil {
 			return err
 		}
 	}
@@ -167,7 +179,7 @@ func (b *RowsBlockBuilder) Add(rowID uint64, schemaVersion uint32, change filefo
 	}
 	b.entries = append(b.entries, fileformat.RowDirectoryEntry{RowID: rowID, SchemaVersion: schemaVersion, ChangeType: change})
 	if b.page.NeedsFlush() {
-		if err := b.finishCurrentPage(); err != nil {
+		if err := b.finishPage(); err != nil {
 			return err
 		}
 		if b.rawSize >= b.blockSize {
@@ -178,11 +190,11 @@ func (b *RowsBlockBuilder) Add(rowID uint64, schemaVersion uint32, change filefo
 }
 
 // Pending returns the number of buffered records (finished + current page).
-func (b *RowsBlockBuilder) Pending() int { return len(b.entries) }
+func (b *RowsBuilder) Pending() int { return len(b.entries) }
 
-// finishCurrentPage compresses and stores the current (non-empty) page, if
+// finishPage compresses and stores the current (non-empty) page, if
 // any, appending its directory entry and updating the running counters.
-func (b *RowsBlockBuilder) finishCurrentPage() error {
+func (b *RowsBuilder) finishPage() error {
 	if b.page.Count() == 0 {
 		return nil
 	}
@@ -196,7 +208,7 @@ func (b *RowsBlockBuilder) finishCurrentPage() error {
 // storePage compresses one finished (uncompressed) page and records its
 // directory entry. StoredOffset is resolved at block assembly time, once the
 // directory length is known.
-func (b *RowsBlockBuilder) storePage(rawPage []byte, oversized bool) error {
+func (b *RowsBuilder) storePage(rawPage []byte, oversized bool) error {
 	var stored []byte
 	var err error
 	if b.enc != nil && b.compress == fileformat.CompressionZstd {
@@ -235,11 +247,11 @@ func (b *RowsBlockBuilder) storePage(rawPage []byte, oversized bool) error {
 }
 
 // Flush emits the current pending pages as one page-container block, if any.
-func (b *RowsBlockBuilder) Flush() error {
+func (b *RowsBuilder) Flush() error {
 	if len(b.entries) == 0 {
 		return nil
 	}
-	if err := b.finishCurrentPage(); err != nil {
+	if err := b.finishPage(); err != nil {
 		return err
 	}
 	if len(b.dirEntries) == 0 {

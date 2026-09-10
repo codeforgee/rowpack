@@ -14,7 +14,7 @@ func uint32LE(b []byte, off int) uint32 {
 }
 
 // row_index_page_test.go — S3-⑦ 落盘②：Row Index Page + Fence 的生产实现测试。
-// 目标：encodeRowIndexPage/decodeRowIndexPage/fenceForRowIndexPage 的往返一致性
+// 目标：encodePage/decodePage/pageFence 的往返一致性
 // 与严格损坏校验（截断、单 bit 翻转、伪造 size/count、非法 changeType、排序破坏、
 // Fence 越界/重复页/错误 Snapshot 归属）必须报错且绝不 panic/无界分配。
 
@@ -49,11 +49,11 @@ func riSeq(n, blkEvery int) []fileformat.RowIndexEntry {
 
 func TestRowIndexPageSequential(t *testing.T) {
 	rows := riSeq(300, 100)
-	page, n, _, _, _ := encodeRowIndexPage(rows, indexPageEntryCount)
+	page, n, _, _, _ := encodePage(rows, indexPageEntryCount)
 	if n != len(rows) {
 		t.Fatalf("entryCount = %d, want %d", n, len(rows))
 	}
-	got, err := decodeRowIndexPage(page)
+	got, err := decodePage(page)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -73,8 +73,8 @@ func TestRowIndexPageMultiTable(t *testing.T) {
 		riEntry(2, 20, 21, 0, fileformat.ChangeDelete),
 		riEntry(3, 5, 30, 1, fileformat.ChangeInsert),
 	}
-	page, _, _, _, _ := encodeRowIndexPage(rows, indexPageEntryCount)
-	got, err := decodeRowIndexPage(page)
+	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
+	got, err := decodePage(page)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -90,8 +90,8 @@ func TestRowIndexPageRowIDBoundaries(t *testing.T) {
 		riEntry(1, math.MaxUint64-1, 2, 0, fileformat.ChangeUpdate),
 		riEntry(1, math.MaxUint64, 2, 1, fileformat.ChangeDelete),
 	}
-	page, _, _, _, _ := encodeRowIndexPage(rows, indexPageEntryCount)
-	got, err := decodeRowIndexPage(page)
+	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
+	got, err := decodePage(page)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -108,8 +108,8 @@ func TestRowIndexPageOrdinalDelta(t *testing.T) {
 		riEntry(1, 4, 2, 1, fileformat.ChangeDelete),
 		riEntry(1, 5, 2, math.MaxUint32, fileformat.ChangeUpdate),
 	}
-	page, _, _, _, _ := encodeRowIndexPage(rows, indexPageEntryCount)
-	got, err := decodeRowIndexPage(page)
+	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
+	got, err := decodePage(page)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -132,8 +132,8 @@ func TestRowIndexPageRandomPreSorted(t *testing.T) {
 		rows[i] = riEntry(1, id, id/50, uint32(id%50), fileformat.ChangeInsert)
 	}
 	sortRowIndexEntries(rows)
-	page, _, _, _, _ := encodeRowIndexPage(rows, indexPageEntryCount)
-	got, err := decodeRowIndexPage(page)
+	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
+	got, err := decodePage(page)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -146,24 +146,24 @@ func TestRowIndexPageRandomPreSorted(t *testing.T) {
 
 func TestRowIndexPageEncodeErrors(t *testing.T) {
 	rows := []fileformat.RowIndexEntry{riEntry(1, 1, 1, 0, fileformat.ChangeInsert), riEntry(1, 2, 1, 1, fileformat.ChangeInsert)}
-	if _, _, _, _, err := encodeRowIndexPage(nil, indexPageEntryCount); err == nil {
+	if _, _, _, _, err := encodePage(nil, indexPageEntryCount); err == nil {
 		t.Fatal("encode(nil) = nil error")
 	}
-	if _, _, _, _, err := encodeRowIndexPage(rows, 0); err == nil {
+	if _, _, _, _, err := encodePage(rows, 0); err == nil {
 		t.Fatal("encode(pageSize=0) = nil error")
 	}
-	if _, _, _, _, err := encodeRowIndexPage(rows, 1); err == nil {
+	if _, _, _, _, err := encodePage(rows, 1); err == nil {
 		t.Fatal("encode(rows > pageSize) = nil error")
 	}
 	bad := []fileformat.RowIndexEntry{riEntry(1, 2, 1, 0, fileformat.ChangeInsert), riEntry(1, 1, 1, 1, fileformat.ChangeInsert)}
-	if _, _, _, _, err := encodeRowIndexPage(bad, indexPageEntryCount); err == nil {
+	if _, _, _, _, err := encodePage(bad, indexPageEntryCount); err == nil {
 		t.Fatal("encode(unsorted) = nil error")
 	}
 	dup := []fileformat.RowIndexEntry{riEntry(1, 1, 1, 0, fileformat.ChangeInsert), riEntry(1, 1, 1, 1, fileformat.ChangeInsert)}
-	if _, _, _, _, err := encodeRowIndexPage(dup, indexPageEntryCount); err == nil {
+	if _, _, _, _, err := encodePage(dup, indexPageEntryCount); err == nil {
 		t.Fatal("encode(duplicate row id) = nil error")
 	}
-	if _, _, _, _, err := encodeRowIndexPage([]fileformat.RowIndexEntry{riEntry(1, 1, 1, 0, 0)}, indexPageEntryCount); err == nil {
+	if _, _, _, _, err := encodePage([]fileformat.RowIndexEntry{riEntry(1, 1, 1, 0, 0)}, indexPageEntryCount); err == nil {
 		t.Fatal("encode(changeType=0) = nil error")
 	}
 }
@@ -179,12 +179,12 @@ func cloneRI(t *testing.T, page []byte) []byte {
 
 func TestRowIndexPageDecodeTruncated(t *testing.T) {
 	rows := riSeq(200, 50)
-	page, _, _, _, _ := encodeRowIndexPage(rows, indexPageEntryCount)
+	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	for _, cut := range []int{fileformat.IndexPageHeaderSize - 1, fileformat.IndexPageHeaderSize + 1, len(page) / 2, len(page) - 1} {
 		if cut >= len(page) {
 			continue
 		}
-		if _, err := decodeRowIndexPage(page[:cut]); err == nil {
+		if _, err := decodePage(page[:cut]); err == nil {
 			t.Fatalf("decode(truncated %d/%d) = nil error", cut, len(page))
 		}
 	}
@@ -192,14 +192,14 @@ func TestRowIndexPageDecodeTruncated(t *testing.T) {
 
 func TestRowIndexPageDecodeBitFlip(t *testing.T) {
 	rows := riSeq(200, 50)
-	page, _, _, _, _ := encodeRowIndexPage(rows, indexPageEntryCount)
+	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	for _, off := range []int{1, 12, 16, 36, 60, fileformat.IndexPageHeaderSize, fileformat.IndexPageHeaderSize + 8, len(page) - 1} {
 		if off < 0 || off >= len(page) {
 			continue
 		}
 		m := cloneRI(t, page)
 		m[off] ^= 0x01
-		if _, err := decodeRowIndexPage(m); err == nil {
+		if _, err := decodePage(m); err == nil {
 			t.Fatalf("decode(bit flip @%d) = nil error", off)
 		}
 	}
@@ -207,49 +207,49 @@ func TestRowIndexPageDecodeBitFlip(t *testing.T) {
 
 func TestRowIndexPageDecodeForgedSize(t *testing.T) {
 	rows := riSeq(100, 50)
-	page, _, _, _, _ := encodeRowIndexPage(rows, indexPageEntryCount)
+	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	m := cloneRI(t, page)
 	m[20] = m[20] + 1
-	if _, err := decodeRowIndexPage(m); err == nil {
+	if _, err := decodePage(m); err == nil {
 		t.Fatal("decode(forged table run size) = nil error")
 	}
 	m2 := cloneRI(t, page)
 	m2[32] = 0
-	if _, err := decodeRowIndexPage(m2); err == nil {
+	if _, err := decodePage(m2); err == nil {
 		t.Fatal("decode(forged change bits size) = nil error")
 	}
 }
 
 func TestRowIndexPageDecodeForgedCount(t *testing.T) {
 	rows := riSeq(64, 16)
-	page, _, _, _, _ := encodeRowIndexPage(rows, indexPageEntryCount)
+	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	m := cloneRI(t, page)
 	m[12], m[13], m[14], m[15] = 0xFF, 0xFF, 0xFF, 0x7F
-	if _, err := decodeRowIndexPage(m); err == nil {
+	if _, err := decodePage(m); err == nil {
 		t.Fatal("decode(forged entry count) = nil error")
 	}
 }
 
 func TestRowIndexPageDecodeIllegalChangeType(t *testing.T) {
 	rows := riSeq(8, 8)
-	page, _, _, _, _ := encodeRowIndexPage(rows, indexPageEntryCount)
+	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	m := cloneRI(t, page)
 	cbOff := changeBitsOffsetRI(page)
 	if cbOff < 0 {
 		t.Fatalf("cannot locate change bits region")
 	}
 	m[cbOff] = m[cbOff] | 0x03
-	if _, err := decodeRowIndexPage(m); err == nil {
+	if _, err := decodePage(m); err == nil {
 		t.Fatal("decode(illegal change type 3) = nil error")
 	}
 }
 
 func TestRowIndexPageDecodeCorruptCRC(t *testing.T) {
 	rows := riSeq(50, 10)
-	page, _, _, _, _ := encodeRowIndexPage(rows, indexPageEntryCount)
+	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	m := cloneRI(t, page)
 	m[fileformat.IndexPageHeaderSize] ^= 0x40
-	if _, err := decodeRowIndexPage(m); err == nil {
+	if _, err := decodePage(m); err == nil {
 		t.Fatal("decode(stream mutation) = nil error")
 	}
 }
@@ -259,9 +259,9 @@ func TestRowIndexPageDecodeCorruptCRC(t *testing.T) {
 func TestFenceForRowIndexPage(t *testing.T) {
 	rows := riSeq(100, 25)
 	page, n, mn, mx := encodeRowIndexPage1(rows)
-	f, err := fenceForRowIndexPage(page, 42, 9, 0x1234)
+	f, err := pageFence(page, 42, 9, 0x1234)
 	if err != nil {
-		t.Fatalf("fenceForRowIndexPage: %v", err)
+		t.Fatalf("pageFence: %v", err)
 	}
 	if f.TableID != 1 || f.SnapshotID != 9 || f.StoredOffset != 0x1234 {
 		t.Fatalf("fence identity fields wrong: %+v", f)
@@ -286,7 +286,7 @@ func TestFenceForRowIndexPage(t *testing.T) {
 // ---- helpers ----
 
 func encodeRowIndexPage1(rows []fileformat.RowIndexEntry) ([]byte, int, uint64, uint64) {
-	page, n, mn, mx, err := encodeRowIndexPage(rows, indexPageEntryCount)
+	page, n, mn, mx, err := encodePage(rows, indexPageEntryCount)
 	if err != nil {
 		panic(err)
 	}

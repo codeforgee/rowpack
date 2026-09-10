@@ -53,7 +53,7 @@ func (s *Schema) Validate(limits Limits) error {
 		if c.Type == 0 {
 			return fmt.Errorf("rowpack: schema %q column %q has zero type", s.Name, c.Name)
 		}
-		if !validValueType(c.Type) {
+		if !isValidType(c.Type) {
 			return fmt.Errorf("rowpack: schema %q column %q has unknown type %d", s.Name, c.Name, c.Type)
 		}
 		if c.Type == TypeDecimal {
@@ -101,7 +101,7 @@ func checkDuplicateColumnNames(s *Schema, maxColumns uint32) error {
 	return nil
 }
 
-func validValueType(t Type) bool {
+func isValidType(t Type) bool {
 	switch t {
 	case TypeBool, TypeInt8, TypeInt16, TypeInt32, TypeInt64,
 		TypeUint8, TypeUint16, TypeUint32, TypeUint64,

@@ -37,8 +37,8 @@ func TestGetRawBufSatisfiesRequest(t *testing.T) {
 
 func TestPoolGradeDoesNotRetainOversized(t *testing.T) {
 	prev := pooledBytes.Load()
-	defer SetPoolDisabled(false)
-	SetPoolDisabled(false)
+	defer DisablePool(false)
+	DisablePool(false)
 
 	big := make([]byte, poolBudget+1)
 	putRawBuf(&rawBuf{data: big}) // oversized: dropped, not counted
@@ -48,8 +48,8 @@ func TestPoolGradeDoesNotRetainOversized(t *testing.T) {
 }
 
 func TestPoolBudgetCap(t *testing.T) {
-	SetPoolDisabled(false)
-	defer SetPoolDisabled(false)
+	DisablePool(false)
+	defer DisablePool(false)
 	pooledBytes.Store(0)
 	defer pooledBytes.Store(0)
 
@@ -68,8 +68,8 @@ func TestPoolBudgetCap(t *testing.T) {
 }
 
 func TestSetPoolDisabledBypass(t *testing.T) {
-	prev := SetPoolDisabled(true)
-	defer SetPoolDisabled(prev)
+	prev := DisablePool(true)
+	defer DisablePool(prev)
 
 	pooledBytes.Store(0)
 	defer pooledBytes.Store(0)

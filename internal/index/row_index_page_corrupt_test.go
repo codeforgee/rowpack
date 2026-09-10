@@ -6,7 +6,7 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
-// FuzzParseRowIndexPages feeds arbitrary page regions to parseRowIndexPages:
+// FuzzParseRowIndexPages feeds arbitrary page regions to pageParser:
 // it must never panic and never hand a malformed batch to the sink. It is a
 // no-op during normal `go test` beyond the seed corpus; run with
 // `go test -fuzz=FuzzParseRowIndexPages ./internal/index` for fuzzing.
@@ -23,20 +23,13 @@ func FuzzParseRowIndexPages(f *testing.F) {
 			}
 		}()
 		sink := &throwingSink{}
-		var crc uint32
-		var n uint64
 		// Bound the page count so a forged huge count never reaches an
 		// attacker-sized allocation; the parser must reject out-of-bounds
 		// fence lengths before allocating.
 		pageCount := uint32(countByte) * 4
-		_ = parseRowIndexPages(region, 0, pageCount, 1, nil, sink, 0, &crc, &n)
+		_, _, _ = (&pageParser{region: region, pageCount: pageCount, snapshotID: 1, sink: sink}).parse()
 	})
 }
-
-// row_index_page_corrupt_test.go — S3-⑦ 落盘②：Row Index Page + Fence 的
-// 目录层损坏矩阵。decodeRowIndexPage 的页内损坏已由 row_index_page_test.go
-// 覆盖；这里直接针对 parseRowIndexPages 的 Fence 越界 / 重复页 / 错误 Snapshot
-// 归属 / 伪造 pageCount，断言报出结构化错误且绝不 panic / 无界分配。
 
 type throwingSink struct {
 	rows int
@@ -65,7 +58,7 @@ func buildPageRegion(t *testing.T, rows []fileformat.RowIndexEntry, snapshotID u
 			t.Fatal(err)
 		}
 	}
-	pages, err := b.buildRowIndexPages(nil, 0, 0)
+	pages, err := b.buildPages(nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,17 +79,15 @@ func buildPageRegion(t *testing.T, rows []fileformat.RowIndexEntry, snapshotID u
 	return out
 }
 
-func parsePages(region []byte, pageCount uint32, snapshotID uint64) (int, error) {
+func parseCorruptPages(region []byte, pageCount uint32, snapshotID uint64) (int, error) {
 	sink := &throwingSink{}
-	var crc uint32
-	var n uint64
-	err := parseRowIndexPages(region, 0, pageCount, snapshotID, nil, sink, 0, &crc, &n)
+	_, n, err := (&pageParser{region: region, pageCount: pageCount, snapshotID: snapshotID, sink: sink}).parse()
 	return int(n), err
 }
 
 func TestParseRowsValid(t *testing.T) {
 	region := buildPageRegion(t, riSeq(100, 25), 9)
-	rows, err := parsePages(region, uint32(len(riSeq(100, 25))/indexPageEntryCount+1), 9)
+	rows, err := parseCorruptPages(region, uint32(len(riSeq(100, 25))/indexPageEntryCount+1), 9)
 	if err != nil {
 		t.Fatalf("valid parse rejected: %v", err)
 	}
@@ -109,11 +100,11 @@ func TestParseRowsForgedPageCount(t *testing.T) {
 	region := buildPageRegion(t, riSeq(100, 25), 9)
 	// Huge page count: fence directory must exceed the region before any
 	// attacker-sized allocation.
-	if _, err := parsePages(region, 0x7FFFFFFF, 9); err == nil {
+	if _, err := parseCorruptPages(region, 0x7FFFFFFF, 9); err == nil {
 		t.Fatal("forged huge page count = nil error")
 	}
 	// page count 0 with a non-empty fence region: no pages requested.
-	if n, err := parsePages(region, 0, 9); err != nil || n != 0 {
+	if n, err := parseCorruptPages(region, 0, 9); err != nil || n != 0 {
 		t.Fatalf("pageCount=0 => n=%d err=%v, want 0,nil", n, err)
 	}
 }
@@ -130,7 +121,7 @@ func TestParseRowsFenceOffsetOutOfBounds(t *testing.T) {
 	region[offs+2] = 0xFF
 	region[offs+3] = 0xFF
 	region[offs+7] = 0x7F
-	if _, err := parsePages(region, pageCount, 9); err == nil {
+	if _, err := parseCorruptPages(region, pageCount, 9); err == nil {
 		t.Fatal("fence offset out of bounds = nil error")
 	}
 }
@@ -143,7 +134,7 @@ func TestParseRowsFenceSizeZero(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		region[fenceStart+36+i] = 0
 	}
-	if _, err := parsePages(region, pageCount, 9); err == nil {
+	if _, err := parseCorruptPages(region, pageCount, 9); err == nil {
 		t.Fatal("fence zero stored size = nil error")
 	}
 }
@@ -157,7 +148,7 @@ func TestParseRowsWrongSnapshot(t *testing.T) {
 	region[fenceStart+1] = 0
 	region[fenceStart+2] = 0
 	region[fenceStart+3] = 0
-	if _, err := parsePages(region, pageCount, 9); err == nil {
+	if _, err := parseCorruptPages(region, pageCount, 9); err == nil {
 		t.Fatal("wrong snapshot ownership = nil error")
 	}
 }
@@ -177,7 +168,7 @@ func TestParseRowsOverlappingPages(t *testing.T) {
 	region[secondOffset+2] = 0
 	region[secondOffset+3] = 0
 	region[secondOffset+7] = 0
-	if _, err := parsePages(region, pageCount, 9); err == nil {
+	if _, err := parseCorruptPages(region, pageCount, 9); err == nil {
 		t.Fatal("overlapping pages = nil error")
 	}
 }
@@ -188,7 +179,7 @@ func TestParseRowsPageCorruptCompressed(t *testing.T) {
 	// Flip a byte inside the first page's compressed payload (in the pages
 	// region). Decompression or the page CRC must catch it.
 	region[3] ^= 0xFF
-	if _, err := parsePages(region, pageCount, 9); err == nil {
+	if _, err := parseCorruptPages(region, pageCount, 9); err == nil {
 		t.Fatal("corrupt compressed page = nil error")
 	}
 }

@@ -36,12 +36,12 @@ func (s *Store) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 	metas := st.view.Snapshots()
 	out := make([]SnapshotInfo, 0, len(metas))
 	for _, sm := range metas {
-		out = append(out, snapshotInfoFromMeta(sm))
+		out = append(out, snapshotInfo(sm))
 	}
 	return out, nil
 }
 
-func snapshotInfoFromMeta(sm *index.SnapshotMeta) SnapshotInfo {
+func snapshotInfo(sm *index.SnapshotMeta) SnapshotInfo {
 	return SnapshotInfo{
 		ID:          sm.ID,
 		Type:        SnapshotType(sm.Type),
@@ -129,7 +129,7 @@ func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc index.RowLoc,
 	if err != nil {
 		return nil, 0, err
 	}
-	rec, release, err := rc.RecordAtScratch(loc.ItemOrdinal)
+	rec, release, err := rc.RecordAt(loc.ItemOrdinal)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -137,19 +137,35 @@ func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc index.RowLoc,
 	if rec.ChangeType == fileformat.ChangeDelete {
 		return nil, 0, fmt.Errorf("rowpack: row is a tombstone in block %d", bl.BlockID)
 	}
-	row, err := s.decodeBodyRecordInto(rec, bl, si, dst, nil)
+	row, err := s.decodeInto(rec, dst, rowDecodeContext{block: bl, schema: si})
 	return row, rec.SchemaVersion, err
 }
 
-// decodeBodyRecordInto decodes a page record (body-only TypedTuple) into dst
-// against its schema version. A non-nil sink materializes String/Bytes
-// payloads as arena views (batch/scan); nil keeps copy semantics (Get).
-func (s *Store) decodeBodyRecordInto(rec codec.PageRecord, bl *index.BlockLoc, si *schemaIndex, dst Row, sink *codec.Sink) (Row, error) {
-	schema, err := si.schemaFor(bl, rec.SchemaVersion)
+// rowDecodeContext is the per-row decode context: the block the record was
+// read from (schema-version resolution), the snapshot's schema index, and the
+// optional materialization sink (non-nil for batch/scan arena views, nil for
+// copy-semantics Get).
+type rowDecodeContext struct {
+	block  *index.BlockLoc
+	schema *schemaIndex
+	sink   *codec.Sink
+}
+
+// rowCodec returns the store's row codec: the codec limits derived from opts.
+// It is the single place the store turns Options into a codec policy; both the
+// write path (EncodeInto) and the read paths (DecodeInto) go through it, so
+// limits never travel as a loose argument.
+func (s *Store) rowCodec() codec.Codec {
+	return codec.Codec{Limits: s.opts.codecLimits()}
+}
+
+// decodeInto decodes a page record (body-only TypedTuple) into dst under ctx.
+func (s *Store) decodeInto(rec codec.PageRecord, dst Row, ctx rowDecodeContext) (Row, error) {
+	schema, err := ctx.schema.schemaFor(ctx.block, rec.SchemaVersion)
 	if err != nil {
 		return nil, err
 	}
-	return codec.DecodeBodyInto(dst, rec.Body, schema, s.opts.codecLimits(), sink)
+	return s.rowCodec().DecodeInto(dst, rec.Body, schema, ctx.sink)
 }
 
 // Schema returns the schema of a table version at a snapshot. The table is
@@ -219,7 +235,7 @@ func (s *Store) tableRecord(view *index.View, snapshot uint64, tableOID uint64) 
 	cur := snapshot
 	for {
 		if loc := view.Metadata(cur, tableOID); loc != nil {
-			return s.readMetadataRecord(view, cur, tableOID)
+			return s.readMetadataCached(view, cur, tableOID, nil)
 		}
 		sm := view.Snapshot(cur)
 		if sm == nil || sm.Parent == 0 {

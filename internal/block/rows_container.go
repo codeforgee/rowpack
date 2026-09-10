@@ -110,8 +110,8 @@ func rowsPageRetainedBytes(p *RowsPage) int64 {
 	return int64(len(p.raw)) + int64(len(p.ids))*8 + int64(len(p.ends))*4 + int64(len(p.vers))*4
 }
 
-// SetDecompCounter attaches the reader's decompression counter.
-func (c *RowsContainer) SetDecompCounter(p *atomic.Uint64) { c.decompCounter = p }
+// setCounter attaches the reader's decompression counter.
+func (c *RowsContainer) setCounter(p *atomic.Uint64) { c.decompCounter = p }
 
 // RecordsRegionStart is the byte offset (within stored) where the first page's
 // stored bytes begin.
@@ -122,12 +122,12 @@ func (c *RowsContainer) RecordsRegionStart() int {
 // PageCount returns the number of pages.
 func (c *RowsContainer) PageCount() int { return int(c.Header.PageCount) }
 
-// ParseRowsContainer validates a whole Rows Block page container against its
+// ParseContainer validates a whole Rows Block page container against its
 // block header. It checks container geometry, the aggregate header/directory
 // CRC (BlockHeader.RawCRC32C), every page's bounds (inside the container,
 // non-overlapping, within limits) and the logical TotalRecords == ItemCount.
 // It never decompresses a page. Corruption is always an error, never a panic.
-func ParseRowsContainer(container []byte, h fileformat.BlockHeader, limits Limits) (*RowsContainer, error) {
+func ParseContainer(container []byte, h fileformat.BlockHeader, limits Limits) (*RowsContainer, error) {
 	if h.BlockKind != fileformat.BlockKindRows {
 		return nil, fmt.Errorf("rowpack: block %d is kind %d, not rows", h.BlockID, h.BlockKind)
 	}
@@ -163,7 +163,7 @@ func ParseRowsContainer(container []byte, h fileformat.BlockHeader, limits Limit
 		return nil, err
 	}
 	c := &RowsContainer{Header: rh, Dir: dir, blockH: h, comp: h.Compression, limits: limits, stored: container}
-	if err := c.validatePageBounds(fileformat.RowsBlockHeaderSize + len(dir)*fileformat.RowsPageDirEntrySize); err != nil {
+	if err := c.checkBounds(fileformat.RowsBlockHeaderSize + len(dir)*fileformat.RowsPageDirEntrySize); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -215,7 +215,7 @@ func ParseRowsDir(offset int64, r *Reader, h fileformat.BlockHeader, limits Limi
 	}
 	c := &RowsContainer{Header: rh, Dir: dir, blockH: h, comp: h.Compression, limits: limits, reader: r, blockOffset: offset}
 	c.pageCtrs = r.pageCounts()
-	if err := c.validatePageBounds(fileformat.RowsBlockHeaderSize + len(dir)*fileformat.RowsPageDirEntrySize); err != nil {
+	if err := c.checkBounds(fileformat.RowsBlockHeaderSize + len(dir)*fileformat.RowsPageDirEntrySize); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -250,12 +250,12 @@ func parsePageDir(containerOrHeader []byte, rh *fileformat.RowsBlockHeader) ([]f
 	return dir, nil
 }
 
-// validatePageBounds checks every page's geometry: ordinal order, contiguous
+// checkBounds checks every page's geometry: ordinal order, contiguous
 // FirstRecordOrdinal, non-overlapping contiguous stored offsets, sizes within
 // the safety limits and, for a whole container, that pages end exactly at the
 // container length. recordsStart is the byte offset where the first page's
 // stored bytes begin (== container header + directory for a whole container).
-func (c *RowsContainer) validatePageBounds(recordsStart int) error {
+func (c *RowsContainer) checkBounds(recordsStart int) error {
 	expectedOff := recordsStart
 	firstOrd := uint32(0)
 	for i := range c.Dir {
@@ -296,9 +296,9 @@ func (c *RowsContainer) validatePageBounds(recordsStart int) error {
 	return nil
 }
 
-// PageIndexForOrdinal returns the index of the page owning itemOrdinal, by
+// PageFor returns the index of the page owning itemOrdinal, by
 // binary search over the strictly-increasing FirstRecordOrdinal.
-func (c *RowsContainer) PageIndexForOrdinal(ordinal uint32) (int, error) {
+func (c *RowsContainer) PageFor(ordinal uint32) (int, error) {
 	if ordinal >= c.Header.TotalRecords {
 		return 0, fmt.Errorf("rowpack: record ordinal %d out of range (%d)", ordinal, c.Header.TotalRecords)
 	}
@@ -318,9 +318,9 @@ func (c *RowsContainer) PageIndexForOrdinal(ordinal uint32) (int, error) {
 	return i, nil
 }
 
-// decompressPageInto decompresses the stored page i into buf, returning the
+// decompress decompresses the stored page i into buf, returning the
 // page's uncompressed bytes. buf must have capacity for at least RawSize.
-func (c *RowsContainer) decompressPageInto(i int, buf *rawBuf) ([]byte, error) {
+func (c *RowsContainer) decompress(i int, buf *rawBuf) ([]byte, error) {
 	dir := &c.Dir[i]
 	stored := c.stored[int(dir.StoredOffset) : int(dir.StoredOffset)+int(dir.StoredSize)]
 	var raw []byte
@@ -392,7 +392,7 @@ func (c *RowsContainer) pageOwned(i int) (*RowsPage, error) {
 		p, err = c.reader.ReadRowsPage(c.blockOffset, c, i)
 	} else {
 		buf := &rawBuf{data: make([]byte, c.Dir[i].RawSize)}
-		raw, derr := c.decompressPageInto(i, buf)
+		raw, derr := c.decompress(i, buf)
 		if derr != nil {
 			return nil, derr
 		}
@@ -433,12 +433,12 @@ func (c *RowsContainer) PageScratch(i int) (*RowsPage, func(), error) {
 	return p, func() {}, nil
 }
 
-// RecordAtScratch decodes one record by block item ordinal, decompressing only
+// RecordAt decodes one record by block item ordinal, decompressing only
 // the containing page. The returned codec.PageRecord's Body aliases the page
 // buffer, which is valid for the container's lifetime (release is a no-op). It
 // is the Get / single-random-read accessor.
-func (c *RowsContainer) RecordAtScratch(ordinal uint32) (codec.PageRecord, func(), error) {
-	pi, err := c.PageIndexForOrdinal(ordinal)
+func (c *RowsContainer) RecordAt(ordinal uint32) (codec.PageRecord, func(), error) {
+	pi, err := c.PageFor(ordinal)
 	if err != nil {
 		return codec.PageRecord{}, nil, err
 	}

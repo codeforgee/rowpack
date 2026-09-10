@@ -68,12 +68,12 @@ func (si *schemaIndex) schemaFor(bl *index.BlockLoc, version uint32) (*codec.Sch
 	return schema, nil
 }
 
-// buildSchemaIndex derives schemas for every snapshot in the view by reading
+// buildIndex derives schemas for every snapshot in the view by reading
 // its Table and Column metadata records (resolved along the parent chain).
 // One decode memo is shared across all snapshots: deriveTables for snapshot
 // S re-reads every ancestor layer's records, so without the memo an open
 // with N snapshots decompresses the same metadata blocks O(N²) times.
-func (s *Store) buildSchemaIndex(view *index.View) (*schemaIndex, error) {
+func (s *Store) buildIndex(view *index.View) (*schemaIndex, error) {
 	si := &schemaIndex{bySnapshot: make(map[uint64]map[uint32]*tableSchemas)}
 	memo := make(map[metaRecKey]*metadata.Record)
 	for _, sm := range view.Snapshots() {
@@ -91,7 +91,7 @@ func (s *Store) buildSchemaIndex(view *index.View) (*schemaIndex, error) {
 // deriveTables builds the schema index for one snapshot by walking its
 // metadata (UPSERT records win over parent records; DELETE hides them).
 // memo (may be nil) caches decoded records by physical block slot across
-// calls; see buildSchemaIndex.
+// calls; see buildIndex.
 func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRecKey]*metadata.Record) (map[uint32]*tableSchemas, error) {
 	result := make(map[uint32]*tableSchemas)
 	walk := func(snap uint64) error {
@@ -103,7 +103,7 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 			if loc == nil || loc.Operation == fileformat.OperationDelete || loc.RecordType != uint32(fileformat.RecordColumn) {
 				continue
 			}
-			rec, err := s.readMetadataRecordMemo(view, snap, cid, memo)
+			rec, err := s.readMetadataCached(view, snap, cid, memo)
 			if err != nil {
 				return err
 			}
@@ -116,7 +116,7 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 			if loc == nil || loc.Operation == fileformat.OperationDelete {
 				continue
 			}
-			rec, err := s.readMetadataRecordMemo(view, snap, oid, memo)
+			rec, err := s.readMetadataCached(view, snap, oid, memo)
 			if err != nil {
 				return err
 			}
@@ -130,7 +130,7 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 				result[tableID] = ts
 			}
 			before := len(ts.versions)
-			if err := s.addDerivedSchema(ts, rec, columnsByParent[rec.ObjectID]); err != nil {
+			if err := s.addSchema(ts, rec, columnsByParent[rec.ObjectID]); err != nil {
 				if errors.Is(err, errUnknownColumnType) {
 					// The engine does not interpret this table's column type
 					// strings: the records are plain stored data. Skip the
@@ -167,9 +167,9 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 	return result, nil
 }
 
-// addDerivedSchema resolves one Table record and its columns into a
+// addSchema resolves one Table record and its columns into a
 // codec.Schema for the given schema version (Table Revision).
-func (s *Store) addDerivedSchema(ts *tableSchemas, tableRec *metadata.Record, columnRecords []*metadata.Record) error {
+func (s *Store) addSchema(ts *tableSchemas, tableRec *metadata.Record, columnRecords []*metadata.Record) error {
 	version := tableRec.Revision
 	if version == 0 {
 		return nil
@@ -368,15 +368,10 @@ type metaRecKey struct {
 	ordinal uint32
 }
 
-// readMetadataRecord reads and decodes one metadata record from the data file
-// via its index location, resolving along the parent chain.
-func (s *Store) readMetadataRecord(view *index.View, snapshot, objectID uint64) (*metadata.Record, error) {
-	return s.readMetadataRecordMemo(view, snapshot, objectID, nil)
-}
-
-// readMetadataRecordMemo is readMetadataRecord with an optional decode memo
-// keyed by physical block slot (nil memo decodes every time).
-func (s *Store) readMetadataRecordMemo(view *index.View, snapshot, objectID uint64, memo map[metaRecKey]*metadata.Record) (*metadata.Record, error) {
+// readMetadataCached reads and decodes one metadata record from the data
+// file via its index location, resolving along the parent chain. An optional
+// memo avoids decoding the same physical record repeatedly.
+func (s *Store) readMetadataCached(view *index.View, snapshot, objectID uint64, memo map[metaRecKey]*metadata.Record) (*metadata.Record, error) {
 	cur := snapshot
 	for {
 		loc := view.Metadata(cur, objectID)
@@ -389,14 +384,14 @@ func (s *Store) readMetadataRecordMemo(view *index.View, snapshot, objectID uint
 				if rec, ok := memo[key]; ok {
 					return rec, nil
 				}
-				rec, err := s.decodeMetadataRecord(view, loc, objectID)
+				rec, err := s.decodeRecord(view, loc, objectID)
 				if err != nil {
 					return nil, err
 				}
 				memo[key] = rec
 				return rec, nil
 			}
-			return s.decodeMetadataRecord(view, loc, objectID)
+			return s.decodeRecord(view, loc, objectID)
 		}
 		sm := view.Snapshot(cur)
 		if sm == nil || sm.Parent == 0 {
@@ -406,8 +401,8 @@ func (s *Store) readMetadataRecordMemo(view *index.View, snapshot, objectID uint
 	}
 }
 
-// decodeMetadataRecord loads, parses and decodes the metadata record at loc.
-func (s *Store) decodeMetadataRecord(view *index.View, loc *index.MetadataLoc, objectID uint64) (*metadata.Record, error) {
+// decodeRecord loads, parses and decodes the metadata record at loc.
+func (s *Store) decodeRecord(view *index.View, loc *index.MetadataLoc, objectID uint64) (*metadata.Record, error) {
 	bl := view.Block(loc.BlockID)
 	if bl == nil {
 		return nil, fmt.Errorf("rowpack: metadata object %d block %d missing", objectID, loc.BlockID)

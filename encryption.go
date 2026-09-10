@@ -48,9 +48,9 @@ func (c *EncryptionConfig) validate() error {
 	return nil
 }
 
-// buildEncryptor resolves the initial key and builds the write-path Cipher.
+// newEncryptor resolves the initial key and builds the write-path Cipher.
 // It is called once at Create.
-func buildEncryptor(cfg *EncryptionConfig) (*seal.Cipher, error) {
+func newEncryptor(cfg *EncryptionConfig) (*seal.Cipher, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -65,11 +65,11 @@ func buildEncryptor(cfg *EncryptionConfig) (*seal.Cipher, error) {
 	return c, nil
 }
 
-// storeDecrypter authenticates and decrypts blocks for one store. Ciphers
+// decrypter authenticates and decrypts blocks for one store. Ciphers
 // are cached per KeyEpoch so reopen of the same stored key (e.g. the common
 // epoch 0 across every block) is at most one key-schedule per epoch; the
 // cipher.AEAD instances are safe for concurrent reads.
-type storeDecrypter struct {
+type decrypter struct {
 	provider KeyProvider
 	keyID    string
 	uuid     [16]byte
@@ -78,18 +78,18 @@ type storeDecrypter struct {
 	epochs map[uint32]*seal.Cipher
 }
 
-func newStoreDecrypter(provider KeyProvider, keyID string, uuid [16]byte) *storeDecrypter {
-	return &storeDecrypter{provider: provider, keyID: keyID, uuid: uuid, epochs: make(map[uint32]*seal.Cipher)}
+func newDecrypter(provider KeyProvider, keyID string, uuid [16]byte) *decrypter {
+	return &decrypter{provider: provider, keyID: keyID, uuid: uuid, epochs: make(map[uint32]*seal.Cipher)}
 }
 
 // Decrypt implements block.Decrypter. The returned plaintext is a fresh
 // buffer owned by the caller.
-func (d *storeDecrypter) Decrypt(h fileformat.BlockHeader, ciphertext []byte) ([]byte, error) {
+func (d *decrypter) Decrypt(h fileformat.BlockHeader, ciphertext []byte) ([]byte, error) {
 	c, err := d.cipherFor(h.KeyEpoch)
 	if err != nil {
 		return nil, err
 	}
-	pt, err := c.Open(h.KeyEpoch, h.BlockID, &d.uuid, &h, ciphertext)
+	pt, err := c.Open(&d.uuid, &h, ciphertext)
 	if err != nil {
 		return nil, fmt.Errorf("%w: block %d (snapshot %d, table %d): %v", ErrAuthFailed, h.BlockID, h.SnapshotID, h.TableID, err)
 	}
@@ -101,12 +101,20 @@ func (d *storeDecrypter) Decrypt(h fileformat.BlockHeader, ciphertext []byte) ([
 // and the AAD binds the page-directory fields and block identity
 // (BINARY_FORMAT_V2 §5.1). The returned plaintext is the page's compressed
 // payload.
-func (d *storeDecrypter) OpenPage(h fileformat.BlockHeader, page fileformat.RowsPageDirEntry, ciphertext []byte) ([]byte, error) {
+func (d *decrypter) OpenPage(h fileformat.BlockHeader, page fileformat.RowsPageDirEntry, ciphertext []byte) ([]byte, error) {
 	c, err := d.cipherFor(h.KeyEpoch)
 	if err != nil {
 		return nil, err
 	}
-	pt, err := c.OpenPage(&d.uuid, h.BlockID, h.SnapshotID, h.TableID, h.Compression, page, h.KeyEpoch, ciphertext)
+	pt, err := c.OpenPage(seal.PageContext{
+		UUID:        &d.uuid,
+		BlockID:     h.BlockID,
+		SnapshotID:  h.SnapshotID,
+		TableID:     h.TableID,
+		Compression: h.Compression,
+		Page:        page,
+		Epoch:       h.KeyEpoch,
+	}, ciphertext)
 	if err != nil {
 		return nil, fmt.Errorf("%w: rows page %d (block %d, snapshot %d, table %d): %v", ErrAuthFailed, page.PageOrdinal, h.BlockID, h.SnapshotID, h.TableID, err)
 	}
@@ -115,16 +123,20 @@ func (d *storeDecrypter) OpenPage(h fileformat.BlockHeader, page fileformat.Rows
 
 // OpenIndexChunk authenticates and decrypts one sealed index txn chunk. The
 // nonce is HMAC-derived from (txn sequence, chunk sequence) and the AAD binds
-// store, txn, chunk identity and lengths (doc §5.3/§5.4). The returned
-// plaintext is the compressed chunk payload.
-func (d *storeDecrypter) OpenIndexChunk(epoch uint32, txnSeq, snapshotID uint64, chunkSeq uint32, kind uint8, firstOrdinal, rawBytes, storedBytes uint32, stored []byte) ([]byte, error) {
-	c, err := d.cipherFor(epoch)
+// store, txn, chunk identity and lengths (doc §5.3/§5.4). ctx.UUID is ignored:
+// the decrypter is the authority on the store identity and injects its own
+// uuid, so callers never repeat it. The returned plaintext is the compressed
+// chunk payload.
+func (d *decrypter) OpenIndexChunk(ctx seal.ChunkContext, stored []byte) ([]byte, error) {
+	c, err := d.cipherFor(ctx.Epoch)
 	if err != nil {
 		return nil, err
 	}
-	pt, err := c.OpenIndexChunk(&d.uuid, txnSeq, snapshotID, chunkSeq, firstOrdinal, rawBytes, storedBytes, kind, epoch, stored)
+	ctx.UUID = &d.uuid
+	pt, err := c.OpenIndexChunk(ctx, stored)
 	if err != nil {
-		return nil, fmt.Errorf("%w: index chunk %d (txn %d, snapshot %d): %v", ErrAuthFailed, chunkSeq, txnSeq, snapshotID, err)
+		return nil, fmt.Errorf("%w: index chunk %d (txn %d, snapshot %d): %v",
+			ErrAuthFailed, ctx.ChunkSequence, ctx.TxnSequence, ctx.SnapshotID, err)
 	}
 	return pt, nil
 }
@@ -133,7 +145,7 @@ func (d *storeDecrypter) OpenIndexChunk(epoch uint32, txnSeq, snapshotID uint64,
 // is the shared entry point for the write path's single-writer encryptor;
 // the returned cipher is cached per epoch so a reopen of the same stored key
 // costs at most one key schedule.
-func (d *storeDecrypter) cipherFor(epoch uint32) (*seal.Cipher, error) {
+func (d *decrypter) cipherFor(epoch uint32) (*seal.Cipher, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if c := d.epochs[epoch]; c != nil {

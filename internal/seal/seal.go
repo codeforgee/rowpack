@@ -120,10 +120,18 @@ var chunkNonceInfoPrefix = []byte("RowPackIdxChunkV1")
 var aadMagicIndex = [16]byte{'R', 'o', 'w', 'P', 'a', 'c', 'k', 'I', 'n', 'd', 'e', 'x', 'V', '1', 0, 0}
 
 // AADIndexSize is the fixed serialized index AAD length.
+//
+// The layout below covers a whole IndexTxn sealed as one unit
+// (BINARY_FORMAT_V2 §13). The v2 writer/reader do not use that shape: since
+// S3-⑦ the txn body is sealed per chunk (ChunkContext), and the txn's byte
+// range and offsets are bound by SnapshotFooter.IndexTxnCRC32C over the stored
+// bytes instead of by an AAD. BuildAADIndex is kept as the documented layout
+// primitive and is exercised only by this package's tests.
 const AADIndexSize = 60
 
 // BuildAADIndex serializes the domain-separated AAD for one encrypted index
-// transaction:
+// transaction (the whole-txn layout; see AADIndexSize for why the v2 paths seal
+// per chunk instead):
 //
 //	 0..15  aadMagicIndex
 //	16..31  store UUID
@@ -150,12 +158,25 @@ var aadMagicIndexChunk = [16]byte{'R', 'o', 'w', 'P', 'a', 'c', 'k', 'I', 'C', '
 // AADIndexChunkSize is the fixed serialized chunk AAD length.
 const AADIndexChunkSize = 72
 
-// BuildAADIndexChunk serializes the domain-separated AAD for one encrypted
-// index chunk. It binds every field that gives the chunk its identity and
-// length semantics (doc §5.4). File offsets are intentionally excluded: the
-// chunk's stored size depends on compression while the footer offsets depend
-// on all stored sizes, so offset binding would be circular — the footer's
-// region CRC and byte extent carry the offset binding instead.
+// ChunkContext is the full identity of one sealed index chunk: the
+// fields the nonce derives from and the AAD binds. File offsets are
+// intentionally excluded: the chunk's stored size depends on compression while
+// the footer offsets depend on all stored sizes, so offset binding would be
+// circular — the footer's region CRC and byte extent carry the offset binding
+// instead (doc §5.4).
+type ChunkContext struct {
+	UUID          *[16]byte
+	TxnSequence   uint64
+	SnapshotID    uint64
+	ChunkSequence uint32
+	FirstOrdinal  uint32
+	RawBytes      uint32
+	StoredBytes   uint32
+	Kind          uint8
+	Epoch         uint32
+}
+
+// AAD serializes the domain-separated AAD for the chunk described by ctx.
 //
 //	 0..15  aadMagicIndexChunk
 //	16..31  store UUID
@@ -168,18 +189,18 @@ const AADIndexChunkSize = 72
 //	60..63  RawBytes
 //	64..67  StoredBytes
 //	68..71  KeyEpoch
-func BuildAADIndexChunk(uuid *[16]byte, txnSeq, snapshotID uint64, chunkSeq, firstOrdinal, rawBytes, storedBytes uint32, kind uint8, epoch uint32) [AADIndexChunkSize]byte {
+func (ctx ChunkContext) AAD() [AADIndexChunkSize]byte {
 	var aad [AADIndexChunkSize]byte
 	copy(aad[0:16], aadMagicIndexChunk[:])
-	copy(aad[16:32], uuid[:])
-	le64(aad[32:40], txnSeq)
-	le64(aad[40:48], snapshotID)
-	le32(aad[48:52], chunkSeq)
-	le32(aad[52:56], firstOrdinal)
-	aad[56] = kind
-	le32(aad[60:64], rawBytes)
-	le32(aad[64:68], storedBytes)
-	le32(aad[68:72], epoch)
+	copy(aad[16:32], ctx.UUID[:])
+	le64(aad[32:40], ctx.TxnSequence)
+	le64(aad[40:48], ctx.SnapshotID)
+	le32(aad[48:52], ctx.ChunkSequence)
+	le32(aad[52:56], ctx.FirstOrdinal)
+	aad[56] = ctx.Kind
+	le32(aad[60:64], ctx.RawBytes)
+	le32(aad[64:68], ctx.StoredBytes)
+	le32(aad[68:72], ctx.Epoch)
 	return aad
 }
 
@@ -192,12 +213,22 @@ var aadMagicPage = [16]byte{'R', 'o', 'w', 'P', 'a', 'c', 'k', 'P', 'a', 'g', 'e
 // AADPageSize is the fixed serialized Rows Page AAD length.
 const AADPageSize = 96
 
-// BuildAADPage serializes the domain-separated AAD for one sealed Rows Page.
-// It binds every field that gives the page its identity and parse semantics
-// (the block identity, the page directory entry, and the key epoch), so a
-// sealed page cannot be moved to another block, snapshot, page ordinal or
-// store and still authenticate. StoredSize is the on-disk sealed length
-// (compressed + AESGCMTagLen).
+// PageContext is the full identity of one sealed Rows Page: the block
+// identity, the page directory entry, and the key epoch. It binds every field
+// that gives the page its parse semantics, so a sealed page cannot be moved to
+// another block, snapshot, page ordinal or store and still authenticate.
+// StoredSize is the on-disk sealed length (compressed + AESGCMTagLen).
+type PageContext struct {
+	UUID        *[16]byte
+	BlockID     uint64
+	SnapshotID  uint64
+	TableID     uint32
+	Compression fileformat.Compression
+	Page        fileformat.RowsPageDirEntry
+	Epoch       uint32
+}
+
+// AAD serializes the domain-separated AAD for the page described by ctx.
 //
 //	 0..15  aadMagicPage
 //	16..31  store UUID
@@ -214,22 +245,22 @@ const AADPageSize = 96
 //	76..83  MinRowID
 //	84..91  MaxRowID
 //	92..95  KeyEpoch
-func BuildAADPage(uuid *[16]byte, blockID, snapshotID uint64, tableID uint32, comp fileformat.Compression, page fileformat.RowsPageDirEntry, epoch uint32) [AADPageSize]byte {
+func (ctx PageContext) AAD() [AADPageSize]byte {
 	var aad [AADPageSize]byte
 	copy(aad[0:16], aadMagicPage[:])
-	copy(aad[16:32], uuid[:])
-	le64(aad[32:40], snapshotID)
-	le64(aad[40:48], blockID)
-	le32(aad[48:52], tableID)
-	aad[52] = byte(comp)
-	le32(aad[56:60], page.PageOrdinal)
-	le32(aad[60:64], page.FirstRecordOrdinal)
-	le32(aad[64:68], page.RecordCount)
-	le32(aad[68:72], page.StoredSize)
-	le32(aad[72:76], page.RawSize)
-	le64(aad[76:84], page.MinRowID)
-	le64(aad[84:92], page.MaxRowID)
-	le32(aad[92:96], epoch)
+	copy(aad[16:32], ctx.UUID[:])
+	le64(aad[32:40], ctx.SnapshotID)
+	le64(aad[40:48], ctx.BlockID)
+	le32(aad[48:52], ctx.TableID)
+	aad[52] = byte(ctx.Compression)
+	le32(aad[56:60], ctx.Page.PageOrdinal)
+	le32(aad[60:64], ctx.Page.FirstRecordOrdinal)
+	le32(aad[64:68], ctx.Page.RecordCount)
+	le32(aad[68:72], ctx.Page.StoredSize)
+	le32(aad[72:76], ctx.Page.RawSize)
+	le64(aad[76:84], ctx.Page.MinRowID)
+	le64(aad[84:92], ctx.Page.MaxRowID)
+	le32(aad[92:96], ctx.Epoch)
 	return aad
 }
 
@@ -245,23 +276,24 @@ func (c *Cipher) pageNonceKey() [sha256.Size]byte {
 	return c.pageHk
 }
 
-// NoncePage returns the deterministic 96-bit nonce for one sealed Rows
-// Page: Trunc12(HMAC-SHA256(pageNonceKey, prefix ‖ UUID ‖ SnapshotID ‖
-// BlockID ‖ PageOrdinal ‖ KeyEpoch)). Binding the store/snapshot/block/
-// page/epoch into the nonce means the AES-GCM nonce is unique per page and
-// domain-separated from block and index-chunk nonces (BINARY_FORMAT_V2 §5.1).
-func (c *Cipher) NoncePage(uuid *[16]byte, snapshotID, blockID uint64, pageOrdinal uint32, epoch uint32) [fileformat.EncNonceLen]byte {
+// NoncePage returns the deterministic 96-bit nonce for the sealed Rows Page
+// described by ctx: Trunc12(HMAC-SHA256(pageNonceKey, prefix ‖ UUID ‖
+// SnapshotID ‖ BlockID ‖ PageOrdinal ‖ KeyEpoch)). Binding the
+// store/snapshot/block/page/epoch into the nonce means the AES-GCM nonce is
+// unique per page and domain-separated from block and index-chunk nonces
+// (BINARY_FORMAT_V2 §5.1).
+func (c *Cipher) NoncePage(ctx PageContext) [fileformat.EncNonceLen]byte {
 	hk := c.pageNonceKey()
 	mac := hmac.New(sha256.New, hk[:])
 	mac.Write(pageNonceInfoPrefix)
 	var in [32]byte
-	copy(in[0:16], uuid[:])
-	binary.BigEndian.PutUint64(in[16:24], snapshotID)
-	binary.BigEndian.PutUint64(in[24:32], blockID)
+	copy(in[0:16], ctx.UUID[:])
+	binary.BigEndian.PutUint64(in[16:24], ctx.SnapshotID)
+	binary.BigEndian.PutUint64(in[24:32], ctx.BlockID)
 	mac.Write(in[:])
 	var in2 [8]byte
-	binary.BigEndian.PutUint32(in2[0:4], pageOrdinal)
-	binary.BigEndian.PutUint32(in2[4:8], epoch)
+	binary.BigEndian.PutUint32(in2[0:4], ctx.Page.PageOrdinal)
+	binary.BigEndian.PutUint32(in2[4:8], ctx.Epoch)
 	mac.Write(in2[:])
 	sum := mac.Sum(nil)
 	var n [fileformat.EncNonceLen]byte
@@ -273,39 +305,39 @@ func (c *Cipher) NoncePage(uuid *[16]byte, snapshotID, blockID uint64, pageOrdin
 // nonce/AAD. page.StoredSize must already be the on-disk sealed length
 // (compressed + AESGCMTagLen); the AAD binds it so read-time verification
 // is self-consistent. The returned ciphertext is a fresh buffer.
-func (c *Cipher) SealPage(uuid *[16]byte, blockID, snapshotID uint64, tableID uint32, comp fileformat.Compression, page fileformat.RowsPageDirEntry, epoch uint32, plaintext []byte) ([]byte, error) {
-	nonce := c.NoncePage(uuid, snapshotID, blockID, page.PageOrdinal, epoch)
-	aad := BuildAADPage(uuid, blockID, snapshotID, tableID, comp, page, epoch)
+func (c *Cipher) SealPage(ctx PageContext, plaintext []byte) ([]byte, error) {
+	nonce := c.NoncePage(ctx)
+	aad := ctx.AAD()
 	out := make([]byte, 0, len(plaintext)+fileformat.AESGCMTagLen)
 	return c.aead.Seal(out, nonce[:], plaintext, aad[:]), nil
 }
 
 // OpenPage authenticates and opens one sealed Rows Page stored bytes. On
 // any authentication failure it returns ErrAuth (wrapped).
-func (c *Cipher) OpenPage(uuid *[16]byte, blockID, snapshotID uint64, tableID uint32, comp fileformat.Compression, page fileformat.RowsPageDirEntry, epoch uint32, ciphertext []byte) ([]byte, error) {
-	nonce := c.NoncePage(uuid, snapshotID, blockID, page.PageOrdinal, epoch)
-	aad := BuildAADPage(uuid, blockID, snapshotID, tableID, comp, page, epoch)
+func (c *Cipher) OpenPage(ctx PageContext, ciphertext []byte) ([]byte, error) {
+	nonce := c.NoncePage(ctx)
+	aad := ctx.AAD()
 	pt, err := c.aead.Open(nil, nonce[:], ciphertext, aad[:])
 	if err != nil {
-		return nil, fmt.Errorf("%w: rows page %d block %d epoch %d", ErrAuth, page.PageOrdinal, blockID, epoch)
+		return nil, fmt.Errorf("%w: rows page %d block %d epoch %d", ErrAuth, ctx.Page.PageOrdinal, ctx.BlockID, ctx.Epoch)
 	}
 	return pt, nil
 }
 
 // SealIndexChunk seals one compressed index chunk payload under the chunk
 // nonce/AAD. The returned ciphertext carries exactly AESGCMTagLen extra bytes.
-func (c *Cipher) SealIndexChunk(uuid *[16]byte, txnSeq, snapshotID uint64, chunkSeq, firstOrdinal, rawBytes, storedBytes uint32, kind uint8, epoch uint32, plaintext []byte) ([]byte, error) {
-	nonce := c.NonceIndexChunk(txnSeq, chunkSeq)
-	aad := BuildAADIndexChunk(uuid, txnSeq, snapshotID, chunkSeq, firstOrdinal, rawBytes, storedBytes, kind, epoch)
+func (c *Cipher) SealIndexChunk(ctx ChunkContext, plaintext []byte) ([]byte, error) {
+	nonce := c.NonceIndexChunk(ctx.TxnSequence, ctx.ChunkSequence)
+	aad := ctx.AAD()
 	return c.SealWith(nonce, aad[:], plaintext), nil
 }
 
 // OpenIndexChunk authenticates and opens one stored (compressed) chunk
 // payload. storedBytes must be the header-declared payload length including
 // the tag.
-func (c *Cipher) OpenIndexChunk(uuid *[16]byte, txnSeq, snapshotID uint64, chunkSeq, firstOrdinal, rawBytes, storedBytes uint32, kind uint8, epoch uint32, stored []byte) ([]byte, error) {
-	nonce := c.NonceIndexChunk(txnSeq, chunkSeq)
-	aad := BuildAADIndexChunk(uuid, txnSeq, snapshotID, chunkSeq, firstOrdinal, rawBytes, storedBytes, kind, epoch)
+func (c *Cipher) OpenIndexChunk(ctx ChunkContext, stored []byte) ([]byte, error) {
+	nonce := c.NonceIndexChunk(ctx.TxnSequence, ctx.ChunkSequence)
+	aad := ctx.AAD()
 	return c.OpenWith(nonce, aad[:], stored)
 }
 
@@ -398,23 +430,25 @@ func (c *Cipher) NonceIndexChunk(txnSeq uint64, chunkSeq uint32) [fileformat.Enc
 }
 
 // Seal encrypts plaintext into a fresh ciphertext buffer (plaintext +
-// AESGCMTagLen). plaintext is not modified.
-func (c *Cipher) Seal(epoch uint32, blockID uint64, uuid *[16]byte, h *fileformat.BlockHeader, plaintext []byte) ([]byte, error) {
-	nonce := Nonce(epoch, blockID)
+// AESGCMTagLen). plaintext is not modified. The block's identity — BlockID and
+// KeyEpoch — comes from h, which is also what the AAD binds, so the header is
+// the single source of truth for both the nonce and the AAD.
+func (c *Cipher) Seal(uuid *[16]byte, h *fileformat.BlockHeader, plaintext []byte) ([]byte, error) {
+	nonce := Nonce(h.KeyEpoch, h.BlockID)
 	aad := BuildAAD(uuid, h)
 	out := make([]byte, 0, len(plaintext)+fileformat.AESGCMTagLen)
 	return c.aead.Seal(out, nonce[:], plaintext, aad[:]), nil
 }
 
-// Open authenticates ciphertext against (epoch, blockID, uuid, header) and
-// returns the plaintext in a fresh buffer. On any authentication failure it
-// returns ErrAuth (wrapped with context) and a nil payload.
-func (c *Cipher) Open(epoch uint32, blockID uint64, uuid *[16]byte, h *fileformat.BlockHeader, ciphertext []byte) ([]byte, error) {
-	nonce := Nonce(epoch, blockID)
+// Open authenticates ciphertext against (uuid, header) and returns the
+// plaintext in a fresh buffer. On any authentication failure it returns ErrAuth
+// (wrapped with context) and a nil payload.
+func (c *Cipher) Open(uuid *[16]byte, h *fileformat.BlockHeader, ciphertext []byte) ([]byte, error) {
+	nonce := Nonce(h.KeyEpoch, h.BlockID)
 	aad := BuildAAD(uuid, h)
 	pt, err := c.aead.Open(nil, nonce[:], ciphertext, aad[:])
 	if err != nil {
-		return nil, fmt.Errorf("%w: block %d epoch %d", ErrAuth, blockID, epoch)
+		return nil, fmt.Errorf("%w: block %d epoch %d", ErrAuth, h.BlockID, h.KeyEpoch)
 	}
 	return pt, nil
 }

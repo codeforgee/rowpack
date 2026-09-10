@@ -36,7 +36,7 @@ func pageBenchSchema() *codec.Schema {
 }
 
 // benchPageRows builds body-only encodings for benchPageRows rows, reusing
-// buffers via EncodeBodyInto's reuse argument (page build is the benchmark;
+// buffers via EncodeInto's reuse argument (page build is the benchmark;
 // row encoding is done once and cached).
 func benchPageRows(b *testing.B, schema *codec.Schema) [][]byte {
 	b.Helper()
@@ -67,8 +67,8 @@ func benchPageRows(b *testing.B, schema *codec.Schema) [][]byte {
 			row[3] = codec.String(fmt.Sprintf("row-%08d-payload", i))
 		}
 		// Copy the body: pages keep their own bytes for the duration of the
-		// benchmark, and EncodeBodyInto may alias the returned buffer.
-		body, err := codec.EncodeBodyInto(schema, row, codec.Limits{MaxRowBytes: 1 << 20, MaxColumns: 100, MaxValueBytes: 1 << 20}, nil)
+		// benchmark, and EncodeInto may alias the returned buffer.
+		body, err := testCodec.EncodeInto(schema, row, nil)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -91,7 +91,7 @@ func BenchmarkRowsPageEncode(b *testing.B) {
 			)
 			for i := 0; i < b.N; i++ {
 				pageCount, rawBytes, stored = 0, 0, 0
-				bld := NewRowsPageBuilder(target)
+				bld := NewPageBuilder(target)
 				buildComp := func() error {
 					page, err := bld.Finish()
 					if err != nil {
@@ -138,7 +138,7 @@ func BenchmarkRowsPageEncode(b *testing.B) {
 func BenchmarkRowsPageRecordAt32K(b *testing.B) {
 	schema := pageBenchSchema()
 	bodies := benchPageRows(b, schema)
-	bld := NewRowsPageBuilder(32 << 10)
+	bld := NewPageBuilder(32 << 10)
 	for _, body := range bodies[1:] {
 		if bld.NeedsFlush() {
 			if _, err := bld.Finish(); err != nil {
@@ -170,7 +170,7 @@ func BenchmarkRowsPageRecordAt32K(b *testing.B) {
 func BenchmarkRowsPageRecords32K(b *testing.B) {
 	schema := pageBenchSchema()
 	bodies := benchPageRows(b, schema)
-	bld := NewRowsPageBuilder(32 << 10)
+	bld := NewPageBuilder(32 << 10)
 	for _, body := range bodies[1:] {
 		if bld.NeedsFlush() {
 			if _, err := bld.Finish(); err != nil {

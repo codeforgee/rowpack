@@ -76,7 +76,7 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 					if rec.ChangeType != fileformat.ChangeDelete {
 						schema := st.schemas.schema(bl.SnapshotID, bl.TableID, rec.SchemaVersion)
 						if schema != nil {
-							if _, err := codec.DecodeBodyInto(nil, rec.Body, schema, s.opts.codecLimits(), nil); err != nil {
+							if _, err := s.rowCodec().DecodeInto(nil, rec.Body, schema, nil); err != nil {
 								return fmt.Errorf("row %d: %v", rec.RowID, err)
 							}
 						}

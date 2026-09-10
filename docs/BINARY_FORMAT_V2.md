@@ -138,7 +138,7 @@ S2 起 Rows Block 的逻辑块（写入/统计/快照组织单位）与物理压
 - **Nonce（96 位）**：HMAC-SHA256 派生自独立 page-nonce 子密钥，绑定
   `StoreUUID ‖ SnapshotID ‖ BlockID ‖ PageOrdinal ‖ KeyEpoch`，与块 nonce、IndexTxn
   nonce 和 IndexChunk nonce 域分离（`internal/seal` 的 `NoncePage`）。
-- **AAD**：`BuildAADPage` 绑定 store UUID、SnapshotID/BlockID/TableID/Compression、
+- **AAD**：`PageContext.AAD` 绑定 store UUID、SnapshotID/BlockID/TableID/Compression、
   页目录的 PageOrdinal/FirstRecordOrdinal/RecordCount/StoredSize/RawSize/MinRowID/MaxRowID
   和 KeyEpoch；StoredSize 取**密封后**长度，所以读取端按目录字段认证自洽。
 - 未加密页不承担 tag 开销；同一页不会重放（nonce 域分离测试见
@@ -433,6 +433,13 @@ RowIDs/Ranges
 加密 IndexTxn 时：Body 加密，Header/Footer 保留最小明文导航字段（Header/Footer 永不需
 密钥，R1 扫描与 Footer 校验才成立），AAD 绑定 StoreUUID、SnapshotID、IndexTxn offset 和
 长度。
+
+（实现现状：自 S3-⑦ 起 IndexTxn 不再整体密封，body 按 chunk 独立密封，AAD 用
+`seal.ChunkContext.AAD`——绑定 chunk 身份与 raw/stored 长度，**刻意不绑 offset**（stored
+长度取决于压缩率，而 offset 又取决于全部 stored 长度，绑进去会成循环）；txn 的字节范围与
+offset 由 `SnapshotFooter.IndexTxnCRC32C` 覆盖落盘字节承担。`seal.BuildAADIndex` /
+`AADIndexSize` 是本段上述「整条 IndexTxn 一个 AAD」布局的冻结原语，当前读写路径不调用，
+仅由 seal 包测试守住布局。）
 
 **nonce 域分离（R11）**：nonce 唯一性不依赖 AAD，必须在 nonce 字段内部显式分区：
 

@@ -48,7 +48,7 @@ func scanBudgetFor(cacheBytes int64) int64 {
 	return b
 }
 
-func splitCacheBudget(total, scan int64) (dataCap, scanCap int64) {
+func cacheBudget(total, scan int64) (dataCap, scanCap int64) {
 	if total <= 0 {
 		return 0, 0
 	}
@@ -63,8 +63,8 @@ func splitCacheBudget(total, scan int64) (dataCap, scanCap int64) {
 	return total - scan, scan
 }
 
-func newBlockLoader(reader *block.Reader, file string, cacheBytes, scanCacheBytes int64) *blockLoader {
-	dataCap, scanCap := splitCacheBudget(cacheBytes, scanCacheBytes)
+func newLoader(reader *block.Reader, file string, cacheBytes, scanCacheBytes int64) *blockLoader {
+	dataCap, scanCap := cacheBudget(cacheBytes, scanCacheBytes)
 	var lru, scn *cache.LRU
 	if dataCap > 0 {
 		lru = cache.NewLRU(dataCap)
@@ -75,13 +75,13 @@ func newBlockLoader(reader *block.Reader, file string, cacheBytes, scanCacheByte
 	return &blockLoader{reader: reader, file: file, cache: lru, scan: scn}
 }
 
-// blockReadError normalizes a block read/decode failure into a structured
+// readError normalizes a block read/decode failure into a structured
 // CorruptionError so public read paths can match ErrCorruptData with
 // errors.Is, while still unwrapping to the underlying Cause (e.g.
 // ErrAuthFailed for a failed AEAD authentication). Failures that already
 // carry a corruption or auth sentinel are returned unchanged so Verify and
 // the recovery rebuild never double-wrap.
-func (l *blockLoader) blockReadError(offset int64, blockID uint64, err error) error {
+func (l *blockLoader) readError(offset int64, blockID uint64, err error) error {
 	if errors.Is(err, ErrCorruptData) || errors.Is(err, ErrAuthFailed) {
 		return err
 	}
@@ -108,7 +108,7 @@ func (l *blockLoader) Load(offset int64, blockID uint64) (*block.Block, error) {
 		l.cache.NoteLoad()
 		blk, err := l.reader.ReadAtBlock(offset)
 		if err != nil {
-			return nil, l.blockReadError(offset, blockID, err)
+			return nil, l.readError(offset, blockID, err)
 		}
 		// Only validated blocks (CRC passed inside ReadAtBlock) are cached.
 		l.cache.Put(blockID, int64(len(blk.Raw)), blk)
@@ -136,7 +136,7 @@ func (l *blockLoader) LoadRows(offset int64, blockID uint64) (*block.RowsContain
 		l.cache.NoteLoad()
 		rc, err := l.reader.ReadRowsDir(offset)
 		if err != nil {
-			return nil, l.blockReadError(offset, blockID, err)
+			return nil, l.readError(offset, blockID, err)
 		}
 		rc.SetCacheAccounting(func(size int64) { l.cache.Put(blockID, size, rc) })
 		l.cache.Put(blockID, rc.RetainedLen(), rc)
@@ -169,7 +169,7 @@ func (l *blockLoader) LoadScanRows(offset int64, blockID uint64) (*block.RowsCon
 	}
 	rc, err := l.reader.ReadRowsDir(offset)
 	if err != nil {
-		return nil, l.blockReadError(offset, blockID, err)
+		return nil, l.readError(offset, blockID, err)
 	}
 	// RetainedLen is the actual initial resident footprint. StoredLen can be
 	// only the header+directory for lazy containers and is not a safe budget

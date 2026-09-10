@@ -94,7 +94,7 @@ func TestRowsContainerAccountingHooks(t *testing.T) {
 
 	// Decompression counter counts page loads.
 	var counter atomic.Uint64
-	rc.SetDecompCounter(&counter)
+	rc.setCounter(&counter)
 	before := counter.Load()
 	var n int
 	if err := rc.ForEach(func(codec.PageRecord) error { n++; return nil }); err != nil {
@@ -164,7 +164,7 @@ func TestRowsPageBuilderResetAndRowIDAt(t *testing.T) {
 	}
 
 	// Reset clears the builder for reuse.
-	b := NewRowsPageBuilder(16 << 10)
+	b := NewPageBuilder(16 << 10)
 	for i := range want {
 		if err := b.Add(want[i].rowID, want[i].version, want[i].ct, bodies[i]); err != nil {
 			t.Fatal(err)

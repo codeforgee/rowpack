@@ -89,7 +89,7 @@ type Store struct {
 	// (cached per epoch, concurrent-safe). Both are non-nil only for
 	// encrypted stores and are built during initOpen from the on-disk header.
 	encCipher *seal.Cipher
-	decrypter *storeDecrypter
+	decrypter *decrypter
 
 	data   *iofile.Appender
 	reader *block.Reader
@@ -173,7 +173,7 @@ func Create(basePath string, opts Options) (*Store, error) {
 	}
 	// Encryption is fixed at Create: resolve the initial key and stamp the
 	// header. A plain store keeps all encryption bytes zero.
-	encCipher, err := buildEncryptor(resolved.Encryption)
+	encCipher, err := newEncryptor(resolved.Encryption)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +233,7 @@ func openStore(basePath, dataPath string, opts Options, uuid [16]byte, header fi
 		MaxRawBytes:    opts.Limits.MaxRawBlockBytes,
 		MaxStoredBytes: opts.Limits.MaxStoredBlockBytes,
 	})
-	s.loader = newBlockLoader(s.reader, dataPath, opts.CacheBytes, opts.ScanCacheBytes)
+	s.loader = newLoader(s.reader, dataPath, opts.CacheBytes, opts.ScanCacheBytes)
 	s.uuid = uuid
 	s.header = header
 	// Cross-process single-writer lock for read-write opens.
@@ -323,8 +323,8 @@ func (s *Store) Close() error {
 	return errors.Join(errs...)
 }
 
-// readDataHeader reads and validates the single-file header.
-func (s *Store) readDataHeader() (fileformat.DataFileHeader, error) {
+// readHeader reads and validates the single-file header.
+func (s *Store) readHeader() (fileformat.DataFileHeader, error) {
 	var h fileformat.DataFileHeader
 	buf := make([]byte, fileformat.DataFileHeaderSize)
 	if _, err := s.data.ReadAt(buf, 0); err != nil {
@@ -349,7 +349,7 @@ func (s *Store) checkOpen() error {
 
 func (s *Store) initOpen() error {
 	// Read and validate the single-file header.
-	dataHdr, err := s.readDataHeader()
+	dataHdr, err := s.readHeader()
 	if err != nil {
 		return err
 	}
@@ -376,16 +376,16 @@ func (s *Store) initOpen() error {
 	default:
 		return fmt.Errorf("%w: default compression %d", ErrVersionUnsupported, dataHdr.DefaultCompression)
 	}
-	if err := s.initEncryption(dataHdr); err != nil {
+	if err := s.setupEncryption(dataHdr); err != nil {
 		return err
 	}
 	return s.recover()
 }
 
-// initEncryption wires the read (and write) crypto for an encrypted store and
+// setupEncryption wires the read (and write) crypto for an encrypted store and
 // enforces the key contract: an encrypted store opened without a KeyProvider
 // fails with ErrKeyRequired instead of entering a half-usable state.
-func (s *Store) initEncryption(dataHdr fileformat.DataFileHeader) error {
+func (s *Store) setupEncryption(dataHdr fileformat.DataFileHeader) error {
 	if dataHdr.EncryptionAlgorithm == fileformat.EncNone {
 		return nil
 	}
@@ -399,7 +399,7 @@ func (s *Store) initEncryption(dataHdr fileformat.DataFileHeader) error {
 		return fmt.Errorf("%w: store %q is encrypted (key id %q)", ErrKeyRequired, s.basePath, dataHdr.KeyID)
 	}
 	keyID := string(dataHdr.KeyID)
-	s.decrypter = newStoreDecrypter(s.opts.Encryption.KeyProvider, keyID, dataHdr.StoreUUID)
+	s.decrypter = newDecrypter(s.opts.Encryption.KeyProvider, keyID, dataHdr.StoreUUID)
 	s.reader.SetDecrypter(s.decrypter)
 	// Write path (read-write opens only): resolve the initial key up front so
 	// provider failures surface at Open, not at the first commit.

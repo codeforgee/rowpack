@@ -65,13 +65,13 @@ func poolClass(size int) int {
 // measurement instrumentation (S0 baseline): benchmarks use it to report the
 // true per-read temporary allocation that the page-format refactor must cut.
 // It is process-wide, read once from ROWPACK_NOPOOL=1 at init, and can be
-// flipped at runtime via SetPoolDisabled (benchmarks run sequentially).
+// flipped at runtime via DisablePool (benchmarks run sequentially).
 var noPool = os.Getenv("ROWPACK_NOPOOL") == "1"
 
-// SetPoolDisabled forces the pool bypass on or off for the whole process and
+// DisablePool forces the pool bypass on or off for the whole process and
 // returns the previous value so callers can restore it. It must not be
 // flipped while reads are in flight on other goroutines.
-func SetPoolDisabled(v bool) (prev bool) {
+func DisablePool(v bool) (prev bool) {
 	prev = noPool
 	noPool = v
 	return prev

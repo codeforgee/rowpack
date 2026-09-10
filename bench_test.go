@@ -168,8 +168,8 @@ func BenchmarkGetCold(b *testing.B) {
 // <= 64 KiB (FILE_FORMAT_REFACTOR_PLAN.md §3.1). The pool state is restored
 // on exit; benchmarks run sequentially so the flip is race-free.
 func BenchmarkGetColdUnpooled(b *testing.B) {
-	prev := block.SetPoolDisabled(true)
-	defer block.SetPoolDisabled(prev)
+	prev := block.DisablePool(true)
+	defer block.DisablePool(prev)
 	ctx := context.Background()
 	db, snap := benchStore(b, Options{CacheBytes: -1}, 20_000)
 	b.Cleanup(func() { db.Close() })

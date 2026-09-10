@@ -104,7 +104,7 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 		rawBytes += uint64(bl.RawSize)
 		reqByPage := make(map[uint32][]batchReq, 4)
 		for _, req := range groups[bid] {
-			pi, err := rc.PageIndexForOrdinal(req.ordinal)
+			pi, err := rc.PageFor(req.ordinal)
 			if err != nil {
 				return nil, err
 			}
@@ -122,7 +122,7 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 					release()
 					return nil, err
 				}
-				row, err := s.decodeBodyRecordInto(rec, bl, st.schemas, nil, sink)
+				row, err := s.decodeInto(rec, nil, rowDecodeContext{block: bl, schema: st.schemas, sink: sink})
 				if err != nil {
 					release()
 					return nil, err

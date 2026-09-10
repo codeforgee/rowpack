@@ -8,7 +8,7 @@ import (
 
 // TestStreamApplyMatchesBuffered verifies that the Open-path streaming apply
 // (ApplyStreaming → rowShardBuilder) produces byte-identical row shards to the
-// buffered Apply (buildRowShards). It covers empty snapshots, single-table,
+// buffered Apply (buildShards). It covers empty snapshots, single-table,
 // multi-table, and multi-page (crossing the indexPageEntryCount boundary)
 // shapes. Every test builds the txn once, applies it both ways, and compares
 // the resulting (RowID, ItemOrdinal, ChangeType, BlockID) per table.
@@ -44,7 +44,7 @@ func TestStreamApplyMatchesBuffered(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			data, txn, err := b.Build(0, 0, 0, 0, 0)
+			data, txn, err := b.Build(BodyBounds{}, 0)
 			if err != nil {
 				t.Fatal(err)
 			}

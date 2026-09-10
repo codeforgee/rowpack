@@ -1,0 +1,183 @@
+package block
+
+import (
+	"bytes"
+	"io"
+	"sync/atomic"
+	"testing"
+
+	"github.com/rowpack/rowpack/internal/codec"
+	"github.com/rowpack/rowpack/internal/fileformat"
+)
+
+// plainReaderAt is an io.ReaderAt without the viewer interface, forcing the
+// copy path in ReadAtBlock.
+func plainReaderAt(data []byte) io.ReaderAt { return bytes.NewReader(data) }
+
+func TestReaderReadAtBlockCopyNonViewer(t *testing.T) {
+	raw := []byte("copy-path block payload")
+	compressed, err := Compress(fileformat.CompressionZstd, 3, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := fileformat.BlockHeader{
+		BlockKind:   fileformat.BlockKindRows,
+		Compression: fileformat.CompressionZstd,
+		SnapshotID:  1,
+		TableID:     2,
+		ItemCount:   1,
+		RawSize:     uint32(len(raw)),
+		StoredSize:  uint32(len(compressed)),
+		RawCRC32C:   fileformat.CRC32C(raw),
+	}
+	hdr := make([]byte, fileformat.BlockHeaderSize)
+	if err := h.MarshalTo(hdr); err != nil {
+		t.Fatal(err)
+	}
+	buf := append(append([]byte(nil), hdr...), compressed...)
+
+	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
+	r := NewReader(plainReaderAt(buf), limits)
+	blk, err := r.ReadAtBlock(0)
+	if err != nil {
+		t.Fatalf("ReadAtBlock: %v", err)
+	}
+	if !bytes.Equal(blk.Raw, raw) {
+		t.Fatalf("raw mismatch: %q", blk.Raw)
+	}
+
+	// Truncated stored payload surfaces a read error.
+	if _, err := r.ReadAtBlock(int64(len(buf))); err == nil {
+		t.Fatal("read past EOF should error")
+	}
+
+	// CRC mismatch is caught on the copy path too.
+	bad := append([]byte(nil), buf...)
+	bad[fileformat.BlockHeaderSize] ^= 0xFF
+	r2 := NewReader(plainReaderAt(bad), limits)
+	if _, err := r2.ReadAtBlock(0); err == nil {
+		t.Fatal("corrupt payload should error")
+	}
+}
+
+func TestReaderSetDecrypterClears(t *testing.T) {
+	r := NewReader(plainReaderAt(nil), DefaultLimits())
+	r.SetDecrypter(nil) // must not panic
+}
+
+func TestRowsContainerAccountingHooks(t *testing.T) {
+	_, want := []expectedPageRow{}, 0
+	_ = want
+	schema := pageTestSchema()
+	var rows []expectedPageRow
+	var bodies [][]byte
+	for i := 1; i <= 8; i++ {
+		rows = append(rows, expectedPageRow{rowID: uint64(i), version: 1, ct: fileformat.ChangeInsert, bodyLen: 8})
+		bodies = append(bodies, []byte{byte(i), 0, 0, 0, 0, 0, 0, 0})
+	}
+	_ = schema
+	fb, rc := buildContainer(t, 0, 0, fileformat.CompressionNone, rows, bodies)
+
+	// RecordsRegionStart: header + directory.
+	if got := rc.RecordsRegionStart(); got != fileformat.RowsBlockHeaderSize+len(rc.Dir)*fileformat.RowsPageDirEntrySize {
+		t.Fatalf("RecordsRegionStart = %d", got)
+	}
+	// StoredLen covers the whole plaintext container.
+	if got, want := rc.StoredLen(), len(fb.Stored); got != want {
+		t.Fatalf("StoredLen = %d, want %d", got, want)
+	}
+
+	// Cache accounting: the callback fires as pages are memoized, so it must
+	// be installed before the first page load.
+	var reported int64
+	rc.SetCacheAccounting(func(delta int64) { reported += delta })
+
+	// Decompression counter counts page loads.
+	var counter atomic.Uint64
+	rc.SetDecompCounter(&counter)
+	before := counter.Load()
+	var n int
+	if err := rc.ForEach(func(codec.PageRecord) error { n++; return nil }); err != nil {
+		t.Fatalf("ForEach: %v", err)
+	}
+	if n != len(rows) {
+		t.Fatalf("ForEach visited %d records, want %d", n, len(rows))
+	}
+	if counter.Load() <= before {
+		t.Fatal("decompression counter did not advance")
+	}
+	if reported == 0 {
+		t.Fatal("cache accounting callback never fired")
+	}
+
+	if rc.RetainedLen() <= 0 {
+		t.Fatalf("RetainedLen = %d", rc.RetainedLen())
+	}
+
+	// PageScratch returns memoized pages with a no-op release.
+	p, release, err := rc.PageScratch(0)
+	if err != nil {
+		t.Fatalf("PageScratch: %v", err)
+	}
+	release()
+	if p == nil || len(p.Raw()) == 0 {
+		t.Fatal("PageScratch returned an empty page")
+	}
+}
+
+func TestRowsContainerForEachPropagatesError(t *testing.T) {
+	var rows []expectedPageRow
+	var bodies [][]byte
+	for i := 1; i <= 4; i++ {
+		rows = append(rows, expectedPageRow{rowID: uint64(i), version: 1, ct: fileformat.ChangeInsert, bodyLen: 4})
+		bodies = append(bodies, []byte{1, 2, 3, 4})
+	}
+	_, rc := buildContainer(t, 0, 0, fileformat.CompressionNone, rows, bodies)
+	sentinel := errPageTruncated
+	err := rc.ForEach(func(codec.PageRecord) error { return sentinel })
+	if err == nil {
+		t.Fatal("ForEach must propagate the callback error")
+	}
+}
+
+func TestRowsPageBuilderResetAndRowIDAt(t *testing.T) {
+	var want []expectedPageRow
+	var bodies [][]byte
+	for i := 1; i <= 5; i++ {
+		want = append(want, expectedPageRow{rowID: uint64(i) * 10, version: 2, ct: fileformat.ChangeInsert, bodyLen: 4})
+		bodies = append(bodies, []byte{9, 9, 9, 9})
+	}
+	page := buildAndVerifyPage(t, 16<<10, want, bodies)
+
+	// RowIDAt walks the varint stream to the ordinal.
+	for i, w := range want {
+		got, err := page.RowIDAt(uint32(i))
+		if err != nil {
+			t.Fatalf("RowIDAt(%d): %v", i, err)
+		}
+		if got != w.rowID {
+			t.Fatalf("RowIDAt(%d) = %d, want %d", i, got, w.rowID)
+		}
+	}
+	if _, err := page.RowIDAt(uint32(len(want))); err == nil {
+		t.Fatal("RowIDAt past the end should error")
+	}
+
+	// Reset clears the builder for reuse.
+	b := NewRowsPageBuilder(16 << 10)
+	for i := range want {
+		if err := b.Add(want[i].rowID, want[i].version, want[i].ct, bodies[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b.Count() != uint32(len(want)) {
+		t.Fatalf("count %d, want %d", b.Count(), len(want))
+	}
+	if _, err := b.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	b.Reset()
+	if b.Count() != 0 {
+		t.Fatalf("builder not empty after Reset: %d rows", b.Count())
+	}
+}

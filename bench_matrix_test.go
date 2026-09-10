@@ -709,12 +709,11 @@ func BenchmarkLatency(b *testing.B) {
 
 // ---- 环境与数据集几何 ----
 
-// BenchmarkEnv self-describes the runtime and reports the geometry of the
-// standard 100k × 7-column dataset at the README reference config: single
-// file size (dataMB, including embedded IndexTxn), compression ratio,
-// per-row footprint and index memory.
+// BenchmarkEnv reports the geometry of the standard 100k × 7-column dataset at
+// the README reference config: single file size (dataMB, including embedded
+// IndexTxn), compression ratio, per-row footprint and index memory. The
+// runtime header (goos/goarch/cpu) is emitted by `go test` itself.
 func BenchmarkEnv(b *testing.B) {
-	b.Logf("env: %s/%s go=%s", runtime.GOOS, runtime.GOARCH, runtime.Version())
 	base := filepath.Join(tmpdb(b), "env")
 	db, _ := benchStoreAt(b, base, Options{}, benchRows)
 	defer db.Close()

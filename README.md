@@ -179,6 +179,7 @@ st := db.Stats().Batch // Calls/Rows/Blocks/RawBytes：聚合效果可量化（B
 - [IndexTxn 格式](docs/INDEX_TXN_FORMAT_V1.md)
 - [数据块加密](docs/ENCRYPTION_V1.md)
 - [源库 Key Range 映射](docs/SOURCE_KEY_RANGE_MAPPING.md)
+- [性能基线（v1）](docs/PERFORMANCE_BASELINE_V1.md)
 - [文件结构查看器（HTML）](docs/file-explorer.html)
 
 ## 命令
@@ -190,7 +191,10 @@ make vet         # go vet ./...
 make staticcheck # staticcheck ./...
 make bench       # 统一基线套件（Env/矩阵/延迟 + 直读档），输出 bench/results.txt
 make bench-quick # 快速档：20k 行 + 3 次迭代全矩阵冒烟（~15s），输出 bench/results-quick.txt
+make bench-1m    # 1M 行档：scan1m / getrand1m
 make bench-batch # 批量读对比：逐行 Get 基线 vs ReadBatch（10s 每场景）
+make baseline    # 归档性能基线 → testdata/baseline/<date>.txt（带统一环境标注）
+make baseline-diff OLD=2026-09-10 NEW=2026-09-11   # 对比两个基线，>10% 回退退出码 1
 make golden      # 重新生成 golden files（格式变更时人工审查）
 ```
 
@@ -198,7 +202,9 @@ make golden      # 重新生成 golden files（格式变更时人工审查）
 
 统一套件由 `make bench` 复现（`BenchmarkEnv` + `BenchmarkMainMatrix` 64 格矩阵 +
 `BenchmarkLatency` 延迟分位数 + 直读档），完整结果落盘 `bench/results.txt`
-（机器相关，gitignore）。
+（机器相关，gitignore）。冻结的 v1 基线速查见
+[docs/PERFORMANCE_BASELINE_V1.md](docs/PERFORMANCE_BASELINE_V1.md)；
+`make baseline` 会把带环境标注的输出归档到 `testdata/baseline/<日期>.txt`。
 环境：Go 1.27 / darwin/arm64 / klauspost zstd v1.20 / BlockSize 256 KiB / Zstd /
 SyncCommit（批量与缓存档另标注），数据集 100k 行 × 7 列。数值随磁盘与 CPU 变化，
 仅作相对参考。吞吐量以中文口径表述：行吞吐量 = 万行/秒，点读吞吐量 = 万次/秒。

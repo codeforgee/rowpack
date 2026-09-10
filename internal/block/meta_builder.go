@@ -23,8 +23,10 @@ type MetadataBuilder struct {
 	count   uint32
 
 	// enc is the caller-owned zstd encoder (store-level, outliving GC pool
-	// churn); nil selects the pooled encoder.
-	enc *ZstdEncoder
+	// churn); nil selects the pooled encoder. encDst is its EncodeAll scratch
+	// (see RowsBuilder).
+	enc    *ZstdEncoder
+	encDst []byte
 
 	onFlush func(*FlushedBlock) error
 }
@@ -82,7 +84,7 @@ func (b *MetadataBuilder) Flush() error {
 	}
 	var compressed []byte
 	if b.enc != nil && b.compress == fileformat.CompressionZstd {
-		compressed, err = EncodeZstdWith(b.enc, raw)
+		compressed, err = EncodeZstdInto(b.enc, &b.encDst, raw)
 	} else {
 		compressed, err = Compress(b.compress, b.level, raw)
 	}

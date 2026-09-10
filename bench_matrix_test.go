@@ -282,15 +282,34 @@ func benchConcurrentGet(b *testing.B, c benchCtx, g int) {
 		require.NoError(b, err)
 	}
 	b.ResetTimer()
+	// No require.* in the parallel loop: testing.T.Helper() takes the test
+	// mutex (92% of the mutex profile's contention) and would make this measure
+	// testify, not the store; errors surface after the loop. Each goroutine
+	// reuses its own dst like BenchmarkGetHot — nil would add one []Value
+	// allocation per get.
+	errCh := make(chan error, 1)
 	b.RunParallel(func(pb *testing.PB) {
+		var dst Row
 		i := uint64(0)
 		for pb.Next() {
 			i++
-			_, err := db.Get(ctx, snap, "t", i%uint64(rows)+1, nil)
-			require.NoError(b, err)
+			row, err := db.Get(ctx, snap, "t", i%uint64(rows)+1, dst)
+			if err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+				return
+			}
+			dst = row[:0]
 		}
 	})
 	b.StopTimer()
+	select {
+	case err := <-errCh:
+		b.Fatal(err)
+	default:
+	}
 	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds()/1000, "kget/s")
 	_ = g // goroutine count is set by GOMAXPROCS via -cpu; kept for name clarity
 	st := db.Stats()

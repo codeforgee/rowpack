@@ -178,11 +178,13 @@ type Sink struct {
 // dst (growing it when the schema has more columns than dst can hold) and the
 // returned Row aliases dst; the caller owns it and must not retain it across
 // the next reuses of dst. Column values are copied with the same ownership
-// semantics as Decode (String/Bytes payloads are copied or materialized
-// through sink, Decimal reuses dst's existing *big.Int when the corresponding
-// column already holds one). Like Decode it requires an already-validated
-// schema and enforces all length/bounds/limit checks, so malformed payloads
-// never panic.
+// semantics as Decode, except that the dst slot's own buffers are reused where
+// it already holds one (Decimal's *big.Int, Bytes' backing array when it is
+// large enough), so a retained Value struct may observe a rewritten
+// Bytes/Decimal after the next decode into the same dst. String is always
+// copied or materialized through sink, since strings are immutable. Like
+// Decode it requires an already-validated schema and enforces all
+// length/bounds/limit checks, so malformed payloads never panic.
 func (c Codec) DecodeTupleInto(dst []Value, data []byte, schema *Schema, sink *Sink) ([]Value, error) {
 	if schema == nil {
 		return nil, errors.New("rowpack: nil schema")
@@ -366,7 +368,7 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 		if sink != nil && sink.Bytes != nil {
 			return Value{typ: TypeBytes, by: sink.Bytes(payload)}, 4 + ln, nil
 		}
-		return Bytes(payload), 4 + ln, nil
+		return bytesValueInto(reuse, payload), 4 + ln, nil
 	case TypeDate:
 		raw, ok := need(4)
 		if !ok {
@@ -411,6 +413,17 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 		return Value{typ: TypeDecimal, d: Decimal{Unscaled: u, Scale: col.Scale}}, 4 + ln, nil
 	}
 	return Value{}, 0, fmt.Errorf("unsupported type %d", col.Type)
+}
+
+// bytesValueInto materializes a Bytes payload into the dst slot, reusing the
+// slot's backing array when it is large enough (overwriting it, like Decimal
+// reuse).
+func bytesValueInto(reuse Value, payload []byte) Value {
+	buf := reuse.by[:0]
+	if cap(buf) < len(payload) {
+		buf = make([]byte, 0, len(payload))
+	}
+	return Value{typ: TypeBytes, by: append(buf, payload...)}
 }
 
 // appendValue appends the encoding of v, returning the extended buffer.

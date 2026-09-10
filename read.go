@@ -57,12 +57,13 @@ func snapshotInfo(sm *index.SnapshotMeta) SnapshotInfo {
 // Get returns the row visible at the given snapshot (resolved along the
 // parent chain), decoding it into dst: the returned Row aliases dst and is
 // overwritten by the next Get call on the same dst, reusing dst's backing
-// array and any Decimal big.Int already held there. A nil dst allocates; keep
-// the returned Row as the next dst to preserve the reuse. Getters of
-// String/Bytes/Decimal return copies, so reading through them is always
-// safe, but retained Value structs may observe overwritten Decimals after the
-// next call. The contents of dst are unspecified if an error is returned.
-// A DELETE tombstone or an absent row returns ErrNotFound.
+// array and any Decimal big.Int or Bytes buffer already held there. A nil dst
+// allocates; keep the returned Row as the next dst to preserve the reuse.
+// Getters of String/Bytes/Decimal return copies, so reading through them is
+// always safe, but retained Value structs may observe overwritten
+// Decimal/Bytes values after the next call. The contents of dst are
+// unspecified if an error is returned. A DELETE tombstone or an absent row
+// returns ErrNotFound.
 func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowID RowID, dst Row) (Row, error) {
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
@@ -73,7 +74,7 @@ func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowI
 	if st.view.Snapshot(uint64(snapshot)) == nil {
 		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	tid, ok := st.schemas.tableIDByName(uint64(snapshot), table)
+	tid, ok := st.schemas.tableID(uint64(snapshot), table)
 	if !ok {
 		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
 	}
@@ -104,7 +105,7 @@ func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, r
 	if st.view.Snapshot(uint64(snapshot)) == nil {
 		return false, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	tid, ok := st.schemas.tableIDByName(uint64(snapshot), table)
+	tid, ok := st.schemas.tableID(uint64(snapshot), table)
 	if !ok {
 		return false, nil
 	}
@@ -180,7 +181,7 @@ func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table string, v
 	if st.view.Snapshot(snapshot) == nil {
 		return Schema{}, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	tid, ok := st.schemas.tableIDByName(snapshot, table)
+	tid, ok := st.schemas.tableID(snapshot, table)
 	if !ok {
 		return Schema{}, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
 	}

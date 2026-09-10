@@ -16,6 +16,36 @@ import (
 // metadata records and is immutable once built.
 type schemaIndex struct {
 	bySnapshot map[uint64]map[uint32]*tableSchemas
+	// byName is the reverse of bySnapshot's latest version per table, so a point
+	// read resolves a table name without scanning every visible table.
+	byName map[uint64]map[string]TableID
+}
+
+// newSchemaIndex returns an empty index with both lookup directions ready.
+func newSchemaIndex() *schemaIndex {
+	return &schemaIndex{
+		bySnapshot: make(map[uint64]map[uint32]*tableSchemas),
+		byName:     make(map[uint64]map[string]TableID),
+	}
+}
+
+// nameIndex maps the latest schema name of every table to its ID; tables whose
+// latest schema could not be built are skipped. Name conflicts are rejected at
+// write time.
+func nameIndex(tables map[uint32]*tableSchemas) map[string]TableID {
+	if len(tables) == 0 {
+		return nil
+	}
+	names := make(map[string]TableID, len(tables))
+	for tid, ts := range tables {
+		if ts == nil || len(ts.versions) == 0 {
+			continue
+		}
+		if s := ts.byVer[ts.versions[len(ts.versions)-1]]; s != nil {
+			names[s.Name] = TableID(tid)
+		}
+	}
+	return names
 }
 
 type tableSchemas struct {
@@ -41,20 +71,29 @@ func (si *schemaIndex) latest(snapshot uint64, table uint32) uint32 {
 	return ts.versions[len(ts.versions)-1]
 }
 
-// tableIDByName resolves a table name to its internal table ID at a
-// snapshot. The index for a snapshot already covers every ancestor layer
-// (deriveTables walks the chain), so a linear scan over the visible tables
-// is sufficient; name conflicts are rejected at write time.
-func (si *schemaIndex) tableIDByName(snapshot uint64, name string) (TableID, bool) {
-	for tid, ts := range si.bySnapshot[snapshot] {
-		if ts == nil || len(ts.versions) == 0 {
-			continue
-		}
-		if s := ts.byVer[ts.versions[len(ts.versions)-1]]; s != nil && s.Name == name {
-			return TableID(tid), true
+// maxColumns returns the widest column count among the schema versions of
+// (snapshot, table), or 0 when the table has no usable schema. Batch decode
+// sizes its row slab with it instead of resolving a schema per record.
+func (si *schemaIndex) maxColumns(snapshot uint64, table uint32) int {
+	ts := si.bySnapshot[snapshot][table]
+	if ts == nil {
+		return 0
+	}
+	max := 0
+	for _, v := range ts.versions {
+		if s := ts.byVer[v]; s != nil && len(s.Columns) > max {
+			max = len(s.Columns)
 		}
 	}
-	return 0, false
+	return max
+}
+
+// tableID resolves a table name at a snapshot to its internal ID through the
+// reverse index. The index for a snapshot already covers every ancestor layer
+// (deriveTables walks the chain).
+func (si *schemaIndex) tableID(snapshot uint64, name string) (TableID, bool) {
+	tid, ok := si.byName[snapshot][name]
+	return tid, ok
 }
 
 // schemaFor resolves the codec schema for one block's version, reporting
@@ -74,7 +113,7 @@ func (si *schemaIndex) schemaFor(bl *index.BlockLoc, version uint32) (*codec.Sch
 // S re-reads every ancestor layer's records, so without the memo an open
 // with N snapshots decompresses the same metadata blocks O(N²) times.
 func (s *Store) buildIndex(view *index.View) (*schemaIndex, error) {
-	si := &schemaIndex{bySnapshot: make(map[uint64]map[uint32]*tableSchemas)}
+	si := newSchemaIndex()
 	memo := make(map[metaRecKey]*metadata.Record)
 	for _, sm := range view.Snapshots() {
 		tables, err := s.deriveTables(view, sm.ID, memo)
@@ -83,6 +122,9 @@ func (s *Store) buildIndex(view *index.View) (*schemaIndex, error) {
 		}
 		if len(tables) > 0 {
 			si.bySnapshot[sm.ID] = tables
+			if names := nameIndex(tables); names != nil {
+				si.byName[sm.ID] = names
+			}
 		}
 	}
 	return si, nil

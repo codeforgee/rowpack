@@ -1,16 +1,19 @@
 package rowpack
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
-// batchReq is one requested row located inside a target block.
+// batchReq is one requested row: its slot in the caller's ids slice plus the
+// location the sort below orders by.
 type batchReq struct {
 	outIdx  int    // index into the caller's ids slice (row goes to out[outIdx])
+	blockID uint64 // block holding the row
 	ordinal uint32 // ItemOrdinal of the row inside the block
 }
 
@@ -47,7 +50,7 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 	if view.Snapshot(snapshot) == nil {
 		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	tid, ok := st.schemas.tableIDByName(snapshot, table)
+	tid, ok := st.schemas.tableID(snapshot, table)
 	if !ok {
 		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
 	}
@@ -58,8 +61,7 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 	// Resolve every id along the parent chain and group requests by block.
 	// Resolution is index-only (no block I/O); the per-row cost is one binary
 	// search per chain layer, the same as Get.
-	groups := make(map[uint64][]batchReq, 8)
-	blockIDs := make([]uint64, 0, 8)
+	reqs := make([]batchReq, 0, len(ids))
 	for i, id := range ids {
 		loc, ok := view.ResolveRow(snapshot, uint32(tid), id)
 		if !ok {
@@ -68,16 +70,19 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 		if loc.ChangeType == fileformat.ChangeDelete {
 			return nil, fmt.Errorf("%w: (table %q, row %d) deleted in snapshot %d", ErrNotFound, table, id, snapshot)
 		}
-		reqs := groups[loc.BlockID]
-		if len(reqs) == 0 {
-			blockIDs = append(blockIDs, loc.BlockID)
-		}
-		groups[loc.BlockID] = append(reqs, batchReq{outIdx: i, ordinal: loc.ItemOrdinal})
+		reqs = append(reqs, batchReq{outIdx: i, blockID: loc.BlockID, ordinal: loc.ItemOrdinal})
 	}
-	// Walk blocks in ascending ID order (= the file layout order for a fully
-	// clustered snapshot), so a batch that spans many blocks reads
-	// sequentially rather than jumping around the file.
-	sort.Slice(blockIDs, func(i, j int) bool { return blockIDs[i] < blockIDs[j] })
+	// Order by (BlockID, ItemOrdinal): blocks in file order (sequential reads
+	// for a clustered snapshot) and every page of a block one contiguous run,
+	// so each page is decompressed once. Duplicates stay adjacent, like
+	// repeated Gets. A sorted slice replaces the two per-batch maps this used
+	// to build: no hashing, no growth, deterministic order.
+	slices.SortFunc(reqs, func(a, b batchReq) int {
+		if a.blockID != b.blockID {
+			return cmp.Compare(a.blockID, b.blockID)
+		}
+		return cmp.Compare(a.ordinal, b.ordinal)
+	})
 
 	out := make([]Row, len(ids))
 	// Per-call arena: String/Bytes payloads materialize as zero-copy views
@@ -87,47 +92,67 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 	// their chunk alive via GC without pinning whole block buffers.
 	var arena strArena
 	sink := strArenaSink(&arena)
+	// Rows decode into one contiguous slab, so N rows cost one allocation
+	// instead of one []Value per row. The capacity comes from the widest schema
+	// version of the table, so no decode ever grows the slab. Rows share it in
+	// disjoint regions, so they still never alias each other.
+	ncols := st.schemas.maxColumns(snapshot, uint32(tid))
+	slab := make([]Value, 0, len(ids)*ncols)
 	var blocks, rawBytes uint64
-	for _, bid := range blockIDs {
+	for i := 0; i < len(reqs); {
+		bid := reqs[i].blockID
 		bl := view.Block(bid)
 		if bl == nil {
 			return nil, fmt.Errorf("rowpack: block %d missing from view", bid)
 		}
-		// Load the page container (no page decompressed yet), then group the
-		// requested rows by page so each page is decompressed exactly once per
-		// batch regardless of how many requested rows fall in it.
+		// Load the page container (no page decompressed yet), then walk the
+		// block's requests in ordinal order.
 		rc, err := s.loader.LoadRows(int64(bl.DataOffset), bid)
 		if err != nil {
 			return nil, err
 		}
 		blocks++
 		rawBytes += uint64(bl.RawSize)
-		reqByPage := make(map[uint32][]batchReq, 4)
-		for _, req := range groups[bid] {
-			pi, err := rc.PageFor(req.ordinal)
+		for i < len(reqs) && reqs[i].blockID == bid {
+			pi, err := rc.PageFor(reqs[i].ordinal)
 			if err != nil {
 				return nil, err
 			}
-			reqByPage[uint32(pi)] = append(reqByPage[uint32(pi)], req)
-		}
-		for pi, pageReqs := range reqByPage {
-			page, release, err := rc.PageScratch(int(pi))
+			// Every request up to (not including) end lands in page pi.
+			end := i + 1
+			for end < len(reqs) && reqs[end].blockID == bid {
+				next, err := rc.PageFor(reqs[end].ordinal)
+				if err != nil {
+					return nil, err
+				}
+				if next != pi {
+					break
+				}
+				end++
+			}
+			page, release, err := rc.PageScratch(pi)
 			if err != nil {
 				return nil, err
 			}
 			dir := &rc.Dir[pi]
-			for _, req := range pageReqs {
-				rec, err := page.RecordAt(req.ordinal - dir.FirstRecordOrdinal)
+			for ; i < end; i++ {
+				rec, err := page.RecordAt(reqs[i].ordinal - dir.FirstRecordOrdinal)
 				if err != nil {
 					release()
 					return nil, err
 				}
-				row, err := s.decodeInto(rec, nil, rowDecodeContext{block: bl, schema: st.schemas, sink: sink})
+				dst := slab[len(slab) : len(slab) : len(slab)+ncols]
+				row, err := s.decodeInto(rec, dst, rowDecodeContext{block: bl, schema: st.schemas, sink: sink})
 				if err != nil {
 					release()
 					return nil, err
 				}
-				out[req.outIdx] = row
+				// A row wider than the widest schema was allocated fresh (not
+				// aliasing the slab), so never advance past the slab's cap.
+				if len(row) <= cap(slab)-len(slab) {
+					slab = slab[:len(slab)+len(row)]
+				}
+				out[reqs[i].outIdx] = row
 			}
 			release()
 		}

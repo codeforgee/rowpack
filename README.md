@@ -125,10 +125,12 @@ big.Int 分配：
   仅 ~135 次分配，String/Bytes 均为零复制 arena 视图）。
 - `Get(ctx, snap, table, id, dst)`：解码进调用者提供的 Row 复用其底层数组；
   Get 是并发入口，nil dst 每次分配新行，dst 是唯一跨调用复用的方式。
-  缓存热读为 2 allocs/16 B（String/Bytes 列按值复制，调用方安全持有）。
+  缓存热读为 1 alloc/16 B（String 列按值复制，调用方安全持有）。
 
 需要跨调用保留的值需拷贝；通过 `String()`/`Bytes()`/`Decimal()` 访问器读
-值始终安全（返回副本）。
+值始终安全（返回副本）。dst 槽自身的缓冲会被复用（`Decimal` 的 `big.Int`、
+容量足够的 `Bytes` 底层数组），因此保留的 Value 结构体在下一次解码进同一
+dst 后可能看到被覆盖的值；`String` 因不可变而始终复制。
 
 ```go
 it, _ := db.Scan(ctx, full, "users", rowpack.ScanOptions{})
@@ -166,7 +168,7 @@ st := db.Stats().Batch // Calls/Rows/Blocks/RawBytes：聚合效果可量化（B
 
 冷缓存连续 1000 行场景较逐行 Get 提升数百倍（`make bench-batch` 对比
 `BenchmarkGetLoop1000` vs `BenchmarkReadBatch1000`）；热读千行批量
-~229 µs · **19 allocs**，逐行 Get 基线 281 µs · 2,000 allocs。
+~240 µs · **4 allocs**，逐行 Get 基线 ~237 µs · 1,000 allocs。
 
 ## 文档
 
@@ -209,7 +211,7 @@ SyncCommit（批量与缓存档另标注），数据集 100k 行 × 7 列。数�
 | --- | --- |
 | FULL 顺序写行吞吐量 | ~101.6 万行/秒（sync）· ~104.5 万行/秒（async）|
 | 同构行写行吞吐量 | ~186 万行/秒（sync）· ~204 万行/秒（async，压缩比 0.044）|
-| Get 热读点读吞吐量（复用 dst） | ~238 万次/秒 · ~0.42 µs · 2 allocs · 16 B/op |
+| Get 热读点读吞吐量（复用 dst） | ~260 万次/秒 · ~0.39 µs · 1 alloc · 16 B/op |
 | Get 冷读 | ~3,000 次/秒 · ~338 µs · 6 allocs · 160 B/op（池化瞬态解压）|
 | 并发 Get 点读吞吐量（64 goroutine） | ~157 万次/秒 · ~0.64 µs |
 | Scan 100k 扫描行吞吐量（热/冷） | ~738 / ~365 万行/秒（13.6 / 27.4 ms）· 全表 135 allocs |

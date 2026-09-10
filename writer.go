@@ -326,7 +326,7 @@ func (w *Writer) CreateTable(name string, columns []Column) error {
 	// Resolve against the committed parent chain.
 	st := w.store.state.Load()
 	if st != nil {
-		if chainTID, ok := st.schemas.tableIDByName(uint64(w.parentOf()), name); ok {
+		if chainTID, ok := st.schemas.tableID(uint64(w.parentOf()), name); ok {
 			if !w.columnsEqual(uint64(w.parentOf()), chainTID, columns) {
 				return fmt.Errorf("%w: table %q already exists with different columns", ErrSchemaConflict, name)
 			}
@@ -466,7 +466,7 @@ func (w *Writer) tableForWrite(table string) (TableID, SchemaVersion, error) {
 			return 0, 0, fmt.Errorf("%w: table %q", ErrNotFound, table)
 		}
 		var ok bool
-		if tid, ok = st.schemas.tableIDByName(uint64(w.parentOf()), table); !ok {
+		if tid, ok = st.schemas.tableID(uint64(w.parentOf()), table); !ok {
 			return 0, 0, fmt.Errorf("%w: table %q", ErrNotFound, table)
 		}
 		w.tableIDs[table] = tid // cache for subsequent writes
@@ -1043,10 +1043,13 @@ func (w *Writer) writePendingBlock(blk *pendingBlock) ([fileformat.BlockHeaderSi
 // parent snapshots' schemas are reused from the old index).
 func (w *Writer) buildSchemas(newView *index.View) (*schemaIndex, error) {
 	base := w.store.state.Load()
-	si := &schemaIndex{bySnapshot: make(map[uint64]map[uint32]*tableSchemas)}
+	si := newSchemaIndex()
 	if base != nil && base.schemas != nil {
 		for snap, tables := range base.schemas.bySnapshot {
 			si.bySnapshot[snap] = tables
+		}
+		for snap, names := range base.schemas.byName {
+			si.byName[snap] = names
 		}
 	}
 	tables, err := w.store.deriveTables(newView, w.id, nil)
@@ -1055,6 +1058,9 @@ func (w *Writer) buildSchemas(newView *index.View) (*schemaIndex, error) {
 	}
 	if len(tables) > 0 {
 		si.bySnapshot[w.id] = tables
+		if names := nameIndex(tables); names != nil {
+			si.byName[w.id] = names
+		}
 	}
 	return si, nil
 }

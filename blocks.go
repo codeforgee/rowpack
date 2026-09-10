@@ -26,7 +26,7 @@ func (s *Store) Blocks(ctx context.Context, snap SnapshotID, table string) ([]Bl
 	if view.Snapshot(uint64(snap)) == nil {
 		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snap)
 	}
-	tid, ok := st.schemas.tableIDByName(uint64(snap), table)
+	tid, ok := st.schemas.tableID(uint64(snap), table)
 	if !ok {
 		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snap)
 	}
@@ -107,7 +107,7 @@ func (s *Store) ScanBlocks(ctx context.Context, snap SnapshotID, table string, l
 	if view.Snapshot(uint64(snap)) == nil {
 		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snap)
 	}
-	tid, ok := st.schemas.tableIDByName(uint64(snap), table)
+	tid, ok := st.schemas.tableID(uint64(snap), table)
 	if !ok {
 		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snap)
 	}

@@ -3,6 +3,7 @@ package block
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -64,13 +65,11 @@ var (
 	encPoolsMu sync.Mutex
 	encPools   = map[int]*sync.Pool{}
 
-	// encodeDstPool holds output scratch buffers for EncodeAll. klauspost's
-	// EncodeAll pre-allocates a make([]byte, 0, len(src)) destination when the
-	// caller passes nil; passing our own large buffer avoids that per-block
-	// ~256 KiB allocation.
-	encodeDstPool = sync.Pool{New: func() any {
-		return make([]byte, 0, 1<<20) // 1 MiB scratch, plenty for any block
-	}}
+	// encodeDstPools holds EncodeAll destination scratch, graded by size like
+	// rawBufPools. Grading bounds the cost of a pool miss: GC clears sync.Pool
+	// every cycle, so one 1 MiB buffer was re-made per 32 KiB page flush.
+	encodeDstPools [poolNumClasses]sync.Pool
+	encodeDstBytes atomic.Int64 // parked in encodeDstPools, capped by encodeDstBudget
 
 	decPool = sync.Pool{New: func() any {
 		d, err := zstd.NewReader(nil,
@@ -130,15 +129,85 @@ func NewZstdEncoder(level int) *ZstdEncoder {
 	return e
 }
 
+// encodeDstBudget caps the bytes parked in encodeDstPools.
+const encodeDstBudget = 8 << 20
+
+func init() {
+	for i := range encodeDstPools {
+		size := 1 << (poolClassMinBits + i)
+		p := &encodeDstPools[i]
+		p.New = func() any { return make([]byte, 0, size) }
+	}
+}
+
+// getEncodeDst returns an EncodeAll scratch with capacity for at least n
+// bytes: getRawBuf's grading, but a separate pool and budget so read and write
+// scratch never compete. Oversized requests bypass the pool.
+func getEncodeDst(n int) []byte {
+	c := poolClass(n)
+	if c < 0 {
+		return make([]byte, 0, n)
+	}
+	b := encodeDstPools[c-poolClassMinBits].Get().([]byte)
+	if cap(b) > 0 {
+		encodeDstBytes.Add(-int64(cap(b)))
+	}
+	if cap(b) < n {
+		b = make([]byte, 0, n)
+	}
+	return b[:0]
+}
+
+// putEncodeDst files a scratch buffer back under the class of its capacity.
+func putEncodeDst(b []byte) {
+	if b == nil {
+		return
+	}
+	c := poolClass(cap(b))
+	if c < 0 {
+		return // oversized: never retained
+	}
+	if encodeDstBytes.Add(int64(cap(b))) > encodeDstBudget {
+		encodeDstBytes.Add(-int64(cap(b)))
+		return // budget exhausted: drop to GC
+	}
+	encodeDstPools[c-poolClassMinBits].Put(b[:0])
+}
+
 // EncodeZstdWith compresses src with a caller-owned encoder, returning a
-// freshly allocated frame (like Compress). The pool scratch is used for the
-// output and returned before copying, so enc can be reused immediately.
+// freshly allocated frame (like Compress). Callers that compress many buffers
+// in a row should prefer EncodeZstdInto with a scratch they keep.
 func EncodeZstdWith(enc *ZstdEncoder, src []byte) ([]byte, error) {
-	dst := encodeDstPool.Get().([]byte)
+	dst := getEncodeDst(len(src))
 	out := enc.EncodeAll(src, dst[:0])
 	res := make([]byte, len(out))
 	copy(res, out)
-	encodeDstPool.Put(dst)
+	if cap(out) == cap(dst) {
+		putEncodeDst(out[:0])
+	} else {
+		// Outgrew the scratch: pool the class buffer, drop the larger array.
+		putEncodeDst(dst)
+	}
+	return res, nil
+}
+
+// EncodeZstdInto is EncodeZstdWith with a caller-owned EncodeAll scratch,
+// reused across calls through *scratch; the stored frame is still freshly
+// allocated for the caller. Builders flush single-threaded owning one scratch
+// each, mirroring the store-owned encoder (NewZstdEncoder).
+func EncodeZstdInto(enc *ZstdEncoder, scratch *[]byte, src []byte) ([]byte, error) {
+	dst := *scratch
+	if cap(dst) < len(src) {
+		dst = make([]byte, 0, len(src))
+	}
+	out := enc.EncodeAll(src, dst[:0])
+	res := make([]byte, len(out))
+	copy(res, out)
+	if cap(out) >= cap(dst) {
+		*scratch = out[:0]
+	} else {
+		*scratch = dst[:0]
+	}
 	return res, nil
 }
 

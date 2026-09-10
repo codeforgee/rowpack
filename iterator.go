@@ -203,7 +203,7 @@ func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opt
 	if st.view.Snapshot(uint64(snapshot)) == nil {
 		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
 	}
-	tid, ok := st.schemas.tableIDByName(uint64(snapshot), table)
+	tid, ok := st.schemas.tableID(uint64(snapshot), table)
 	if !ok {
 		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
 	}

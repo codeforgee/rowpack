@@ -73,8 +73,10 @@ type RowsBuilder struct {
 	oversizedPages uint32
 
 	// enc is the caller-owned zstd encoder (store-level, outliving GC pool
-	// churn); nil selects the pooled encoder.
-	enc *ZstdEncoder
+	// churn); nil selects the pooled encoder. encDst is its EncodeAll scratch,
+	// held here for the same reason.
+	enc    *ZstdEncoder
+	encDst []byte
 
 	// Flush returns each finished block; the consumer supplies the BlockID.
 	onFlush func(*FlushedBlock) error
@@ -212,7 +214,7 @@ func (b *RowsBuilder) storePage(rawPage []byte, oversized bool) error {
 	var stored []byte
 	var err error
 	if b.enc != nil && b.compress == fileformat.CompressionZstd {
-		stored, err = EncodeZstdWith(b.enc, rawPage)
+		stored, err = EncodeZstdInto(b.enc, &b.encDst, rawPage)
 	} else {
 		stored, err = Compress(b.compress, b.level, rawPage)
 	}

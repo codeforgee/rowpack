@@ -266,7 +266,7 @@ table.rows-t tbody tr:hover{background:var(--sel);color:var(--text)}
 <body>
 
 <header class="top">
-  <div class="brand"><div class="logo">RP</div><div>RowPack 文件结构查看器 <span class="sub">v2 · 单文件格式</span></div></div>
+  <div class="brand"><div class="logo">RP</div><div>RowPack 文件结构查看器 <span class="sub">v1 · 单文件格式</span></div></div>
   <div class="fileinfo" id="fileInfo" hidden>
     <span class="fname" id="fName"></span>
     <span class="pill" id="fSize"></span>
@@ -287,14 +287,14 @@ table.rows-t tbody tr:hover{background:var(--sel);color:var(--text)}
     <div class="empty" id="empty">
       <div class="glyph">⌗</div>
       <h1>看进一个 .rpk 的内部</h1>
-      <p>打开 RowPack v2 单文件存储，逐层下钻：文件头 → 快照事务（块 · 索引事务 · 提交 Footer）→ Rows 页容器目录 → 索引分块与 Fence。所有固定结构在浏览器本地解析，带 CRC-32C 校验与字段级 Hex 联动。</p>
+      <p>打开 RowPack v1 单文件存储，逐层下钻：文件头 → 快照事务（块 · 索引事务 · 提交 Footer）→ Rows 页容器目录 → 索引分块与 Fence。所有固定结构在浏览器本地解析，带 CRC-32C 校验与字段级 Hex 联动。</p>
       <div class="acts">
         <button class="primary" id="openBtn2">打开 .rpk 文件</button>
         <button id="demoBtn2">载入演示文件</button>
       </div>
       <p style="font-size:12px;color:var(--text-faint)">也可以直接把文件拖进窗口 · 解析纯前端完成，不联网</p>
       <div class="magics">
-        <span class="chip">ROWPACK2 文件头</span><span class="chip">RPKSNAPH 快照头</span><span class="chip">RPKBLOCK 块</span>
+        <span class="chip">ROWPACK1 文件头</span><span class="chip">RPKSNAPH 快照头</span><span class="chip">RPKBLOCK 块</span>
         <span class="chip">RPKROWBL 页容器</span><span class="chip">RPITXNBH 索引事务</span><span class="chip">RPICHNK1 分块</span>
         <span class="chip">RPKIDXPG 行索引页</span><span class="chip">RPITXNEF 事务尾</span><span class="chip">RPKSNAPF 提交 Footer</span>
       </div>
@@ -332,7 +332,7 @@ table.rows-t tbody tr:hover{background:var(--sel);color:var(--text)}
 /*__ENGINE_START__*/
 'use strict';
 /* ================================================================
- * RowPack v2 文件结构解析引擎（纯函数，无 DOM 依赖）
+ * RowPack v1 文件结构解析引擎（纯函数，无 DOM 依赖）
  * 字节布局与 internal/fileformat 一一对应。
  * ================================================================ */
 
@@ -424,8 +424,8 @@ const R = '必须为 0';
 /* ---------------- 各固定结构解析 ---------------- */
 function parseFileHeader(buf, off) {
   const f = [
-    F(off,8,'bytes[8]','magic',JSON.stringify(ascii(buf,off,8)),'magic','固定 "ROWPACK2"'),
-    F(off+8,2,'u16','VersionMajor',u16(buf,off+8),'ver','固定 = 2'),
+    F(off,8,'bytes[8]','magic',JSON.stringify(ascii(buf,off,8)),'magic','固定 "ROWPACK1"'),
+    F(off+8,2,'u16','VersionMajor',u16(buf,off+8),'ver','固定 = 1'),
     F(off+10,2,'u16','VersionMinor',u16(buf,off+10),'ver','当前 = 0'),
     F(off+12,4,'u32','HeaderSize',u32(buf,off+12),'ver','固定 = 128'),
     F(off+16,16,'bytes[16]','StoreUUID',hexOf(buf,off+16,16),'id','文件身份 / 加密 AAD'),
@@ -447,12 +447,12 @@ function parseFileHeader(buf, off) {
   const crc = checkCRC(buf, off, off+128, off+120);
   f[17].val = `${hexn(crc.stored)}${crc.ok ? ' ✓' : ' ✗ 计算='+hexn(crc.calc)}`;
   const errs = [];
-  if (ascii(buf,off,8) !== 'ROWPACK2') errs.push(`magic 错误: ${JSON.stringify(ascii(buf,off,8))}`);
-  if (u16(buf,off+8) !== 2) errs.push(`Major=${u16(buf,off+8)}，应为 2`);
+  if (ascii(buf,off,8) !== 'ROWPACK1') errs.push(`magic 错误: ${JSON.stringify(ascii(buf,off,8))}`);
+  if (u16(buf,off+8) !== 1) errs.push(`Major=${u16(buf,off+8)}，应为 1`);
   if (u32(buf,off+12) !== 128) errs.push('HeaderSize ≠ 128');
   if (!crc.ok) errs.push('HeaderCRC32C 校验失败');
   if (u64(buf,off+40) & ~0x0F) errs.push('存在未知 RequiredFeatures 位');
-  return {kind:'FileHeader', title:'FileHeader', magic:'ROWPACK2', start:off, end:off+128, fields:f, crc, errs,
+  return {kind:'FileHeader', title:'FileHeader', magic:'ROWPACK1', start:off, end:off+128, fields:f, crc, errs,
     info:{uuid:hexOf(buf,off+16,16)}};
 }
 
@@ -564,7 +564,7 @@ function parseIndexTxnHeader(buf, off) {
   const f = [
     F(off,8,'bytes[8]','magic',JSON.stringify(ascii(buf,off,8)),'magic','"RPITXNBH"（恒明文）'),
     F(off+8,4,'u32','HeaderSize',u32(buf,off+8),'ver','固定 = 80'),
-    F(off+12,4,'u32','RowIndexPageCount',u32(buf,off+12),'cnt','排序行索引页数（S3-⑦）'),
+    F(off+12,4,'u32','RowIndexPageCount',u32(buf,off+12),'cnt','排序行索引页数'),
     F(off+16,8,'u64','TxnSequence',u64(buf,off+16),'id',''),
     F(off+24,8,'u64','SnapshotID',u64(buf,off+24),'id',''),
     F(off+32,8,'u64','DataSnapshotStart',u64(buf,off+32),'off','SnapshotHeader 处'),
@@ -919,7 +919,7 @@ function verifyStore(buf, m) {
   return checks;
 }
 
-/* ---------------- 演示文件构造（合法 v2 布局，CRC 全部真实计算，一遍成型零回填） ---------------- */
+/* ---------------- 演示文件构造（合法 v1 布局，CRC 全部真实计算，一遍成型零回填） ---------------- */
 function buildDemoStore() {
   const NS = 1757400000000000000;
   const lcg = s => () => (s = (s * 48271) % 2147483647) / 2147483647;
@@ -1119,7 +1119,7 @@ function buildDemoStore() {
   /* ================= 组装演示 Store ================= */
   const w = mk(1 << 14);
   /* FileHeader */
-  wmagic(w,'ROWPACK2'); wu16(w,2); wu16(w,0); wu32(w,128);
+  wmagic(w,'ROWPACK1'); wu16(w,1); wu16(w,0); wu32(w,128);
   wbytes(w,[0x52,0x50,0x4b,0x44,0x45,0x4d,0x4f,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09]);
   wu64(w,NS); wu64(w,0x0F); wu64(w,0);
   wu32(w,262144); wu8(w,1); wu8(w,1); wu16(w,0);

@@ -14,12 +14,7 @@
 coverage.out
 
 # Machine-specific benchmark output (regenerate with `make bench`)
-docs/bench-results.txt
+bench/
+
 **/testdata/tmpdb/
 .codegraph/
-
-# Quick benchmark output (make bench-quick)
-docs/bench-results-quick.txt
-
-# 10M Open 内存档输出（make bench-10m）
-docs/bench-results-10m.txt

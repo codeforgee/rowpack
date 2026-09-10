@@ -11,7 +11,7 @@ import (
 // sorted Row Index Pages are decoded (encodePage guarantees this). Each
 // entry is appended directly into the columnar (rowIDs/ordinals/changes) and
 // block-run (runStart/blockIDs) arrays, so no []RowKeyLoc intermediate and no
-// fully materialized []RowIndexEntry page ever exists (S3-⑦ 落盘② Open peak).
+// fully materialized []RowIndexEntry page ever exists.
 // finish() validates ascending order + rejects duplicates, then finalizes each
 // run by appending the terminal runStart sentinel.
 type rowShardBuilder struct {

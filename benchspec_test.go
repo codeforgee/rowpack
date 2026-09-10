@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// S0 冻结的固定基准数据集几何（FILE_FORMAT_REFACTOR_PLAN.md §12 阶段 0）。
+// 固定基准数据集几何（BINARY_FORMAT_V1.md）。
 //
 // 所有几何共用同一 7 列 schema（benchCols），差异只在 RowID 序列与 Bytes 列
 // 负载；随机序列使用固定种子，保证跨阶段、跨提交可比。压测新格式时以这些

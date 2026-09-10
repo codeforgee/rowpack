@@ -1,6 +1,6 @@
 # 源库 Key Range 到 RowPack 批量读取的映射
 
-> 状态：设计建议；§9 决策记录（v1.2）已固化实现边界（2026-09-09）
+> 状态：设计说明；§9 决策记录已固化实现边界
 > 适用场景：源数据库按 `[lo, hi)` 查询，RowPack 按快照批量分块读取
 
 ## 1. 问题定义
@@ -234,16 +234,15 @@ Block 读取内核应做到：
 → 使用 RowPack 的 Get/Scan 路径读取
 ```
 
-后续 v1.2 若确认范围读取是主要访问模式，应优先实现按 RowID 集合聚合 Block 的内部能力，再决定是否提供通用 Key Index API。
+后续若确认范围读取是主要访问模式，应优先实现按 RowID 集合聚合 Block 的内部能力，再决定是否提供通用 Key Index API。
 
-> 注：按 RowID 集合聚合 Block 的能力已随 `Store.ReadBatch` 于 v1.2 完成；
+> 注：按 RowID 集合聚合 Block 的能力已随 `Store.ReadBatch` 完成；
 > 是否提供通用 Key Index API 的最终决策见 §9。
 
-## 9. 决策记录（v1.2）
+## 9. 决策记录
 
-> 日期：2026-09-09
-> 关联：ADR-002（引擎解耦方言语义）；批量分块读取（`Store.ReadBatch`）已于
-> v1.2 完成，公开契约见 [GO_API_DESIGN_V2.md](GO_API_DESIGN_V2.md)
+> 关联：引擎解耦方言语义（见 [METADATA_FORMAT_V1.md](METADATA_FORMAT_V1.md) §1）；批量分块读
+> 取（`Store.ReadBatch`）已完成，公开契约见 [GO_API_DESIGN_V1.md](GO_API_DESIGN_V1.md)
 
 ### 9.1 采用外层适配方案（§8 路线），不内建 Key Index
 
@@ -252,8 +251,8 @@ Block 读取内核应做到：
 - 语义正确性由源库自身的 PK 索引和排序规则保证，引擎不冻结任何方言排序规则；
 - §5 所列冻结清单（ASC/DESC、NULL 位次、字符串排序、数值编码、时区、Decimal scale 等）
   全部归适配层，引擎不承担；
-- 符合 ADR-002「引擎与『数据库是什么』解耦」的方向；
-- v1.2 已完成 `Store.ReadBatch`（按块聚合、去重、单次读/解压/校验），所需引擎能力已齐备，
+- 符合「引擎与『数据库是什么』解耦」的方向；
+- v1 已完成 `Store.ReadBatch`（按块聚合、去重、单次读/解压/校验），所需引擎能力已齐备，
   本方案的引擎改动量为零。
 
 ### 9.2 API 边界：公开 `ReadBatch`，不公开 `ReadRowsByKeyRange`
@@ -283,5 +282,4 @@ Block 读取内核应做到：
 2. 目标源库收敛到单一/少数方言，且能完整复制其排序规则（复合键、NULL、字符串排序）。
 
 在此之前，`ReadRowsByKeyRange` 定义为适配器接口；需要批量读取性能优化时，
-引擎侧优先补 `ReadBatchInto`（行缓冲复用，消除 v1.2 基线 seq/hot 档回退），
-而不是引入 Key Index。
+引擎侧优先补 `ReadBatch` 的行缓冲复用，而不是引入 Key Index。

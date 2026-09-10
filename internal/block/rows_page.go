@@ -9,7 +9,7 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
-// Rows Page v2 in-memory builder/reader (S2 prototype).
+// Rows Page in-memory builder/reader.
 //
 // The builder accumulates per-record metadata into column streams
 // (RowID deltas, end-offset deltas, schema-version RLE, 2-bit change types)

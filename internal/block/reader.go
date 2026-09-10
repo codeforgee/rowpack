@@ -14,7 +14,7 @@ import (
 //
 // Decrypt opens a whole sealed block payload (metadata blocks, which remain
 // whole-sealed). OpenPage opens one sealed Rows Page stored bytes (per-page
-// encryption, BINARY_FORMAT_V2 §5.1); the page directory is plaintext, so a
+// encryption, BINARY_FORMAT_V1 §5.1); the page directory is plaintext, so a
 // reader OPENs only the page it needs.
 type Decrypter interface {
 	Decrypt(header fileformat.BlockHeader, ciphertext []byte) ([]byte, error)
@@ -36,10 +36,10 @@ type Reader struct {
 	// blocks. Set via SetDecrypter before any reads; read-only after.
 	decrypter Decrypter
 
-	// Cumulative I/O counters (measurement instrumentation, S0 baseline):
+	// Cumulative I/O counters (measurement instrumentation):
 	// readBytes counts header+stored bytes pulled from the handle before
 	// decryption; decompressedBytes counts validated raw payload bytes;
-	// pageCtrs counts Rows-page reads (S2 page container). Together they
+	// pageCtrs counts Rows-page reads. Together they
 	// quantify cold-read amplification: with a 256 KiB block a single-row
 	// read still pulls and decompresses the whole block, but only the
 	// accessed page is loaded from a page container.
@@ -48,7 +48,7 @@ type Reader struct {
 	pageCtrs          PageStatCtrs
 }
 
-// PageStats is a snapshot of the per-page read counters (S2 page container).
+// PageStats is a snapshot of the per-page read counters.
 type PageStats struct {
 	PageLoads       uint64 // pages decompressed on demand
 	PageRawBytes    uint64 // validated raw page payload bytes produced
@@ -113,8 +113,8 @@ type viewer interface {
 }
 
 // ReadRowsDir reads a Rows block's header + container header + page directory
-// into a lazy RowsContainer that reads individual pages on demand (R2
-// page-level I/O). The block header, container header and page directory are
+// into a lazy RowsContainer that reads individual pages on demand (page-level
+// I/O). The block header, container header and page directory are
 // plaintext even for per-page-encrypted blocks, so this is the single read
 // entry point for plain and encrypted Rows blocks alike; each page is OPENed
 // (authenticated) and decompressed only when accessed.

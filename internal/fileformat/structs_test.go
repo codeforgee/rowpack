@@ -118,11 +118,11 @@ func TestFrozenEnums(t *testing.T) {
 	}
 }
 
-// TestVersionConstants locks the format major. v1 never shipped; major 2 is
-// the single-file line and the only openable line.
+// TestVersionConstants locks the format major. v1 is the single-file line and
+// the only openable line.
 func TestVersionConstants(t *testing.T) {
-	if VersionMajor != 2 || VersionMinor != 0 {
-		t.Fatalf("VersionMajor/Minor = %d.%d, frozen at 2.0", VersionMajor, VersionMinor)
+	if VersionMajor != 1 || VersionMinor != 0 {
+		t.Fatalf("VersionMajor/Minor = %d.%d, frozen at 1.0", VersionMajor, VersionMinor)
 	}
 	if RequiredFeaturesV1 == 0 {
 		t.Fatal("RequiredFeaturesV1 must not be zero")

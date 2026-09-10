@@ -16,7 +16,7 @@ type pageSealer struct {
 
 // seal re-encrypts a Rows page container for an encrypted
 // store: instead of sealing the whole container as one blob, each stored page
-// is sealed independently (BINARY_FORMAT_V2 §5.1). It parses the container's
+// is sealed independently (BINARY_FORMAT_V1 §5.1). It parses the container's
 // page directory, seals each page's stored (compressed) bytes with a
 // domain-separated nonce/AAD, updates the directory StoredSize to the sealed
 // length (compressed + AESGCMTagLen), and recomputes the container

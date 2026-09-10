@@ -73,9 +73,9 @@ func (h *SnapshotHeader) Unmarshal(src []byte) error {
 // SnapshotFooter is the fixed 144-byte snapshot commit marker. It is the
 // only authoritative commit flag of a snapshot AND the binding record for the
 // transaction's structure offsets: the block range and the embedded IndexTxn
-// range are read from this footer during open (BINARY_FORMAT_V2.md §6/§7, R8).
+// range are read from this footer during open (BINARY_FORMAT_V1.md §6/§7).
 //
-// Commit authority (R3): a snapshot is committed iff FooterCRC32C validates
+// Commit authority: a snapshot is committed iff FooterCRC32C validates
 // and the recorded offsets are self-consistent and inside the file. The
 // BlocksCRC32C/IndexTxnCRC32C bindings are integrity hints: a mismatch only
 // triggers an in-memory index rebuild (§10.2), never a commit-status change.
@@ -175,7 +175,7 @@ func (f *SnapshotFooter) Unmarshal(src []byte) error {
 }
 
 // OffsetsAreConsistent reports whether the footer's recorded structure
-// offsets respect the transaction invariants (BINARY_FORMAT_V2.md §6/§7):
+// offsets respect the transaction invariants (BINARY_FORMAT_V1.md §6/§7):
 //
 //	BlocksStartOffset == SnapshotStartOffset + SnapshotHeaderSize
 //	SnapshotHeaderSize <= BlocksStartOffset <= BlocksEndOffset <= IndexTxnStartOffset

@@ -5,10 +5,10 @@ import (
 	"encoding/binary"
 )
 
-// IndexTxn encryption layout (v2): when the store is encrypted, the txn
-// body+footer are sealed as one ciphertext unit and the plaintext header
-// stays readable for scanning. BodyBytes then counts the stored (ciphertext)
-// body bytes, and the first reserved word carries the KeyEpoch.
+// IndexTxn layout: the txn body is a sequence of independently sealed
+// chunks/pages; the plaintext header and footer stay readable for scanning.
+// BodyBytes counts the stored bytes between header and footer, and the 76..80
+// reserved word carries the KeyEpoch for encrypted stores.
 const (
 	// IndexTxnKeyEpochOffset is the 4-byte KeyEpoch in the header reserved
 	// region (offset 76..80). Zero for plain stores.
@@ -67,7 +67,7 @@ type IndexTxnHeader struct {
 	RowEntryCount      uint64
 	BodyBytes          uint64 // length between header and footer
 	// RowIndexPageCount is the number of sorted Row Index Pages in the txn
-	// body (S3-⑦). It lives in the 12..16 reserved word, which is separate
+	// body. It lives in the 12..16 reserved word, which is separate
 	// from the 76..80 KeyEpoch word, so plain and encrypted stores agree on
 	// where to find it. Zero means the snapshot has no row entries (pages ==
 	// fences == 0).

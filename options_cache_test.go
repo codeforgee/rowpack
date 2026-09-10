@@ -9,7 +9,7 @@ import (
 
 // TestSplitCacheBudget verifies the S1 hard-budget invariant: data + scan
 // capacities always sum to exactly the total, for every explicit-override
-// combination (FILE_FORMAT_REFACTOR_PLAN.md §8.1).
+// combination (GO_API_DESIGN_V1.md §2).
 func TestSplitCacheBudget(t *testing.T) {
 	const MiB = 1 << 20
 	cases := []struct {

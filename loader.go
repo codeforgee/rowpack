@@ -37,7 +37,7 @@ type blockLoader struct {
 // 64 MiB so huge explicit cache sizes do not let scans squat on the
 // random-read hot set. Unlike the historical heuristic there is no 1 MiB
 // floor: DataCache + ScanWindow must never exceed the total (Options.CacheBytes
-// is a hard budget, FILE_FORMAT_REFACTOR_PLAN.md §8.1). Large scan sets
+// is a hard budget, GO_API_DESIGN_V1.md §2). Large scan sets
 // (deep chains) fit the window and are reused across iterations; very large
 // scans fill it and then stream through the pool without allocating.
 func scanBudgetFor(cacheBytes int64) int64 {

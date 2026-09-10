@@ -9,7 +9,7 @@ import (
 	"github.com/rowpack/rowpack/internal/fileformat"
 )
 
-// Index txn chunking (docs/INDEX_TXN_CHUNK_COMPRESSION.md): the txn body is
+// Index txn chunking (docs/INDEX_TXN_FORMAT_V1.md): the txn body is
 // a sequence of independently compressed/authenticated chunks followed by a
 // plaintext chunk directory. Row chunks carry a delta/varint encoding that
 // removes per-entry context (SnapshotID is txn-wide, TableID/BlockID are
@@ -195,7 +195,7 @@ func emitChunks(cc *chunkWriter, kind uint8, n, entrySize int, marshal func(i in
 // chunks. The snapshot chunk head is reserved (not yet filled); snapshot,
 // metadata and block chunks are emitted here in frozen order. Row entries are
 // NOT chunked: they are written as sorted Row Index Pages + a Fence Directory
-// by `buildPages` (S3-⑦), and `cc.seq` is left at the next free chunk
+// by `buildPages`, and `cc.seq` is left at the next free chunk
 // sequence so pages can seal under distinct chunk sequences.
 func (b *Builder) emitChunks(cc *chunkWriter) error {
 	if err := emitChunks(cc, fileformat.IndexChunkKindMetadata, len(b.metadata), fileformat.MetadataIndexEntrySize,
@@ -230,7 +230,7 @@ type BoundsResolver func(bodyLen int) BodyBounds
 // chunk's stored size is fixed at 72 bytes, so the resolution is stable in one
 // pass. A nil resolver passes the snapshot entry's own values through (tests).
 //
-// Body layout (ADR-005, S3-⑦ 落盘②):
+// Body layout:
 //
 //	[SnapshotChunk][MetadataChunks][BlockChunks][ChunkDirectory]
 //	[IndexPage × N][RowIndexFenceEntry × N]
@@ -423,7 +423,7 @@ type RowHintSink interface {
 // (walkPage) feeds entries straight to this sink — one at a time, in
 // (TableID, RowID) sorted order — so the Eager rowShard builder appends into
 // its columnar arrays without materializing a []RowIndexEntry page or a
-// []RowKeyLoc intermediate (S3-⑦ 落盘② Open 峰值优化).
+// []RowKeyLoc intermediate.
 type RowEntrySink interface {
 	AddRowEntry(e fileformat.RowIndexEntry) error
 }
@@ -597,7 +597,7 @@ func (p *bodyParser) parse() (*storedBody, error) {
 			}
 			sb.blockCount += h.EntryCount
 		case fileformat.IndexChunkKindRow:
-			return nil, fmt.Errorf("rowpack: row chunk %d: obsolete v1 row-chunk layout (S3-⑦ 落盘 switch to Index Pages; refusing to decode)", seq)
+			return nil, fmt.Errorf("rowpack: row chunk %d: obsolete row-chunk layout (the row index is stored as sorted Index Pages; refusing to decode)", seq)
 		default:
 			return nil, fmt.Errorf("rowpack: chunk %d unknown kind %d", seq, h.EntryKind)
 		}
@@ -731,7 +731,7 @@ type pageParser struct {
 }
 
 // parse decodes the Row Index Pages + Fence Directory that
-// follow the chunk directory in a txn body (S3-⑦), handing entries to the
+// follow the chunk directory in a txn body, handing entries to the
 // sink in RowID-sorted order in bounded batches. It returns the plaintext-body
 // CRC extended with the raw page bytes and the fence bytes, and the row count
 // accumulated from the pages. Forged page counts, offsets or sizes are
@@ -786,7 +786,7 @@ func (p *pageParser) parse() (crc uint32, rows uint64, err error) {
 		// without SnapshotID (txn-wide); stamp it before handing to the sink.
 		// A RowEntrySink receives entries one at a time via walkPage —
 		// no []RowIndexEntry page materialization, no []RowKeyLoc intermediate
-		// (S3-⑦ 落盘② Open 峰值优化). Older sinks fall back to the batched path.
+		// Sinks that do not implement RowEntrySink fall back to the batched path.
 		if es, ok := p.sink.(RowEntrySink); ok {
 			emitted := 0
 			if err := walkPage(pageRaw, func(e fileformat.RowIndexEntry) error {

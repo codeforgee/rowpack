@@ -20,13 +20,12 @@ import (
 
 func TestGoldenManifest(t *testing.T) {
 	want := map[string]string{
-		// S2: Rows blocks are now page containers (v2 page layout); the
-		// full-delta, encrypted and rows-payload samples were regenerated on
-		// this format switch (see docs/REFACTOR_EXECUTION_PLAN.md §5).
-		"empty-store.rpk":            "cd0a96b72ad858d8bceb946b4ae77b1667b6bf17b9d79d72c9b282a52ddc34f7",
+		// Rows blocks are page containers; empty, full-delta, encrypted and
+		// rows-payload samples are locked against this frozen layout.
+		"empty-store.rpk":            "359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401",
 		"rows-payload-all-types.bin": "ae6f94f72c1b08f8c0a6727c97cb57cfad18b6f0ffc732a625db23be907b8769",
-		"full-delta-store.rpk":       "411de6ebd82bdd228dfc721dc7fa5e97b6affa0132bfd1033c39467c358bc3ca",
-		"encrypted-store.rpk":        "c098a6ab6183ca6683d54455027bb3954d80157cc23770336cb65cf9a92b2349",
+		"full-delta-store.rpk":       "c32072a7d9801a983b2742616c9fd3d50b621d4b08512c18809e5cb7652a4a9e",
+		"encrypted-store.rpk":        "afd3c1b56b8a10b3913021802c16c26baf7d7c581c0f84db324b48368297fae3",
 	}
 	for name, digest := range want {
 		data, err := os.ReadFile(goldenPath(name))

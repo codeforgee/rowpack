@@ -1,6 +1,6 @@
 package rowpack
 
-// v2 统一基准矩阵（恢复自 011056d 删除的 bench_matrix_test.go，适配 v2 API）。
+// 统一基准矩阵。
 //
 // BenchmarkMainMatrix 是矩阵唯一入口：按场景 × BlockSize × 缓存 × 持久化 ×
 // I/O 路径的剪枝矩阵；BenchmarkLatency 补点读延迟分位数；BenchmarkEnv 自描述
@@ -9,7 +9,7 @@ package rowpack
 //	go test -run '^$' -bench 'Benchmark(Env|MainMatrix|Latency)' -benchmem -count=1
 //
 // 每个子测试报告 ns/op、B/op、allocs/op（-benchmem）以及自定义指标：
-// krows/s=行吞吐；kget/s=点读吞吐；dataMB=.rpk 单文件大小（v2 含内嵌
+// krows/s=行吞吐；kget/s=点读吞吐；dataMB=.rpk 单文件大小（含内嵌
 // IndexTxn）；ratio=存储字节/原始字节（压缩率，越小越好）；bytePerRow=落盘
 // 字节/行；idxMB=索引常驻内存；hitpct/scanhitpct=块缓存/扫描窗口命中率%；
 // rssdMB=进程峰值 RSS 增量（本子测试归属，近似）。
@@ -535,7 +535,7 @@ func benchIndexRebuildOnOpen(b *testing.B, c benchCtx) {
 
 // ---- 矩阵入口 ----
 
-// BenchmarkMainMatrix runs the pruned v2 benchmark matrix (see file doc).
+// BenchmarkMainMatrix runs the pruned benchmark matrix (see file doc).
 func BenchmarkMainMatrix(b *testing.B) {
 	for _, io := range matrixIOModes {
 		for _, bs := range matrixBlockSizes {
@@ -711,7 +711,7 @@ func BenchmarkLatency(b *testing.B) {
 
 // BenchmarkEnv self-describes the runtime and reports the geometry of the
 // standard 100k × 7-column dataset at the README reference config: single
-// file size (dataMB, v2 including embedded IndexTxn), compression ratio,
+// file size (dataMB, including embedded IndexTxn), compression ratio,
 // per-row footprint and index memory.
 func BenchmarkEnv(b *testing.B) {
 	b.Logf("env: %s/%s go=%s", runtime.GOOS, runtime.GOARCH, runtime.Version())

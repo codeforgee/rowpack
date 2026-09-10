@@ -41,12 +41,12 @@ type RecoveryStats struct {
 //	ReadBytes         header + stored bytes pulled from the file
 //	DecompressedBytes validated raw payload bytes produced
 //
-// Their ratio to the caller's logical bytes is the read amplification the
-// page-format refactor targets (256 KiB raw blocks → 16–64 KiB pages).
+// Their ratio to the caller's logical bytes is the read amplification of a
+// whole-block read (256 KiB raw block vs the accessed page).
 type ReadStats struct {
 	ReadBytes         uint64 // header + stored bytes pulled from the file
 	DecompressedBytes uint64 // validated raw payload bytes produced
-	PageLoads         uint64 // Rows-page decompressions on demand (S2 page container)
+	PageLoads         uint64 // Rows-page decompressions on demand
 	PageRawBytes      uint64 // validated raw page payload bytes
 	PageStoredBytes   uint64 // stored page bytes pulled from the file
 }

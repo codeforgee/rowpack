@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 )
 
-// IndexTxn chunk layout (v2): the txn body is split into independently
+// IndexTxn chunk layout: the txn body is split into independently
 // compressed/authenticated chunks, each preceded by a fixed IndexChunkHeader,
 // followed by a plaintext Chunk Directory right before the IndexTxnFooter.
 //

@@ -89,7 +89,7 @@ func BuildAAD(uuid *[16]byte, h *fileformat.BlockHeader) [AADSize]byte {
 	return aad
 }
 
-// IndexDomainBit is the nonce-domain flag (R11): index nonces set bit 31 of
+// IndexDomainBit is the nonce-domain flag: index nonces set bit 31 of
 // the epoch word while block nonces always carry an epoch below 2^31, so a
 // block nonce and an index nonce can never collide regardless of counter
 // values. Nonce uniqueness never relies on the AAD.
@@ -122,16 +122,16 @@ var aadMagicIndex = [16]byte{'R', 'o', 'w', 'P', 'a', 'c', 'k', 'I', 'n', 'd', '
 // AADIndexSize is the fixed serialized index AAD length.
 //
 // The layout below covers a whole IndexTxn sealed as one unit
-// (BINARY_FORMAT_V2 §13). The v2 writer/reader do not use that shape: since
-// S3-⑦ the txn body is sealed per chunk (ChunkContext), and the txn's byte
+// (BINARY_FORMAT_V1 §13). The writer/reader do not use that shape: the txn
+// body is sealed per chunk/page (ChunkContext), and the txn's byte
 // range and offsets are bound by SnapshotFooter.IndexTxnCRC32C over the stored
 // bytes instead of by an AAD. BuildAADIndex is kept as the documented layout
 // primitive and is exercised only by this package's tests.
 const AADIndexSize = 60
 
 // BuildAADIndex serializes the domain-separated AAD for one encrypted index
-// transaction (the whole-txn layout; see AADIndexSize for why the v2 paths seal
-// per chunk instead):
+// transaction (the whole-txn layout; see AADIndexSize for why the current paths
+// seal per chunk instead):
 //
 //	 0..15  aadMagicIndex
 //	16..31  store UUID
@@ -204,8 +204,8 @@ func (ctx ChunkContext) AAD() [AADIndexChunkSize]byte {
 	return aad
 }
 
-// aadMagicPage domain-separates the Rows Page AAD layout (BINARY_FORMAT_V2
-// §5.1 / FILE_FORMAT_REFACTOR_PLAN §6.4): a page's stored bytes are sealed
+// aadMagicPage domain-separates the Rows Page AAD layout (BINARY_FORMAT_V1.md
+// §5.1): a page's stored bytes are sealed
 // independently, and the AAD binds the page-directory fields that determine
 // how the page is parsed and which block it belongs to.
 var aadMagicPage = [16]byte{'R', 'o', 'w', 'P', 'a', 'c', 'k', 'P', 'a', 'g', 'e', 'V', '1', 0, 0, 0}
@@ -281,7 +281,7 @@ func (c *Cipher) pageNonceKey() [sha256.Size]byte {
 // SnapshotID ‖ BlockID ‖ PageOrdinal ‖ KeyEpoch)). Binding the
 // store/snapshot/block/page/epoch into the nonce means the AES-GCM nonce is
 // unique per page and domain-separated from block and index-chunk nonces
-// (BINARY_FORMAT_V2 §5.1).
+// (BINARY_FORMAT_V1 §5.1).
 func (c *Cipher) NoncePage(ctx PageContext) [fileformat.EncNonceLen]byte {
 	hk := c.pageNonceKey()
 	mac := hmac.New(sha256.New, hk[:])

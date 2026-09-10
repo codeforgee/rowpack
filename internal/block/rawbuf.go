@@ -62,8 +62,8 @@ func poolClass(size int) int {
 
 // noPool bypasses the pooled scratch entirely: every transient read
 // allocates a fresh buffer and Release drops it to the GC. This is
-// measurement instrumentation (S0 baseline): benchmarks use it to report the
-// true per-read temporary allocation that the page-format refactor must cut.
+// measurement instrumentation: benchmarks use it to report the
+// true per-read temporary allocation with and without pooling.
 // It is process-wide, read once from ROWPACK_NOPOOL=1 at init, and can be
 // flipped at runtime via DisablePool (benchmarks run sequentially).
 var noPool = os.Getenv("ROWPACK_NOPOOL") == "1"

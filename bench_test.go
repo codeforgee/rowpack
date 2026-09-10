@@ -69,7 +69,7 @@ func timeUnix(sec int64) time.Time { return time.Unix(sec, 0).UTC() }
 // benchStore builds a FULL mixed-geometry store with n rows and returns it
 // plus the snapshot ID. Marks the caller warm (stops the timer around the
 // build). All dataset construction routes through benchStoreGeom so every
-// benchmark shares the same frozen S0 geometries.
+// benchmark shares the same frozen test geometries.
 func benchStore(tb testing.TB, opts Options, n int) (*Store, SnapshotID) {
 	tb.Helper()
 	return benchStoreGeom(tb, opts, geomMixed, n)
@@ -84,7 +84,7 @@ func requireNilErr(tb testing.TB, err error) {
 
 // BenchmarkWriteFull measures the sequential FULL write path: encode + block
 // build + one commit. Reported as ns/row (see the krows/s derivation in
-// docs/perf-report.md).
+// docs/GO_API_DESIGN_V1.md).
 func BenchmarkWriteFull(b *testing.B) {
 	ctx := context.Background()
 	b.ReportAllocs()
@@ -131,7 +131,7 @@ func BenchmarkGetHot(b *testing.B) {
 // BenchmarkGetCold measures random reads with the decoded-block cache
 // disabled entirely (CacheBytes < 0; 0 resolves to the 64 MiB default): every
 // Get pays block load + CRC + decompress into the pooled scratch. Custom
-// metrics quantify the block-level read amplification (S0 frozen baselines):
+// metrics quantify the block-level read amplification (frozen baselines):
 //
 //	readB/op  file bytes pulled per read (header + stored payload)
 //	rawB/op   decompressed raw bytes produced per read
@@ -165,7 +165,7 @@ func BenchmarkGetCold(b *testing.B) {
 // the scratch pool is bypassed for the duration, so every Get visibly
 // allocates (and drops) its full decompression buffer. B/op is the per-read
 // temporary allocation the page-format refactor must cut from ~256 KiB to
-// <= 64 KiB (FILE_FORMAT_REFACTOR_PLAN.md §3.1). The pool state is restored
+// <= 64 KiB (GO_API_DESIGN_V1.md §2). The pool state is restored
 // on exit; benchmarks run sequentially so the flip is race-free.
 func BenchmarkGetColdUnpooled(b *testing.B) {
 	prev := block.DisablePool(true)

@@ -4,12 +4,12 @@
 // RowPack stores two-dimensional table data, its version history and database
 // metadata in one append-only file <base>.rpk: data blocks and the per-snapshot
 // IndexTxn stream share the single file and are committed together by the
-// extended SnapshotFooter (BINARY_FORMAT_V2.md). There is no separate index
+// extended SnapshotFooter (BINARY_FORMAT_V1.md). There is no separate index
 // file, no UUID pairing and no cross-file recovery.
 //
-// The on-disk format is fixed by the v2 binary and metadata specifications
-// (BINARY_FORMAT_V2.md, METADATA_FORMAT_V1.md). The format version is frozen
-// as Major=2, Minor=0 (see internal/fileformat): unknown major versions are
+// The on-disk format is fixed by the v1 binary and metadata specifications
+// (BINARY_FORMAT_V1.md, METADATA_FORMAT_V1.md). The format version is frozen
+// as Major=1, Minor=0 (see internal/fileformat): unknown major versions are
 // rejected when opening a store, and higher minor versions are only opened
 // when all required feature bits are recognized.
 package rowpack
@@ -417,9 +417,9 @@ func le32(b []byte) uint32 {
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 }
 
-// dataPathOf resolves the single store file path. Like v1, base paths
-// carrying a .rpk/.rpi extension are rejected so a store never ends up at
-// double-extension paths (R21; final `.rpk`-suffix policy is a M0 decision).
+// dataPathOf resolves the single store file path. Base paths carrying a
+// .rpk/.rpi extension are rejected so a store never ends up at
+// double-extension paths.
 func dataPathOf(basePath string) (string, error) {
 	if strings.HasSuffix(basePath, ".rpk") || strings.HasSuffix(basePath, ".rpi") {
 		return "", fmt.Errorf("%w: base path %q must not carry an extension", ErrInvalidPath, basePath)

@@ -211,7 +211,7 @@ func (c *LRU) Len() int {
 // map slot (~16 B with bucket sharing), the list.Element (~56 B), the
 // lruEntry struct (~32 B) and GC pointer overhead. Reported separately in
 // Stats so CacheBytes stays a value-bytes budget while total resident cost
-// remains visible (FILE_FORMAT_REFACTOR_PLAN.md §8.1).
+// remains visible (GO_API_DESIGN_V1.md §2).
 const overheadPerEntry = 128
 
 // OverheadBytes returns the estimated management memory (map/list nodes),

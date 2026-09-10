@@ -1,11 +1,11 @@
 # RowPack 元数据格式 v1
 
 > 状态：设计基线  
-> 配套格式：[BINARY_FORMAT_V2.md](BINARY_FORMAT_V2.md)（原配套 BINARY_FORMAT_V1.md 已随 v1 历史文档移除）
+> 配套格式：[BINARY_FORMAT_V1.md](BINARY_FORMAT_V1.md)
 
 ## 1. 目标
 
-元数据格式服务于两层信息：引擎用 `DefineSchema` 写入行解码所需的
+元数据格式服务于两层信息：引擎用 `Tx.DefineTable` 写入行解码所需的
 Canonical Schema；未来的上层适配器可用同一 TLV 机制保存源数据库的原始设计元信息。
 两者不能混同：Canonical Schema 决定 RowPack 行负载的编码/解码，Source Metadata
 用于恢复、审计和 Schema 对比。引擎不内建 CoreMetadata 或任何数据库对象模型，
@@ -24,7 +24,7 @@ TLV 机制位于 `../internal/metadata`：记录信封（Envelope）、字段 TL
 Snapshot
 ├── Metadata Block
 │   ├── Header
-│   ├── Table / Column schema records（DefineSchema 产生）
+│   ├── Table / Column schema records（DefineTable 产生）
 │   └── 其他记录（为未来 Source Metadata 扩展保留）
 └── Rows Block...
 ```
@@ -51,8 +51,8 @@ ObjectID 是 RowPack 身份，不等同于源数据库 OID。Table 对象保持
 
 | ID | 名称 | 说明 |
 | ---: | --- | --- |
-| 2 | Table | DefineSchema 写的表 Schema 记录 |
-| 3 | Column | DefineSchema 写的列 Schema 记录 |
+| 2 | Table | DefineTable 写的表 Schema 记录 |
+| 3 | Column | DefineTable 写的列 Schema 记录 |
 
 其他 RecordType 按第 4/5 节规则作为普通数据处理。
 
@@ -141,7 +141,7 @@ Critical 拒绝。
 
 ## 6. 引擎 Schema 记录
 
-`DefineSchema(schema)` 把 Schema 契约写成两类记录（字段见下表，字段 ID
+`Tx.DefineTable(name, columns)` 把 Schema 契约写成两类记录（字段见下表，字段 ID
 与 `../internal/metadata/corefields.go` 一致）：
 
 - **Table 记录（RecordType=2）**：ObjectID = TableID，Revision = Schema
@@ -159,7 +159,7 @@ Critical 拒绝。
 
 ### 6.2 Column（RecordType=3）
 
-ColumnID 领先作为记录的第一个字段，其余按 DefineSchema 语义顺序：
+ColumnID 领先作为记录的第一个字段，其余按 DefineTable 语义顺序：
 
 | ID | 字段 | WireType |
 | ---: | --- | --- |
@@ -170,7 +170,7 @@ ColumnID 领先作为记录的第一个字段，其余按 DefineSchema 语义顺
 | 5 | DataScale(Sint64) | Sint |
 
 引擎只识别 `ColumnType`/`DataType` 中的规范类型字符串
-（`uint64`、`string`、`decimal`…，即 `DefineSchema` 自产自销的值）；遇到
+（`uint64`、`string`、`decimal`…，即 `DefineTable` 自产自销的值）；遇到
 无法解释的类型字符串时，该表的记录按普通数据跳过 SchemaIndex，绝不因此
 导致 Open 失败。`TypeString` 与 `Nullable` 原文保存，不做规范化。
 
@@ -215,7 +215,7 @@ metadataByType[(SnapshotID,RecordType)] -> sorted ObjectIDs
 
 ## 9. 写入示例
 
-`DefineSchema` 写入 `users` 表（TableID=2，Version=1，列 id uint64 /
+`DefineTable` 写入 `users` 表（TableID=2，Version=1，列 id uint64 /
 name string，均为非空）：
 
 ```text

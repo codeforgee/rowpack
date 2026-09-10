@@ -11,7 +11,7 @@ import (
 )
 
 // committedSnapshot is one validated, committed snapshot in the single data
-// file. The structure offsets come from the SnapshotFooter (BINARY_FORMAT_V2
+// file. The structure offsets come from the SnapshotFooter (BINARY_FORMAT_V1
 // §7), so an IndexTxn rebuild never needs the (possibly corrupt) IndexTxn
 // itself.
 type committedSnapshot struct {
@@ -50,12 +50,12 @@ type recoveryReport struct {
 //  2. Each committed snapshot's IndexTxn is read from its footer-recorded
 //     range and replayed into the view independently. A snapshot whose txn
 //     fails validation (length, footer-bound CRC, parse, or apply) is rebuilt
-//     from its own blocks in memory (R2: mid-file IndexTxn corruption never
+//     from its own blocks in memory (mid-file IndexTxn corruption never
 //     stops later snapshots; a duplicate/inconsistent apply after rebuild is
 //     mid-file corruption).
 //  3. Any committed data snapshot that cannot be rebuilt (broken block
 //     headers, authentication, decompression or CRC) is a hard error
-//     (BINARY_FORMAT_V2 §10.3).
+//     (BINARY_FORMAT_V1 §10.3).
 //  4. The uncommitted tail is truncated (read-write) or reported (read-only).
 func (s *Store) recover() error {
 	report := recoveryReport{}
@@ -179,7 +179,7 @@ func (s *Store) readIndexTxn(c *committedSnapshot) (data []byte, crypto *index.C
 		return nil, nil, 0, false, nil // implausible range: rebuild
 	}
 	// The footer binds the STORED bytes (ciphertext when encrypted), so a
-	// torn or bit-rotted txn is detected before any key is needed (R12).
+	// torn or bit-rotted txn is detected before any key is needed.
 	buf := make([]byte, span)
 	if _, rerr := s.data.ReadAt(buf, c.txnStart); rerr != nil {
 		return nil, nil, 0, false, fmt.Errorf("rowpack: read IndexTxn of snapshot %d: %w", c.snapshotID, rerr)
@@ -216,11 +216,11 @@ func (s *Store) readIndexTxn(c *committedSnapshot) (data []byte, crypto *index.C
 
 // scanDataFile walks the single file from after the header, collecting
 // committed snapshots and the start offset of any recoverable tail. It
-// recognizes the four fixed structures (BINARY_FORMAT_V2 §10.1): Snapshot
+// recognizes the four fixed structures (BINARY_FORMAT_V1 §10.1): Snapshot
 // Header, Block Header, IndexTxn and Snapshot Footer. A broken region between
 // two valid commit points is reported as mid-file corruption. The mid/tail
 // discriminator is the presence of a later VALID SNAPSHOT FOOTER (the commit
-// authority, R3), NOT a SnapshotHeader: an IndexTxn header whose magic is
+// authority), NOT a SnapshotHeader: an IndexTxn header whose magic is
 // bit-rotted must not demote a committed snapshot to an uncommitted tail.
 func (s *Store) scanDataFile() ([]committedSnapshot, int64, error) {
 	size, err := s.data.Size()
@@ -380,8 +380,7 @@ func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, n
 // path, and a false positive requires an 8-byte magic collision plus a
 // passing CRC-32C over 144 bytes (~2^-32 per candidate), which is
 // negligible. The footer is the commit authority: its presence means earlier
-// bytes in this region are mid-file corruption, never an uncommitted tail
-// (R3).
+// bytes in this region are mid-file corruption, never an uncommitted tail.
 func (s *Store) hasValidFooterAfter(from, size int64) bool {
 	for p := from; p+fileformat.SnapshotFooterSize <= size; p++ {
 		var magic [8]byte

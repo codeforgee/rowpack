@@ -85,7 +85,7 @@ func (c Codec) EncodeTupleInto(schema *Schema, row []Value, reuse []byte) ([]byt
 
 // EncodeInto encodes the body of a TypedTuple — null bitmap + values,
 // without the 8-byte ColumnCount/NullBitmapBytes header — for page layouts
-// that carry the schema out of band (Rows Page v2). The returned slice may
+// that carry the schema out of band (Rows Page). The returned slice may
 // alias reuse; per-value checks are identical to EncodeTupleInto except that the
 // MaxRowBytes intermediate check counts body bytes only (8-byte header slack
 // is immaterial at the 64 MiB default limit).
@@ -222,7 +222,7 @@ func (c Codec) DecodeInto(dst []Value, body []byte, schema *Schema, sink *Sink) 
 	return c.decodeBodyInto(dst, body, schema, sink)
 }
 
-// PageRecord is one decoded Rows Page record (v2 page layout): identity and
+// PageRecord is one decoded Rows Page record (page layout): identity and
 // metadata from the page streams plus a view of the body-only TypedTuple.
 // Body aliases the page buffer and is empty for deletes; callers decode it
 // against the record's schema version via Codec.DecodeInto and must not

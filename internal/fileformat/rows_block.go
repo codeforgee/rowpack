@@ -5,7 +5,7 @@ import (
 	"math"
 )
 
-// Rows Block v2 page-container layout (the payload behind a BlockKindRows
+// Rows Block page-container layout (the payload behind a BlockKindRows
 // block header):
 //
 //	[RowsBlockHeader]         fixed container descriptor

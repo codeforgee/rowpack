@@ -99,7 +99,7 @@ func (d *decrypter) Decrypt(h fileformat.BlockHeader, ciphertext []byte) ([]byte
 // OpenPage authenticates and decrypts one sealed Rows Page stored bytes
 // (per-page encryption). The nonce binds the store/snapshot/block/page/epoch
 // and the AAD binds the page-directory fields and block identity
-// (BINARY_FORMAT_V2 §5.1). The returned plaintext is the page's compressed
+// (BINARY_FORMAT_V1 §5.1). The returned plaintext is the page's compressed
 // payload.
 func (d *decrypter) OpenPage(h fileformat.BlockHeader, page fileformat.RowsPageDirEntry, ciphertext []byte) ([]byte, error) {
 	c, err := d.cipherFor(h.KeyEpoch)

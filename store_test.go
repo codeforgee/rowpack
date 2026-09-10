@@ -48,7 +48,7 @@ func insertUsers(t testing.TB, tx *Tx, n int) {
 // paths and existing files, Open of a missing store fails with ErrNotFound.
 func TestCreateOpenLifecycle(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "lf")
-	// Extension suffixes on the base path are rejected (R21).
+	// Extension suffixes on the base path are rejected.
 	_, err := Create(base+".rpk", Options{})
 	require.ErrorIs(t, err, ErrInvalidPath)
 
@@ -339,7 +339,7 @@ func TestValidationNone(t *testing.T) {
 }
 
 // TestSchemaVersioning verifies FULL checkpoint semantics: a FULL on top of
-// an existing chain rewrites its own metadata layer (R7).
+// an existing chain rewrites its own metadata layer.
 func TestSchemaVersioning(t *testing.T) {
 	db := testDB(t, Options{})
 	ctx := context.Background()

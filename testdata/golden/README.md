@@ -8,23 +8,23 @@
 
 | 文件 | 内容 | 里程碑 |
 | --- | --- | --- |
-| `empty-store.rpk` | 仅 128 字节 FileHeader 的空 Store（确定性 UUID/时间） | M0 |
-| `rows-payload-all-types.bin` | 覆盖全类型值 + NULL 的确定性未压缩 Rows Payload | M3 |
-| `full-delta-store.rpk` | FULL + DELTA + 空 DELTA + 超大行（单文件，含内嵌 IndexTxn；IndexTxn 正文为排序 Row Index Page + Fence Directory，S3-⑦） | M2 / S3-⑦ |
-| `encrypted-store.rpk` | 加密 FULL Store（None 压缩 + 固定 key，锁定 Header 加密字段/块 Flags/KeyEpoch/密文布局；IndexTxn 页按 Index 域 chunk-nonce/AAD 密封） | M6 / S3-⑦ |
+| `empty-store.rpk` | 仅 128 字节 FileHeader 的空 Store（确定性 UUID/时间） | v1 |
+| `rows-payload-all-types.bin` | 覆盖全类型值 + NULL 的确定性未压缩 Rows Payload | v1 |
+| `full-delta-store.rpk` | FULL + DELTA + 空 DELTA + 超大行（单文件，含内嵌 IndexTxn；Row Index Page + Fence Directory） | v1 |
+| `encrypted-store.rpk` | 加密 FULL Store（None 压缩 + 固定 key，锁定 Header 加密字段/块 Flags/KeyEpoch/密文布局；IndexTxn 页按 Index 域 chunk-nonce/AAD 密封） | v1 |
 
 ## 锁定摘要（SHA-256）
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `empty-store.rpk` | `cd0a96b72ad858d8bceb946b4ae77b1667b6bf17b9d79d72c9b282a52ddc34f7` |
+| `empty-store.rpk` | `359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401` |
 | `rows-payload-all-types.bin` | `ae6f94f72c1b08f8c0a6727c97cb57cfad18b6f0ffc732a625db23be907b8769` |
-| `full-delta-store.rpk` | `411de6ebd82bdd228dfc721dc7fa5e97b6affa0132bfd1033c39467c358bc3ca` |
-| `encrypted-store.rpk` | `c098a6ab6183ca6683d54455027bb3954d80157cc23770336cb65cf9a92b2349` |
+| `full-delta-store.rpk` | `c32072a7d9801a983b2742616c9fd3d50b621d4b08512c18809e5cb7652a4a9e` |
+| `encrypted-store.rpk` | `afd3c1b56b8a10b3913021802c16c26baf7d7c581c0f84db324b48368297fae3` |
 
-这些摘要描述当前冻结的 v2 IndexTxn 格式（S3-⑦ 起为排序 Row Index Page + Fence
-Directory，不再是 chunk delta 行索引）。修改任一摘要均视为有意的磁盘格式变更，
-必须经过格式审查并按版本策略建立新的 golden 样本族。
+这些摘要描述当前冻结的 v1 IndexTxn 格式（排序 Row Index Page + Fence
+Directory）。修改任一摘要均视为有意的磁盘格式变更，必须经过格式审查并按版本策略建立新的
+golden 样本族。
 
 损坏样本由 `TestM10CorruptSamples` 从健康 Store 动态构建（坏 Magic、未知主版本、
 负载损坏、IndexTxn 损坏），不静态保存。

@@ -21,7 +21,7 @@ import (
 //     whole-container consumers (recovery/verify/replay).
 //   - lazy: only the block header + container header + directory were read
 //     (plain blocks); each page is read + decompressed from the file on first
-//     access (R2-style page I/O), so a cold single-row read pulls only the one
+//     access, so a cold single-row read pulls only the one
 //     page it needs instead of the whole container.
 //
 // Either way, decompressed pages are memoized in the container (keyed by page
@@ -69,7 +69,7 @@ type RowsContainer struct {
 	// pulled and page raw bytes produced.
 	decompCounter *atomic.Uint64
 	// pageCtrs is the reader's shared per-page read counters (page loads, raw
-	// and stored page bytes) for the S2 page-container I/O stats.
+	// and stored page bytes) for the page-container I/O stats.
 	pageCtrs *PageStatCtrs
 }
 
@@ -179,7 +179,7 @@ func ParseRowsDir(offset int64, r *Reader, h fileformat.BlockHeader, limits Limi
 		return nil, fmt.Errorf("rowpack: block %d is kind %d, not rows", h.BlockID, h.BlockKind)
 	}
 	// The block header + container header + page directory are all plaintext
-	// even for encrypted blocks (BINARY_FORMAT_V2 §5.1: pages are sealed, the
+	// even for encrypted blocks (BINARY_FORMAT_V1 §5.1: pages are sealed, the
 	// directory is not). So we can read the directory and OPEN+decompress
 	// individual pages on demand, which is the whole point of per-page
 	// encryption on the read path.

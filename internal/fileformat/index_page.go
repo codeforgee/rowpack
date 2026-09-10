@@ -4,13 +4,12 @@ import (
 	"bytes"
 )
 
-// Row Index Page / Fence on-disk structures (FILE_FORMAT_REFACTOR_PLAN §7.1 /
-// §7.2, frozen by ADR-005 after the S3-⑦ prototype measured decision #2
-// (Index Page = 4096 entries) and #6 (reuse the data compression level)). The
-// row index of a snapshot is a set of independently compressed Row Index Pages
-// plus a plaintext Fence directory; the fence lets a reader binary-search by
-// (SnapshotID, TableID, RowID) to the page containing a row, then OPEN +
-// decompress just that page (Lazy mode) or stream-build the Eager shard.
+// Row Index Page / Fence on-disk structures (BINARY_FORMAT_V1.md §5.3/§6).
+// The row index of a snapshot is a set of independently compressed Row Index
+// Pages plus a plaintext Fence directory; the fence lets a reader binary-search
+// by (SnapshotID, TableID, RowID) to the page containing a row, then OPEN +
+// decompress just that page (Lazy mode) or stream-build the Eager shard. The
+// page carries 4096 entries and reuses the data compression level.
 
 const (
 	// MagicIndexPage opens every Row Index Page.

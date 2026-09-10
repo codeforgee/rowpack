@@ -2,10 +2,9 @@
 // validation of the RowPack binary format. It is the single source of truth
 // for every frozen disk constant, magic, enum value and structure size.
 //
-// The v1 prerelease line was never shipped; the current format line (Major=2)
-// is the single-file store: data blocks and the per-snapshot IndexTxn stream
-// share one `.rpk` file and are committed by the extended SnapshotFooter
-// (BINARY_FORMAT_V2.md).
+// The v1 format line is the single-file store: data blocks and the
+// per-snapshot IndexTxn stream share one `.rpk` file and are committed by the
+// extended SnapshotFooter (BINARY_FORMAT_V1.md).
 //
 // The package must never reflect over Go structs to encode or decode: all
 // multi-byte integers are hand-written Little Endian, all top-level structures
@@ -13,9 +12,9 @@
 // layout.
 package fileformat
 
-// Format version. VersionMajor=2 is the single-file line; minor starts at 0.
+// Format version. VersionMajor=1 is the single-file line; minor starts at 0.
 const (
-	VersionMajor = 2
+	VersionMajor = 1
 	VersionMinor = 0
 )
 
@@ -33,12 +32,11 @@ const (
 const RequiredFeaturesV1 = FeatureTypedTupleV1 | FeatureZstd | FeatureMetadataBlock | FeatureDeltaSnapshot
 
 // ASCII magics. All are exactly 8 bytes. MagicDataFile identifies the
-// single-file store; it deliberately differs from the prerelease v1 data
-// magic (`ROWPACKD`) so v2 openers reject v1 files at the first 8 bytes
-// without probing anything else. There is no separate index magic: the
+// single-file store; it deliberately differs from the never-released
+// dual-file draft magic (`ROWPACKD`). There is no separate index magic: the
 // IndexTxn stream lives inside the data file.
 const (
-	MagicDataFile    = "ROWPACK2"
+	MagicDataFile    = "ROWPACK1"
 	MagicSnapshotHdr = "RPKSNAPH"
 	MagicSnapshotFtr = "RPKSNAPF"
 	MagicBlockHdr    = "RPKBLOCK"
@@ -69,7 +67,7 @@ const (
 // Reserved field offsets that must stay fixed by the spec.
 const DataFileHeaderCRC32COffset = 120
 
-// SnapshotFooterV2 marker offsets (BINARY_FORMAT_V2.md §7). The footer is
+// SnapshotFooter marker offsets (BINARY_FORMAT_V1.md §7). The footer is
 // 144 bytes; FooterCRC32C at 136 covers the whole structure with its own
 // field zeroed, per the shared fixed-structure CRC rule.
 const (
@@ -231,7 +229,7 @@ const (
 	TypeDecimal  ValueType = 17
 )
 
-// Payload versions for the Metadata payload (Rows moved to the S2 page
+// Payload versions for the Metadata payload (Rows moved to the page
 // container format and no longer uses a payload version constant).
 const (
 	MetaPayloadVersion = 1
@@ -253,9 +251,9 @@ const (
 const (
 	DefaultBlockSize = 256 << 10 // 256 KiB target raw block size
 	// DefaultPageSize is the target raw size of one Rows Page (the actual
-	// read/compress/cache unit inside a Rows Block). Frozen at 32 KiB from the
-	// S2 prototype matrix (docs/REFACTOR_EXECUTION_PLAN.md §9.1): it loses
-	// only ~7% compression vs 64 KiB while halving cold-read decompression.
+	// read/compress/cache unit inside a Rows Block). Chosen at 32 KiB by the
+	// page-size sweep: it loses only ~7% compression vs 64 KiB while halving
+	// cold-read decompression.
 	DefaultPageSize       = 32 << 10
 	DefaultCacheBytes     = 64 << 20 // 64 MiB block cache
 	DefaultCompressionLvl = 3        // klauspost/compress default level mapping

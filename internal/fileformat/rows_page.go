@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 )
 
-// Rows Page v2 layout (uncompressed form; this is what Page CRC covers):
+// Rows Page layout (uncompressed form; this is what Page CRC covers):
 //
 //	[RowsPageHeader]        64 B fixed
 //	[rowID stream]          first RowID absolute uvarint, then
@@ -146,7 +146,7 @@ func (h *RowsPageHeader) Unmarshal(src []byte, totalLen int) error {
 }
 
 // RowsPageDirEntry is the fixed 56-byte per-page directory entry stored after
-// the Rows Block header (v2 page layout). It stays plaintext so readers
+// the Rows Block header (page layout). It stays plaintext so readers
 // locate and skip pages without decrypting the block; the block header CRC
 // (and a dedicated directory CRC at the block level) authenticates it.
 type RowsPageDirEntry struct {

@@ -337,7 +337,7 @@ func (w *Writer) CreateTable(name string, columns []Column) error {
 				return nil
 			}
 			// FULL checkpoint (parent 0): always write the snapshot's own
-			// metadata layer, even when identical to the ancestor's (R7) —
+			// metadata layer, even when identical to the ancestor's —
 			// its visibility no longer follows any ancestor chain.
 			latest := st.schemas.latest(uint64(w.parentOf()), uint32(chainTID))
 			if latest == 0 {
@@ -736,7 +736,7 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 		blk.header.BlockID = w.store.lastBlockID.Add(1)
 	}
 	// Single-file commit order: SnapshotHeader -> Blocks -> IndexTxn ->
-	// SnapshotFooter, then exactly one Sync (BINARY_FORMAT_V2 §8).
+	// SnapshotFooter, then exactly one Sync (BINARY_FORMAT_V1 §8).
 	startOffset := w.store.data.Offset()
 	snapStart := startOffset
 	sh, err := w.writeHeader()
@@ -811,11 +811,11 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 	// After the single sync below, failures are "outcome unknown"; before it,
 	// a failure is a known torn commit.
 	unknown := false
-	// Index-domain chunk sealing (R11): each chunk is sealed under its own
+	// Index-domain chunk sealing: each chunk is sealed under its own
 	// HMAC-derived nonce (the NonceIndex 96-bit space is full) and AAD bound
 	// to store/txn/chunk identity and lengths. Header, chunk headers and the
 	// directory stay plaintext — the scanner walks the txn by magic +
-	// BodyBytes + footer magic without a key (R1) — while every payload is
+	// BodyBytes + footer magic without a key — while every payload is
 	// authenticated independently.
 	var crypto *index.ChunkCrypto
 	if c := w.store.encCipher; c != nil {

@@ -14,11 +14,11 @@ import (
 // is rejected).
 const maxUint32 = uint64(0xFFFFFFFF)
 
-// indexPageEntryCount 是每页最大行条目数（ADR-005 决策 #2 = 4096）。
+// indexPageEntryCount 是每页最大行条目数（4096）。
 const indexPageEntryCount = 4096
 
 // rowIndexPageChunkKind is the chunk-sealing kind used for index pages so an
-// encrypted store seals pages under the Index-domain nonce/AAD space (R11).
+// encrypted store seals pages under the Index-domain nonce/AAD space.
 // It reuses the row kind because pages are the row index; pages seal under
 // chunk sequences beyond every chunk, so no nonce collision occurs.
 const rowIndexPageChunkKind = fileformat.IndexChunkKindRow
@@ -41,7 +41,7 @@ type pageBuild struct {
 // entries. Fence.StoredOffset is zero here and patched by the caller once the
 // body layout (chunk region + directory) is known. pageSeqBase is the first
 // free chunk sequence in the surrounding txn so pages seal under distinct
-// nonces (ADR-005 / R11).
+// nonces.
 func (b *Builder) buildPages(crypto *ChunkCrypto, level int, pageSeqBase uint32) ([]pageBuild, error) {
 	n := len(b.rows)
 	if n == 0 {

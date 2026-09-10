@@ -57,6 +57,19 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 		if sm.Depth > s.opts.Limits.MaxSnapshotDepth {
 			return rep, &CorruptionError{File: s.dataPath, SnapshotID: sm.ID, Kind: ErrCorruptIndex, Reason: "snapshot chain too deep"}
 		}
+		seenAddr := make(map[string]TableID, len(st.schemas.bySnapshot[sm.ID]))
+		for tid := range st.schemas.bySnapshot[sm.ID] {
+			name := st.schemas.nameOf(sm.ID, tid)
+			if name == "" {
+				continue
+			}
+			addr := Qualify(st.schemas.nsOf(sm.ID, tid), name)
+			if prev, dup := seenAddr[addr]; dup {
+				return rep, &CorruptionError{File: s.dataPath, SnapshotID: sm.ID, TableID: tid, Kind: ErrCorruptIndex,
+					Reason: fmt.Sprintf("address %q claimed by tables %d and %d", addr, prev, tid)}
+			}
+			seenAddr[addr] = tid
+		}
 	}
 
 	for _, bl := range view.Blocks() {

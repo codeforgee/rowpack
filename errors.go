@@ -3,6 +3,8 @@ package rowpack
 import (
 	"errors"
 	"fmt"
+
+	"github.com/rowpack/rowpack/internal/codec"
 )
 
 // Sentinel errors. All public APIs return errors that support errors.Is against
@@ -18,7 +20,7 @@ var (
 	ErrSnapshotAborted    = errors.New("rowpack: snapshot aborted")
 	ErrSnapshotFailed     = errors.New("rowpack: snapshot failed")
 	ErrInvalidParent      = errors.New("rowpack: invalid parent snapshot")
-	ErrSchemaMismatch     = errors.New("rowpack: schema mismatch")
+	ErrSchemaMismatch     = codec.ErrSchemaMismatch
 	ErrSchemaConflict     = errors.New("rowpack: schema conflict")
 	ErrCorruptData        = errors.New("rowpack: corrupt data")
 	ErrCorruptIndex       = errors.New("rowpack: corrupt index")

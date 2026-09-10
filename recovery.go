@@ -139,14 +139,14 @@ func (s *Store) recover() error {
 	var maxTableID uint32
 	var maxObjectID uint64
 	for _, sm := range view.Snapshots() {
+		for _, oid := range view.MetadataObjects(sm.ID) {
+			if oid > maxObjectID {
+				maxObjectID = oid
+			}
+		}
 		for _, oid := range view.MetadataByType(sm.ID, uint32(fileformat.RecordTable)) {
 			if tid, err := metadata.TableID(oid); err == nil && tid > maxTableID {
 				maxTableID = tid
-			}
-		}
-		for _, oid := range view.MetadataByType(sm.ID, uint32(fileformat.RecordColumn)) {
-			if oid > maxObjectID {
-				maxObjectID = oid
 			}
 		}
 	}

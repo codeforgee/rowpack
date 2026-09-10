@@ -163,7 +163,8 @@ func list(ctx context.Context, base string) {
 		tables, err := db.Tables(ctx, s.ID)
 		if err == nil {
 			for _, t := range tables {
-				fmt.Printf("  table %d %q latestVersion=%d\n", t.ID, t.Name, t.LatestVersion)
+				fmt.Printf("  table %d %q latestVersion=%d ns=%s\n",
+					t.ID, t.Name, t.LatestVersion, t.NS)
 			}
 		}
 	}

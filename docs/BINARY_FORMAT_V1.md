@@ -46,18 +46,18 @@ Block 内分页（页容器）、排序 Row Index Page 与紧凑索引均已纳�
 [FileHeader]
 
 [SnapshotTxn 1]
-  [SnapshotHeader]
-  [Metadata/Rows Blocks ...]
-  [IndexTxnHeader]
-  [SnapshotIndexEntry]
-  [MetadataIndexEntry ...]
-  [BlockIndexEntry ...]
-  [RowIndexEntry ...]
-  [IndexTxnFooter]
-  [SnapshotFooter]
+ [SnapshotHeader]
+ [Metadata/Rows Blocks ...]
+ [IndexTxnHeader]
+ [SnapshotIndexEntry]
+ [MetadataIndexEntry ...]
+ [BlockIndexEntry ...]
+ [RowIndexEntry ...]
+ [IndexTxnFooter]
+ [SnapshotFooter]
 
 [SnapshotTxn 2]
-  ...
+ ...
 
 [optional uncommitted tail]
 ```
@@ -109,10 +109,10 @@ Rows Block 的逻辑块（写入/统计/快照组织单位）与物理压缩页�
 分离。一个 Rows Block 的 payload 是页容器：
 
 ```text
-[RowsBlockHeader]        24 B 固定：PageCount / DirectoryBytes / TotalRecords
-[RowsPageDirEntry × N]   56 B 每页（明文，供读取器定位页）
-[stored page 0]          每页独立压缩（+可选整套容器密封），由自身 PageCRC 校验
-[stored page 1]          …
+[RowsBlockHeader] 24 B 固定：PageCount / DirectoryBytes / TotalRecords
+[RowsPageDirEntry × N] 56 B 每页（明文，供读取器定位页）
+[stored page 0] 每页独立压缩（+可选整套容器密封），由自身 PageCRC 校验
+[stored page 1] …
 ```
 
 - 外层 BlockHeader 只做聚合：`RawSize = Σ页 RawSize`、`StoredSize = 容器长`、
@@ -164,12 +164,12 @@ Fence Directory**。正文布局：
 
 ```text
 IndexTxnHeader (80B, RowIndexPageCount @ offset 12..16)
-SnapshotChunk                // 定长 SnapshotIndexEntry，chunk seq 0
-MetadataChunk × A            // 定长条目，chunk seq 1..A
-BlockChunk × B               // 定长条目，chunk seq A+1..A+B
-ChunkDirectory               // 明文 (A+B+1) × 32B，chunk 定位
-IndexPage × N                // 每页独立 zstd（复用 store 压缩级别），加密 +16B tag
-RowIndexFenceEntry × N       // 明文 52B，由正文 CRC 认证
+SnapshotChunk // 定长 SnapshotIndexEntry，chunk seq 0
+MetadataChunk × A // 定长条目，chunk seq 1..A
+BlockChunk × B // 定长条目，chunk seq A+1..A+B
+ChunkDirectory // 明文 (A+B+1) × 32B，chunk 定位
+IndexPage × N // 每页独立 zstd（复用 store 压缩级别），加密 +16B tag
+RowIndexFenceEntry × N // 明文 52B，由正文 CRC 认证
 IndexTxnFooter (80B)
 ```
 
@@ -211,30 +211,30 @@ Block 重建内存索引；不允许正常 Open 原地覆盖修复，必要时�
 SnapshotFooter 是整个 SnapshotTxn 的最终提交标志，**固定 144 字节**：
 
 ```text
-offset  size  field
-0       8     MagicSnapshotFtr ("RPKSNAPF")
-8       4     size = 144
-12      1     SnapshotType
-13      3     reserved (0)
-16      8     SnapshotID
-24      8     ParentSnapshotID
-32      8     PreviousFooterOffset
-40      8     SnapshotStartOffset
-48      8     BlocksStartOffset
-56      8     BlocksEndOffset
-64      8     IndexTxnStartOffset
-72      8     IndexTxnEndOffset
-80      8     SnapshotEndOffset
-88      8     FirstBlockID
-96      4     BlockCount
-100     4     MetadataBlockCount
-104     8     RowRecordCount
-112     8     RawBytes
-120     8     StoredBytes
-128     4     BlocksCRC32C
-132     4     IndexTxnCRC32C
-136     4     FooterCRC32C
-140     4     reserved (0)
+offset size field
+0 8 MagicSnapshotFtr ("RPKSNAPF")
+8 4 size = 144
+12 1 SnapshotType
+13 3 reserved (0)
+16 8 SnapshotID
+24 8 ParentSnapshotID
+32 8 PreviousFooterOffset
+40 8 SnapshotStartOffset
+48 8 BlocksStartOffset
+56 8 BlocksEndOffset
+64 8 IndexTxnStartOffset
+72 8 IndexTxnEndOffset
+80 8 SnapshotEndOffset
+88 8 FirstBlockID
+96 4 BlockCount
+100 4 MetadataBlockCount
+104 8 RowRecordCount
+112 8 RawBytes
+120 8 StoredBytes
+128 4 BlocksCRC32C
+132 4 IndexTxnCRC32C
+136 4 FooterCRC32C
+140 4 reserved (0)
 ```
 
 约束：`BlocksStartOffset = SnapshotStartOffset + SnapshotHeaderSize`；当快照没有任何块时
@@ -296,11 +296,11 @@ IndexTxn Builder 和 `View.Apply` 复用既有实现，只调整写入目标和 
 2. 从文件尾定位最后一个有效 SnapshotFooter；
 3. 沿 `PreviousFooterOffset` 建立 Snapshot 目录；
 4. 按物理顺序（或 Footer 链顺序）对**每个 committed Snapshot 独立**读取其 IndexTxn 区段：
-   - 校验 SnapshotID、区间自洽（§6 边界强制）、Entry CRC 和 Footer 绑定 CRC；
-   - 成功 → Apply；
-   - 失败 → 该 snapshot 判定 IndexTxn 损坏：按 §10.2 从 Blocks 内存重建并 Apply，
-     报告 `IndexRebuiltInMemory`，**继续处理下一个 snapshot**（不能沿用“首个坏 txn 即停、
-     其后全部丢弃”的重放语义）；
+  - 校验 SnapshotID、区间自洽（§6 边界强制）、Entry CRC 和 Footer 绑定 CRC；
+  - 成功 → Apply；
+  - 失败 → 该 snapshot 判定 IndexTxn 损坏：按 §10.2 从 Blocks 内存重建并 Apply，
+  报告 `IndexRebuiltInMemory`，**继续处理下一个 snapshot**（不能沿用“首个坏 txn 即停、
+  其后全部丢弃”的重放语义）；
 5. 派生 SchemaIndex 并发布 Store 状态。
 
 打开仍会重放全部 Row Index，因此 Open 时间和内存接近既有实现。**注意：索引重放必须按
@@ -323,10 +323,10 @@ Block，整文件读入会把 Open 峰值内存放大到与数据同量级**。
 **物理扫描协议**：所有恢复/打开扫描必须识别四类固定结构：
 
 ```text
-SnapshotHeader (RPKSNAPH)  → 开始新 snapshot
-BlockHeader    (RPKBLOCK)  → 按 StoredSize 跳过 payload
-IndexTxnHeader (RPITXNBH)  → 按 BodyBytes 跳过，随后必须出现 IndexTxnFooter (RPITXNEF)
-SnapshotFooter (RPKSNAPF)  → 结束当前 snapshot
+SnapshotHeader (RPKSNAPH) → 开始新 snapshot
+BlockHeader (RPKBLOCK) → 按 StoredSize 跳过 payload
+IndexTxnHeader (RPITXNBH) → 按 BodyBytes 跳过，随后必须出现 IndexTxnFooter (RPITXNEF)
+SnapshotFooter (RPKSNAPF) → 结束当前 snapshot
 ```
 
 未知结构出现在最后一个有效 Footer 之前 → 中间损坏硬错；之后 → 未提交尾部。空 DELTA
@@ -435,7 +435,7 @@ offset 又取决于全部 stored 长度，绑进去会成循环）；txn 的字�
 
 ```text
 Block nonce : KeyEpoch(4B, LE) ‖ BlockID(8B, LE)
-Index nonce : (KeyEpoch | 0x80000000)(4B, LE) ‖ TxnSequence(8B, LE)   // bit31 = 域标志
+Index nonce : (KeyEpoch | 0x80000000)(4B, LE) ‖ TxnSequence(8B, LE) // bit31 = 域标志
 ```
 
 Block nonce 的 epoch 恒低于 2^31，index nonce 置 epoch 字最高位，因此二者永不碰撞。
@@ -501,5 +501,6 @@ v1 直接替代早期双文件草案：
 
 **元数据**
 
-- 引擎不内建数据库对象模型或方言语义；Canonical Schema 决定行解码，Source Metadata 走
-  同一 TLV 机制（见 [METADATA_FORMAT_V1.md](METADATA_FORMAT_V1.md)）。
+- 引擎不内建数据库对象模型或方言语义；Canonical Schema 决定行解码，Source Metadata
+  以普通行数据存放在调用方自选 ns 的目录表里（见
+  [METADATA_FORMAT_V1.md](METADATA_FORMAT_V1.md) §9），不进入 TLV。

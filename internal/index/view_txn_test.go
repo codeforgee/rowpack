@@ -51,26 +51,6 @@ func metaEntry(snap, obj uint64, rectype uint32) fileformat.MetadataIndexEntry {
 	}
 }
 
-func snapWithRows(id, parent uint64, rows []fileformat.RowIndexEntry) *Txn {
-	b := NewBuilder(id)
-	b.SetRowDedup(false)
-	if err := b.SetSnapshot(snapEntry(id, parent, fileformat.SnapshotFull)); err != nil {
-		panic(err)
-	}
-	for _, r := range rows {
-		e := r
-		e.SnapshotID = id
-		if err := b.AddRow(e); err != nil {
-			panic(err)
-		}
-	}
-	_, txn, err := b.Build(BodyBounds{}, 0)
-	if err != nil {
-		panic(err)
-	}
-	return txn
-}
-
 // --- Builder validation ------------------------------------------------------
 
 func TestBuilderSetSnapshotValidation(t *testing.T) {

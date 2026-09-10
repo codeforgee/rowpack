@@ -12,7 +12,9 @@
 - 不用 API 名称暴露物理 IndexTxn、offset 或 mmap 实现；
 - 批量 API 以 RowID 为存储层边界，不接受源数据库方言 Key；
 - 返回顺序、内存所有权、取消和错误语义必须明确；
-- Source Metadata API 不随本版本加入，另行设计。
+- Source Metadata 不进入本版本的 API：源库元信息由调用方以自选 ns 下的
+  普通目录表承载（`DefineTableIn` 到自选 ns + `Insert/Update/Delete`），
+  复用既有行 API，不新增元数据读写通道。
 
 ## 2. 创建与打开
 
@@ -29,19 +31,19 @@ func Open(basePath string, opts Options) (*Store, error)
 
 ```go
 type Options struct {
-    ReadOnly         bool
-    BlockSize        int
-    PageSize         int
-    Compression      Compression
-    CompressionLevel int
+	ReadOnly         bool
+	BlockSize        int
+	PageSize         int
+	Compression      Compression
+	CompressionLevel int
 
-    CacheBytes     int64 // 解码数据总预算：DataCache + ScanWindow 不超过它；负值禁用缓存
-    ScanCacheBytes int64 // 扫描窗口显式上限；0 取默认拆分，负值禁用扫描窗口
+	CacheBytes     int64 // 解码数据总预算：DataCache + ScanWindow 不超过它；负值禁用缓存
+	ScanCacheBytes int64 // 扫描窗口显式上限；0 取默认拆分，负值禁用扫描窗口
 
-    Durability Durability
-    Validation ValidationMode
-    Limits     Limits
-    Encryption *EncryptionConfig // nil = 明文 store，仅在 Create 时设置
+	Durability Durability
+	Validation ValidationMode
+	Limits     Limits
+	Encryption *EncryptionConfig // nil = 明文 store，仅在 Create 时设置
 }
 ```
 
@@ -54,17 +56,17 @@ type Options struct {
 ### 枚举与限制
 
 ```go
-type Compression uint8 // CompressionDefault(0) / CompressionNone / CompressionZstd
-type Durability uint8  // SyncCommit / AsyncCommit
+type Compression uint8    // CompressionDefault(0) / CompressionNone / CompressionZstd
+type Durability uint8     // SyncCommit / AsyncCommit
 type ValidationMode uint8 // ValidationStrict / ValidationNone
 
 type Limits struct {
-    MaxRowBytes         uint32
-    MaxRawBlockBytes    uint32
-    MaxStoredBlockBytes uint32
-    MaxColumns          uint32
-    MaxValueBytes       uint32
-    MaxSnapshotDepth    uint32
+	MaxRowBytes         uint32
+	MaxRawBlockBytes    uint32
+	MaxStoredBlockBytes uint32
+	MaxColumns          uint32
+	MaxValueBytes       uint32
+	MaxSnapshotDepth    uint32
 }
 ```
 
@@ -75,12 +77,12 @@ type Limits struct {
 
 ```go
 type EncryptionConfig struct {
-    KeyProvider KeyProvider
-    KeyID       string
+	KeyProvider KeyProvider
+	KeyID       string
 }
 
 type KeyProvider interface {
-    Key(ctx context.Context, keyID string, epoch uint32) ([]byte, error)
+	Key(ctx context.Context, keyID string, epoch uint32) ([]byte, error)
 }
 ```
 
@@ -117,10 +119,10 @@ func (tx *Tx) Rollback() error
 
 ```go
 type Change struct {
-    Type  ChangeType // Insert / Update / Delete
-    Table string
-    RowID RowID
-    Row   Row
+	Type  ChangeType // Insert / Update / Delete
+	Table string
+	RowID RowID
+	Row   Row
 }
 ```
 
@@ -128,6 +130,10 @@ type Change struct {
   批次中某条失败时，之前的变更仍属于本事务，`Rollback` 丢弃整个事务。
 - `Commit` 发布新快照；`Rollback` 可安全地紧跟在 `Begin` 后 defer，成功 Commit 后
   返回 `ErrSnapshotCommitted`。
+- 表必须先于行写入定义。`DefineTable*` 在同一快照内重复定义同列是幂等 no-op，
+  同地址不同列返回 `ErrSchemaConflict`；DELTA 里链上已有的表可以直接写，而 FULL
+  的元数据不沿父链可见，所以它必须自己定义写的每一张表：否则 `Commit` 返回
+  `ErrInvalidArgument`，且不落任何字节。
 - 写路径为单写者串行；并发 `Begin` 返回 `ErrWriterBusy`。
 
 ## 4. 读路径
@@ -162,7 +168,7 @@ func (s *Store) Blocks(ctx context.Context, snapshot SnapshotID, table string) (
 ```go
 type ScanOptions struct {
     Start RowID // inclusive；0 = 从头开始
-    End   RowID // exclusive；0 = 无上界
+    End RowID // exclusive；0 = 无上界
 }
 
 func (it *Iterator) Next() (Row, bool)
@@ -181,10 +187,28 @@ func (it *Iterator) Close() error
 ```go
 func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table string, version SchemaVersion) (Schema, error)
 func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error)
+func (s *Store) TablesIn(ctx context.Context, snapshot SnapshotID, ns string) ([]Table, error)
 func (s *Store) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error)
+func (tx *Tx) DefineTable(name string, columns []Column) error
+func (tx *Tx) DefineTableIn(ns, name string, columns []Column) error
 ```
 
-- 表按**表名**寻址；`Tables` 返回表身份与最新 SchemaVersion；
+- 表按**地址**寻址（默认 ns 用裸名）；`Tables` 返回表身份与最新 SchemaVersion；
+- 每张表属于一个**ns**（`Table.NS`）。默认是 `NSUser`（`user`），
+  此时 Table 记录省略 `NS` 字段，所以既有 store 的字节不变；
+  `DefineTableIn` 可以指定别的名字， ns 随该表的 Table 记录一起持久化（见
+  [METADATA_FORMAT_V1.md](METADATA_FORMAT_V1.md) §6.1），`TablesIn` 按它过滤；
+- ns 是**调用方自选的标签**，引擎不赋予语义（没有“系统表”之类概念）。典型用法
+  是把上层自己的目录表放进一个自有 ns，用 `TablesIn(ctx, snap,
+  rowpack.NSUser)` 一次拿到源库表（见
+  [SOURCE_CATALOG_GUIDE_V1.md](SOURCE_CATALOG_GUIDE_V1.md)）；
+- 表的身份是 `(NS, Name)`，因此**同名表可以在不同 ns 共存**。所有收表的
+  API 收的是**地址字符串**：默认 ns 用裸名（`"users"`），其他 ns 加
+  `"ns."` 前缀（`"public.users"`）。`Qualify`/`SplitAddress` 是公开的地址
+  工具函数；`Table.Address()` 给出结果。`.` 是地址分隔符，但**引擎不禁止任何
+  字符**：地址按**第一个** `.` 切分，所以 ns 与表名都可以含 `.`（`SplitAddress` 在 ns
+  自身含点时不再是 `Qualify` 的逆，以 `Table.NS`/`Table.Name` 为准）；两个不同的
+  `(ns, name)` 算出同一地址是真实冲突，第二个 `DefineTable*` 报 `ErrSchemaConflict`；
 - `Schema` 解析指定版本的 Canonical Schema；未知类型字符串的记录按普通数据跳过，
   不导致 Open 失败；
 - `SnapshotInfo` 是已提交快照的不可变摘要（ID/Type/Parent/CreatedAt/BlockCount/
@@ -221,13 +245,13 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 所有公开 API 返回可用 `errors.Is` 匹配的哨兵错误，不得按字符串分类：
 
 ```text
-ErrNotFound           ErrAlreadyExists      ErrInvalidPath
-ErrInvalidArgument    ErrReadOnly           ErrWriterBusy
-ErrSnapshotCommitted  ErrSnapshotAborted    ErrSnapshotFailed
-ErrInvalidParent      ErrSchemaMismatch     ErrSchemaConflict
-ErrCorruptData        ErrCorruptIndex       ErrVersionUnsupported
-ErrStoreMismatch      ErrClosed             ErrMustReopen
-ErrKeyRequired        ErrKeyUnavailable     ErrKeyIDNotFound     ErrAuthFailed
+ErrNotFound ErrAlreadyExists ErrInvalidPath
+ErrInvalidArgument ErrReadOnly ErrWriterBusy
+ErrSnapshotCommitted ErrSnapshotAborted ErrSnapshotFailed
+ErrInvalidParent ErrSchemaMismatch ErrSchemaConflict
+ErrCorruptData ErrCorruptIndex ErrVersionUnsupported
+ErrStoreMismatch ErrClosed ErrMustReopen
+ErrKeyRequired ErrKeyUnavailable ErrKeyIDNotFound ErrAuthFailed
 ```
 
 - `CorruptionError`（Kind + 文件/offset/Snapshot/Table/Block/Cause）描述完整性失败，

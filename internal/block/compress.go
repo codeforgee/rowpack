@@ -136,7 +136,7 @@ func init() {
 	for i := range encodeDstPools {
 		size := 1 << (poolClassMinBits + i)
 		p := &encodeDstPools[i]
-		p.New = func() any { return make([]byte, 0, size) }
+		p.New = func() any { b := make([]byte, 0, size); return &b }
 	}
 }
 
@@ -148,7 +148,7 @@ func getEncodeDst(n int) []byte {
 	if c < 0 {
 		return make([]byte, 0, n)
 	}
-	b := encodeDstPools[c-poolClassMinBits].Get().([]byte)
+	b := *encodeDstPools[c-poolClassMinBits].Get().(*[]byte)
 	if cap(b) > 0 {
 		encodeDstBytes.Add(-int64(cap(b)))
 	}
@@ -171,7 +171,8 @@ func putEncodeDst(b []byte) {
 		encodeDstBytes.Add(-int64(cap(b)))
 		return // budget exhausted: drop to GC
 	}
-	encodeDstPools[c-poolClassMinBits].Put(b[:0])
+	b = b[:0]
+	encodeDstPools[c-poolClassMinBits].Put(&b)
 }
 
 // EncodeZstdWith compresses src with a caller-owned encoder, returning a

@@ -2,15 +2,12 @@ package metadata
 
 import "github.com/rowpack/rowpack/internal/fileformat"
 
-// Core field IDs and wire types for the engine's schema records
-// (Table and Column). These are the records DefineSchema writes itself;
-// every field listed here is written by DefineSchema and read back by
-// schema derivation. Foreign/upper-layer metadata objects are not part
-// of the engine. FieldID numbering is frozen once published.
-
-// Table field IDs (RecordType 2).
+// Table field IDs (RecordType 2). FieldIDs are allocated densely from 1 per
+// record type: a number is only frozen once some file has been written with it,
+// so an unused reservation is reclaimed rather than left as a gap.
 const (
-	TableTableName uint16 = 1
+	TableName uint16 = 1
+	TableNS   uint16 = 2
 )
 
 // Column field IDs (RecordType 3). ColumnID leads so that the record's
@@ -34,7 +31,7 @@ func str() fileformat.WireType  { return fileformat.WireString }
 // rejected while unknown non-critical fields are preserved losslessly.
 var CoreFieldSchemas = map[uint32]KnownFieldSchema{
 	uint32(fileformat.RecordTable): {
-		TableTableName: str(),
+		TableName: str(), TableNS: str(),
 	},
 	uint32(fileformat.RecordColumn): {
 		ColColumnName: str(), ColColumnType: str(), ColNullable: str(),

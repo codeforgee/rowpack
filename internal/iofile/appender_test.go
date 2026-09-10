@@ -81,7 +81,7 @@ func TestAppendZeroes(t *testing.T) {
 	_, a := newTestAppender(t)
 	defer a.Close()
 
-	off, err := a.Append([]byte("abc"))
+	_, err := a.Append([]byte("abc"))
 	if err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestAppendZeroes(t *testing.T) {
 		t.Fatalf("zeroes padding not zero, got %v", buf)
 	}
 
-	off, err = a.Append([]byte("x"))
+	off, err := a.Append([]byte("x"))
 	if err != nil {
 		t.Fatalf("Append after zeroes: %v", err)
 	}

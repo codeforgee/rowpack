@@ -67,9 +67,14 @@ type Writer struct {
 
 	state writerState
 
-	// tableIDs resolves table names to internal table IDs for this
+	// tableIDs resolves table addresses to internal table IDs for this
 	// transaction (tables created here and tables resolved from the chain).
+	// Keys are addresses (Qualify(ns, name)).
 	tableIDs map[string]TableID
+	// tableNS remembers the ns of every table created in this transaction, so
+	// a second DefineTable can detect an ns conflict without consulting the
+	// committed chain.
+	tableNS map[TableID]string
 	// nextTableID is the lowest free internal table ID: one past the highest
 	// table ID in the committed view, raised by every CreateTable.
 	nextTableID uint32
@@ -145,6 +150,7 @@ func (s *Store) newWriter(ctx context.Context, typ SnapshotType, parent Snapshot
 		schemas:     make(map[schemaKey]*codec.Schema),
 		seenRows:    make(map[TableID]*rowIDSet),
 		tableIDs:    make(map[string]TableID),
+		tableNS:     make(map[TableID]string),
 		allocator:   metadata.NewIDAllocator(),
 	}
 	if !s.writer.CompareAndSwap(nil, w) {
@@ -300,53 +306,80 @@ func (w *Writer) setEncoder(setter interface{ SetZstdEncoder(*block.ZstdEncoder)
 	setter.SetZstdEncoder(w.store.zstdEncoder())
 }
 
-// Insert appends an INSERT change.
-// CreateTable creates a table in this snapshot. The table name is the
+// createTable creates a table in this snapshot. The address (ns + name) is the
 // caller-facing identity; the internal table ID and schema version are
 // assigned by the engine and never surface in the API.
 //
-//   - same name + same columns within this transaction ⇒ idempotent no-op;
-//   - same name + different columns ⇒ ErrSchemaConflict;
-//   - a table of the same name on the parent chain resolves to the existing
-//     internal ID: same columns ⇒ no-op, different columns ⇒ ErrSchemaConflict.
-func (w *Writer) CreateTable(name string, columns []Column) error {
+//   - same address + same columns within this transaction => idempotent no-op;
+//   - same address + different columns => ErrSchemaConflict;
+//   - a table of the same address on the parent chain resolves to the existing
+//     internal ID: same columns => no-op for a DELTA, the snapshot's own
+//     metadata layer for a FULL; different columns => ErrSchemaConflict;
+//   - the ns is part of the identity, so the same name in another ns is a
+//     different table and never conflicts.
+func (w *Writer) createTable(ns, name string, columns []Column) error {
 	if err := w.checkState(); err != nil {
 		return err
 	}
 	if name == "" {
 		return fmt.Errorf("%w: table name is empty", ErrInvalidArgument)
 	}
-	// Idempotence / conflict against this transaction's own definitions.
-	if tid, ok := w.tableIDs[name]; ok {
+	if ns == "" {
+		return fmt.Errorf("%w: ns is empty", ErrInvalidArgument)
+	}
+	// No character is forbidden in ns or name: the address is the key, and a
+	// name may contain the separator because Qualify/SplitAddress resolve at the
+	// first one. Two different (ns, name) pairs can still produce the same
+	// address -- a dotted name in NSUser versus a ns named after its prefix --
+	// so the address is checked for ownership rather than the characters.
+	address := Qualify(ns, name)
+	// Only a table this transaction has defined has a txn schema version. A table
+	// merely cached by tableForWrite falls through to the chain branch, which
+	// keeps DELTA and FULL apart (a FULL writes its own metadata layer).
+	if tid, ok := w.tableIDs[address]; ok && w.latestVersion(tid) != 0 {
+		if prev := w.nsOf(tid); prev != ns || w.nameOf(tid) != name {
+			return fmt.Errorf("%w: address %q already names table %q in ns %q",
+				ErrSchemaConflict, address, w.nameOf(tid), prev)
+		}
 		if w.txnColumnsEqual(tid, columns) {
 			return nil
 		}
-		return fmt.Errorf("%w: table %q already defined with different columns", ErrSchemaConflict, name)
+		return fmt.Errorf("%w: table %q already defined with different columns", ErrSchemaConflict, address)
 	}
 	// Resolve against the committed parent chain.
 	st := w.store.state.Load()
 	if st != nil {
-		if chainTID, ok := st.schemas.tableID(uint64(w.parentOf()), name); ok {
+		if chainTID, ok := st.schemas.tableID(uint64(w.parentOf()), address); ok {
+			if prev := st.schemas.nsOf(uint64(w.parentOf()), uint32(chainTID)); prev != ns ||
+				st.schemas.nameOf(uint64(w.parentOf()), uint32(chainTID)) != name {
+				return fmt.Errorf("%w: address %q already names table %q in ns %q",
+					ErrSchemaConflict, address, st.schemas.nameOf(uint64(w.parentOf()), uint32(chainTID)), prev)
+			}
 			if !w.columnsEqual(uint64(w.parentOf()), chainTID, columns) {
-				return fmt.Errorf("%w: table %q already exists with different columns", ErrSchemaConflict, name)
+				return fmt.Errorf("%w: table %q already exists with different columns", ErrSchemaConflict, address)
 			}
 			if w.typ == SnapshotDelta {
 				// DELTA: readers resolve the schema along the parent chain, so
 				// an identical re-definition needs no metadata of its own.
-				w.tableIDs[name] = chainTID
+				w.tableIDs[address] = chainTID
+				w.tableNS[chainTID] = ns
 				return nil
 			}
 			// FULL checkpoint (parent 0): always write the snapshot's own
-			// metadata layer, even when identical to the ancestor's —
+			// metadata layer, even when identical to the ancestor's --
 			// its visibility no longer follows any ancestor chain.
 			latest := st.schemas.latest(uint64(w.parentOf()), uint32(chainTID))
 			if latest == 0 {
 				latest = 1
 			}
-			if err := w.writeRecords(uint32(chainTID), latest, name, columns); err != nil {
+			if err := w.writeRecords(tableDef{
+				ID: uint32(chainTID), Version: latest, Name: name,
+				NS: ns, Address: address, Columns: columns,
+			}); err != nil {
 				return err
 			}
-			w.tableIDs[name] = chainTID
+			w.tableIDs[address] = chainTID
+			w.tableNS[chainTID] = ns
 			return nil
 		}
 	}
@@ -355,37 +388,84 @@ func (w *Writer) CreateTable(name string, columns []Column) error {
 	if tid == 0 || tid == ^uint32(0) {
 		return fmt.Errorf("%w: table id space exhausted", ErrInvalidArgument)
 	}
-	if err := w.writeRecords(tid, 1, name, columns); err != nil {
+	if err := w.writeRecords(tableDef{
+		ID: tid, Version: 1, Name: name,
+		NS: ns, Address: address, Columns: columns,
+	}); err != nil {
 		return err
 	}
 	w.nextTableID++
-	w.tableIDs[name] = tid
+	w.tableIDs[address] = tid
+	w.tableNS[tid] = ns
 	return nil
 }
 
-// writeRecords writes the Table + Column metadata records of one table
-// version and records the resolved schema in the writer's txn map.
-func (w *Writer) writeRecords(tid uint32, version uint32, name string, columns []Column) error {
-	schema := codec.Schema{TableID: tid, Version: version, Name: name, Columns: columns}
+// nsOf returns the ns a table resolves to in this transaction:
+// its own definition first, then the committed chain (the default ns when the
+// table carries no ns).
+func (w *Writer) nsOf(tid TableID) string {
+	if ns, ok := w.tableNS[tid]; ok {
+		return ns
+	}
+	st := w.store.state.Load()
+	if st == nil {
+		return NSUser
+	}
+	return st.schemas.nsOf(uint64(w.parentOf()), uint32(tid))
+}
+
+// nameOf returns the bare name of a table defined in this transaction, or "".
+// createTable consults it only for tables with a txn schema version.
+func (w *Writer) nameOf(tid TableID) string {
+	if sch := w.schemas[schemaKey{Table: tid, Version: w.latestVersion(tid)}]; sch != nil {
+		return sch.Name
+	}
+	return ""
+}
+
+// tableDef is one table definition to write into this snapshot's metadata
+// layer.
+type tableDef struct {
+	ID      uint32
+	Version uint32
+	Name    string
+	NS      string
+	Address string
+	Columns []Column
+}
+
+// writeRecords writes the Table + Column metadata records of one table version
+// and records the resolved schema in the writer's txn map.
+func (w *Writer) writeRecords(def tableDef) error {
+	schema := codec.Schema{TableID: def.ID, Version: def.Version, Name: def.Name, Columns: def.Columns}
 	if err := schema.Validate(w.store.rowCodec().Limits); err != nil {
 		return err
 	}
-	tableOID := uint64(tid)
+	tableOID := uint64(def.ID)
+	// The ns field is omitted for the default ns, so that case stays
+	// byte-identical to stores written before ns existed.
+	fields := []metadata.Field{
+		{ID: metadata.TableName, WireType: fileformat.WireString, Value: schema.Name},
+	}
+	if def.NS != NSUser {
+		fields = append(fields, metadata.Field{
+			ID: metadata.TableNS, WireType: fileformat.WireString, Value: def.NS,
+		})
+	}
 	tableRec := &metadata.Record{
 		RecordType:  uint32(fileformat.RecordTable),
 		ObjectID:    tableOID,
 		Revision:    schema.Version,
 		Namespace:   fileformat.NamespaceCore,
 		ExternalKey: schema.Name,
-		Fields: []metadata.Field{
-			{ID: metadata.TableTableName, WireType: fileformat.WireString, Value: schema.Name},
-		},
+		Fields:      fields,
 	}
 	if err := w.writeMetadata(tableRec); err != nil {
 		return err
 	}
 	for i, col := range schema.Columns {
-		objectID := w.allocator.Alloc(fileformat.NamespaceCore, fmt.Sprintf("%s:%d:%s", schema.Name, schema.Version, col.Name))
+		objectID := w.allocator.Alloc(fileformat.NamespaceCore,
+			fmt.Sprintf("%s:%d:%s", def.Address, schema.Version, col.Name))
 		if objectID > w.maxObject {
 			w.maxObject = objectID
 		}
@@ -407,19 +487,15 @@ func (w *Writer) writeRecords(tid uint32, version uint32, name string, columns [
 			return err
 		}
 	}
-	w.schemas[schemaKey{Table: tid, Version: schema.Version}] = schema.Clone()
+	w.schemas[schemaKey{Table: def.ID, Version: schema.Version}] = schema.Clone()
 	return nil
 }
 
-// txnColumnsEqual compares the columns of the latest schema version defined for
-// tid within this transaction against columns.
+// txnColumnsEqual compares columns against the latest schema version defined in
+// this transaction; false when it defined none (the chain comparison belongs to
+// createTable's chain branch).
 func (w *Writer) txnColumnsEqual(tid TableID, columns []Column) bool {
-	var latest uint32
-	for key := range w.schemas {
-		if key.Table == tid && key.Version > latest {
-			latest = key.Version
-		}
-	}
+	latest := w.latestVersion(tid)
 	if latest == 0 {
 		return false
 	}
@@ -453,7 +529,7 @@ func schemaColumnsEqual(s *codec.Schema, columns []Column) bool {
 	return true
 }
 
-// tableForWrite resolves a table name to (internal ID, schema
+// tableForWrite resolves a table address to (internal ID, schema
 // version) for a write: tables created in this transaction first, then the
 // committed parent chain; the schema version is the table's latest — the
 // newest version defined in this transaction, or the committed latest when
@@ -490,8 +566,9 @@ func (w *Writer) latestVersion(tid TableID) SchemaVersion {
 	return latest
 }
 
-// Insert appends an INSERT change. The table is addressed by name; the row
-// is encoded against the table's latest schema.
+// Insert appends an INSERT change. The table address is resolved against the
+// committed parent chain and this transaction's definitions; the row is encoded
+// against the table's latest schema.
 func (w *Writer) Insert(ctx context.Context, table string, rowID RowID, row Row) error {
 	if err := w.checkState(); err != nil {
 		return err
@@ -537,7 +614,7 @@ func (w *Writer) Delete(ctx context.Context, table string, rowID RowID) error {
 }
 
 // rowChange is the internal, already-resolved form of one row mutation: the
-// public Change with its table name resolved to a TableID and its schema
+// public Change with its table address resolved to a TableID and its schema
 // version pinned. Insert/Update/Delete resolve the public arguments once and
 // hand put a single semantic value.
 type rowChange struct {
@@ -727,6 +804,11 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 	}
 	if len(w.pending) == 0 && w.typ == SnapshotFull {
 		return SnapshotInfo{}, fmt.Errorf("%w: empty FULL snapshot", ErrInvalidArgument)
+	}
+	// A table with rows but no visible schema would commit undecodable rows.
+	// Checked before the first byte is written: after the sync, it is durable.
+	if err := w.checkSchemaCoverage(); err != nil {
+		return SnapshotInfo{}, err
 	}
 	// Fault injection points (test-only): crash between these positions.
 	fault.Check("commit.header.before")
@@ -1039,6 +1121,46 @@ func (w *Writer) writePendingBlock(blk *pendingBlock) ([fileformat.BlockHeaderSi
 	return hb, nil
 }
 
+// checkSchemaCoverage rejects a snapshot that writes rows for a table with no
+// schema visible at the snapshot: a FULL snapshot's metadata is not visible
+// through any ancestor, so a chain table it only wrote to (tableForWrite
+// resolved it, DefineTable never ran) would commit rows no reader can decode.
+func (w *Writer) checkSchemaCoverage() error {
+	checked := make(map[TableID]struct{})
+	for _, blk := range w.pending {
+		if len(blk.rowsDir) == 0 {
+			continue
+		}
+		tid := TableID(blk.header.TableID)
+		if _, ok := checked[tid]; ok {
+			continue
+		}
+		checked[tid] = struct{}{}
+		if w.latestVersion(tid) != 0 {
+			continue // defined in this snapshot
+		}
+		if st := w.store.state.Load(); st != nil && w.typ == SnapshotDelta {
+			if st.schemas.latest(uint64(w.parentOf()), uint32(tid)) != 0 {
+				continue // inherited from the parent chain
+			}
+		}
+		return fmt.Errorf("%w: table %q has rows but no schema in this snapshot; define it with DefineTable",
+			ErrInvalidArgument, w.addressOf(tid))
+	}
+	return nil
+}
+
+// addressOf returns the address a table was resolved under in this transaction,
+// or "" (every written table is cached in tableIDs by tableForWrite first).
+func (w *Writer) addressOf(tid TableID) string {
+	for addr, id := range w.tableIDs {
+		if id == tid {
+			return addr
+		}
+	}
+	return ""
+}
+
 // buildSchemas derives the schema index for the new snapshot only (the
 // parent snapshots' schemas are reused from the old index).
 func (w *Writer) buildSchemas(newView *index.View) (*schemaIndex, error) {
@@ -1048,19 +1170,20 @@ func (w *Writer) buildSchemas(newView *index.View) (*schemaIndex, error) {
 		for snap, tables := range base.schemas.bySnapshot {
 			si.bySnapshot[snap] = tables
 		}
-		for snap, names := range base.schemas.byName {
-			si.byName[snap] = names
+		for snap, addrs := range base.schemas.byAddress {
+			si.byAddress[snap] = addrs
 		}
+
 	}
-	tables, err := w.store.deriveTables(newView, w.id, nil)
+	d, err := w.store.deriveTables(newView, w.id, nil)
 	if err != nil {
 		return nil, err
 	}
-	if len(tables) > 0 {
-		si.bySnapshot[w.id] = tables
-		if names := nameIndex(tables); names != nil {
-			si.byName[w.id] = names
-		}
+	if len(d.tables) > 0 {
+		si.bySnapshot[w.id] = d.tables
+	}
+	if len(d.byAddress) > 0 {
+		si.byAddress[w.id] = d.byAddress
 	}
 	return si, nil
 }

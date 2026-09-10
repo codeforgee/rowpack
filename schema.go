@@ -1,6 +1,7 @@
 package rowpack
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
@@ -16,41 +17,73 @@ import (
 // metadata records and is immutable once built.
 type schemaIndex struct {
 	bySnapshot map[uint64]map[uint32]*tableSchemas
-	// byName is the reverse of bySnapshot's latest version per table, so a point
-	// read resolves a table name without scanning every visible table.
-	byName map[uint64]map[string]TableID
+	byAddress  map[uint64]map[string]TableID
 }
 
-// newSchemaIndex returns an empty index with both lookup directions ready.
+// newSchemaIndex returns an empty index with all lookup directions ready.
 func newSchemaIndex() *schemaIndex {
 	return &schemaIndex{
 		bySnapshot: make(map[uint64]map[uint32]*tableSchemas),
-		byName:     make(map[uint64]map[string]TableID),
+		byAddress:  make(map[uint64]map[string]TableID),
 	}
 }
 
-// nameIndex maps the latest schema name of every table to its ID; tables whose
-// latest schema could not be built are skipped. Name conflicts are rejected at
-// write time.
-func nameIndex(tables map[uint32]*tableSchemas) map[string]TableID {
+// addressIndex maps the latest schema address of every table to its ID; tables
+// whose latest schema could not be built are skipped.
+//
+// DefineTable rejects two tables claiming the same address, so collisions are
+// impossible in a store the engine wrote. The lowest TableID wins if one is
+// nonetheless present, keeping lookups deterministic instead of map-order
+// dependent; Verify reports the duplicate.
+func addressIndex(tables map[uint32]*tableSchemas) map[string]TableID {
 	if len(tables) == 0 {
 		return nil
 	}
-	names := make(map[string]TableID, len(tables))
-	for tid, ts := range tables {
+	tids := make([]uint32, 0, len(tables))
+	for tid := range tables {
+		tids = append(tids, tid)
+	}
+	sort.Slice(tids, func(i, j int) bool { return tids[i] < tids[j] })
+	addrs := make(map[string]TableID, len(tables))
+	for _, tid := range tids {
+		ts := tables[tid]
 		if ts == nil || len(ts.versions) == 0 {
 			continue
 		}
 		if s := ts.byVer[ts.versions[len(ts.versions)-1]]; s != nil {
-			names[s.Name] = TableID(tid)
+			if _, taken := addrs[Qualify(ts.ns, s.Name)]; !taken {
+				addrs[Qualify(ts.ns, s.Name)] = TableID(tid)
+			}
 		}
 	}
-	return names
+	return addrs
 }
 
 type tableSchemas struct {
 	versions []uint32 // sorted ascending
 	byVer    map[uint32]*codec.Schema
+	ns       string
+}
+
+// nameOf returns the bare name of a table at a snapshot, or "" when unknown.
+func (si *schemaIndex) nameOf(snapshot uint64, table uint32) string {
+	ts := si.bySnapshot[snapshot][table]
+	if ts == nil || len(ts.versions) == 0 {
+		return ""
+	}
+	if sch := ts.byVer[ts.versions[len(ts.versions)-1]]; sch != nil {
+		return sch.Name
+	}
+	return ""
+}
+
+// nsOf returns the ns a table resolves to at a snapshot (NSUser when the Table
+// record carries none).
+func (si *schemaIndex) nsOf(snapshot uint64, table uint32) string {
+	if ts := si.bySnapshot[snapshot][table]; ts != nil && ts.ns != "" {
+		return ts.ns
+	}
+	return NSUser
 }
 
 // Schema returns the schema for (snapshot, table, version), or nil.
@@ -88,11 +121,11 @@ func (si *schemaIndex) maxColumns(snapshot uint64, table uint32) int {
 	return max
 }
 
-// tableID resolves a table name at a snapshot to its internal ID through the
+// tableID resolves a table address at a snapshot to its internal ID through the
 // reverse index. The index for a snapshot already covers every ancestor layer
 // (deriveTables walks the chain).
-func (si *schemaIndex) tableID(snapshot uint64, name string) (TableID, bool) {
-	tid, ok := si.byName[snapshot][name]
+func (si *schemaIndex) tableID(snapshot uint64, address string) (TableID, bool) {
+	tid, ok := si.byAddress[snapshot][address]
 	return tid, ok
 }
 
@@ -116,25 +149,31 @@ func (s *Store) buildIndex(view *index.View) (*schemaIndex, error) {
 	si := newSchemaIndex()
 	memo := make(map[metaRecKey]*metadata.Record)
 	for _, sm := range view.Snapshots() {
-		tables, err := s.deriveTables(view, sm.ID, memo)
+		d, err := s.deriveTables(view, sm.ID, memo)
 		if err != nil {
 			return nil, err
 		}
-		if len(tables) > 0 {
-			si.bySnapshot[sm.ID] = tables
-			if names := nameIndex(tables); names != nil {
-				si.byName[sm.ID] = names
-			}
+		if len(d.tables) > 0 {
+			si.bySnapshot[sm.ID] = d.tables
+		}
+		if len(d.byAddress) > 0 {
+			si.byAddress[sm.ID] = d.byAddress
 		}
 	}
 	return si, nil
+}
+
+// derivedSchemas is the schema derivation result for one snapshot.
+type derivedSchemas struct {
+	tables    map[uint32]*tableSchemas
+	byAddress map[string]TableID
 }
 
 // deriveTables builds the schema index for one snapshot by walking its
 // metadata (UPSERT records win over parent records; DELETE hides them).
 // memo (may be nil) caches decoded records by physical block slot across
 // calls; see buildIndex.
-func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRecKey]*metadata.Record) (map[uint32]*tableSchemas, error) {
+func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRecKey]*metadata.Record) (*derivedSchemas, error) {
 	result := make(map[uint32]*tableSchemas)
 	walk := func(snap uint64) error {
 		// Decode and group the layer's columns once. Previously every table
@@ -184,6 +223,11 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 				}
 				return err
 			}
+			if ts.ns == "" {
+				if ns := fieldString(rec, metadata.TableNS); ns != "" {
+					ts.ns = ns
+				}
+			}
 		}
 		return nil
 	}
@@ -202,11 +246,10 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 		}
 		snap = sm.Parent
 	}
-	// Finalize ordering.
 	for _, ts := range result {
 		sort.Slice(ts.versions, func(i, j int) bool { return ts.versions[i] < ts.versions[j] })
 	}
-	return result, nil
+	return &derivedSchemas{tables: result, byAddress: addressIndex(result)}, nil
 }
 
 // addSchema resolves one Table record and its columns into a
@@ -221,7 +264,7 @@ func (s *Store) addSchema(ts *tableSchemas, tableRec *metadata.Record, columnRec
 		_ = existing
 		return nil
 	}
-	name := fieldString(tableRec, metadata.TableTableName)
+	name := fieldString(tableRec, metadata.TableName)
 	schema := &codec.Schema{TableID: mustTableID(tableRec.ObjectID), Version: version, Name: name}
 	var derived []derivedColumn
 	for _, rec := range columnRecords {
@@ -461,7 +504,11 @@ func (s *Store) decodeRecord(view *index.View, loc *index.MetadataLoc, objectID 
 		return nil, fmt.Errorf("rowpack: metadata object %d ordinal %d out of range", objectID, loc.ItemOrdinal)
 	}
 	rec := &metadata.Record{}
-	if err := rec.Decode(payload.Records[loc.ItemOrdinal], metadata.CoreFieldSchemas[rec.RecordType]); err != nil {
+	raw := payload.Records[loc.ItemOrdinal]
+	if len(raw) >= 8 {
+		rec.RecordType = binary.LittleEndian.Uint32(raw[4:])
+	}
+	if err := rec.Decode(raw, metadata.CoreFieldSchemas[rec.RecordType]); err != nil {
 		return nil, err
 	}
 	return rec, nil

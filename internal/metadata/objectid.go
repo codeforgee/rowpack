@@ -28,15 +28,15 @@ func NewIDAllocator() *IDAllocator {
 	}
 }
 
-// naturalKey joins the namespace and the caller-constructed identity string.
-func naturalKey(namespace, key string) string {
-	return namespace + "\x00" + key
+// naturalKey joins the ns and the caller-constructed identity string.
+func naturalKey(ns, key string) string {
+	return ns + "\x00" + key
 }
 
-// Alloc returns the stable ObjectID for (namespace, key), assigning a new one
-// on first use.
-func (a *IDAllocator) Alloc(namespace, key string) uint64 {
-	k := naturalKey(namespace, key)
+// Alloc returns the stable ObjectID for (ns, key), assigning a new one on
+// first use.
+func (a *IDAllocator) Alloc(ns, key string) uint64 {
+	k := naturalKey(ns, key)
 	if id, ok := a.byKey[k]; ok {
 		return id
 	}

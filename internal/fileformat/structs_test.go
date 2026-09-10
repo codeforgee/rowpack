@@ -88,7 +88,7 @@ func TestFrozenEnums(t *testing.T) {
 		{"TypeBytes", uint16(TypeBytes), 13}, {"TypeDate", uint16(TypeDate), 14},
 		{"TypeTime", uint16(TypeTime), 15}, {"TypeDateTime", uint16(TypeDateTime), 16},
 		{"TypeDecimal", uint16(TypeDecimal), 17},
-		{"RecordTable", uint16(RecordTable), 2}, {"RecordColumn", uint16(RecordColumn), 3},
+		{"RecordTable", uint16(RecordTable), 1}, {"RecordColumn", uint16(RecordColumn), 2},
 	}
 	for _, c := range checks {
 		if c.got != c.want {

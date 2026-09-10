@@ -322,6 +322,53 @@ func TestWriterErrors(t *testing.T) {
 	require.ErrorIs(t, err, ErrReadOnly)
 }
 
+// TestFullSnapshotRequiresOwnSchema: a FULL snapshot's metadata is invisible
+// through any ancestor, so writing to a chain table without defining it must
+// fail the commit instead of storing rows no reader can decode.
+func TestFullSnapshotRequiresOwnSchema(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t, Options{})
+
+	w, err := db.Begin(ctx, NoParent)
+	require.NoError(t, err)
+	require.NoError(t, w.DefineTable("users", usersSchema()))
+	insertUsers(t, w, 1)
+	full, err := w.Commit(ctx)
+	require.NoError(t, err)
+
+	// The chain resolves users, but this FULL layer defines nothing.
+	ck, err := db.Begin(ctx, NoParent)
+	require.NoError(t, err)
+	require.NoError(t, ck.Insert("users", 2, Row{
+		Uint64(2), String("user-2"), Bool(true),
+		DecimalValue(Decimal{Unscaled: big.NewInt(200), Scale: 2}),
+	}))
+	_, err = ck.Commit(ctx)
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	require.Contains(t, err.Error(), "users")
+	require.NoError(t, ck.Rollback())
+
+	// The failed commit published nothing and the store stays usable.
+	tables, err := db.Tables(ctx, full)
+	require.NoError(t, err)
+	require.Equal(t, []string{"users"}, tableAddresses(tables))
+
+	// Defining the table first commits normally.
+	ck, err = db.Begin(ctx, NoParent)
+	require.NoError(t, err)
+	require.NoError(t, ck.DefineTable("users", usersSchema()))
+	require.NoError(t, ck.Insert("users", 2, Row{
+		Uint64(2), String("user-2"), Bool(true),
+		DecimalValue(Decimal{Unscaled: big.NewInt(200), Scale: 2}),
+	}))
+	check, err := ck.Commit(ctx)
+	require.NoError(t, err)
+	row, err := db.Get(ctx, check, "users", 2, nil)
+	require.NoError(t, err)
+	name, _ := row[1].String()
+	require.Equal(t, "user-2", name)
+}
+
 // TestValidationNone skips the strict parent existence check.
 func TestValidationNone(t *testing.T) {
 	db := testDB(t, Options{Validation: ValidationNone})

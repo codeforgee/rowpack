@@ -61,7 +61,7 @@ RowPack v1 不包含：
 | 概念 | 定义 |
 | --- | --- |
 | Store | 单个 `<base>.rpk` 文件及其运行时状态 |
-| Table | 由 `TableID` 唯一标识、按表名寻址的二维表 |
+| Table | 由 `TableID` 唯一标识、按 `(NS, Name)` 地址寻址的二维表 |
 | Schema | 表的有序列定义及其版本 |
 | Row | 按 Schema 列顺序编码的一组值，不重复保存列名 |
 | RowID | 表内稳定的逻辑行标识，与业务主键相互独立 |
@@ -144,9 +144,10 @@ S1 FULL <- S2 DELTA <- S3 DELTA <- ...
 7. 不支持的值类型必须在写入前返回错误。
 8. RowPack 必须在快照内持久化自身的 Canonical Schema，至少包括表名、Schema 版本、列顺序、逻辑类型、可空性和 Decimal 精度。Canonical Schema 是行编码/解码契约，不等同于源数据库 Schema。
 9. 源数据库的原始设计元信息（列定义、约束、索引、视图、触发器、注释和厂商扩展等）如被采集，应作为独立的 Source Metadata 保存，用于恢复、审计和对比；不得驱动 RowPack 核心按源数据库方言建模，也不由引擎解释其语义。
-10. 元数据必须支持命名空间、稳定对象 ID、Revision、Tombstone 和可扩展 TLV 字段；未知非关键字段必须可跳过并无损透传，未知关键字段必须拒绝处理。
-11. 元数据与行数据必须在同一 Snapshot 中原子提交，解释行所需的元数据必须可由当前快照或父链获得。
-12. 引擎不内建 CoreMetadata 或数据库对象的强类型模型。行解码所需的最小 Canonical Schema 契约由 `Tx.DefineTable` 写入，使用引擎自产自销的规范类型字符串。元数据 TLV 仅是内部持久化格式；当前公开 API 不提供通用 Source Metadata 的读写通道。
+10. Source Metadata 的载体已定为**普通行数据**：上层用 `DefineTableIn` 在自己的 ns 建目录表（表/视图等对象一张、字段列表一张），以普通 `Insert/Update/Delete` 写入。不得把它做成元数据 TLV 记录类型或新增字段，因为方言属性不可穷举而 TLV 字段编号一经发布即冻结（见 [METADATA_FORMAT_V1.md](METADATA_FORMAT_V1.md) §9）。
+11. 元数据必须支持 ns、稳定对象 ID、Revision、Tombstone 和可扩展 TLV 字段；未知非关键字段必须可跳过并无损透传，未知关键字段必须拒绝处理。
+12. 元数据与行数据必须在同一 Snapshot 中原子提交，解释行所需的元数据必须可由当前快照或父链获得。
+13. 引擎不内建 CoreMetadata 或数据库对象的强类型模型。行解码所需的最小 Canonical Schema 契约由 `Tx.DefineTable` 写入，使用引擎自产自销的规范类型字符串。元数据 TLV 仅是内部持久化格式，不承载源库元信息，也不提供通用读写通道。
 
 ### FR-003 快照生命周期
 
@@ -166,7 +167,7 @@ S1 FULL <- S2 DELTA <- S3 DELTA <- ...
 2. Canonical Schema 的变化必须通过新的 SchemaVersion 表达；已提交 Schema 不得原地修改，历史快照必须继续使用原版本解码。
 3. 新增、删除或修改列，以及类型、可空性或 Decimal 精度变化，属于 Canonical Schema Diff；约束、索引、视图、注释和厂商扩展等属于 Source Metadata Diff。
 4. 两类 Diff 的结果可以由上层适配器用于恢复或生成迁移 SQL，但不属于 RowPack 引擎核心的数据库语义。
-5. 当前版本不提供通用 Source Metadata 公开读写 API；元数据 TLV 的持久化扩展能力不等同于已有的 `PutMetadata`、`Metadata` 或 `ListMetadata` API。
+5. 源库元信息的载体是调用方自选 ns 下的普通目录表（FR-002.10），不使用元数据 TLV；因此不需要 `PutMetadata`、`Metadata` 或 `ListMetadata` 这类 API，也不需要实现任何保留 WireType。源库元信息的差异计算是普通的行差异，可直接复用块级比对（`Blocks`/`ScanBlocks`）。
 
 ### FR-004 行变更写入
 
@@ -306,26 +307,26 @@ IndexTxn 必须至少提供以下三类逻辑索引：
 
 ```go
 type Options struct {
-	ReadOnly        bool
-	BlockSize       int
-	PageSize        int
-	Compression     Compression
-	CacheBytes      int64
-	ScanCacheBytes  int64
-	Durability      Durability
-	Validation      ValidationMode
-	Limits          Limits
-	Encryption      *EncryptionConfig
+    ReadOnly bool
+    BlockSize int
+    PageSize int
+    Compression Compression
+    CacheBytes int64
+    ScanCacheBytes int64
+    Durability Durability
+    Validation ValidationMode
+    Limits Limits
+    Encryption *EncryptionConfig
 }
 
 const NoParent SnapshotID = 0
 const Latest SnapshotID = ^SnapshotID(0)
 
 type Change struct {
-	Type  ChangeType // Insert / Update / Delete
-	Table string
-	RowID RowID
-	Row   Row
+    Type ChangeType // Insert / Update / Delete
+    Table string
+    RowID RowID
+    Row Row
 }
 
 func Create(basePath string, opts Options) (*Store, error)
@@ -362,16 +363,16 @@ func (s *Store) Close() error
 [File Header]
 
 [SnapshotTxn S1 / FULL]
-  [Snapshot Header]
-  [Metadata/Rows Blocks ...]
-  [IndexTxnHeader]
-  [Snapshot/Metadata/Block Chunks + ChunkDirectory]
-  [Row Index Pages + Row Index Fence]
-  [IndexTxnFooter]
-  [Snapshot Footer]
+ [Snapshot Header]
+ [Metadata/Rows Blocks ...]
+ [IndexTxnHeader]
+ [Snapshot/Metadata/Block Chunks + ChunkDirectory]
+ [Row Index Pages + Row Index Fence]
+ [IndexTxnFooter]
+ [Snapshot Footer]
 
 [SnapshotTxn S2 / DELTA / Parent=S1]
-  ...
+ ...
 
 [optional uncommitted tail]
 ```
@@ -410,10 +411,10 @@ IndexTxn 是最新版本之外的历史快照的派生导航结构；启动时�
 
 ```text
 在 S3 查询 R10
-  ├─ 找到 INSERT/UPDATE：返回该行
-  ├─ 找到 DELETE：返回 NotFound
-  └─ 未找到：查询 Parent S2
-                 └─ 继续，直至 FULL 或链首
+ ├─ 找到 INSERT/UPDATE：返回该行
+ ├─ 找到 DELETE：返回 NotFound
+ └─ 未找到：查询 Parent S2
+ └─ 继续，直至 FULL 或链首
 ```
 
 规则如下：
@@ -429,13 +430,13 @@ IndexTxn 是最新版本之外的历史快照的派生导航结构；启动时�
 公开 API 必须支持 `errors.Is` 或等价机制识别以下错误：
 
 ```text
-ErrNotFound           ErrAlreadyExists      ErrInvalidPath
-ErrInvalidArgument    ErrReadOnly           ErrWriterBusy
-ErrSnapshotCommitted  ErrSnapshotAborted    ErrSnapshotFailed
-ErrInvalidParent      ErrSchemaMismatch     ErrSchemaConflict
-ErrCorruptData        ErrCorruptIndex       ErrVersionUnsupported
-ErrStoreMismatch      ErrClosed             ErrMustReopen
-ErrKeyRequired        ErrKeyUnavailable     ErrKeyIDNotFound     ErrAuthFailed
+ErrNotFound ErrAlreadyExists ErrInvalidPath
+ErrInvalidArgument ErrReadOnly ErrWriterBusy
+ErrSnapshotCommitted ErrSnapshotAborted ErrSnapshotFailed
+ErrInvalidParent ErrSchemaMismatch ErrSchemaConflict
+ErrCorruptData ErrCorruptIndex ErrVersionUnsupported
+ErrStoreMismatch ErrClosed ErrMustReopen
+ErrKeyRequired ErrKeyUnavailable ErrKeyIDNotFound ErrAuthFailed
 ```
 
 错误信息必须包含操作上下文，但不得依赖字符串匹配判断错误类别。完整性失败使用结构化
@@ -562,5 +563,8 @@ v1 发布前必须包含：
 - 业务主键到 RowID 的独立索引；
 - LZ4 等额外压缩算法；
 - 列裁剪、块级统计信息和谓词过滤；
-- 通用 Source Metadata 公开读写 API；
 - 整数/字符串列裁剪与更细粒度的索引分页加载。
+
+原列在此的“通用 Source Metadata 公开读写 API”已从候选项移出：它不是一个待做的
+能力，而是一个已决议的**非目标**——源库元信息以自选 ns 下的普通目录表
+承载（FR-002.10），无需新增 API，也无需实现任何保留的元数据 WireType。

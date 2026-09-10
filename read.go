@@ -170,7 +170,7 @@ func (s *Store) decodeInto(rec codec.PageRecord, dst Row, ctx rowDecodeContext) 
 }
 
 // Schema returns the schema of a table version at a snapshot. The table is
-// addressed by name, like the other read paths.
+// addressed by table address, like the other read paths.
 func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table string, version SchemaVersion) (Schema, error) {
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
@@ -192,7 +192,7 @@ func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table string, v
 	return *schema, nil
 }
 
-// Tables lists the tables visible at a snapshot.
+// Tables lists the tables visible at a snapshot, in every ns.
 func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error) {
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
@@ -224,9 +224,31 @@ func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error
 			continue
 		}
 		latest := st.schemas.latest(snapshot, tid)
-		out = append(out, Table{ID: tid, Name: fieldString(rec, metadata.TableTableName), LatestVersion: latest})
+		out = append(out, Table{
+			ID:            tid,
+			Name:          fieldString(rec, metadata.TableName),
+			LatestVersion: latest,
+			NS:            st.schemas.nsOf(uint64(snapshot), uint32(tid)),
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// TablesIn lists the tables visible at a snapshot whose ns equals ns.
+// A bare name resolves in NSUser, so this is a filter over Tables, not a second
+// addressing dimension.
+func (s *Store) TablesIn(ctx context.Context, snapshot SnapshotID, ns string) ([]Table, error) {
+	all, err := s.Tables(ctx, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Table, 0, len(all))
+	for _, t := range all {
+		if t.NS == ns {
+			out = append(out, t)
+		}
+	}
 	return out, nil
 }
 

@@ -19,8 +19,8 @@
 | --- | --- |
 | `empty-store.rpk` | `359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401` |
 | `rows-payload-all-types.bin` | `ae6f94f72c1b08f8c0a6727c97cb57cfad18b6f0ffc732a625db23be907b8769` |
-| `full-delta-store.rpk` | `c32072a7d9801a983b2742616c9fd3d50b621d4b08512c18809e5cb7652a4a9e` |
-| `encrypted-store.rpk` | `afd3c1b56b8a10b3913021802c16c26baf7d7c581c0f84db324b48368297fae3` |
+| `full-delta-store.rpk` | `f1e2e8bcce675ab0dce4a84a6f97a6d4d26c3ccfcdbb508f75692e7189494e95` |
+| `encrypted-store.rpk` | `870e2c0d7744cb49fd7ee206902cafb23fc22c223dbdef51f436e64e26c6b64f` |
 
 这些摘要描述当前冻结的 v1 IndexTxn 格式（排序 Row Index Page + Fence
 Directory）。修改任一摘要均视为有意的磁盘格式变更，必须经过格式审查并按版本策略建立新的

@@ -1,18 +1,28 @@
 # RowPack 元数据格式 v1
 
-> 状态：设计基线  
+> 状态：设计基线 
 > 配套格式：[BINARY_FORMAT_V1.md](BINARY_FORMAT_V1.md)
 
 ## 1. 目标
 
-元数据格式服务于两层信息：引擎用 `Tx.DefineTable` 写入行解码所需的
-Canonical Schema；未来的上层适配器可用同一 TLV 机制保存源数据库的原始设计元信息。
-两者不能混同：Canonical Schema 决定 RowPack 行负载的编码/解码，Source Metadata
-用于恢复、审计和 Schema 对比。引擎不内建 CoreMetadata 或任何数据库对象模型，
-也不按源数据库方言建表或解释约束、索引、视图等语义。
+元数据 TLV 只服务一个目的：持久化**引擎自身需要的、行解码所依赖的**信息。
+它当前承载两类记录：
 
-当前版本通用元数据读写 API 尚未公开，因此本文档描述的是持久化格式能力，不代表
-`PutMetadata`、`Metadata` 或 `ListMetadata` 已存在。
+- **Canonical Schema 契约（RecordType 1/2）**：`Tx.DefineTable` 写入，描述行负载
+  的编码/解码方式（列顺序、逻辑类型、可空性、Decimal 精度）；
+- **表身份（Table 记录的一个字段）**：ns 是 Table 记录上的一个字段，不需要单独的
+  记录类型，也没有需要跨快照共享的 ns 对象。
+
+**源数据库的设计元信息不走 TLV。** 列定义、约束、索引、视图、触发器、注释和
+厂商扩展等，由上层以**普通行数据**存放在调用方自选 ns 的目录表里（见
+[§9](#9-源库元信息的承载方式)）。理由：这些属性跨源库方言无法穷举，而 TLV
+字段编号一经发布即冻结；把它们做成 TLV 字段会把“枚举不完的方言属性”写进一个
+不可变的契约里。引擎不内建 CoreMetadata 或任何数据库对象模型，也不按源数据库
+方言建表或解释约束、索引、视图等语义。
+
+当前版本**没有**通用元数据读写 API，也没有计划新增：本文档描述的是持久化格式
+能力，不代表 `PutMetadata`、`Metadata` 或 `ListMetadata` 已存在；上层元数据无需
+这类 API，用 `DefineTable` + `Insert/Update/Delete` 即可表达。
 
 TLV 机制位于 `../internal/metadata`：记录信封（Envelope）、字段 TLV、元数据块
 载荷（头部 + 目录）都按本文档布局。未知非 Critical 记录/字段无损保留，
@@ -23,10 +33,9 @@ TLV 机制位于 `../internal/metadata`：记录信封（Envelope）、字段 TL
 ```text
 Snapshot
 ├── Metadata Block
-│   ├── Header
-│   ├── Table / Column schema records（DefineTable 产生）
-│   └── 其他记录（为未来 Source Metadata 扩展保留）
-└── Rows Block...
+│ ├── Header
+│ └── Table / Column schema records（DefineTable / DefineTableIn 产生）
+└── Rows Block... ← 源库元信息目录表的数据就在这里
 ```
 
 FULL 保存完整有效元数据；DELTA 只保存 UPSERT/DELETE。解释 Rows Block 所需的
@@ -40,7 +49,7 @@ Schema 记录必须先于该 Block 出现，或已存在于父快照。
 | ParentObjectID | u64 | 所属对象；根对象为 0 |
 | Revision | u32 | 同一对象严格递增，从 1 开始 |
 | RecordType | u32 | 元数据种类 |
-| Namespace | string | 记录命名空间 |
+| Namespace | string | 记录命名空间（信封字段，非表 ns） |
 | ExternalKey | string | 关联键，可为空 |
 
 ObjectID 是 RowPack 身份，不等同于源数据库 OID。Table 对象保持
@@ -51,8 +60,8 @@ ObjectID 是 RowPack 身份，不等同于源数据库 OID。Table 对象保持
 
 | ID | 名称 | 说明 |
 | ---: | --- | --- |
-| 2 | Table | DefineTable 写的表 Schema 记录 |
-| 3 | Column | DefineTable 写的列 Schema 记录 |
+| 1 | Table | DefineTable 写的表 Schema 记录，含 ns |
+| 2 | Column | DefineTable 写的列 Schema 记录 |
 
 其他 RecordType 按第 4/5 节规则作为普通数据处理。
 
@@ -96,68 +105,89 @@ DELETE 不带 Record，offset/length/CRC 为 0。
 ## 4. MetadataRecord
 
 ```text
-u32 RecordLength             // 包含整个 Record
+u32 RecordLength // 包含整个 Record
 u32 RecordType
 u64 ObjectID
 u64 ParentObjectID
 u32 Revision
-u32 Flags                    // bit 0=Critical
-u32 NamespaceLength
+u32 Flags // bit 0=Critical
+u32 NSLength
 u32 ExternalKeyLength
 u32 FieldCount
 u32 FieldsLength
-bytes NamespaceUTF8
+bytes NSUTF8
 bytes ExternalKeyUTF8
 Field × FieldCount
 u32 RecordCRC32C
 ```
 
-未知 Namespace 或 RecordType：Critical=0 时跳过但保留原始字节；Critical=1 时
+未知 NS 或 RecordType：Critical=0 时跳过但保留原始字节；Critical=1 时
 拒绝打开。再次写出未知记录时必须无损保留。
 
 ## 5. Field TLV
 
 ```text
 u16 FieldID
-u8  WireType
-u8  Flags        // bit 0=Critical, bit 1=Repeated
+u8 WireType
+u8 Flags // bit 0=Critical, bit 1=Repeated
 u32 ValueLength
 bytes Value
 ```
 
-引擎识别并写入的 WireType：
+引擎**实现**的 WireType 只有两种：
 
 | WireType | ID | Value |
 | --- | ---: | --- |
 | Sint | 3 | 1/2/4/8 byte 二补码 Little Endian |
 | String | 4 | UTF-8 |
 
-编号 1、2、5–10 是 v1 格式的保留值：引擎不解释其值编码。含保留
-WireType 的字段按未知字段规则处理——非 Critical 保留原始字节并无损透传，
-Critical 拒绝。
+编号 1、2、5–10 是 v1 的**保留值**，在 `../internal/fileformat/constants.go` 中已
+命名（Bool/Uint/Bytes/ObjectRef/StringList/ObjectRefList/Expression/FieldSet），
+但引擎不解释其值编码：含保留 WireType 的字段按未知字段规则处理——非 Critical
+保留原始字节并无损透传，Critical 拒绝。
+
+> **保留编号不可回收。** 编号冻结与是否实现无关：一旦某份已写出的文件里含
+> WireType 5 的非 Critical 字段（原始字节被无损保留），后续版本把 5 重新分配给
+> 别的语义就会把旧字节解释成错的东西。因此这些编号永久保留，永远不得重编号、
+> 不得重新分配。
+>
+> **当前没有实现它们的计划。** 在“源库元信息用普通表承载”的决策下（§9），这
+> 八个 WireType 没有任何在途消费者。保留它们纯粹是为了前向兼容与前向扩展的
+> 余地，不代表路线图。`WireBytes(5)` 尤其容易误认：它属于**元数据字段**编码，
+> 与行负载的 `TypeBytes`（TypedTuple 值类型，目录表正常使用）完全无关。
 
 未知 Field：Critical=0 时跳过并保留；Critical=1 时拒绝。Field 按 ID 升序
 规范编码；只有 Repeated=1 可重复，并保持原顺序。
 
 ## 6. 引擎 Schema 记录
 
-`Tx.DefineTable(name, columns)` 把 Schema 契约写成两类记录（字段见下表，字段 ID
-与 `../internal/metadata/corefields.go` 一致）：
+`Tx.DefineTable(name, columns)` / `Tx.DefineTableIn(ns, name, columns)` 把
+Schema 契约写成两类记录（字段见下表，字段 ID 与
+`../internal/metadata/corefields.go` 一致）：
 
-- **Table 记录（RecordType=2）**：ObjectID = TableID，Revision = Schema
-  Version，ExternalKey = 表名。
-- **Column 记录（RecordType=3）**：ParentObjectID = Table ObjectID，
+- **Table 记录（RecordType=1）**：ObjectID = TableID，Revision = Schema
+  Version，ExternalKey = 表名，`NS` 字段记 ns （默认 ns 省略）。
+- **Column 记录（RecordType=2）**：ParentObjectID = Table ObjectID，
   ObjectID 由表内分配器分配（`TableSpaceEnd` 起），列按 ColumnID 排序。
 
-### 6.1 Table（RecordType=2）
+### 6.1 Table（RecordType=1）
 
-| ID | 字段 | WireType |
-| ---: | --- | --- |
-| 1 | TableName(String) | String |
-| 2 | TotalRows(Sint64) | Sint |
-| 3 | Schema(String) | String |
+| ID | 字段 | WireType | 说明 |
+| ---: | --- | --- | --- |
+| 1 | TableName(String) | String | 裸表名 |
+| 2 | NS(String) | String | 默认 ns （`user`）时省略 |
 
-### 6.2 Column（RecordType=3）
+- **ID 2 是表的 ns**，与 `TableName` 一起构成表的地址（`ns.name`）。默认 ns
+  **省略该字段**，所以既有 store 的 Table 记录字节完全不变；读取侧缺字段即视为
+  `user`。
+- ns 是表身份的一半且不可变，因此**不需要单独的记录类型，也没有需要跨快照共享的
+  ns 对象**：它就是这条 Table 记录的一个属性。
+- 早期设计曾预留过 `TotalRows`(2) / `Schema`(3) 两个编号。它们**从未被任何一份文件
+  写出**，而 FieldID 冻结的目的只是保护已写出的字节，所以已回收：ID 2 现在就是 ns
+  （§8）。若未来确实需要表级行数，用 `Stats` 或上层目录表的列表达；源库的库/模式名
+  属于上层元数据（§9）。
+
+### 6.2 Column（RecordType=2）
 
 ColumnID 领先作为记录的第一个字段，其余按 DefineTable 语义顺序：
 
@@ -188,8 +218,8 @@ u32 Revision
 u32 RecordType
 u64 BlockID
 u32 ItemOrdinal
-u8  Operation
-u8  Flags
+u8 Operation
+u8 Flags
 u16 Reserved
 u32 EntryCRC32C
 u32 Reserved2
@@ -206,27 +236,82 @@ metadataByType[(SnapshotID,RecordType)] -> sorted ObjectIDs
 
 ## 8. 安全与兼容
 
-- 元数据字符串、Bytes、FieldSet 受 MaxValueBytes 限制。
-- Object 引用必须验证存在性和允许的父子关系。
-- 未知非 Critical 内容必须无损透传；未知 Critical 内容必须拒绝，不能猜
-  测语义。
-- 扩展新记录类型或字段时，不修改外层 Block 格式、不改变既有字段编号；
-  若会让引擎误解行解码契约，必须 Critical 且分配 Required Feature Bit。
+- 元数据字符串受 MaxValueBytes 限制。
+- Object 引用必须验证存在性和允许的父子关系（读取侧对悬空引用退化为默认值，由
+  `Verify` 报为 `ErrCorruptIndex`）。
+- 未知非 Critical 内容必须无损透传；未知 Critical 内容必须拒绝，不能猜测语义。
+- **编号冻结的目的是保护已写出的字节。**
+  - **FieldID**：同一记录类型内，FieldID 从 1 密集分配；一个编号一旦被任何一份
+  文件写过就永久冻结，**从未写出的预留编号可以回收**（不要求"编号与是否实现
+  无关"，只要求"已被写出的不得重编号"）。
+  - **WireType**：这是**全局共享**的编号空间（对所有记录类型、所有未来字段都
+  一样），重新分配的影响面大且回收它没有任何收益，因此 1、2、5–10 **一律保留**，
+  即使当前无实现也无计划。
+- 扩展范围已收窄：本格式只承载 **引擎自有的**记录（Table / Column）。
+  新增记录类型或字段时，不修改外层 Block 格式、不改变既有字段编号；若会让引擎误
+  解行解码契约，必须 Critical 且分配 Required Feature Bit。源库属性不在本格式的
+  扩展范围内（§9）。
 
-## 9. 写入示例
+## 9. 源库元信息的承载方式
+
+本节是一条**决策记录**（decision record），用于防止后续再往 TLV 里塞源库属性。
+
+**决策：源库的表/视图/字段列表等设计元信息，以普通行数据存储在调用方自选 ns
+的目录表里，不做成 TLV 记录类型。** 完整的用户端开发指南见
+[SOURCE_CATALOG_GUIDE_V1.md](SOURCE_CATALOG_GUIDE_V1.md)。
+
+理由：
+
+1. **属性量不可穷举。** MySQL 的 `charset`/`collation`/`unsigned`/`generated`/
+  `srid`，Oracle 的 `char_used`/`virtual_column`/`identity`，MSSQL 的
+  `is_sparse`/`generated_always_type`，方言与版本都在增长。TLV 字段编号一经
+  发布即冻结（§8），把它用作方言属性的容器等于把一个永远在变的集合写进不可变
+  契约。
+2. **普通表的列是“数据”，TLV 的字段是“契约”。** `DefineTable` 的列决定了行
+  解码方式，源库属性只是行的内容。放在普通表里，属性的增删改一律是普通的
+  `INSERT/UPDATE/DELETE`，不触碰 `DefineTable`，因此永远不会触发
+  `ErrSchemaConflict`。
+3. **不用新 API。** 普通表不需要 `PutMetadata`/`ListMetadata`，也不需要实现
+  任何保留 WireType（§5）。这是当前决策最大的收益。
+
+配套约定（上层需自行遵守，引擎不做约束）：
+
+- 目录表建议用 `DefineTableIn` 放在调用方自己的 ns （如 `_rowpack`），这样用
+  `TablesIn(ctx, snap, rowpack.NSUser)` 一次就能拿到源库表。
+- ns 是表身份的一半：同名表在不同 ns 可以共存，靠地址前缀区分
+  （`"_rowpack.__rowpack_src_columns"` vs `"public.users"`），所以把源库的 schema /
+  表空间映射成 ns 就能自然消歧（见指南 §1）。
+- 目录表自身的 schema 同样受“表定义不可变”约束，因此**必须预留一个变长
+  `TypeBytes` 列**（行负载类型，见 BINARY_FORMAT_V1.md）作为逃生舱，承载之后
+  才出现的方言属性。
+- 不可枚举的属性放原文（如 MySQL 的 `COLUMN_TYPE` 文本），派生值（如 unsigned、
+  charset）在读取时从原文计算，**不要为每个派生属性建列**。
+- 目录表是可重建的派生数据：其权威来源是源库本身，不应在其中存放不可再生的
+  信息。
+
+## 10. 写入示例
 
 `DefineTable` 写入 `users` 表（TableID=2，Version=1，列 id uint64 /
 name string，均为非空）：
 
 ```text
-Table ObjectID=2 Revision=1  Namespace=rowpack.meta.v1  ExternalKey="users"
-  TableName="users"
+Table ObjectID=2 Revision=1 Namespace=rowpack.meta.v1 ExternalKey="users"
+ TableName="users"
+```
 
-Column ObjectID=4294967296  Parent=2 Revision=1  Namespace=rowpack.meta.v1
-  ColumnID=1, ColumnName="id", ColumnType="uint64", Nullable="NO", DataScale=0
+同一张表定义在非默认 ns （此处举例 `catalog`）时，Table 记录多一个字段：
 
-Column ObjectID=4294967297  Parent=2 Revision=1  Namespace=rowpack.meta.v1
-  ColumnID=2, ColumnName="name", ColumnType="string", Nullable="NO", DataScale=0
+```text
+Table ObjectID=2 Revision=1 Namespace=rowpack.meta.v1 ExternalKey="_src_columns"
+ TableName="_src_columns", NS="catalog"
+```
+
+列记录（默认 ns）：
+Column ObjectID=4294967296 Parent=2 Revision=1 Namespace=rowpack.meta.v1
+ ColumnID=1, ColumnName="id", ColumnType="uint64", Nullable="NO", DataScale=0
+
+Column ObjectID=4294967297 Parent=2 Revision=1 Namespace=rowpack.meta.v1
+ ColumnID=2, ColumnName="name", ColumnType="string", Nullable="NO", DataScale=0
 ```
 
 这些记录组成 Metadata Block；列按 ColumnID 排序派生成行解码 Schema。若某

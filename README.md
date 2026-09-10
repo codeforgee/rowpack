@@ -6,12 +6,17 @@ RowPack 是一个使用 Go 实现的轻量级嵌入式二维表存储引擎，�
 - **单文件格式**：`<base>.rpk` 一个文件承载全部数据与索引，数据块与每快照
   IndexTxn 交错追加，由扩展 SnapshotFooter 一次性原子提交（一次 fsync）。
   备份/迁移/复制即拷贝单个文件。
-- **核心 API 按表名寻址**：`Begin(ctx, NoParent)` 创建首个 FULL 快照，
+- **核心 API 按表地址寻址**：`Begin(ctx, NoParent)` 创建首个 FULL 快照，
   `Begin(ctx, parent)` 创建 DELTA；`DefineTable` 后可用
   `Insert/Update/Delete/ApplyBatch` 流式写入，
   `Blocks`/`ScanBlocks` 暴露块级主键范围与原始变更流，支撑"块扫描批量比对"场景。
 - 支持 FULL / DELTA 快照以及 INSERT / UPDATE / DELETE 变更；任意时刻可提交
   新 FULL checkpoint（快照 ID 全局递增，深度重置）。
+- **表 ns 与地址**：`DefineTable` 用默认 ns （`user`）且不写额外元数据；
+  `DefineTableIn` 可指定别的 ns。表身份是 `(NS, Name)`，因此不同命名
+  空间的同名表可以共存；收表的 API 收**地址字符串**——默认 ns 用裸名
+  （`"users"`），其他 ns 加前缀（`"public.users"`），`Qualify`/`SplitAddress`/
+  `Table.Address()` 是配套工具。
 - Zstandard 块压缩（默认 256 KiB 目标块）。
 - 按快照、表和行随机访问，历史快照不可变、不受后续提交影响。
 - 多读单写：读操作可并发，写操作单写者串行，提交原子可见；Close 会等待在途读取。
@@ -19,8 +24,9 @@ RowPack 是一个使用 Go 实现的轻量级嵌入式二维表存储引擎，�
   时从该快照自身的数据块在内存重建索引，后续快照照常重放。
 - Schema 与源数据库设计元信息分层：`DefineTable` 把 RowPack 自身的 Canonical
   Schema 写成引擎自产自销的 Table/Column 记录（内部 TLV）；它只服务于行编码/解码，
-  不会按源数据库方言建模。源数据库原始元信息属于上层 Source Metadata，当前不提供
-  通用公开读写 API，也不内建 CoreMetadata。
+  不会按源数据库方言建模。源数据库原始元信息属于上层 Source Metadata：**载体已定
+  为普通行数据**——用 `DefineTableIn` 在自选 ns 建目录表存放，元数据 TLV
+  不承载它，也不新增通用元数据 API（见 docs/SOURCE_CATALOG_GUIDE_V1.md）。
 
 ## 快速开始
 
@@ -113,6 +119,9 @@ changes = changes[:0]
 - **Snapshot**：不可变、原子提交的行变更集合，FULL 或 DELTA，形成父子链。
 - **RowID**：表内稳定逻辑行标识，与业务主键相互独立。
 - **Block**：压缩与校验单位，属于一个快照和一个表。
+- **NS**：表的归属命名空间，默认 `user`。表身份是 `(NS, Name)`，所以收表的
+  API 用**地址**寻址（默认 ns 是裸名 `"users"`，其他 ns 加前缀 `"public.users"`）；
+  ns 记在该表的 Table 记录里（`NS` 字段），默认 ns 省略该字段、不占元数据字节。
 - **TypedTuple**：按 Schema 顺序编码的行负载，NULL 用位图表达。
 
 ## 行复用
@@ -185,17 +194,17 @@ st := db.Stats().Batch // Calls/Rows/Blocks/RawBytes：聚合效果可量化（B
 ## 命令
 
 ```sh
-make test        # go test ./...
-make race        # go test -race ./...
-make vet         # go vet ./...
+make test # go test ./...
+make race # go test -race ./...
+make vet # go vet ./...
 make staticcheck # staticcheck ./...
-make bench       # 统一基线套件（Env/矩阵/延迟 + 直读档），输出 bench/results.txt
+make bench # 统一基线套件（Env/矩阵/延迟 + 直读档），输出 bench/results.txt
 make bench-quick # 快速档：20k 行 + 3 次迭代全矩阵冒烟（~15s），输出 bench/results-quick.txt
-make bench-1m    # 1M 行档：scan1m / getrand1m
+make bench-1m # 1M 行档：scan1m / getrand1m
 make bench-batch # 批量读对比：逐行 Get 基线 vs ReadBatch（10s 每场景）
-make baseline    # 归档性能基线 → testdata/baseline/<date>.txt（带统一环境标注）
-make baseline-diff OLD=2026-09-10 NEW=2026-09-11   # 对比两个基线，>10% 回退退出码 1
-make golden      # 重新生成 golden files（格式变更时人工审查）
+make baseline # 归档性能基线 → testdata/baseline/<date>.txt（带统一环境标注）
+make baseline-diff OLD=2026-09-10 NEW=2026-09-11 # 对比两个基线，>10% 回退退出码 1
+make golden # 重新生成 golden files（格式变更时人工审查）
 ```
 
 ## 参考基准

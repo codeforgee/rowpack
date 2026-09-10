@@ -201,8 +201,11 @@ const NamespaceCore = "rowpack.meta.v1"
 type RecordType uint32
 
 const (
-	RecordTable  RecordType = 2 // Table schema record
-	RecordColumn RecordType = 3 // Column schema record
+	// RecordType is a global numbering space, allocated densely from 1. It is
+	// frozen once a file carrying the value has been written; before v1 release
+	// it is compacted rather than left with gaps.
+	RecordTable  RecordType = 1 // Table schema record
+	RecordColumn RecordType = 2 // Column schema record
 )
 
 // TypedTuple v1 value type identifiers. These equal the public API Type enum

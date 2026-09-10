@@ -59,7 +59,7 @@ func TestReadDataHeaderCorruptFiles(t *testing.T) {
 	mk := func(t *testing.T, buf []byte) string {
 		t.Helper()
 		p := filepath.Join(t.TempDir(), "store.rpk")
-		if err := fileformatFromBytes(p, buf); err != nil {
+		if err := os.WriteFile(p, buf, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		return p
@@ -72,7 +72,7 @@ func TestReadDataHeaderCorruptFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 		db.Close()
-		data, err := readAll(filepath.Join(base, "s.rpk"))
+		data, err := os.ReadFile(filepath.Join(base, "s.rpk"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -185,20 +185,4 @@ func TestStoreDecrypterWrapsAuthFailure(t *testing.T) {
 	if _, err := d.Decrypt(h, ct); err != nil {
 		t.Fatalf("same key under a new epoch should decrypt: %v", err)
 	}
-}
-
-func requireNoErr(t *testing.T, err error) {
-	t.Helper()
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-// fileformatFromBytes and readAll are small helpers for crafted-file tests.
-func fileformatFromBytes(path string, buf []byte) error {
-	return os.WriteFile(path, buf, 0o644)
-}
-
-func readAll(path string) ([]byte, error) {
-	return os.ReadFile(path)
 }

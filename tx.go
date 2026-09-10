@@ -76,9 +76,17 @@ func (tx *Tx) ID() SnapshotID { return tx.w.ID() }
 // Parent returns NoParent for a FULL transaction or its DELTA parent.
 func (tx *Tx) Parent() SnapshotID { return tx.w.Parent() }
 
-// DefineTable defines a table for the snapshot.
+// DefineTable defines a table in the default ns (NSUser).
 func (tx *Tx) DefineTable(name string, columns []Column) error {
-	return tx.w.CreateTable(name, columns)
+	return tx.w.createTable(NSUser, name, columns)
+}
+
+// DefineTableIn defines a table in an explicit ns. The ns is a caller-chosen
+// label: the engine stores it on the Table record, returns it through Table.NS
+// and can filter on it, and attaches no further meaning. The default ns writes
+// no metadata; any other one adds an ns field to the table's Table record.
+func (tx *Tx) DefineTableIn(ns, name string, columns []Column) error {
+	return tx.w.createTable(ns, name, columns)
 }
 
 // Insert records a newly-created row.

@@ -269,6 +269,22 @@ func (v *View) MetadataByType(snapshot uint64, recordType uint32) []uint64 {
 	return v.metadataByType[snapshot][recordType]
 }
 
+// MetadataObjects returns every metadata object ID visible in a snapshot layer,
+// sorted ascending. Record types are not distinguished: callers that need to
+// bound an ID space must see records of types they do not otherwise query.
+func (v *View) MetadataObjects(snapshot uint64) []uint64 {
+	m := v.metadata[snapshot]
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]uint64, 0, len(m))
+	for oid := range m {
+		out = append(out, oid)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
 // MemoryBytes estimates the in-memory footprint of the view.
 func (v *View) MemoryBytes() uint64 { return v.memoryBytes }
 

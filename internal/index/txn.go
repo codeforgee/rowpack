@@ -4,18 +4,18 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // Txn is one parsed index transaction: the per-snapshot increment of
 // snapshot/block/metadata/row entries plus its footer.
 type Txn struct {
-	Header   fileformat.IndexTxnHeader
-	Snapshot fileformat.SnapshotIndexEntry
-	Metadata []fileformat.MetadataIndexEntry
-	Blocks   []fileformat.BlockIndexEntry
-	Rows     []fileformat.RowIndexEntry
-	Footer   fileformat.IndexTxnFooter
+	Header   format.IndexTxnHeader
+	Snapshot format.SnapshotIndexEntry
+	Metadata []format.MetadataIndexEntry
+	Blocks   []format.BlockIndexEntry
+	Rows     []format.RowIndexEntry
+	Footer   format.IndexTxnFooter
 
 	// Resolved layout bounds (BuildStored/BuildStoredBody only; zero for
 	// parsed txns). dataStart/dataEnd feed the snapshot entry, txnStart/
@@ -28,10 +28,10 @@ type Txn struct {
 // Builder assembles one index transaction for a snapshot.
 type Builder struct {
 	sequence uint64
-	snapshot *fileformat.SnapshotIndexEntry
-	metadata []fileformat.MetadataIndexEntry
-	blocks   []fileformat.BlockIndexEntry
-	rows     []fileformat.RowIndexEntry
+	snapshot *format.SnapshotIndexEntry
+	metadata []format.MetadataIndexEntry
+	blocks   []format.BlockIndexEntry
+	rows     []format.RowIndexEntry
 	// pageCount is the number of Row Index Pages produced by buildPages
 	// (single-table pages; 0 when there are no rows). header() uses it so a
 	// multi-table snapshot's RowIndexPageCount matches the fence directory.
@@ -57,14 +57,14 @@ func NewBuilder(sequence uint64) *Builder {
 func (b *Builder) SetRowDedup(enabled bool) { b.dedupRows = enabled }
 
 // SetSnapshot sets the snapshot summary entry.
-func (b *Builder) SetSnapshot(e fileformat.SnapshotIndexEntry) error {
+func (b *Builder) SetSnapshot(e format.SnapshotIndexEntry) error {
 	if b.snapshot != nil {
 		return errors.New("rowpack: snapshot entry already set")
 	}
 	if e.SnapshotID == 0 {
 		return errors.New("rowpack: snapshot id is zero")
 	}
-	if e.SnapshotType != fileformat.SnapshotFull && e.SnapshotType != fileformat.SnapshotDelta {
+	if e.SnapshotType != format.SnapshotFull && e.SnapshotType != format.SnapshotDelta {
 		return fmt.Errorf("rowpack: snapshot %d bad type %d", e.SnapshotID, e.SnapshotType)
 	}
 	b.snapshot = &e
@@ -72,7 +72,7 @@ func (b *Builder) SetSnapshot(e fileformat.SnapshotIndexEntry) error {
 }
 
 // AddMetadata appends a metadata entry.
-func (b *Builder) AddMetadata(e fileformat.MetadataIndexEntry) error {
+func (b *Builder) AddMetadata(e format.MetadataIndexEntry) error {
 	if b.snapshot == nil {
 		return errors.New("rowpack: set snapshot before adding entries")
 	}
@@ -84,7 +84,7 @@ func (b *Builder) AddMetadata(e fileformat.MetadataIndexEntry) error {
 }
 
 // AddBlock appends a block entry.
-func (b *Builder) AddBlock(e fileformat.BlockIndexEntry) error {
+func (b *Builder) AddBlock(e format.BlockIndexEntry) error {
 	if b.snapshot == nil {
 		return errors.New("rowpack: set snapshot before adding entries")
 	}
@@ -97,7 +97,7 @@ func (b *Builder) AddBlock(e fileformat.BlockIndexEntry) error {
 
 // AddRow appends a row entry, rejecting duplicate (table, row) within the
 // snapshot (v1 forbids duplicate RowKeys in one snapshot).
-func (b *Builder) AddRow(e fileformat.RowIndexEntry) error {
+func (b *Builder) AddRow(e format.RowIndexEntry) error {
 	if b.snapshot == nil {
 		return errors.New("rowpack: set snapshot before adding entries")
 	}
@@ -126,13 +126,13 @@ func (b *Builder) Counts() (meta, blocks uint32, rows uint64) {
 // blocks).
 func (b *Builder) Reserve(meta, blocks, rows int) {
 	if len(b.metadata) == 0 && b.metadata == nil {
-		b.metadata = make([]fileformat.MetadataIndexEntry, 0, meta)
+		b.metadata = make([]format.MetadataIndexEntry, 0, meta)
 	}
 	if len(b.blocks) == 0 && b.blocks == nil {
-		b.blocks = make([]fileformat.BlockIndexEntry, 0, blocks)
+		b.blocks = make([]format.BlockIndexEntry, 0, blocks)
 	}
 	if len(b.rows) == 0 && b.rows == nil {
-		b.rows = make([]fileformat.RowIndexEntry, 0, rows)
+		b.rows = make([]format.RowIndexEntry, 0, rows)
 	}
 	if b.dedupRows && len(b.seen) == 0 {
 		b.seen = make(map[[2]uint64]struct{}, rows)
@@ -165,10 +165,10 @@ func (b *Builder) Build(bounds BodyBounds, dataFooterCRC uint32) ([]byte, *Txn, 
 // RowIndexPageCount is the count of sorted Row Index Pages produced by
 // buildPages (single-table pages, so the count equals the fence
 // directory size; 0 when there are no row entries).
-func (b *Builder) header(dataSnapshotStart, dataSnapshotEnd uint64) fileformat.IndexTxnHeader {
+func (b *Builder) header(dataSnapshotStart, dataSnapshotEnd uint64) format.IndexTxnHeader {
 	n := len(b.rows)
 	pages := b.pageCount
-	return fileformat.IndexTxnHeader{
+	return format.IndexTxnHeader{
 		TxnSequence:        b.sequence,
 		SnapshotID:         b.snapshot.SnapshotID,
 		DataSnapshotStart:  dataSnapshotStart,
@@ -182,8 +182,8 @@ func (b *Builder) header(dataSnapshotStart, dataSnapshotEnd uint64) fileformat.I
 
 // footer assembles the IndexTxnFooter fields from the builder state and the
 // txn's resolved bounds.
-func (b *Builder) footer(bounds BodyBounds, dataFooterCRC, plainCRC uint32) fileformat.IndexTxnFooter {
-	return fileformat.IndexTxnFooter{
+func (b *Builder) footer(bounds BodyBounds, dataFooterCRC, plainCRC uint32) format.IndexTxnFooter {
+	return format.IndexTxnFooter{
 		TxnSequence:      b.sequence,
 		SnapshotID:       b.snapshot.SnapshotID,
 		TxnStartOffset:   uint64(bounds.TxnStart),
@@ -238,25 +238,25 @@ func parseStream(data []byte, crypto *ChunkCrypto, sink TxnSink) (*Txn, error) {
 }
 
 func parseTxnChunked(data []byte, crypto *ChunkCrypto, sink TxnSink) (*Txn, error) {
-	if len(data) < fileformat.IndexTxnHeaderSize+fileformat.IndexTxnFooterSize {
+	if len(data) < format.IndexTxnHeaderSize+format.IndexTxnFooterSize {
 		return nil, errors.New("rowpack: index txn too short")
 	}
-	var h fileformat.IndexTxnHeader
+	var h format.IndexTxnHeader
 	if err := h.Unmarshal(data); err != nil {
 		return nil, err
 	}
-	if h.BodyBytes > uint64(len(data)-fileformat.IndexTxnHeaderSize-fileformat.IndexTxnFooterSize) {
+	if h.BodyBytes > uint64(len(data)-format.IndexTxnHeaderSize-format.IndexTxnFooterSize) {
 		return nil, errors.New("rowpack: index txn body exceeds input")
 	}
-	region := data[fileformat.IndexTxnHeaderSize : fileformat.IndexTxnHeaderSize+int(h.BodyBytes)]
+	region := data[format.IndexTxnHeaderSize : format.IndexTxnHeaderSize+int(h.BodyBytes)]
 	if uint64(len(region)) != h.BodyBytes {
 		return nil, errors.New("rowpack: index txn body length mismatch")
 	}
-	ftrOff := fileformat.IndexTxnHeaderSize + len(region)
-	if len(data) != ftrOff+fileformat.IndexTxnFooterSize {
+	ftrOff := format.IndexTxnHeaderSize + len(region)
+	if len(data) != ftrOff+format.IndexTxnFooterSize {
 		return nil, errors.New("rowpack: index txn trailing bytes")
 	}
-	var f fileformat.IndexTxnFooter
+	var f format.IndexTxnFooter
 	if err := f.Unmarshal(data[ftrOff:]); err != nil {
 		return nil, err
 	}
@@ -279,15 +279,15 @@ func parseTxnChunked(data []byte, crypto *ChunkCrypto, sink TxnSink) (*Txn, erro
 	}
 	if sink != nil {
 		if hs, ok := sink.(RowHintSink); ok {
-			hs.ReserveRows(boundedCap(h.RowEntryCount, fileformat.RowIndexEntrySize))
+			hs.ReserveRows(boundedCap(h.RowEntryCount, format.RowIndexEntrySize))
 		}
 	}
 	sb, err := (&bodyParser{
 		region:            region,
 		snapshotID:        h.SnapshotID,
-		metadataCount:     boundedCap(uint64(h.MetadataEntryCount), fileformat.MetadataIndexEntrySize),
-		blockCount:        boundedCap(uint64(h.BlockEntryCount), fileformat.BlockIndexEntrySize),
-		rowCount:          boundedCap(h.RowEntryCount, fileformat.RowIndexEntrySize),
+		metadataCount:     boundedCap(uint64(h.MetadataEntryCount), format.MetadataIndexEntrySize),
+		blockCount:        boundedCap(uint64(h.BlockEntryCount), format.BlockIndexEntrySize),
+		rowCount:          boundedCap(h.RowEntryCount, format.RowIndexEntrySize),
 		rowIndexPageCount: h.RowIndexPageCount,
 		crypto:            crypto,
 		sink:              sink,

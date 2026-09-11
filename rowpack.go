@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/index"
 	"github.com/rowpack/rowpack/internal/iofile"
 	"github.com/rowpack/rowpack/internal/lockfile"
@@ -81,7 +81,7 @@ type Store struct {
 	opts     Options
 
 	uuid     [16]byte
-	header   fileformat.DataFileHeader
+	header   format.DataFileHeader
 	readOnly bool
 
 	// encCipher seals block payloads on the write path (single writer, so no
@@ -162,14 +162,14 @@ func Create(basePath string, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("rowpack: generate uuid: %w", err)
 	}
 	now := effectiveNow()
-	dataHdr := fileformat.DataFileHeader{}
-	dataHdr.FileHeader = fileformat.FileHeader{
+	dataHdr := format.DataFileHeader{}
+	dataHdr.FileHeader = format.FileHeader{
 		StoreUUID:          uuid,
 		CreatedUnixNano:    now,
-		RequiredFeatures:   fileformat.RequiredFeaturesV1,
+		RequiredFeatures:   format.RequiredFeaturesV1,
 		DefaultBlockSize:   uint32(resolved.BlockSize),
 		DefaultCompression: resolved.diskCompression(),
-		DefaultRowEncoding: fileformat.RowEncodingTypedTuple,
+		DefaultRowEncoding: format.RowEncodingTypedTuple,
 	}
 	// Encryption is fixed at Create: resolve the initial key and stamp the
 	// header. A plain store keeps all encryption bytes zero.
@@ -178,12 +178,12 @@ func Create(basePath string, opts Options) (*Store, error) {
 		return nil, err
 	}
 	if encCipher != nil {
-		dataHdr.EncryptionAlgorithm = fileformat.EncAES256GCM
-		dataHdr.NonceScheme = fileformat.NonceCounterV1
+		dataHdr.EncryptionAlgorithm = format.EncAES256GCM
+		dataHdr.NonceScheme = format.NonceCounterV1
 		dataHdr.KeyID = []byte(resolved.Encryption.KeyID)
 	}
 
-	var dh [fileformat.DataFileHeaderSize]byte
+	var dh [format.DataFileHeaderSize]byte
 	if err := dataHdr.MarshalTo(dh[:]); err != nil {
 		return nil, err
 	}
@@ -214,10 +214,10 @@ func Open(basePath string, opts Options) (*Store, error) {
 	if !iofile.Exists(dataPath) {
 		return nil, fmt.Errorf("%w: missing store file %s", ErrNotFound, dataPath)
 	}
-	return openStore(basePath, dataPath, resolved, [16]byte{}, fileformat.DataFileHeader{}, resolved.ReadOnly)
+	return openStore(basePath, dataPath, resolved, [16]byte{}, format.DataFileHeader{}, resolved.ReadOnly)
 }
 
-func openStore(basePath, dataPath string, opts Options, uuid [16]byte, header fileformat.DataFileHeader, readOnly bool) (*Store, error) {
+func openStore(basePath, dataPath string, opts Options, uuid [16]byte, header format.DataFileHeader, readOnly bool) (*Store, error) {
 	df, err := iofile.OpenAppender(dataPath, false)
 	if err != nil {
 		return nil, fmt.Errorf("rowpack: open store file: %w", err)
@@ -324,14 +324,14 @@ func (s *Store) Close() error {
 }
 
 // readHeader reads and validates the single-file header.
-func (s *Store) readHeader() (fileformat.DataFileHeader, error) {
-	var h fileformat.DataFileHeader
-	buf := make([]byte, fileformat.DataFileHeaderSize)
+func (s *Store) readHeader() (format.DataFileHeader, error) {
+	var h format.DataFileHeader
+	buf := make([]byte, format.DataFileHeaderSize)
 	if _, err := s.data.ReadAt(buf, 0); err != nil {
 		return h, fmt.Errorf("rowpack: read data header: %w", err)
 	}
 	if err := h.Unmarshal(buf); err != nil {
-		if fileformat.IsVersionError(err) {
+		if format.IsVersionError(err) {
 			return h, fmt.Errorf("%w: %v", ErrVersionUnsupported, err)
 		}
 		return h, err
@@ -369,9 +369,9 @@ func (s *Store) initOpen() error {
 		s.opts.PageSize = s.opts.BlockSize
 	}
 	switch dataHdr.DefaultCompression {
-	case fileformat.CompressionNone:
+	case format.CompressionNone:
 		s.opts.Compression = CompressionNone
-	case fileformat.CompressionZstd:
+	case format.CompressionZstd:
 		s.opts.Compression = CompressionZstd
 	default:
 		return fmt.Errorf("%w: default compression %d", ErrVersionUnsupported, dataHdr.DefaultCompression)
@@ -385,14 +385,14 @@ func (s *Store) initOpen() error {
 // setupEncryption wires the read (and write) crypto for an encrypted store and
 // enforces the key contract: an encrypted store opened without a KeyProvider
 // fails with ErrKeyRequired instead of entering a half-usable state.
-func (s *Store) setupEncryption(dataHdr fileformat.DataFileHeader) error {
-	if dataHdr.EncryptionAlgorithm == fileformat.EncNone {
+func (s *Store) setupEncryption(dataHdr format.DataFileHeader) error {
+	if dataHdr.EncryptionAlgorithm == format.EncNone {
 		return nil
 	}
-	if dataHdr.EncryptionAlgorithm != fileformat.EncAES256GCM {
+	if dataHdr.EncryptionAlgorithm != format.EncAES256GCM {
 		return fmt.Errorf("%w: encryption algorithm %d", ErrVersionUnsupported, dataHdr.EncryptionAlgorithm)
 	}
-	if dataHdr.NonceScheme != fileformat.NonceCounterV1 {
+	if dataHdr.NonceScheme != format.NonceCounterV1 {
 		return fmt.Errorf("%w: nonce scheme %d", ErrVersionUnsupported, dataHdr.NonceScheme)
 	}
 	if s.opts.Encryption == nil || s.opts.Encryption.KeyProvider == nil {

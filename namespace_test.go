@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/index"
 	"github.com/rowpack/rowpack/internal/metadata"
 	"github.com/stretchr/testify/require"
@@ -411,9 +411,9 @@ func TestMetadataIDHighWaterMarkSurvivesReopen(t *testing.T) {
 		RecordType: 99, // unknown to the engine
 		ObjectID:   foreignOID,
 		Revision:   1,
-		Namespace:  fileformat.NamespaceCore,
+		Namespace:  format.NamespaceCore,
 		Fields: []metadata.Field{
-			{ID: 1, WireType: fileformat.WireString, Value: "kept verbatim"},
+			{ID: 1, WireType: format.WireString, Value: "kept verbatim"},
 		},
 	}))
 	snap2, err := tx.Commit(ctx)
@@ -434,7 +434,7 @@ func TestMetadataIDHighWaterMarkSurvivesReopen(t *testing.T) {
 	snap3, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
-	for _, id := range db2.state.Load().view.MetadataByType(uint64(snap3), uint32(fileformat.RecordColumn)) {
+	for _, id := range db2.state.Load().view.MetadataByType(uint64(snap3), uint32(format.RecordColumn)) {
 		require.Greater(t, id, foreignOID, "ObjectID was re-issued after reopen")
 	}
 
@@ -471,22 +471,22 @@ func TestNamespaceDuplicateAddressReportedByVerify(t *testing.T) {
 	// the same address as the table above, with its own ObjectIDs.
 	const forgedTableID = 100
 	require.NoError(t, tx.w.writeMetadata(&metadata.Record{
-		RecordType: uint32(fileformat.RecordTable), ObjectID: forgedTableID, Revision: 1,
-		Namespace: fileformat.NamespaceCore, ExternalKey: "b",
+		RecordType: uint32(format.RecordTable), ObjectID: forgedTableID, Revision: 1,
+		Namespace: format.NamespaceCore, ExternalKey: "b",
 		Fields: []metadata.Field{
-			{ID: metadata.TableName, WireType: fileformat.WireString, Value: "b"},
-			{ID: metadata.TableNS, WireType: fileformat.WireString, Value: "a"},
+			{ID: metadata.TableName, WireType: format.WireString, Value: "b"},
+			{ID: metadata.TableNS, WireType: format.WireString, Value: "a"},
 		},
 	}))
 	require.NoError(t, tx.w.writeMetadata(&metadata.Record{
-		RecordType: uint32(fileformat.RecordColumn), ObjectID: 1 << 40, ParentID: forgedTableID, Revision: 1,
-		Namespace: fileformat.NamespaceCore,
+		RecordType: uint32(format.RecordColumn), ObjectID: 1 << 40, ParentID: forgedTableID, Revision: 1,
+		Namespace: format.NamespaceCore,
 		Fields: []metadata.Field{
-			{ID: metadata.ColColumnID, WireType: fileformat.WireSint, Value: int64(1)},
-			{ID: metadata.ColColumnName, WireType: fileformat.WireString, Value: "id"},
-			{ID: metadata.ColColumnType, WireType: fileformat.WireString, Value: "uint64"},
-			{ID: metadata.ColNullable, WireType: fileformat.WireString, Value: "NO"},
-			{ID: metadata.ColDataScale, WireType: fileformat.WireSint, Value: int64(0)},
+			{ID: metadata.ColColumnID, WireType: format.WireSint, Value: int64(1)},
+			{ID: metadata.ColColumnName, WireType: format.WireString, Value: "id"},
+			{ID: metadata.ColColumnType, WireType: format.WireString, Value: "uint64"},
+			{ID: metadata.ColNullable, WireType: format.WireString, Value: "NO"},
+			{ID: metadata.ColDataScale, WireType: format.WireSint, Value: int64(0)},
 		},
 	}))
 	snap, err := tx.Commit(ctx)

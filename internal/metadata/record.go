@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // RecordEnvelopeHeaderSize is the fixed header size before namespace bytes.
@@ -26,7 +26,7 @@ type Record struct {
 // KnownFieldSchema is the canonical set of fields of a known record type.
 // The key is the FieldID; the value is the required wire type. Fields not in
 // the schema are unknown to the implementation.
-type KnownFieldSchema map[uint16]fileformat.WireType
+type KnownFieldSchema map[uint16]format.WireType
 
 // Encode serializes the record. The schema is used to validate known field
 // wire types; unknown fields (not in the schema) are passed through verbatim.
@@ -71,7 +71,7 @@ func (r *Record) Encode(schema KnownFieldSchema) ([]byte, error) {
 	dst = appendU32(dst, r.Revision)
 	var flags uint32
 	if r.Critical {
-		flags |= fileformat.FlagCritical
+		flags |= format.FlagCritical
 	}
 	dst = appendU32(dst, flags)
 	dst = appendU32(dst, uint32(len(r.Namespace)))
@@ -87,7 +87,7 @@ func (r *Record) Encode(schema KnownFieldSchema) ([]byte, error) {
 		}
 	}
 	// CRC over everything except the trailing 4 CRC bytes.
-	crc := fileformat.CRC32C(dst)
+	crc := format.CRC32C(dst)
 	dst = appendU32(dst, crc)
 	return dst, nil
 }
@@ -109,7 +109,7 @@ func (r *Record) Decode(src []byte, known KnownFieldSchema) error {
 	body := src[:recordLen]
 	// Verify CRC over all bytes except the trailing 4.
 	stored := binary.LittleEndian.Uint32(body[recordLen-4:])
-	computed := fileformat.CRC32C(body[:recordLen-4])
+	computed := format.CRC32C(body[:recordLen-4])
 	if stored != computed {
 		return fmt.Errorf("rowpack: metadata record CRC mismatch: stored 0x%08x computed 0x%08x", stored, computed)
 	}
@@ -117,7 +117,7 @@ func (r *Record) Decode(src []byte, known KnownFieldSchema) error {
 	r.ObjectID = binary.LittleEndian.Uint64(body[8:])
 	r.ParentID = binary.LittleEndian.Uint64(body[16:])
 	r.Revision = binary.LittleEndian.Uint32(body[24:])
-	r.Critical = binary.LittleEndian.Uint32(body[28:])&fileformat.FlagCritical != 0
+	r.Critical = binary.LittleEndian.Uint32(body[28:])&format.FlagCritical != 0
 	nsLen := int(binary.LittleEndian.Uint32(body[32:]))
 	ekLen := int(binary.LittleEndian.Uint32(body[36:]))
 	fieldCount := int(binary.LittleEndian.Uint32(body[40:]))

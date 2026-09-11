@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/seal"
 )
 
@@ -18,7 +18,7 @@ func TestEncryptionConfigValidate(t *testing.T) {
 		t.Fatal("empty key id should error")
 	}
 
-	cfg = &EncryptionConfig{KeyProvider: &staticKeyProvider{keyID: "k1"}, KeyID: strings.Repeat("k", fileformat.FileHeaderKeyIDMaxLen+1)}
+	cfg = &EncryptionConfig{KeyProvider: &staticKeyProvider{keyID: "k1"}, KeyID: strings.Repeat("k", format.FileHeaderKeyIDMaxLen+1)}
 	if err := cfg.validate(); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("oversized key id: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestReadDataHeaderCorruptFiles(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return data[:fileformat.DataFileHeaderSize]
+		return data[:format.DataFileHeaderSize]
 	}()
 
 	// Truncated file: header read fails.
@@ -121,8 +121,8 @@ func TestStoreDecrypterWrapsAuthFailure(t *testing.T) {
 	}
 
 	// Block path.
-	h := fileformat.BlockHeader{
-		BlockKind: fileformat.BlockKindRows, Compression: fileformat.CompressionNone,
+	h := format.BlockHeader{
+		BlockKind: format.BlockKindRows, Compression: format.CompressionNone,
 		BlockID: 9, SnapshotID: 1, TableID: 2, ItemCount: 1,
 		RawSize: 4, StoredSize: 4, KeyEpoch: 0,
 	}
@@ -140,10 +140,10 @@ func TestStoreDecrypterWrapsAuthFailure(t *testing.T) {
 	}
 
 	// Rows page path.
-	page := fileformat.RowsPageDirEntry{PageOrdinal: 1, RecordCount: 1, StoredSize: 8, RawSize: 4}
+	page := format.RowsPageDirEntry{PageOrdinal: 1, RecordCount: 1, StoredSize: 8, RawSize: 4}
 	pct, err := cipher.SealPage(seal.PageContext{
 		UUID: &uuid, BlockID: 9, SnapshotID: 1, TableID: 2,
-		Compression: fileformat.CompressionNone, Page: page, Epoch: 0,
+		Compression: format.CompressionNone, Page: page, Epoch: 0,
 	}, []byte("pagedata"))
 	if err != nil {
 		t.Fatal(err)
@@ -160,16 +160,16 @@ func TestStoreDecrypterWrapsAuthFailure(t *testing.T) {
 	// Index chunk path.
 	cct, err := cipher.SealIndexChunk(seal.ChunkContext{
 		UUID: &uuid, TxnSequence: 1, SnapshotID: 1, ChunkSequence: 0, FirstOrdinal: 0,
-		RawBytes: 4, StoredBytes: 4 + fileformat.AESGCMTagLen,
-		Kind: uint8(fileformat.IndexChunkKindRow), Epoch: 0,
+		RawBytes: 4, StoredBytes: 4 + format.AESGCMTagLen,
+		Kind: uint8(format.IndexChunkKindRow), Epoch: 0,
 	}, []byte("indx"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	chunkCtx := seal.ChunkContext{
 		TxnSequence: 1, SnapshotID: 1, ChunkSequence: 0, FirstOrdinal: 0,
-		RawBytes: 4, StoredBytes: 4 + fileformat.AESGCMTagLen,
-		Kind: uint8(fileformat.IndexChunkKindRow), Epoch: 0,
+		RawBytes: 4, StoredBytes: 4 + format.AESGCMTagLen,
+		Kind: uint8(format.IndexChunkKindRow), Epoch: 0,
 	}
 	if _, err := d.OpenIndexChunk(chunkCtx, cct); err != nil {
 		t.Fatalf("honest chunk should decrypt: %v", err)

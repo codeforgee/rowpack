@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // uint32LE reads a little-endian uint32 for corruption tests.
@@ -18,12 +18,12 @@ func uint32LE(b []byte, off int) uint32 {
 // 与严格损坏校验（截断、单 bit 翻转、伪造 size/count、非法 changeType、排序破坏、
 // Fence 越界/重复页/错误 Snapshot 归属）必须报错且绝不 panic/无界分配。
 
-func rowEq(a, b fileformat.RowIndexEntry) bool {
+func rowEq(a, b format.RowIndexEntry) bool {
 	return a.TableID == b.TableID && a.RowID == b.RowID && a.BlockID == b.BlockID &&
 		a.ItemOrdinal == b.ItemOrdinal && a.ChangeType == b.ChangeType
 }
 
-func rowsEq(a, b []fileformat.RowIndexEntry) bool {
+func rowsEq(a, b []format.RowIndexEntry) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -35,14 +35,14 @@ func rowsEq(a, b []fileformat.RowIndexEntry) bool {
 	return true
 }
 
-func riEntry(tid uint32, rowID uint64, blockID uint64, ord uint32, ct fileformat.ChangeType) fileformat.RowIndexEntry {
-	return fileformat.RowIndexEntry{TableID: tid, RowID: rowID, BlockID: blockID, ItemOrdinal: ord, ChangeType: ct}
+func riEntry(tid uint32, rowID uint64, blockID uint64, ord uint32, ct format.ChangeType) format.RowIndexEntry {
+	return format.RowIndexEntry{TableID: tid, RowID: rowID, BlockID: blockID, ItemOrdinal: ord, ChangeType: ct}
 }
 
-func riSeq(n, blkEvery int) []fileformat.RowIndexEntry {
-	rows := make([]fileformat.RowIndexEntry, n)
+func riSeq(n, blkEvery int) []format.RowIndexEntry {
+	rows := make([]format.RowIndexEntry, n)
 	for i := 0; i < n; i++ {
-		rows[i] = riEntry(1, uint64(i)+1, uint64(i/blkEvery+1), uint32(i%blkEvery), fileformat.ChangeInsert)
+		rows[i] = riEntry(1, uint64(i)+1, uint64(i/blkEvery+1), uint32(i%blkEvery), format.ChangeInsert)
 	}
 	return rows
 }
@@ -63,15 +63,15 @@ func TestRowIndexPageSequential(t *testing.T) {
 }
 
 func TestRowIndexPageMultiTable(t *testing.T) {
-	rows := []fileformat.RowIndexEntry{
-		riEntry(1, 1, 10, 0, fileformat.ChangeInsert),
-		riEntry(1, 2, 10, 1, fileformat.ChangeInsert),
-		riEntry(1, 3, 11, 0, fileformat.ChangeUpdate),
-		riEntry(1, 4, 11, 1, fileformat.ChangeDelete),
-		riEntry(2, 7, 20, 3, fileformat.ChangeInsert),
-		riEntry(2, 9, 20, 5, fileformat.ChangeInsert),
-		riEntry(2, 20, 21, 0, fileformat.ChangeDelete),
-		riEntry(3, 5, 30, 1, fileformat.ChangeInsert),
+	rows := []format.RowIndexEntry{
+		riEntry(1, 1, 10, 0, format.ChangeInsert),
+		riEntry(1, 2, 10, 1, format.ChangeInsert),
+		riEntry(1, 3, 11, 0, format.ChangeUpdate),
+		riEntry(1, 4, 11, 1, format.ChangeDelete),
+		riEntry(2, 7, 20, 3, format.ChangeInsert),
+		riEntry(2, 9, 20, 5, format.ChangeInsert),
+		riEntry(2, 20, 21, 0, format.ChangeDelete),
+		riEntry(3, 5, 30, 1, format.ChangeInsert),
 	}
 	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	got, err := decodePage(page)
@@ -84,11 +84,11 @@ func TestRowIndexPageMultiTable(t *testing.T) {
 }
 
 func TestRowIndexPageRowIDBoundaries(t *testing.T) {
-	rows := []fileformat.RowIndexEntry{
-		riEntry(1, 0, 1, 0, fileformat.ChangeInsert),
-		riEntry(1, 1, 1, 1, fileformat.ChangeInsert),
-		riEntry(1, math.MaxUint64-1, 2, 0, fileformat.ChangeUpdate),
-		riEntry(1, math.MaxUint64, 2, 1, fileformat.ChangeDelete),
+	rows := []format.RowIndexEntry{
+		riEntry(1, 0, 1, 0, format.ChangeInsert),
+		riEntry(1, 1, 1, 1, format.ChangeInsert),
+		riEntry(1, math.MaxUint64-1, 2, 0, format.ChangeUpdate),
+		riEntry(1, math.MaxUint64, 2, 1, format.ChangeDelete),
 	}
 	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	got, err := decodePage(page)
@@ -101,12 +101,12 @@ func TestRowIndexPageRowIDBoundaries(t *testing.T) {
 }
 
 func TestRowIndexPageOrdinalDelta(t *testing.T) {
-	rows := []fileformat.RowIndexEntry{
-		riEntry(1, 1, 1, 100, fileformat.ChangeInsert),
-		riEntry(1, 2, 1, 101, fileformat.ChangeInsert),
-		riEntry(1, 3, 2, 0, fileformat.ChangeInsert), // -101 delta
-		riEntry(1, 4, 2, 1, fileformat.ChangeDelete),
-		riEntry(1, 5, 2, math.MaxUint32, fileformat.ChangeUpdate),
+	rows := []format.RowIndexEntry{
+		riEntry(1, 1, 1, 100, format.ChangeInsert),
+		riEntry(1, 2, 1, 101, format.ChangeInsert),
+		riEntry(1, 3, 2, 0, format.ChangeInsert), // -101 delta
+		riEntry(1, 4, 2, 1, format.ChangeDelete),
+		riEntry(1, 5, 2, math.MaxUint32, format.ChangeUpdate),
 	}
 	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	got, err := decodePage(page)
@@ -127,9 +127,9 @@ func TestRowIndexPageRandomPreSorted(t *testing.T) {
 		ids[i] = uint64(i) + 1
 	}
 	rng.Shuffle(n, func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
-	rows := make([]fileformat.RowIndexEntry, n)
+	rows := make([]format.RowIndexEntry, n)
 	for i, id := range ids {
-		rows[i] = riEntry(1, id, id/50, uint32(id%50), fileformat.ChangeInsert)
+		rows[i] = riEntry(1, id, id/50, uint32(id%50), format.ChangeInsert)
 	}
 	sortRowIndexEntries(rows)
 	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
@@ -145,7 +145,7 @@ func TestRowIndexPageRandomPreSorted(t *testing.T) {
 // ---- encode 错误分支 ----
 
 func TestRowIndexPageEncodeErrors(t *testing.T) {
-	rows := []fileformat.RowIndexEntry{riEntry(1, 1, 1, 0, fileformat.ChangeInsert), riEntry(1, 2, 1, 1, fileformat.ChangeInsert)}
+	rows := []format.RowIndexEntry{riEntry(1, 1, 1, 0, format.ChangeInsert), riEntry(1, 2, 1, 1, format.ChangeInsert)}
 	if _, _, _, _, err := encodePage(nil, indexPageEntryCount); err == nil {
 		t.Fatal("encode(nil) = nil error")
 	}
@@ -155,15 +155,15 @@ func TestRowIndexPageEncodeErrors(t *testing.T) {
 	if _, _, _, _, err := encodePage(rows, 1); err == nil {
 		t.Fatal("encode(rows > pageSize) = nil error")
 	}
-	bad := []fileformat.RowIndexEntry{riEntry(1, 2, 1, 0, fileformat.ChangeInsert), riEntry(1, 1, 1, 1, fileformat.ChangeInsert)}
+	bad := []format.RowIndexEntry{riEntry(1, 2, 1, 0, format.ChangeInsert), riEntry(1, 1, 1, 1, format.ChangeInsert)}
 	if _, _, _, _, err := encodePage(bad, indexPageEntryCount); err == nil {
 		t.Fatal("encode(unsorted) = nil error")
 	}
-	dup := []fileformat.RowIndexEntry{riEntry(1, 1, 1, 0, fileformat.ChangeInsert), riEntry(1, 1, 1, 1, fileformat.ChangeInsert)}
+	dup := []format.RowIndexEntry{riEntry(1, 1, 1, 0, format.ChangeInsert), riEntry(1, 1, 1, 1, format.ChangeInsert)}
 	if _, _, _, _, err := encodePage(dup, indexPageEntryCount); err == nil {
 		t.Fatal("encode(duplicate row id) = nil error")
 	}
-	if _, _, _, _, err := encodePage([]fileformat.RowIndexEntry{riEntry(1, 1, 1, 0, 0)}, indexPageEntryCount); err == nil {
+	if _, _, _, _, err := encodePage([]format.RowIndexEntry{riEntry(1, 1, 1, 0, 0)}, indexPageEntryCount); err == nil {
 		t.Fatal("encode(changeType=0) = nil error")
 	}
 }
@@ -180,7 +180,7 @@ func cloneRI(t *testing.T, page []byte) []byte {
 func TestRowIndexPageDecodeTruncated(t *testing.T) {
 	rows := riSeq(200, 50)
 	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
-	for _, cut := range []int{fileformat.IndexPageHeaderSize - 1, fileformat.IndexPageHeaderSize + 1, len(page) / 2, len(page) - 1} {
+	for _, cut := range []int{format.IndexPageHeaderSize - 1, format.IndexPageHeaderSize + 1, len(page) / 2, len(page) - 1} {
 		if cut >= len(page) {
 			continue
 		}
@@ -193,7 +193,7 @@ func TestRowIndexPageDecodeTruncated(t *testing.T) {
 func TestRowIndexPageDecodeBitFlip(t *testing.T) {
 	rows := riSeq(200, 50)
 	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
-	for _, off := range []int{1, 12, 16, 36, 60, fileformat.IndexPageHeaderSize, fileformat.IndexPageHeaderSize + 8, len(page) - 1} {
+	for _, off := range []int{1, 12, 16, 36, 60, format.IndexPageHeaderSize, format.IndexPageHeaderSize + 8, len(page) - 1} {
 		if off < 0 || off >= len(page) {
 			continue
 		}
@@ -248,7 +248,7 @@ func TestRowIndexPageDecodeCorruptCRC(t *testing.T) {
 	rows := riSeq(50, 10)
 	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	m := cloneRI(t, page)
-	m[fileformat.IndexPageHeaderSize] ^= 0x40
+	m[format.IndexPageHeaderSize] ^= 0x40
 	if _, err := decodePage(m); err == nil {
 		t.Fatal("decode(stream mutation) = nil error")
 	}
@@ -275,7 +275,7 @@ func TestFenceForRowIndexPage(t *testing.T) {
 	if f.RawSize != uint32(len(page)) || f.StoredSize != 42 {
 		t.Fatalf("fence sizes = %d/%d", f.RawSize, f.StoredSize)
 	}
-	if f.PageCRC32C != fileformat.CRC32C(page[fileformat.IndexPageHeaderSize:]) {
+	if f.PageCRC32C != format.CRC32C(page[format.IndexPageHeaderSize:]) {
 		t.Fatalf("fence PageCRC32C mismatch")
 	}
 	if err := f.MarshalTo(nil); err == nil {
@@ -285,7 +285,7 @@ func TestFenceForRowIndexPage(t *testing.T) {
 
 // ---- helpers ----
 
-func encodeRowIndexPage1(rows []fileformat.RowIndexEntry) ([]byte, int, uint64, uint64) {
+func encodeRowIndexPage1(rows []format.RowIndexEntry) ([]byte, int, uint64, uint64) {
 	page, n, mn, mx, err := encodePage(rows, indexPageEntryCount)
 	if err != nil {
 		panic(err)
@@ -294,14 +294,14 @@ func encodeRowIndexPage1(rows []fileformat.RowIndexEntry) ([]byte, int, uint64, 
 }
 
 func changeBitsOffsetRI(page []byte) int {
-	if len(page) < fileformat.IndexPageHeaderSize {
+	if len(page) < format.IndexPageHeaderSize {
 		return -1
 	}
 	tableRun := int(uint32LE(page, 16))
 	rowid := int(uint32LE(page, 20))
 	blockRun := int(uint32LE(page, 24))
 	ordinal := int(uint32LE(page, 28))
-	off := fileformat.IndexPageHeaderSize + tableRun + rowid + blockRun + ordinal
+	off := format.IndexPageHeaderSize + tableRun + rowid + blockRun + ordinal
 	if off > len(page) {
 		return -1
 	}

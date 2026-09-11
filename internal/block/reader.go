@@ -5,7 +5,7 @@ import (
 	"io"
 	"sync/atomic"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // Decrypter authenticates and decrypts one sealed block payload before
@@ -17,8 +17,8 @@ import (
 // encryption, BINARY_FORMAT_V1 §5.1); the page directory is plaintext, so a
 // reader OPENs only the page it needs.
 type Decrypter interface {
-	Decrypt(header fileformat.BlockHeader, ciphertext []byte) ([]byte, error)
-	OpenPage(header fileformat.BlockHeader, page fileformat.RowsPageDirEntry, ciphertext []byte) ([]byte, error)
+	Decrypt(header format.BlockHeader, ciphertext []byte) ([]byte, error)
+	OpenPage(header format.BlockHeader, page format.RowsPageDirEntry, ciphertext []byte) ([]byte, error)
 }
 
 // Reader reads blocks from a file via ReadAt (no shared seek cursor), so
@@ -89,8 +89,8 @@ func (r *Reader) Stats() IOStats {
 // count records one successful validated read: bytes pulled from the handle
 // (header + stored payload) and the raw payload produced. Called exactly
 // once per successful block read on every path.
-func (r *Reader) count(h *fileformat.BlockHeader) {
-	r.readBytes.Add(uint64(fileformat.BlockHeaderSize + int64(h.StoredSize)))
+func (r *Reader) count(h *format.BlockHeader) {
+	r.readBytes.Add(uint64(format.BlockHeaderSize + int64(h.StoredSize)))
 	r.decompressedBytes.Add(uint64(h.RawSize))
 }
 
@@ -119,18 +119,18 @@ type viewer interface {
 // entry point for plain and encrypted Rows blocks alike; each page is OPENed
 // (authenticated) and decompressed only when accessed.
 func (r *Reader) ReadRowsDir(offset int64) (*RowsContainer, error) {
-	var hdr [fileformat.BlockHeaderSize]byte
+	var hdr [format.BlockHeaderSize]byte
 	if _, err := r.ra.ReadAt(hdr[:], offset); err != nil {
 		return nil, fmt.Errorf("rowpack: read block header at %d: %w", offset, err)
 	}
-	var h fileformat.BlockHeader
+	var h format.BlockHeader
 	if err := h.Unmarshal(hdr[:]); err != nil {
 		return nil, err
 	}
 	if err := r.checkHeader(&h); err != nil {
 		return nil, err
 	}
-	if h.BlockKind != fileformat.BlockKindRows {
+	if h.BlockKind != format.BlockKindRows {
 		return nil, fmt.Errorf("rowpack: block %d is kind %d, expected rows", h.BlockID, h.BlockKind)
 	}
 	return ParseRowsDir(offset, r, h, r.limits)
@@ -142,7 +142,7 @@ func (r *Reader) ReadRowsDir(offset int64) (*RowsContainer, error) {
 // a fresh allocation and valid for the containing container's lifetime).
 func (r *Reader) ReadRowsPage(offset int64, c *RowsContainer, pageIdx int) (*RowsPage, error) {
 	dir := &c.Dir[pageIdx]
-	pgOff := offset + fileformat.BlockHeaderSize + int64(dir.StoredOffset)
+	pgOff := offset + format.BlockHeaderSize + int64(dir.StoredOffset)
 	stored := make([]byte, dir.StoredSize)
 	if _, err := r.ra.ReadAt(stored, pgOff); err != nil {
 		return nil, fmt.Errorf("rowpack: read page %d at %d: %w", pageIdx, pgOff, err)
@@ -159,13 +159,13 @@ func (r *Reader) ReadRowsPage(offset int64, c *RowsContainer, pageIdx int) (*Row
 		if err != nil {
 			return nil, err
 		}
-		if len(pt) != int(dir.StoredSize)-fileformat.AESGCMTagLen {
+		if len(pt) != int(dir.StoredSize)-format.AESGCMTagLen {
 			return nil, fmt.Errorf("rowpack: page %d opened %d bytes, want stored %d - tag", pageIdx, len(pt), dir.StoredSize)
 		}
 		stored = pt
 	}
 	var raw []byte
-	if c.comp == fileformat.CompressionNone {
+	if c.comp == format.CompressionNone {
 		raw = stored
 	} else {
 		maxOut := c.limits.MaxRawBytes
@@ -199,11 +199,11 @@ func (r *Reader) ReadAtBlock(offset int64) (*Block, error) {
 // out of the handle's mapping. The header view must be released before the
 // payload view is taken (a remap between the two needs the write lock).
 func (r *Reader) readAtBlockView(offset int64, v viewer) (*Block, error) {
-	hb, hdone, err := v.View(offset, fileformat.BlockHeaderSize)
+	hb, hdone, err := v.View(offset, format.BlockHeaderSize)
 	if err != nil {
 		return nil, fmt.Errorf("rowpack: read block header at %d: %w", offset, err)
 	}
-	var h fileformat.BlockHeader
+	var h format.BlockHeader
 	herr := h.Unmarshal(hb)
 	hdone()
 	if herr != nil {
@@ -212,9 +212,9 @@ func (r *Reader) readAtBlockView(offset int64, v viewer) (*Block, error) {
 	if err := r.checkHeader(&h); err != nil {
 		return nil, err
 	}
-	sb, sdone, err := v.View(offset+fileformat.BlockHeaderSize, int64(h.StoredSize))
+	sb, sdone, err := v.View(offset+format.BlockHeaderSize, int64(h.StoredSize))
 	if err != nil {
-		return nil, fmt.Errorf("rowpack: read block payload at %d: %w", offset+fileformat.BlockHeaderSize, err)
+		return nil, fmt.Errorf("rowpack: read block payload at %d: %w", offset+format.BlockHeaderSize, err)
 	}
 	defer sdone()
 	stored, err := r.maybeDecrypt(sb, &h)
@@ -228,11 +228,11 @@ func (r *Reader) readAtBlockView(offset int64, v viewer) (*Block, error) {
 	if uint32(len(raw)) != h.RawSize {
 		return nil, fmt.Errorf("rowpack: decompressed %d bytes, want %d", len(raw), h.RawSize)
 	}
-	if fileformat.CRC32C(raw) != h.RawCRC32C {
+	if format.CRC32C(raw) != h.RawCRC32C {
 		return nil, fmt.Errorf("rowpack: block %d raw CRC mismatch", h.BlockID)
 	}
 	r.count(&h)
-	if h.Compression == fileformat.CompressionNone && !h.Encrypted {
+	if h.Compression == format.CompressionNone && !h.Encrypted {
 		// Plain, uncompressed: Decompress returned the view itself; copy so
 		// the returned (and potentially cached) Block never aliases the file
 		// mapping. Encrypted blocks were decrypted into a fresh buffer.
@@ -246,14 +246,14 @@ func (r *Reader) readAtBlockView(offset int64, v viewer) (*Block, error) {
 // checkHeader validates the stored/raw limits and None-size agreement. An
 // encrypted block's StoredSize is the ciphertext length (plain + tag), so the
 // None equality only applies to plain blocks.
-func (r *Reader) checkHeader(h *fileformat.BlockHeader) error {
+func (r *Reader) checkHeader(h *format.BlockHeader) error {
 	if h.StoredSize > r.limits.MaxStoredBytes {
 		return fmt.Errorf("rowpack: stored size %d exceeds limit %d", h.StoredSize, r.limits.MaxStoredBytes)
 	}
 	if h.RawSize > r.limits.MaxRawBytes {
 		return fmt.Errorf("rowpack: raw size %d exceeds limit %d", h.RawSize, r.limits.MaxRawBytes)
 	}
-	if !h.Encrypted && h.Compression == fileformat.CompressionNone && h.StoredSize != h.RawSize {
+	if !h.Encrypted && h.Compression == format.CompressionNone && h.StoredSize != h.RawSize {
 		return fmt.Errorf("rowpack: none-compressed block stored %d != raw %d", h.StoredSize, h.RawSize)
 	}
 	return nil
@@ -261,11 +261,11 @@ func (r *Reader) checkHeader(h *fileformat.BlockHeader) error {
 
 // readAtBlockCopy is the ReadAt path (plain io.ReaderAt handles).
 func (r *Reader) readAtBlockCopy(offset int64) (*Block, error) {
-	var hdr [fileformat.BlockHeaderSize]byte
+	var hdr [format.BlockHeaderSize]byte
 	if _, err := r.ra.ReadAt(hdr[:], offset); err != nil {
 		return nil, fmt.Errorf("rowpack: read block header at %d: %w", offset, err)
 	}
-	var h fileformat.BlockHeader
+	var h format.BlockHeader
 	if err := h.Unmarshal(hdr[:]); err != nil {
 		return nil, err
 	}
@@ -273,8 +273,8 @@ func (r *Reader) readAtBlockCopy(offset int64) (*Block, error) {
 		return nil, err
 	}
 	stored := make([]byte, h.StoredSize)
-	if _, err := r.ra.ReadAt(stored, offset+fileformat.BlockHeaderSize); err != nil {
-		return nil, fmt.Errorf("rowpack: read block payload at %d: %w", offset+fileformat.BlockHeaderSize, err)
+	if _, err := r.ra.ReadAt(stored, offset+format.BlockHeaderSize); err != nil {
+		return nil, fmt.Errorf("rowpack: read block payload at %d: %w", offset+format.BlockHeaderSize, err)
 	}
 	plain, err := r.maybeDecrypt(stored, &h)
 	if err != nil {
@@ -287,7 +287,7 @@ func (r *Reader) readAtBlockCopy(offset int64) (*Block, error) {
 	if uint32(len(raw)) != h.RawSize {
 		return nil, fmt.Errorf("rowpack: decompressed %d bytes, want %d", len(raw), h.RawSize)
 	}
-	if fileformat.CRC32C(raw) != h.RawCRC32C {
+	if format.CRC32C(raw) != h.RawCRC32C {
 		return nil, fmt.Errorf("rowpack: block %d raw CRC mismatch", h.BlockID)
 	}
 	r.count(&h)
@@ -298,7 +298,7 @@ func (r *Reader) readAtBlockCopy(offset int64) (*Block, error) {
 // itself for plain blocks, or a fresh buffer for encrypted blocks (which are
 // authenticated against the header). It never outlives its view: callers
 // must keep the mapping view alive until this returns.
-func (r *Reader) maybeDecrypt(stored []byte, h *fileformat.BlockHeader) ([]byte, error) {
+func (r *Reader) maybeDecrypt(stored []byte, h *format.BlockHeader) ([]byte, error) {
 	if !h.Encrypted {
 		return stored, nil
 	}
@@ -312,13 +312,13 @@ func (r *Reader) maybeDecrypt(stored []byte, h *fileformat.BlockHeader) ([]byte,
 	// The plaintext is the compressed payload: its length is the ciphertext
 	// minus the tag. The decompressed length (== RawSize) is validated by
 	// decompress afterwards.
-	if len(pt) != int(h.StoredSize)-fileformat.AESGCMTagLen {
+	if len(pt) != int(h.StoredSize)-format.AESGCMTagLen {
 		return nil, fmt.Errorf("rowpack: block %d decrypted %d bytes, want stored %d - tag", h.BlockID, len(pt), h.StoredSize)
 	}
 	return pt, nil
 }
 
-func (r *Reader) decompress(h *fileformat.BlockHeader, stored []byte) ([]byte, error) {
+func (r *Reader) decompress(h *format.BlockHeader, stored []byte) ([]byte, error) {
 	out, err := Decompress(h.Compression, nil, stored, r.limits.MaxRawBytes)
 	if err != nil {
 		return nil, fmt.Errorf("rowpack: block %d: %w", h.BlockID, err)
@@ -328,6 +328,6 @@ func (r *Reader) decompress(h *fileformat.BlockHeader, stored []byte) ([]byte, e
 
 // Block is a validated block: header plus checked uncompressed payload.
 type Block struct {
-	Header fileformat.BlockHeader
+	Header format.BlockHeader
 	Raw    []byte
 }

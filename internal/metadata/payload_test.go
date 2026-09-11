@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 func TestPayloadHeaderRoundtrip(t *testing.T) {
@@ -14,8 +14,8 @@ func TestPayloadHeaderRoundtrip(t *testing.T) {
 	if err := h.MarshalTo(dst); err != nil {
 		t.Fatalf("MarshalTo: %v", err)
 	}
-	if string(dst[0:8]) != fileformat.MagicMetaPayload {
-		t.Fatalf("magic %q, want %q", dst[0:8], fileformat.MagicMetaPayload)
+	if string(dst[0:8]) != format.MagicMetaPayload {
+		t.Fatalf("magic %q, want %q", dst[0:8], format.MagicMetaPayload)
 	}
 	if binary.LittleEndian.Uint32(dst[8:]) != 1 {
 		t.Fatal("version must be 1")
@@ -76,7 +76,7 @@ func TestDirectoryEntryRoundtrip(t *testing.T) {
 		RecordType:   9,
 		RecordOffset: 64,
 		RecordLength: 100,
-		Operation:    fileformat.OperationUpsert,
+		Operation:    format.OperationUpsert,
 		Critical:     true,
 	}
 	e.SetRecordCRC(0xCAFEBABE)
@@ -85,7 +85,7 @@ func TestDirectoryEntryRoundtrip(t *testing.T) {
 	if err := e.MarshalTo(dst); err != nil {
 		t.Fatalf("MarshalTo: %v", err)
 	}
-	if dst[25]&fileformat.FlagCritical == 0 {
+	if dst[25]&format.FlagCritical == 0 {
 		t.Fatal("critical flag not written")
 	}
 
@@ -124,9 +124,9 @@ func TestPayloadBuildParseRoundtrip(t *testing.T) {
 	rec1 := []byte("record-one")
 	rec2 := []byte("record-two")
 	entries := []DirectoryEntry{
-		{ObjectID: TableSpaceEnd + 1, Operation: fileformat.OperationUpsert},
-		{ObjectID: 7, Operation: fileformat.OperationDelete},
-		{ObjectID: TableSpaceEnd + 2, Operation: fileformat.OperationUpsert},
+		{ObjectID: TableSpaceEnd + 1, Operation: format.OperationUpsert},
+		{ObjectID: 7, Operation: format.OperationDelete},
+		{ObjectID: TableSpaceEnd + 2, Operation: format.OperationUpsert},
 	}
 	records := [][]byte{rec1, nil, rec2}
 
@@ -174,7 +174,7 @@ func TestPayloadParseErrors(t *testing.T) {
 		}
 		return data
 	}
-	one := []DirectoryEntry{{ObjectID: 1, Operation: fileformat.OperationUpsert}}
+	one := []DirectoryEntry{{ObjectID: 1, Operation: format.OperationUpsert}}
 
 	if _, err := Parse(nil); err == nil {
 		t.Fatal("nil payload should error")
@@ -200,7 +200,7 @@ func TestPayloadParseErrors(t *testing.T) {
 	}
 
 	// DELETE entry carrying record bytes.
-	bad := build([]DirectoryEntry{{ObjectID: 1, Operation: fileformat.OperationDelete}},
+	bad := build([]DirectoryEntry{{ObjectID: 1, Operation: format.OperationDelete}},
 		[][]byte{[]byte("ab")})
 	// Flip the entry's operation byte to Upsert while keeping zero offset/crc,
 	// so Parse rejects it as a DELETE with payload... instead flip a DELETE to

@@ -5,25 +5,25 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // fixCRC recomputes the trailing CRC after a test mutates encoded bytes.
 func fixCRC(b []byte) {
-	binary.LittleEndian.PutUint32(b[len(b)-4:], fileformat.CRC32C(b[:len(b)-4]))
+	binary.LittleEndian.PutUint32(b[len(b)-4:], format.CRC32C(b[:len(b)-4]))
 }
 
 func schemaFixture() KnownFieldSchema {
 	return KnownFieldSchema{
-		1: fileformat.WireString,
-		2: fileformat.WireSint,
-		3: fileformat.WireString,
+		1: format.WireString,
+		2: format.WireSint,
+		3: format.WireString,
 	}
 }
 
 func sampleRecord() Record {
 	return Record{
-		RecordType:  uint32(fileformat.RecordTable),
+		RecordType:  uint32(format.RecordTable),
 		ObjectID:    42,
 		ParentID:    7,
 		Revision:    3,
@@ -31,8 +31,8 @@ func sampleRecord() Record {
 		Namespace:   "rowpack.meta.v1",
 		ExternalKey: "ext",
 		Fields: []Field{
-			{ID: 1, WireType: fileformat.WireString, Value: "users"},
-			{ID: 2, WireType: fileformat.WireSint, Value: int64(10)},
+			{ID: 1, WireType: format.WireString, Value: "users"},
+			{ID: 2, WireType: format.WireSint, Value: int64(10)},
 		},
 	}
 }
@@ -49,7 +49,7 @@ func TestRecordEncodeDecodeRoundtrip(t *testing.T) {
 	if err := r.Decode(enc, schema); err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if r.RecordType != uint32(fileformat.RecordTable) || r.ObjectID != 42 ||
+	if r.RecordType != uint32(format.RecordTable) || r.ObjectID != 42 ||
 		r.ParentID != 7 || r.Revision != 3 || !r.Critical ||
 		r.Namespace != "rowpack.meta.v1" || r.ExternalKey != "ext" {
 		t.Fatalf("decoded record mismatch: %+v", r)
@@ -75,8 +75,8 @@ func TestRecordEncodeSortsFields(t *testing.T) {
 	rec := sampleRecord()
 	// Reverse order; Encode must sort by ID.
 	rec.Fields = []Field{
-		{ID: 2, WireType: fileformat.WireSint, Value: int64(10)},
-		{ID: 1, WireType: fileformat.WireString, Value: "users"},
+		{ID: 2, WireType: format.WireSint, Value: int64(10)},
+		{ID: 1, WireType: format.WireString, Value: "users"},
 	}
 	enc, err := rec.Encode(schemaFixture())
 	if err != nil {
@@ -103,14 +103,14 @@ func TestRecordEncodeWireTypeFromSchema(t *testing.T) {
 	if err := r.Decode(enc, schemaFixture()); err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if r.Fields[0].WireType != fileformat.WireString {
+	if r.Fields[0].WireType != format.WireString {
 		t.Fatalf("field wire type not filled from schema: %+v", r.Fields[0])
 	}
 }
 
 func TestRecordEncodeSchemaMismatch(t *testing.T) {
 	rec := sampleRecord()
-	rec.Fields = []Field{{ID: 1, WireType: fileformat.WireSint, Value: int64(1)}}
+	rec.Fields = []Field{{ID: 1, WireType: format.WireSint, Value: int64(1)}}
 	if _, err := rec.Encode(schemaFixture()); err == nil {
 		t.Fatal("mismatched wire type against schema should error")
 	}
@@ -118,10 +118,10 @@ func TestRecordEncodeSchemaMismatch(t *testing.T) {
 
 func TestRecordUnknownFieldsPassthrough(t *testing.T) {
 	rec := sampleRecord()
-	known := KnownFieldSchema{1: fileformat.WireString}
+	known := KnownFieldSchema{1: format.WireString}
 	rec.Fields = []Field{
-		{ID: 9, WireType: fileformat.WireString, Value: "unknown-noncritical"},
-		{ID: 1, WireType: fileformat.WireString, Value: "users"},
+		{ID: 9, WireType: format.WireString, Value: "unknown-noncritical"},
+		{ID: 1, WireType: format.WireString, Value: "users"},
 	}
 	enc, err := rec.Encode(known)
 	if err != nil {
@@ -151,7 +151,7 @@ func TestRecordUnknownFieldsPassthrough(t *testing.T) {
 	}
 
 	// A critical unknown field must be rejected.
-	rec.Fields = []Field{{ID: 9, WireType: fileformat.WireString, Value: "x", Critical: true}}
+	rec.Fields = []Field{{ID: 9, WireType: format.WireString, Value: "x", Critical: true}}
 	enc, err = rec.Encode(nil)
 	if err != nil {
 		t.Fatalf("Encode critical unknown: %v", err)
@@ -256,7 +256,7 @@ func TestRecordDecodeFieldRegionErrors(t *testing.T) {
 	// Truncate a field's value bytes while keeping the header counts and CRC
 	// consistent: the declared value length must exceed the remaining input.
 	rec2 := sampleRecord()
-	rec2.Fields = []Field{{ID: 1, WireType: fileformat.WireString, Value: "abcd"}}
+	rec2.Fields = []Field{{ID: 1, WireType: format.WireString, Value: "abcd"}}
 	enc2, err := rec2.Encode(nil)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
@@ -266,7 +266,7 @@ func TestRecordDecodeFieldRegionErrors(t *testing.T) {
 	bad = append([]byte(nil), enc2[:48+8+3]...)
 	binary.LittleEndian.PutUint32(bad[0:], uint32(len(bad))+4)
 	binary.LittleEndian.PutUint32(bad[44:], uint32(len(bad)-48))
-	bad = binary.LittleEndian.AppendUint32(bad, fileformat.CRC32C(bad))
+	bad = binary.LittleEndian.AppendUint32(bad, format.CRC32C(bad))
 	if err := rec2.Decode(bad, nil); err == nil {
 		t.Fatal("truncated field value should error")
 	}
@@ -277,7 +277,7 @@ func TestRecordDecodeKnownFieldRepeated(t *testing.T) {
 	// duplicate input must be crafted by duplicating one field's bytes and
 	// fixing the counts + CRC.
 	rec := sampleRecord()
-	rec.Fields = []Field{{ID: 1, WireType: fileformat.WireString, Value: "a"}}
+	rec.Fields = []Field{{ID: 1, WireType: format.WireString, Value: "a"}}
 	enc, err := rec.Encode(nil)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
@@ -305,7 +305,7 @@ func TestRecordDecodeKnownFieldRepeated(t *testing.T) {
 func TestRecordDecodeKnownFieldWireType(t *testing.T) {
 	// Known field with a non-canonical wire type must be rejected.
 	rec := sampleRecord()
-	rec.Fields = []Field{{ID: 1, WireType: fileformat.WireSint, Value: int64(1)}}
+	rec.Fields = []Field{{ID: 1, WireType: format.WireSint, Value: int64(1)}}
 	enc, err := rec.Encode(nil)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
@@ -317,8 +317,8 @@ func TestRecordDecodeKnownFieldWireType(t *testing.T) {
 
 func TestEnsureSingle(t *testing.T) {
 	fields := []Field{
-		{ID: 1, WireType: fileformat.WireString, Value: "a"},
-		{ID: 1, WireType: fileformat.WireString, Value: "b"},
+		{ID: 1, WireType: format.WireString, Value: "a"},
+		{ID: 1, WireType: format.WireString, Value: "b"},
 	}
 	if err := ensureSingle(fields, 1); err == nil {
 		t.Fatal("duplicate should error")

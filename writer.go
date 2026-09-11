@@ -12,7 +12,7 @@ import (
 
 	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/index"
 	"github.com/rowpack/rowpack/internal/metadata"
 	"github.com/rowpack/rowpack/internal/seal"
@@ -114,7 +114,7 @@ type schemaKey struct {
 
 // pendingBlock is one buffered block awaiting commit-time write.
 type pendingBlock struct {
-	header  fileformat.BlockHeader
+	header  format.BlockHeader
 	payload []byte
 	offset  int64 // .rpk offset assigned at commit
 	// rowsDir is the rows-block directory in record order (rows blocks
@@ -122,8 +122,8 @@ type pendingBlock struct {
 	// slice at flush time, so no per-row copy exists on the commit path;
 	// RowIndexEntries are built straight into the pre-reserved txn builder
 	// at commit.
-	rowsDir []fileformat.RowDirectoryEntry
-	meta    []fileformat.MetadataIndexEntry
+	rowsDir []format.RowDirectoryEntry
+	meta    []format.MetadataIndexEntry
 }
 
 // newWriter constructs the single active writer. A Store allows at most one
@@ -233,7 +233,7 @@ func (w *Writer) addMetadata(rec *metadata.Record, body []byte) error {
 		ObjectID:   rec.ObjectID,
 		Revision:   rec.Revision,
 		RecordType: rec.RecordType,
-		Operation:  fileformat.OperationUpsert,
+		Operation:  format.OperationUpsert,
 		Critical:   rec.Critical,
 	}
 	return w.ensureMetadata().Add(entry, body)
@@ -243,9 +243,9 @@ func (w *Writer) addMetadata(rec *metadata.Record, body []byte) error {
 // directory entries directly, so no payload re-parse is needed.
 func (w *Writer) metaFlush(fb *block.FlushedBlock) error {
 	blk := &pendingBlock{header: fb.Header, payload: fb.Stored}
-	blk.meta = make([]fileformat.MetadataIndexEntry, 0, len(fb.Meta))
+	blk.meta = make([]format.MetadataIndexEntry, 0, len(fb.Meta))
 	for i := range fb.Meta {
-		blk.meta = append(blk.meta, fileformat.MetadataIndexEntry{
+		blk.meta = append(blk.meta, format.MetadataIndexEntry{
 			SnapshotID:  w.id,
 			ObjectID:    fb.Meta[i].ObjectID,
 			Revision:    fb.Meta[i].Revision,
@@ -300,7 +300,7 @@ func (w *Writer) rowBuilder(table TableID) *block.RowsBuilder {
 // writer at a time, sequential flushes), so its ~1 MiB histogram is allocated
 // once per store instead of once per pool-recreating GC cycle.
 func (w *Writer) setEncoder(setter interface{ SetZstdEncoder(*block.ZstdEncoder) }) {
-	if w.store.opts.diskCompression() != fileformat.CompressionZstd {
+	if w.store.opts.diskCompression() != format.CompressionZstd {
 		return
 	}
 	setter.SetZstdEncoder(w.store.zstdEncoder())
@@ -445,18 +445,18 @@ func (w *Writer) writeRecords(def tableDef) error {
 	// The ns field is omitted for the default ns, so that case stays
 	// byte-identical to stores written before ns existed.
 	fields := []metadata.Field{
-		{ID: metadata.TableName, WireType: fileformat.WireString, Value: schema.Name},
+		{ID: metadata.TableName, WireType: format.WireString, Value: schema.Name},
 	}
 	if def.NS != NSUser {
 		fields = append(fields, metadata.Field{
-			ID: metadata.TableNS, WireType: fileformat.WireString, Value: def.NS,
+			ID: metadata.TableNS, WireType: format.WireString, Value: def.NS,
 		})
 	}
 	tableRec := &metadata.Record{
-		RecordType:  uint32(fileformat.RecordTable),
+		RecordType:  uint32(format.RecordTable),
 		ObjectID:    tableOID,
 		Revision:    schema.Version,
-		Namespace:   fileformat.NamespaceCore,
+		Namespace:   format.NamespaceCore,
 		ExternalKey: schema.Name,
 		Fields:      fields,
 	}
@@ -464,23 +464,23 @@ func (w *Writer) writeRecords(def tableDef) error {
 		return err
 	}
 	for i, col := range schema.Columns {
-		objectID := w.allocator.Alloc(fileformat.NamespaceCore,
+		objectID := w.allocator.Alloc(format.NamespaceCore,
 			fmt.Sprintf("%s:%d:%s", def.Address, schema.Version, col.Name))
 		if objectID > w.maxObject {
 			w.maxObject = objectID
 		}
 		colRec := &metadata.Record{
-			RecordType: uint32(fileformat.RecordColumn),
+			RecordType: uint32(format.RecordColumn),
 			ObjectID:   objectID,
 			ParentID:   tableOID,
 			Revision:   1,
-			Namespace:  fileformat.NamespaceCore,
+			Namespace:  format.NamespaceCore,
 			Fields: []metadata.Field{
-				{ID: metadata.ColColumnID, WireType: fileformat.WireSint, Value: int64(i + 1)},
-				{ID: metadata.ColColumnName, WireType: fileformat.WireString, Value: col.Name},
-				{ID: metadata.ColColumnType, WireType: fileformat.WireString, Value: typeName(col.Type)},
-				{ID: metadata.ColNullable, WireType: fileformat.WireString, Value: nullString(col.Nullable)},
-				{ID: metadata.ColDataScale, WireType: fileformat.WireSint, Value: int64(col.Scale)},
+				{ID: metadata.ColColumnID, WireType: format.WireSint, Value: int64(i + 1)},
+				{ID: metadata.ColColumnName, WireType: format.WireString, Value: col.Name},
+				{ID: metadata.ColColumnType, WireType: format.WireString, Value: typeName(col.Type)},
+				{ID: metadata.ColNullable, WireType: format.WireString, Value: nullString(col.Nullable)},
+				{ID: metadata.ColDataScale, WireType: format.WireSint, Value: int64(col.Scale)},
 			},
 		}
 		if err := w.writeMetadata(colRec); err != nil {
@@ -671,7 +671,7 @@ func (w *Writer) put(ctx context.Context, c rowChange) error {
 		}
 		encoded = w.encBuf
 	}
-	if err := w.rowBuilder(c.table).Add(c.rowID, c.schemaVersion, fileformat.ChangeType(c.typ), encoded); err != nil {
+	if err := w.rowBuilder(c.table).Add(c.rowID, c.schemaVersion, format.ChangeType(c.typ), encoded); err != nil {
 		return err
 	}
 	w.rememberRow(c.table, c.rowID)
@@ -723,7 +723,7 @@ func (w *Writer) checkParent(table TableID, rowID RowID, typ ChangeType) error {
 	// Parent-view existence is resolved along the whole parent chain, not just
 	// the immediate parent layer.
 	loc, ok := st.view.ResolveRow(w.parent, table, rowID)
-	exists := ok && loc.ChangeType != fileformat.ChangeDelete
+	exists := ok && loc.ChangeType != format.ChangeDelete
 	switch typ {
 	case ChangeInsert:
 		if exists {
@@ -845,7 +845,7 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 			return SnapshotInfo{}, err
 		}
 		blockCount++
-		if blk.header.BlockKind == fileformat.BlockKindMetadata {
+		if blk.header.BlockKind == format.BlockKindMetadata {
 			metaBlockCount++
 		}
 		rawBytes += uint64(blk.header.RawSize)
@@ -873,10 +873,10 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 	}
 	txnBuilder.SetRowDedup(false)
 	txnBuilder.Reserve(totalMeta, len(w.pending), totalRows)
-	snapEntry := fileformat.SnapshotIndexEntry{
+	snapEntry := format.SnapshotIndexEntry{
 		SnapshotID:       w.id,
 		ParentSnapshotID: w.parent,
-		SnapshotType:     fileformat.SnapshotType(w.typ),
+		SnapshotType:     format.SnapshotType(w.typ),
 		BlockCount:       blockCount,
 		RowRecordCount:   w.rowRecordCount,
 		DataStart:        uint64(snapStart),
@@ -911,7 +911,7 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 			Seal: func(chunkSeq uint32, kind uint8, firstOrdinal uint32, rawBytes int, stored []byte) ([]byte, error) {
 				// AAD binds the FINAL stored length (compressed + GCM tag);
 				// the read side derives it from the chunk header.
-				storedBytes := uint32(len(stored)) + fileformat.AESGCMTagLen
+				storedBytes := uint32(len(stored)) + format.AESGCMTagLen
 				return c.SealIndexChunk(seal.ChunkContext{
 					UUID:          uuid,
 					TxnSequence:   txnSeq,
@@ -929,10 +929,10 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 	var txnStartResolved, txnEndResolved, snapEndResolved int64
 	stored, txn, err := txnBuilder.BuildStored(crypto, w.store.opts.CompressionLevel,
 		func(bodyLen int) index.BodyBounds {
-			l := int64(fileformat.IndexTxnHeaderSize + bodyLen + fileformat.IndexTxnFooterSize)
+			l := int64(format.IndexTxnHeaderSize + bodyLen + format.IndexTxnFooterSize)
 			ts := blocksEnd
 			te := ts + l
-			txnStartResolved, txnEndResolved, snapEndResolved = ts, te, te+fileformat.SnapshotFooterSize
+			txnStartResolved, txnEndResolved, snapEndResolved = ts, te, te+format.SnapshotFooterSize
 			return index.BodyBounds{DataStart: uint64(snapStart), DataEnd: uint64(snapEndResolved), TxnStart: ts, TxnEnd: te}
 		}, 0, 0)
 	if err != nil {
@@ -944,13 +944,13 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 	}
 
 	// Footer: the commit authority; also binds the IndexTxn bytes.
-	var ftr fileformat.SnapshotFooter
-	ftr.SnapshotType = fileformat.SnapshotType(w.typ)
+	var ftr format.SnapshotFooter
+	ftr.SnapshotType = format.SnapshotType(w.typ)
 	ftr.SnapshotID = w.id
 	ftr.ParentSnapshotID = w.parent
 	ftr.PreviousFooterOffset = w.store.lastFooterOffset
 	ftr.SnapshotStartOffset = uint64(snapStart)
-	ftr.BlocksStartOffset = uint64(snapStart) + fileformat.SnapshotHeaderSize
+	ftr.BlocksStartOffset = uint64(snapStart) + format.SnapshotHeaderSize
 	ftr.BlocksEndOffset = uint64(blocksEnd)
 	ftr.IndexTxnStartOffset = uint64(txnStart)
 	ftr.IndexTxnEndOffset = uint64(txnEnd)
@@ -961,9 +961,9 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 	ftr.RowRecordCount = w.rowRecordCount
 	ftr.RawBytes = rawBytes
 	ftr.StoredBytes = uint64(snapEnd - snapStart)
-	ftr.BlocksCRC32C = fileformat.CRC32C(blockCRCs)
-	ftr.IndexTxnCRC32C = fileformat.CRC32C(stored)
-	var fb [fileformat.SnapshotFooterSize]byte
+	ftr.BlocksCRC32C = format.CRC32C(blockCRCs)
+	ftr.IndexTxnCRC32C = format.CRC32C(stored)
+	var fb [format.SnapshotFooterSize]byte
 	if err := ftr.MarshalTo(fb[:]); err != nil {
 		return SnapshotInfo{}, err
 	}
@@ -1019,9 +1019,9 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 // writeHeader assigns the snapshot header fields and appends it before
 // any blocks. Keeping this boundary explicit makes the on-disk commit order
 // easier to audit.
-func (w *Writer) writeHeader() (fileformat.SnapshotHeader, error) {
-	var h fileformat.SnapshotHeader
-	h.SnapshotType = fileformat.SnapshotType(w.typ)
+func (w *Writer) writeHeader() (format.SnapshotHeader, error) {
+	var h format.SnapshotHeader
+	h.SnapshotType = format.SnapshotType(w.typ)
 	h.SnapshotID = w.id
 	h.ParentSnapshotID = w.parent
 	h.CreatedUnixNano = w.created
@@ -1029,12 +1029,12 @@ func (w *Writer) writeHeader() (fileformat.SnapshotHeader, error) {
 	if len(w.pending) > 0 {
 		h.FirstBlockID = w.pending[0].header.BlockID
 	}
-	var buf [fileformat.SnapshotHeaderSize]byte
+	var buf [format.SnapshotHeaderSize]byte
 	if err := h.MarshalTo(buf[:]); err != nil {
-		return fileformat.SnapshotHeader{}, err
+		return format.SnapshotHeader{}, err
 	}
 	if _, err := w.store.data.Append(buf[:]); err != nil {
-		return fileformat.SnapshotHeader{}, err
+		return format.SnapshotHeader{}, err
 	}
 	return h, nil
 }
@@ -1049,7 +1049,7 @@ func (w *Writer) sealPendingBlock(blk *pendingBlock) error {
 	}
 	blk.header.Encrypted = true
 	blk.header.KeyEpoch = 0
-	if blk.header.BlockKind == fileformat.BlockKindRows {
+	if blk.header.BlockKind == format.BlockKindRows {
 		sealer := pageSealer{
 			cipher: c,
 			uuid:   &w.store.uuid,
@@ -1065,7 +1065,7 @@ func (w *Writer) sealPendingBlock(blk *pendingBlock) error {
 		blk.payload = sealed
 		return nil
 	}
-	blk.header.StoredSize = uint32(len(blk.payload)) + fileformat.AESGCMTagLen
+	blk.header.StoredSize = uint32(len(blk.payload)) + format.AESGCMTagLen
 	sealed, err := c.Seal(&w.store.uuid, &blk.header, blk.payload)
 	if err != nil {
 		return err
@@ -1076,7 +1076,7 @@ func (w *Writer) sealPendingBlock(blk *pendingBlock) error {
 
 func (w *Writer) addBlocksToTxn(builder *index.Builder) error {
 	for _, blk := range w.pending {
-		if err := builder.AddBlock(fileformat.BlockIndexEntry{
+		if err := builder.AddBlock(format.BlockIndexEntry{
 			BlockID: blk.header.BlockID, SnapshotID: blk.header.SnapshotID,
 			TableID: blk.header.TableID, BlockKind: blk.header.BlockKind,
 			Compression: blk.header.Compression, DataOffset: uint64(blk.offset),
@@ -1093,7 +1093,7 @@ func (w *Writer) addBlocksToTxn(builder *index.Builder) error {
 		}
 		for i := range blk.rowsDir {
 			de := &blk.rowsDir[i]
-			if err := builder.AddRow(fileformat.RowIndexEntry{
+			if err := builder.AddRow(format.RowIndexEntry{
 				SnapshotID: w.id, TableID: blk.header.TableID,
 				ChangeType: de.ChangeType, RowID: de.RowID,
 				BlockID: blk.header.BlockID, ItemOrdinal: uint32(i),
@@ -1105,8 +1105,8 @@ func (w *Writer) addBlocksToTxn(builder *index.Builder) error {
 	return nil
 }
 
-func (w *Writer) writePendingBlock(blk *pendingBlock) ([fileformat.BlockHeaderSize]byte, error) {
-	var hb [fileformat.BlockHeaderSize]byte
+func (w *Writer) writePendingBlock(blk *pendingBlock) ([format.BlockHeaderSize]byte, error) {
+	var hb [format.BlockHeaderSize]byte
 	if err := blk.header.MarshalTo(hb[:]); err != nil {
 		return hb, err
 	}

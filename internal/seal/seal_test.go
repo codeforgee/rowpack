@@ -6,12 +6,12 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 func TestNonceLayout(t *testing.T) {
 	n := Nonce(0x01020304, 0x0A0B0C0D0E0F1011)
-	want := [fileformat.EncNonceLen]byte{
+	want := [format.EncNonceLen]byte{
 		0x04, 0x03, 0x02, 0x01, // epoch LE
 		0x11, 0x10, 0x0F, 0x0E, 0x0D, 0x0C, 0x0B, 0x0A, // blockID LE
 	}
@@ -49,7 +49,7 @@ func TestBuildAADLayout(t *testing.T) {
 	if !bytes.Equal(aad[16:32], uuid[:]) {
 		t.Fatal("AAD does not bind the store UUID")
 	}
-	if aad[32] != byte(fileformat.BlockKindRows) || aad[33] != byte(fileformat.CompressionZstd) {
+	if aad[32] != byte(format.BlockKindRows) || aad[33] != byte(format.CompressionZstd) {
 		t.Fatalf("kind/comp bytes %x %x", aad[32], aad[33])
 	}
 	if aad[34] != 0 || aad[35] != 0 {
@@ -160,7 +160,7 @@ func TestSealOpenBlockRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	if len(ct) != len(plaintext)+fileformat.AESGCMTagLen {
+	if len(ct) != len(plaintext)+format.AESGCMTagLen {
 		t.Fatalf("ciphertext len %d, want plaintext + tag", len(ct))
 	}
 	if bytes.Equal(ct[:len(plaintext)], plaintext) {
@@ -233,7 +233,7 @@ func TestSealWithOpenWith(t *testing.T) {
 	pt := []byte("index txn bytes")
 
 	ct := c.SealWith(nonce, aad[:], pt)
-	if len(ct) != len(pt)+fileformat.AESGCMTagLen {
+	if len(ct) != len(pt)+format.AESGCMTagLen {
 		t.Fatalf("ciphertext len %d", len(ct))
 	}
 	got, err := c.OpenWith(nonce, aad[:], ct)
@@ -263,7 +263,7 @@ func TestSealOpenIndexChunk(t *testing.T) {
 		rawBytes, storedBytes  uint32
 		kind                   uint8
 		epoch                  uint32
-	}{11, 22, 33, 44, 55, 55 + fileformat.AESGCMTagLen, 7, 88}
+	}{11, 22, 33, 44, 55, 55 + format.AESGCMTagLen, 7, 88}
 	pt := []byte("chunk payload")
 	ctx := ChunkContext{
 		UUID:          &uuid,
@@ -310,7 +310,7 @@ func TestNonceIndexChunkDeterministic(t *testing.T) {
 	// Page and chunk nonce domains must be separated.
 	if c.NonceIndexChunk(1, 2) == c.NoncePage(PageContext{
 		UUID: &testUUID, SnapshotID: 1, BlockID: 2,
-		Page: fileformat.RowsPageDirEntry{PageOrdinal: 3}, Epoch: 4,
+		Page: format.RowsPageDirEntry{PageOrdinal: 3}, Epoch: 4,
 	}) {
 		t.Fatal("chunk nonce collides with page nonce domain")
 	}

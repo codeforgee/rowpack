@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // Limits bound compressed and decompressed sizes during reads.
@@ -18,18 +18,18 @@ type Limits struct {
 // DefaultLimits returns the v1 default block safety limits.
 func DefaultLimits() Limits {
 	return Limits{
-		MaxRawBytes:    fileformat.DefaultMaxRawBlockBytes,
-		MaxStoredBytes: fileformat.DefaultMaxStoredBlockBytes,
+		MaxRawBytes:    format.DefaultMaxRawBlockBytes,
+		MaxStoredBytes: format.DefaultMaxStoredBlockBytes,
 	}
 }
 
 // Compress encodes src with the given algorithm. Zstd output is a complete
 // independent frame (no dictionary) and is deterministic for a fixed level.
-func Compress(alg fileformat.Compression, level int, src []byte) ([]byte, error) {
+func Compress(alg format.Compression, level int, src []byte) ([]byte, error) {
 	switch alg {
-	case fileformat.CompressionNone:
+	case format.CompressionNone:
 		return src, nil
-	case fileformat.CompressionZstd:
+	case format.CompressionZstd:
 		return compressZstd(level, src)
 	}
 	return nil, fmt.Errorf("rowpack: unsupported compression %d", alg)
@@ -38,14 +38,14 @@ func Compress(alg fileformat.Compression, level int, src []byte) ([]byte, error)
 // Decompress decodes src, returning the decoded bytes which never exceed
 // maxOut; a larger result is a compression-bomb rejection rather than an
 // allocation.
-func Decompress(alg fileformat.Compression, dst, src []byte, maxOut uint32) ([]byte, error) {
+func Decompress(alg format.Compression, dst, src []byte, maxOut uint32) ([]byte, error) {
 	switch alg {
-	case fileformat.CompressionNone:
+	case format.CompressionNone:
 		if uint32(len(src)) > maxOut {
 			return nil, fmt.Errorf("rowpack: stored size %d exceeds limit %d", len(src), maxOut)
 		}
 		return src, nil
-	case fileformat.CompressionZstd:
+	case format.CompressionZstd:
 		return decompressZstd(dst, src, maxOut)
 	}
 	return nil, fmt.Errorf("rowpack: unsupported compression %d", alg)

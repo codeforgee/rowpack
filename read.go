@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/index"
 	"github.com/rowpack/rowpack/internal/metadata"
 )
@@ -83,7 +83,7 @@ func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowI
 	if !ok {
 		return nil, fmt.Errorf("%w: (table %d, row %d) in snapshot %d", ErrNotFound, tid, rowID, snapshot)
 	}
-	if loc.ChangeType == fileformat.ChangeDelete {
+	if loc.ChangeType == format.ChangeDelete {
 		return nil, fmt.Errorf("%w: (table %d, row %d) deleted in snapshot %d", ErrNotFound, tid, rowID, snapshot)
 	}
 	row, _, err := s.readRowInto(view, st.schemas, loc, dst)
@@ -111,7 +111,7 @@ func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, r
 	}
 	view := st.view
 	loc, ok := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
-	if !ok || loc.ChangeType == fileformat.ChangeDelete {
+	if !ok || loc.ChangeType == format.ChangeDelete {
 		return false, nil
 	}
 	return true, nil
@@ -135,7 +135,7 @@ func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc index.RowLoc,
 		return nil, 0, err
 	}
 	defer release()
-	if rec.ChangeType == fileformat.ChangeDelete {
+	if rec.ChangeType == format.ChangeDelete {
 		return nil, 0, fmt.Errorf("rowpack: row is a tombstone in block %d", bl.BlockID)
 	}
 	decoder, err := si.decoderFor(bl, rec.SchemaVersion)
@@ -192,7 +192,7 @@ func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error
 	// below resolves deletes/overrides on that same chain.
 	seen := make(map[TableID]bool)
 	for cur := uint64(snapshot); ; {
-		ids := st.view.MetadataByType(cur, uint32(fileformat.RecordTable))
+		ids := st.view.MetadataByType(cur, uint32(format.RecordTable))
 		for _, oid := range ids {
 			seen[TableID(oid)] = true
 		}

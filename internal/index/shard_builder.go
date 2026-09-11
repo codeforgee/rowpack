@@ -3,7 +3,7 @@ package index
 import (
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // rowShardBuilder incrementally builds per-table rowShards from a stream of
@@ -48,7 +48,7 @@ func newRowShardBuilder(snapID uint64, hint int) *rowShardBuilder {
 // AddRowEntry appends one decoded row entry into the current table's shard.
 // Entries must arrive sorted by (TableID, RowID); a table switch finalizes the
 // current shard. Ascending order and absence of duplicate RowKeys are validated.
-func (b *rowShardBuilder) AddRowEntry(e fileformat.RowIndexEntry) error {
+func (b *rowShardBuilder) AddRowEntry(e format.RowIndexEntry) error {
 	if e.SnapshotID != b.snapID {
 		return fmt.Errorf("rowpack: row entry wrong snapshot")
 	}

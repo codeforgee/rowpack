@@ -14,7 +14,7 @@ import (
 
 	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/stretchr/testify/require"
 )
 
@@ -214,9 +214,9 @@ func TestGoldenRowsPayloadAllTypes(t *testing.T) {
 	require.NoError(t, err)
 
 	var sink goldenCaptureSink
-	b := block.NewRowsBuilder(1, 1, block.Config{BlockSize: 1 << 20, Compression: fileformat.CompressionNone, Level: 0, Limits: block.DefaultLimits(), OnFlush: sink.flush})
+	b := block.NewRowsBuilder(1, 1, block.Config{BlockSize: 1 << 20, Compression: format.CompressionNone, Level: 0, Limits: block.DefaultLimits(), OnFlush: sink.flush})
 	for i := 0; i < 3; i++ {
-		require.NoError(t, b.Add(uint64(100+i), 1, fileformat.ChangeInsert, row))
+		require.NoError(t, b.Add(uint64(100+i), 1, format.ChangeInsert, row))
 	}
 	require.NoError(t, b.Flush())
 	require.Len(t, sink.blocks, 1, "got %d blocks, want 1", len(sink.blocks))
@@ -244,18 +244,18 @@ var fixedStoreUUID = [16]byte{0x52, 0x4f, 0x57, 0x50, 0x41, 0x43, 0x4b, 0x01, 0x
 
 // buildEmptyDataHeader renders the canonical empty-store .rpk header.
 func buildEmptyDataHeader() []byte {
-	var h fileformat.DataFileHeader
-	h.FileHeader = fileformat.FileHeader{
+	var h format.DataFileHeader
+	h.FileHeader = format.FileHeader{
 		StoreUUID:          fixedStoreUUID,
 		CreatedUnixNano:    1757400000000000000,
-		RequiredFeatures:   fileformat.RequiredFeaturesV1,
+		RequiredFeatures:   format.RequiredFeaturesV1,
 		OptionalFeatures:   0,
-		DefaultBlockSize:   fileformat.DefaultBlockSize,
-		DefaultCompression: fileformat.CompressionZstd,
-		DefaultRowEncoding: fileformat.RowEncodingTypedTuple,
+		DefaultBlockSize:   format.DefaultBlockSize,
+		DefaultCompression: format.CompressionZstd,
+		DefaultRowEncoding: format.RowEncodingTypedTuple,
 		Flags:              0,
 	}
-	buf := make([]byte, fileformat.DataFileHeaderSize)
+	buf := make([]byte, format.DataFileHeaderSize)
 	_ = h.MarshalTo(buf)
 	return buf
 }
@@ -274,5 +274,5 @@ func TestGoldenEmptyStore(t *testing.T) {
 	if !bytes.Equal(got, data) {
 		require.Fail(t, "golden %s differs from implementation (regenerate with make golden)", path)
 	}
-	require.Equal(t, fileformat.DataFileHeaderSize, len(got), "golden size = %d, want %d", len(got), fileformat.DataFileHeaderSize)
+	require.Equal(t, format.DataFileHeaderSize, len(got), "golden size = %d, want %d", len(got), format.DataFileHeaderSize)
 }

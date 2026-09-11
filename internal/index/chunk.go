@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // Index txn chunking (docs/INDEX_TXN_FORMAT_V1.md): the txn body is
@@ -76,12 +76,12 @@ func newChunkCompressor(crypto *ChunkCrypto, level int) *chunkWriter {
 	// streamed chunks number from 1 in physical order. The head payload
 	// region is content-independent in size: 72B uncompressed, +16B tag when
 	// encrypted.
-	snapPayload := fileformat.SnapshotIndexEntrySize
+	snapPayload := format.SnapshotIndexEntrySize
 	if crypto != nil {
-		snapPayload += fileformat.AESGCMTagLen
+		snapPayload += format.AESGCMTagLen
 	}
 	cc := &chunkWriter{crypto: crypto, level: level, seq: 1, snapPayload: snapPayload}
-	cc.out = make([]byte, fileformat.IndexChunkHeaderSize+snapPayload)
+	cc.out = make([]byte, format.IndexChunkHeaderSize+snapPayload)
 	return cc
 }
 
@@ -97,29 +97,29 @@ type chunkBuild struct {
 // the plaintext-body CRC.
 func (cc *chunkWriter) add(cb *chunkBuild) error {
 	stored := cb.raw
-	compression := fileformat.IndexChunkCompressionNone
-	if cb.kind != fileformat.IndexChunkKindSnapshot && len(cb.raw) > 0 {
-		c, err := block.Compress(fileformat.CompressionZstd, cc.level, cb.raw)
+	compression := format.IndexChunkCompressionNone
+	if cb.kind != format.IndexChunkKindSnapshot && len(cb.raw) > 0 {
+		c, err := block.Compress(format.CompressionZstd, cc.level, cb.raw)
 		if err != nil {
 			return err
 		}
 		stored = c
-		compression = fileformat.IndexChunkCompressionZstd
+		compression = format.IndexChunkCompressionZstd
 	}
-	encryption := fileformat.IndexChunkEncryptionNone
+	encryption := format.IndexChunkEncryptionNone
 	if cc.crypto != nil {
 		sealed, err := cc.crypto.Seal(cc.seq, cb.kind, cb.firstOrdinal, len(cb.raw), stored)
 		if err != nil {
 			return err
 		}
 		stored = sealed
-		encryption = fileformat.IndexChunkEncryptionAESGCM
+		encryption = format.IndexChunkEncryptionAESGCM
 	}
 	keyEpoch := uint32(0)
 	if cc.crypto != nil {
 		keyEpoch = cc.crypto.Epoch
 	}
-	h := fileformat.IndexChunkHeader{
+	h := format.IndexChunkHeader{
 		EntryKind:         cb.kind,
 		Compression:       compression,
 		Encryption:        encryption,
@@ -129,14 +129,14 @@ func (cc *chunkWriter) add(cb *chunkBuild) error {
 		FirstEntryOrdinal: cb.firstOrdinal,
 		RawBytes:          uint32(len(cb.raw)),
 		StoredBytes:       uint32(len(stored)),
-		PayloadCRC32C:     fileformat.CRC32C(stored),
+		PayloadCRC32C:     format.CRC32C(stored),
 	}
 	off := uint64(len(cc.out))
-	if err := h.MarshalTo(cc.reserve(fileformat.IndexChunkHeaderSize)); err != nil {
+	if err := h.MarshalTo(cc.reserve(format.IndexChunkHeaderSize)); err != nil {
 		return err
 	}
 	cc.out = append(cc.out, stored...)
-	var de fileformat.IndexChunkDirEntry
+	var de format.IndexChunkDirEntry
 	de.ChunkSequence = cc.seq
 	de.EntryCount = h.EntryCount
 	de.FirstEntryOrdinal = cb.firstOrdinal
@@ -144,7 +144,7 @@ func (cc *chunkWriter) add(cb *chunkBuild) error {
 	de.StoredBytes = h.StoredBytes
 	de.EntryKind = cb.kind
 	de.RegionOffset = off
-	de.MarshalTo(cc.reserveDir(fileformat.IndexChunkDirEntrySize))
+	de.MarshalTo(cc.reserveDir(format.IndexChunkDirEntrySize))
 	cc.rawParts = append(cc.rawParts, cb.raw)
 	cc.seq++
 	return nil
@@ -178,7 +178,7 @@ func emitChunks(cc *chunkWriter, kind uint8, n, entrySize int, marshal func(i in
 		}
 		cb.raw = append(cb.raw, scratch...)
 		cb.entries++
-		if cb.entries >= fileformat.IndexChunkTargetEntries || len(cb.raw) >= fileformat.IndexChunkTargetRawBytes {
+		if cb.entries >= format.IndexChunkTargetEntries || len(cb.raw) >= format.IndexChunkTargetRawBytes {
 			if err := cc.add(cb); err != nil {
 				return err
 			}
@@ -198,11 +198,11 @@ func emitChunks(cc *chunkWriter, kind uint8, n, entrySize int, marshal func(i in
 // by `buildPages`, and `cc.seq` is left at the next free chunk
 // sequence so pages can seal under distinct chunk sequences.
 func (b *Builder) emitChunks(cc *chunkWriter) error {
-	if err := emitChunks(cc, fileformat.IndexChunkKindMetadata, len(b.metadata), fileformat.MetadataIndexEntrySize,
+	if err := emitChunks(cc, format.IndexChunkKindMetadata, len(b.metadata), format.MetadataIndexEntrySize,
 		func(i int, dst []byte) error { return b.metadata[i].MarshalTo(dst) }); err != nil {
 		return err
 	}
-	if err := emitChunks(cc, fileformat.IndexChunkKindBlock, len(b.blocks), fileformat.BlockIndexEntrySize,
+	if err := emitChunks(cc, format.IndexChunkKindBlock, len(b.blocks), format.BlockIndexEntrySize,
 		func(i int, dst []byte) error { return b.blocks[i].MarshalTo(dst) }); err != nil {
 		return err
 	}
@@ -252,11 +252,11 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 	for i := range pages {
 		pageRegionLen += len(pages[i].stored)
 	}
-	fenceRegionLen := len(pages) * fileformat.IndexFenceEntrySize
+	fenceRegionLen := len(pages) * format.IndexFenceEntrySize
 	// +32B: the snapshot chunk's directory entry (always present) is
 	// prepended after the bounds resolve, so it is counted here. The
 	// snapshot chunk payload itself is already counted in the reserved head.
-	bodyLen := len(cc.out) + len(cc.dir) + fileformat.IndexChunkDirEntrySize + pageRegionLen + fenceRegionLen
+	bodyLen := len(cc.out) + len(cc.dir) + format.IndexChunkDirEntrySize + pageRegionLen + fenceRegionLen
 	bounds := BodyBounds{DataStart: b.snapshot.DataStart, DataEnd: b.snapshot.DataEnd}
 	if resolveBounds != nil {
 		bounds = resolveBounds(bodyLen)
@@ -264,19 +264,19 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 	se := *b.snapshot
 	se.DataStart = bounds.DataStart
 	se.DataEnd = bounds.DataEnd
-	var raw [fileformat.SnapshotIndexEntrySize]byte
+	var raw [format.SnapshotIndexEntrySize]byte
 	if err := se.MarshalTo(raw[:]); err != nil {
 		return nil, 0, nil, err
 	}
 	stored := raw[:]
-	encryption := fileformat.IndexChunkEncryptionNone
+	encryption := format.IndexChunkEncryptionNone
 	if crypto != nil {
-		sealed, err := crypto.Seal(0, fileformat.IndexChunkKindSnapshot, 0, len(raw), stored)
+		sealed, err := crypto.Seal(0, format.IndexChunkKindSnapshot, 0, len(raw), stored)
 		if err != nil {
 			return nil, 0, nil, err
 		}
 		stored = sealed
-		encryption = fileformat.IndexChunkEncryptionAESGCM
+		encryption = format.IndexChunkEncryptionAESGCM
 	}
 	if len(stored) != cc.snapPayload {
 		return nil, 0, nil, fmt.Errorf("rowpack: snapshot chunk stored %d bytes, want fixed %d", len(stored), cc.snapPayload)
@@ -285,37 +285,37 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 	if crypto != nil {
 		keyEpoch = crypto.Epoch
 	}
-	h := fileformat.IndexChunkHeader{
-		EntryKind:     fileformat.IndexChunkKindSnapshot,
+	h := format.IndexChunkHeader{
+		EntryKind:     format.IndexChunkKindSnapshot,
 		Encryption:    encryption,
 		KeyEpoch:      keyEpoch,
 		ChunkSequence: 0,
 		EntryCount:    1,
 		RawBytes:      uint32(len(raw)),
 		StoredBytes:   uint32(len(stored)),
-		PayloadCRC32C: fileformat.CRC32C(stored),
+		PayloadCRC32C: format.CRC32C(stored),
 	}
-	if err := h.MarshalTo(cc.out[:fileformat.IndexChunkHeaderSize]); err != nil {
+	if err := h.MarshalTo(cc.out[:format.IndexChunkHeaderSize]); err != nil {
 		return nil, 0, nil, err
 	}
-	copy(cc.out[fileformat.IndexChunkHeaderSize:], stored)
+	copy(cc.out[format.IndexChunkHeaderSize:], stored)
 	// Snapshot directory entry first, then the streamed chunks' entries; the
 	// directory bytes join the plaintext CRC.
-	var sde fileformat.IndexChunkDirEntry
+	var sde format.IndexChunkDirEntry
 	sde.ChunkSequence = 0
 	sde.EntryCount = 1
 	sde.RawBytes = h.RawBytes
 	sde.StoredBytes = h.StoredBytes
-	sde.EntryKind = fileformat.IndexChunkKindSnapshot
+	sde.EntryKind = format.IndexChunkKindSnapshot
 	sde.RegionOffset = 0
-	var sdeBuf [fileformat.IndexChunkDirEntrySize]byte
+	var sdeBuf [format.IndexChunkDirEntrySize]byte
 	sde.MarshalTo(sdeBuf[:])
 	cc.dir = append(sdeBuf[:], cc.dir...)
 	// Patch each fence's StoredOffset now that the chunk region + directory
 	// length is final, and serialize the fence directory.
 	pageOff := uint64(len(cc.out) + len(cc.dir))
 	fenceBytes := make([]byte, 0, fenceRegionLen)
-	var fbuf [fileformat.IndexFenceEntrySize]byte
+	var fbuf [format.IndexFenceEntrySize]byte
 	for i := range pages {
 		pages[i].fence.StoredOffset = pageOff
 		pageOff += uint64(len(pages[i].stored))
@@ -336,7 +336,7 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 	parts = append(parts, fenceBytes)
 	plainCRC = uint32(0)
 	for _, p := range parts {
-		plainCRC = fileformat.CRC32CConcat(plainCRC, p)
+		plainCRC = format.CRC32CConcat(plainCRC, p)
 	}
 	body = cc.out
 	body = append(body, cc.dir...)
@@ -352,21 +352,21 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 // AssembleTxn wraps a stored chunk body with the IndexTxnHeader and
 // IndexTxnFooter. h.BodyBytes is forced to len(body); keyEpoch != 0 is
 // stamped into the header reserved word (encrypted stores).
-func AssembleTxn(h fileformat.IndexTxnHeader, keyEpoch uint32, body []byte, f fileformat.IndexTxnFooter) ([]byte, error) {
+func AssembleTxn(h format.IndexTxnHeader, keyEpoch uint32, body []byte, f format.IndexTxnFooter) ([]byte, error) {
 	h.BodyBytes = uint64(len(body))
-	out := make([]byte, 0, fileformat.IndexTxnHeaderSize+len(body)+fileformat.IndexTxnFooterSize)
-	var hb [fileformat.IndexTxnHeaderSize]byte
+	out := make([]byte, 0, format.IndexTxnHeaderSize+len(body)+format.IndexTxnFooterSize)
+	var hb [format.IndexTxnHeaderSize]byte
 	if err := h.MarshalTo(hb[:]); err != nil {
 		return nil, err
 	}
 	if keyEpoch != 0 {
-		if err := fileformat.PatchIndexTxnHeaderForStorage(hb[:], uint64(len(body)), keyEpoch); err != nil {
+		if err := format.PatchIndexTxnHeaderForStorage(hb[:], uint64(len(body)), keyEpoch); err != nil {
 			return nil, err
 		}
 	}
 	out = append(out, hb[:]...)
 	out = append(out, body...)
-	var fb [fileformat.IndexTxnFooterSize]byte
+	var fb [format.IndexTxnFooterSize]byte
 	if err := f.MarshalTo(fb[:]); err != nil {
 		return nil, err
 	}
@@ -378,12 +378,12 @@ func AssembleTxn(h fileformat.IndexTxnHeader, keyEpoch uint32, body []byte, f fi
 
 // storedBody is the decoded content of one chunked txn body.
 type storedBody struct {
-	metadata   []fileformat.MetadataIndexEntry
-	blocks     []fileformat.BlockIndexEntry
-	rows       []fileformat.RowIndexEntry // buffered mode only; nil when streaming
-	snapshot   fileformat.SnapshotIndexEntry
+	metadata   []format.MetadataIndexEntry
+	blocks     []format.BlockIndexEntry
+	rows       []format.RowIndexEntry // buffered mode only; nil when streaming
+	snapshot   format.SnapshotIndexEntry
 	hasSnap    bool
-	dir        []fileformat.IndexChunkDirEntry
+	dir        []format.IndexChunkDirEntry
 	plainCRC   uint32
 	metaCount  uint32
 	blockCount uint32
@@ -404,10 +404,10 @@ const rowBatchSize = 512
 // keep. This builds final structures directly (View streaming apply) and
 // skips the ~40 B/row intermediate slice without per-entry virtual calls.
 type TxnSink interface {
-	SetSnapshot(e fileformat.SnapshotIndexEntry) error
-	AddMetadata(e fileformat.MetadataIndexEntry) error
-	AddBlock(e fileformat.BlockIndexEntry) error
-	AddRows(batch []fileformat.RowIndexEntry) error
+	SetSnapshot(e format.SnapshotIndexEntry) error
+	AddMetadata(e format.MetadataIndexEntry) error
+	AddBlock(e format.BlockIndexEntry) error
+	AddRows(batch []format.RowIndexEntry) error
 }
 
 // RowHintSink is an optional TxnSink extension: the parser reports the
@@ -425,7 +425,7 @@ type RowHintSink interface {
 // its columnar arrays without materializing a []RowIndexEntry page or a
 // []RowKeyLoc intermediate.
 type RowEntrySink interface {
-	AddRowEntry(e fileformat.RowIndexEntry) error
+	AddRowEntry(e format.RowIndexEntry) error
 }
 
 // FenceCaptureSink is an optional TxnSink extension for the Lazy index mode:
@@ -435,14 +435,14 @@ type RowEntrySink interface {
 // never materializes a page and never touches the row bytes — only the 52 B
 // fence entries become resident. The sink must run count validation itself.
 type FenceCaptureSink interface {
-	SetRowIndexFences(fences []fileformat.RowIndexFenceEntry) error
+	SetRowIndexFences(fences []format.RowIndexFenceEntry) error
 }
 
 // bufferedSink is the default TxnSink collecting into storedBody slices
 // (historical behavior).
 type bufferedSink struct{ sb *storedBody }
 
-func (s bufferedSink) SetSnapshot(e fileformat.SnapshotIndexEntry) error {
+func (s bufferedSink) SetSnapshot(e format.SnapshotIndexEntry) error {
 	if s.sb.hasSnap {
 		return fmt.Errorf("rowpack: duplicate snapshot chunk")
 	}
@@ -451,17 +451,17 @@ func (s bufferedSink) SetSnapshot(e fileformat.SnapshotIndexEntry) error {
 	return nil
 }
 
-func (s bufferedSink) AddMetadata(e fileformat.MetadataIndexEntry) error {
+func (s bufferedSink) AddMetadata(e format.MetadataIndexEntry) error {
 	s.sb.metadata = append(s.sb.metadata, e)
 	return nil
 }
 
-func (s bufferedSink) AddBlock(e fileformat.BlockIndexEntry) error {
+func (s bufferedSink) AddBlock(e format.BlockIndexEntry) error {
 	s.sb.blocks = append(s.sb.blocks, e)
 	return nil
 }
 
-func (s bufferedSink) AddRows(batch []fileformat.RowIndexEntry) error {
+func (s bufferedSink) AddRows(batch []format.RowIndexEntry) error {
 	s.sb.rows = append(s.sb.rows, batch...)
 	return nil
 }
@@ -486,26 +486,26 @@ type bodyParser struct {
 // returned storedBody.
 func (p *bodyParser) parse() (*storedBody, error) {
 	sb := &storedBody{
-		plainCRC: fileformat.CRC32C(nil),
+		plainCRC: format.CRC32C(nil),
 	}
 	sink := p.sink
 	if sink == nil {
-		sb.metadata = make([]fileformat.MetadataIndexEntry, 0, p.metadataCount)
-		sb.blocks = make([]fileformat.BlockIndexEntry, 0, p.blockCount)
-		sb.rows = make([]fileformat.RowIndexEntry, 0, p.rowCount)
+		sb.metadata = make([]format.MetadataIndexEntry, 0, p.metadataCount)
+		sb.blocks = make([]format.BlockIndexEntry, 0, p.blockCount)
+		sb.rows = make([]format.RowIndexEntry, 0, p.rowCount)
 		sink = bufferedSink{sb: sb}
 	}
 	pos := 0
 	seq := uint32(0)
 	nextOrd := map[uint8]uint32{}
 	for pos < len(p.region) {
-		if !bytes.HasPrefix(p.region[pos:], []byte(fileformat.MagicIndexChunkHdr)) {
+		if !bytes.HasPrefix(p.region[pos:], []byte(format.MagicIndexChunkHdr)) {
 			break // directory region follows
 		}
-		if pos+fileformat.IndexChunkHeaderSize > len(p.region) {
+		if pos+format.IndexChunkHeaderSize > len(p.region) {
 			return nil, fmt.Errorf("rowpack: chunk %d header truncated", seq)
 		}
-		var h fileformat.IndexChunkHeader
+		var h format.IndexChunkHeader
 		if err := h.Unmarshal(p.region[pos:]); err != nil {
 			return nil, fmt.Errorf("rowpack: chunk %d header: %w", seq, err)
 		}
@@ -515,18 +515,18 @@ func (p *bodyParser) parse() (*storedBody, error) {
 		if h.ChunkSequence != seq {
 			return nil, fmt.Errorf("rowpack: chunk sequence %d, want %d", h.ChunkSequence, seq)
 		}
-		if (p.crypto != nil) != (h.Encryption == fileformat.IndexChunkEncryptionAESGCM) {
+		if (p.crypto != nil) != (h.Encryption == format.IndexChunkEncryptionAESGCM) {
 			return nil, fmt.Errorf("rowpack: chunk %d encryption %d inconsistent with store", seq, h.Encryption)
 		}
-		stored := p.region[pos+fileformat.IndexChunkHeaderSize : pos+fileformat.IndexChunkHeaderSize+int(h.StoredBytes)]
+		stored := p.region[pos+format.IndexChunkHeaderSize : pos+format.IndexChunkHeaderSize+int(h.StoredBytes)]
 		if uint32(len(stored)) != h.StoredBytes {
 			return nil, fmt.Errorf("rowpack: chunk %d payload truncated", seq)
 		}
-		if fileformat.CRC32C(stored) != h.PayloadCRC32C {
+		if format.CRC32C(stored) != h.PayloadCRC32C {
 			return nil, fmt.Errorf("rowpack: chunk %d payload CRC mismatch", seq)
 		}
 		var raw []byte
-		if h.Encryption == fileformat.IndexChunkEncryptionAESGCM {
+		if h.Encryption == format.IndexChunkEncryptionAESGCM {
 			if h.KeyEpoch != p.crypto.Epoch {
 				return nil, fmt.Errorf("rowpack: chunk %d key epoch %d, want %d", seq, h.KeyEpoch, p.crypto.Epoch)
 			}
@@ -538,8 +538,8 @@ func (p *bodyParser) parse() (*storedBody, error) {
 		} else {
 			raw = stored
 		}
-		if h.Compression == fileformat.IndexChunkCompressionZstd {
-			pt, err := block.Decompress(fileformat.CompressionZstd, nil, raw, h.RawBytes)
+		if h.Compression == format.IndexChunkCompressionZstd {
+			pt, err := block.Decompress(format.CompressionZstd, nil, raw, h.RawBytes)
 			if err != nil {
 				return nil, fmt.Errorf("rowpack: chunk %d decompress: %w", seq, err)
 			}
@@ -552,8 +552,8 @@ func (p *bodyParser) parse() (*storedBody, error) {
 			return nil, fmt.Errorf("rowpack: chunk %d first ordinal %d, want %d", seq, h.FirstEntryOrdinal, nextOrd[h.EntryKind])
 		}
 		switch h.EntryKind {
-		case fileformat.IndexChunkKindSnapshot:
-			if h.EntryCount != 1 || len(raw) != fileformat.SnapshotIndexEntrySize {
+		case format.IndexChunkKindSnapshot:
+			if h.EntryCount != 1 || len(raw) != format.SnapshotIndexEntrySize {
 				return nil, fmt.Errorf("rowpack: snapshot chunk %d: %d entries, %d bytes", seq, h.EntryCount, len(raw))
 			}
 			if sb.hasSnap {
@@ -566,14 +566,14 @@ func (p *bodyParser) parse() (*storedBody, error) {
 				return nil, fmt.Errorf("rowpack: snapshot chunk %d: %w", seq, err)
 			}
 			sb.hasSnap = true
-		case fileformat.IndexChunkKindMetadata:
-			if len(raw) != int(h.EntryCount)*fileformat.MetadataIndexEntrySize {
+		case format.IndexChunkKindMetadata:
+			if len(raw) != int(h.EntryCount)*format.MetadataIndexEntrySize {
 				return nil, fmt.Errorf("rowpack: metadata chunk %d: %d bytes for %d entries", seq, len(raw), h.EntryCount)
 			}
 			for i := uint32(0); i < h.EntryCount; i++ {
-				var e fileformat.MetadataIndexEntry
-				off := int(i) * fileformat.MetadataIndexEntrySize
-				if err := e.Unmarshal(raw[off : off+fileformat.MetadataIndexEntrySize]); err != nil {
+				var e format.MetadataIndexEntry
+				off := int(i) * format.MetadataIndexEntrySize
+				if err := e.Unmarshal(raw[off : off+format.MetadataIndexEntrySize]); err != nil {
 					return nil, fmt.Errorf("rowpack: metadata chunk %d entry %d: %w", seq, i, err)
 				}
 				if err := sink.AddMetadata(e); err != nil {
@@ -581,14 +581,14 @@ func (p *bodyParser) parse() (*storedBody, error) {
 				}
 			}
 			sb.metaCount += h.EntryCount
-		case fileformat.IndexChunkKindBlock:
-			if len(raw) != int(h.EntryCount)*fileformat.BlockIndexEntrySize {
+		case format.IndexChunkKindBlock:
+			if len(raw) != int(h.EntryCount)*format.BlockIndexEntrySize {
 				return nil, fmt.Errorf("rowpack: block chunk %d: %d bytes for %d entries", seq, len(raw), h.EntryCount)
 			}
 			for i := uint32(0); i < h.EntryCount; i++ {
-				var e fileformat.BlockIndexEntry
-				off := int(i) * fileformat.BlockIndexEntrySize
-				if err := e.Unmarshal(raw[off : off+fileformat.BlockIndexEntrySize]); err != nil {
+				var e format.BlockIndexEntry
+				off := int(i) * format.BlockIndexEntrySize
+				if err := e.Unmarshal(raw[off : off+format.BlockIndexEntrySize]); err != nil {
 					return nil, fmt.Errorf("rowpack: block chunk %d entry %d: %w", seq, i, err)
 				}
 				if err := sink.AddBlock(e); err != nil {
@@ -596,26 +596,26 @@ func (p *bodyParser) parse() (*storedBody, error) {
 				}
 			}
 			sb.blockCount += h.EntryCount
-		case fileformat.IndexChunkKindRow:
+		case format.IndexChunkKindRow:
 			return nil, fmt.Errorf("rowpack: row chunk %d: obsolete row-chunk layout (the row index is stored as sorted Index Pages; refusing to decode)", seq)
 		default:
 			return nil, fmt.Errorf("rowpack: chunk %d unknown kind %d", seq, h.EntryKind)
 		}
 		nextOrd[h.EntryKind] += h.EntryCount
-		sb.plainCRC = fileformat.CRC32CConcat(sb.plainCRC, raw)
-		pos += fileformat.IndexChunkHeaderSize + int(h.StoredBytes)
+		sb.plainCRC = format.CRC32CConcat(sb.plainCRC, raw)
+		pos += format.IndexChunkHeaderSize + int(h.StoredBytes)
 		seq++
 	}
 	// Directory: after the last chunk, region[pos:] = directory (seq*32) + row
 	// index pages + fence directory. The directory is plaintext (even in
 	// encrypted stores) so the scanner can reach it without a key.
 	rest := p.region[pos:]
-	dirLen := int(seq) * fileformat.IndexChunkDirEntrySize
+	dirLen := int(seq) * format.IndexChunkDirEntrySize
 	if len(rest) < dirLen || dirLen == 0 {
 		return nil, fmt.Errorf("rowpack: chunk directory %d bytes malformed", len(rest))
 	}
 	dirBytes := rest[:dirLen]
-	dir, err := fileformat.ParseIndexChunkDirectory(dirBytes)
+	dir, err := format.ParseIndexChunkDirectory(dirBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -632,7 +632,7 @@ func (p *bodyParser) parse() (*storedBody, error) {
 		if de.RegionOffset != uint64(checkPos) {
 			return nil, fmt.Errorf("rowpack: directory entry %d offset %d, want %d", i, de.RegionOffset, checkPos)
 		}
-		var h fileformat.IndexChunkHeader
+		var h format.IndexChunkHeader
 		if err := h.Unmarshal(p.region[checkPos:]); err != nil {
 			return nil, err
 		}
@@ -640,10 +640,10 @@ func (p *bodyParser) parse() (*storedBody, error) {
 			de.FirstEntryOrdinal != h.FirstEntryOrdinal || de.RawBytes != h.RawBytes || de.StoredBytes != h.StoredBytes {
 			return nil, fmt.Errorf("rowpack: directory entry %d disagrees with chunk header", i)
 		}
-		checkPos += fileformat.IndexChunkHeaderSize + int(h.StoredBytes)
+		checkPos += format.IndexChunkHeaderSize + int(h.StoredBytes)
 	}
 	sb.dir = dir
-	sb.plainCRC = fileformat.CRC32CConcat(sb.plainCRC, dirBytes)
+	sb.plainCRC = format.CRC32CConcat(sb.plainCRC, dirBytes)
 	sb.chunkCount = seq
 	crc, rows, err := (&pageParser{
 		region:     p.region,
@@ -667,11 +667,11 @@ func (p *bodyParser) parse() (*storedBody, error) {
 // the pages region of the txn body. It returns the fences and the absolute
 // offset where the fence directory begins (= where the pages region ends), so
 // the Lazy path can stop before decoding any page payload.
-func (p *pageParser) parseFences() (fences []fileformat.RowIndexFenceEntry, pageEnd int, err error) {
+func (p *pageParser) parseFences() (fences []format.RowIndexFenceEntry, pageEnd int, err error) {
 	if p.pageCount == 0 {
 		return nil, p.pageStart, nil
 	}
-	fenceLen := int(p.pageCount) * fileformat.IndexFenceEntrySize
+	fenceLen := int(p.pageCount) * format.IndexFenceEntrySize
 	if p.pageStart < 0 || p.pageStart >= len(p.region) || fenceLen > len(p.region)-p.pageStart {
 		return nil, 0, fmt.Errorf("rowpack: row index fence directory %d bytes exceeds body %d", fenceLen, len(p.region)-p.pageStart)
 	}
@@ -680,10 +680,10 @@ func (p *pageParser) parseFences() (fences []fileformat.RowIndexFenceEntry, page
 		return nil, 0, fmt.Errorf("rowpack: row index pages region %d..%d malformed", p.pageStart, pageEnd)
 	}
 	fenceRegion := p.region[pageEnd:]
-	fences = make([]fileformat.RowIndexFenceEntry, int(p.pageCount))
+	fences = make([]format.RowIndexFenceEntry, int(p.pageCount))
 	for i := range fences {
-		off := i * fileformat.IndexFenceEntrySize
-		if err := fences[i].Unmarshal(fenceRegion[off : off+fileformat.IndexFenceEntrySize]); err != nil {
+		off := i * format.IndexFenceEntrySize
+		if err := fences[i].Unmarshal(fenceRegion[off : off+format.IndexFenceEntrySize]); err != nil {
 			return nil, 0, fmt.Errorf("rowpack: row index fence %d: %w", i, err)
 		}
 	}
@@ -772,14 +772,14 @@ func (p *pageParser) parse() (crc uint32, rows uint64, err error) {
 			}
 			raw = pt
 		}
-		pageRaw, err := block.Decompress(fileformat.CompressionZstd, nil, raw, f.RawSize)
+		pageRaw, err := block.Decompress(format.CompressionZstd, nil, raw, f.RawSize)
 		if err != nil {
 			return 0, 0, fmt.Errorf("rowpack: row index page %d decompress: %w", i, err)
 		}
 		if uint32(len(pageRaw)) != f.RawSize {
 			return 0, 0, fmt.Errorf("rowpack: row index page %d raw %d bytes, want %d", i, len(pageRaw), f.RawSize)
 		}
-		if fileformat.CRC32C(pageRaw[fileformat.IndexPageHeaderSize:]) != f.PageCRC32C {
+		if format.CRC32C(pageRaw[format.IndexPageHeaderSize:]) != f.PageCRC32C {
 			return 0, 0, fmt.Errorf("rowpack: row index page %d CRC mismatch", i)
 		}
 		// The page encodes (TableID, RowID, BlockID, ItemOrdinal, ChangeType)
@@ -789,7 +789,7 @@ func (p *pageParser) parse() (crc uint32, rows uint64, err error) {
 		// Sinks that do not implement RowEntrySink fall back to the batched path.
 		if es, ok := p.sink.(RowEntrySink); ok {
 			emitted := 0
-			if err := walkPage(pageRaw, func(e fileformat.RowIndexEntry) error {
+			if err := walkPage(pageRaw, func(e format.RowIndexEntry) error {
 				e.SnapshotID = p.snapshotID
 				emitted++
 				return es.AddRowEntry(e)
@@ -800,7 +800,7 @@ func (p *pageParser) parse() (crc uint32, rows uint64, err error) {
 				return 0, 0, fmt.Errorf("rowpack: row index page %d %d entries, fence says %d", i, emitted, f.EntryCount)
 			}
 			p.rowCount += uint64(emitted)
-			p.plainCRC = fileformat.CRC32CConcat(p.plainCRC, pageRaw)
+			p.plainCRC = format.CRC32CConcat(p.plainCRC, pageRaw)
 			continue
 		}
 		entries, err := decodePage(pageRaw)
@@ -814,7 +814,7 @@ func (p *pageParser) parse() (crc uint32, rows uint64, err error) {
 			entries[j].SnapshotID = p.snapshotID
 		}
 		p.rowCount += uint64(len(entries))
-		p.plainCRC = fileformat.CRC32CConcat(p.plainCRC, pageRaw)
+		p.plainCRC = format.CRC32CConcat(p.plainCRC, pageRaw)
 		for start := 0; start < len(entries); start += rowBatchSize {
 			end := start + rowBatchSize
 			if end > len(entries) {
@@ -825,6 +825,6 @@ func (p *pageParser) parse() (crc uint32, rows uint64, err error) {
 			}
 		}
 	}
-	p.plainCRC = fileformat.CRC32CConcat(p.plainCRC, p.region[pageEnd:])
+	p.plainCRC = format.CRC32CConcat(p.plainCRC, p.region[pageEnd:])
 	return p.plainCRC, p.rowCount, nil
 }

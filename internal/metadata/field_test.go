@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 func TestSintWidth(t *testing.T) {
@@ -26,7 +26,7 @@ func TestSintWidth(t *testing.T) {
 
 func TestFieldEncodeDecodeSint(t *testing.T) {
 	for _, v := range []int64{0, 127, 128, -128, -32768, 32768, 2147483648, -2147483649, -882575889879} {
-		f := Field{ID: 7, WireType: fileformat.WireSint, Value: v}
+		f := Field{ID: 7, WireType: format.WireSint, Value: v}
 		enc, err := encodeField(nil, &f)
 		if err != nil {
 			t.Fatalf("encodeField: %v", err)
@@ -45,7 +45,7 @@ func TestFieldEncodeDecodeSint(t *testing.T) {
 }
 
 func TestFieldEncodeDecodeString(t *testing.T) {
-	f := Field{ID: 3, WireType: fileformat.WireString, Value: "hello"}
+	f := Field{ID: 3, WireType: format.WireString, Value: "hello"}
 	enc, err := encodeField(nil, &f)
 	if err != nil {
 		t.Fatalf("encodeField: %v", err)
@@ -60,12 +60,12 @@ func TestFieldEncodeDecodeString(t *testing.T) {
 }
 
 func TestFieldFlagsRoundtrip(t *testing.T) {
-	f := Field{ID: 9, WireType: fileformat.WireString, Value: "x", Critical: true, Repeated: true}
+	f := Field{ID: 9, WireType: format.WireString, Value: "x", Critical: true, Repeated: true}
 	enc, err := encodeField(nil, &f)
 	if err != nil {
 		t.Fatalf("encodeField: %v", err)
 	}
-	if flags := enc[3]; flags&fileformat.FieldFlagCritical == 0 || flags&fileformat.FieldFlagRepeated == 0 {
+	if flags := enc[3]; flags&format.FieldFlagCritical == 0 || flags&format.FieldFlagRepeated == 0 {
 		t.Fatalf("flags byte %x did not carry critical+repeated", flags)
 	}
 	got, _, err := decodeField(enc)
@@ -81,18 +81,18 @@ func TestFieldErrorPaths(t *testing.T) {
 	if _, err := fieldValueLen(&Field{ID: 1}); err == nil {
 		t.Fatal("zero WireType should error")
 	}
-	if _, err := fieldValueLen(&Field{ID: 1, WireType: fileformat.WireSint, Value: "not-int"}); err == nil {
+	if _, err := fieldValueLen(&Field{ID: 1, WireType: format.WireSint, Value: "not-int"}); err == nil {
 		t.Fatal("WireSint with string value should error")
 	}
-	if _, err := fieldValueLen(&Field{ID: 2, WireType: fileformat.WireString, Value: 42}); err == nil {
+	if _, err := fieldValueLen(&Field{ID: 2, WireType: format.WireString, Value: 42}); err == nil {
 		t.Fatal("WireString with int value should error")
 	}
-	if _, err := fieldEncodedLen(&Field{WireType: fileformat.WireObjectRef, Value: nil}); err == nil {
+	if _, err := fieldEncodedLen(&Field{WireType: format.WireObjectRef, Value: nil}); err == nil {
 		t.Fatal("unsupported wire type should error")
 	}
 	// encodeFieldValue is only reached after fieldValueLen validation in
 	// encodeField; the safe path must reject wrong-typed values.
-	if _, err := encodeField(nil, &Field{ID: 1, WireType: fileformat.WireSint, Value: nil}); err == nil {
+	if _, err := encodeField(nil, &Field{ID: 1, WireType: format.WireSint, Value: nil}); err == nil {
 		t.Fatal("encodeField nil WireSint value should error")
 	}
 
@@ -105,7 +105,7 @@ func TestFieldErrorPaths(t *testing.T) {
 	}
 
 	// value length exceeds input
-	f := Field{ID: 1, WireType: fileformat.WireString, Value: "abc"}
+	f := Field{ID: 1, WireType: format.WireString, Value: "abc"}
 	enc, err := encodeField(nil, &f)
 	if err != nil {
 		t.Fatalf("encodeField: %v", err)
@@ -119,15 +119,15 @@ func TestFieldErrorPaths(t *testing.T) {
 	// encodeField refuses to encode an unsupported wire type.
 	benc := make([]byte, 8)
 	binary.LittleEndian.PutUint16(benc[0:], 1)
-	benc[2] = byte(fileformat.WireObjectRef)
-	benc[3] = fileformat.FieldFlagCritical
+	benc[2] = byte(format.WireObjectRef)
+	benc[3] = format.FieldFlagCritical
 	binary.LittleEndian.PutUint32(benc[4:], 0)
 	if _, _, err := decodeField(benc); err == nil {
 		t.Fatal("unsupported wire type on critical field should error")
 	}
 
 	// unsupported wire type on non-critical field keeps raw and nil value
-	noncrit := Field{ID: 1, WireType: fileformat.WireObjectRef, Critical: false, raw: []byte{1, 2, 3}}
+	noncrit := Field{ID: 1, WireType: format.WireObjectRef, Critical: false, raw: []byte{1, 2, 3}}
 	nenc, _ := encodeField(nil, &noncrit)
 	got, _, err := decodeField(nenc)
 	if err != nil {
@@ -150,7 +150,7 @@ func TestSintWrongLength(t *testing.T) {
 	// A 6-byte WireSint value length is not a valid sint width.
 	enc := make([]byte, 8+6)
 	binary.LittleEndian.PutUint16(enc[0:], 1)
-	enc[2] = byte(fileformat.WireSint)
+	enc[2] = byte(format.WireSint)
 	binary.LittleEndian.PutUint32(enc[4:], 6)
 	if _, _, err := decodeField(enc); err == nil {
 		t.Fatal("6-byte WireSint should error")
@@ -159,8 +159,8 @@ func TestSintWrongLength(t *testing.T) {
 
 func TestFieldsBytesAndCanonical(t *testing.T) {
 	fs := []Field{
-		{ID: 1, WireType: fileformat.WireSint, Value: int64(5)},
-		{ID: 2, WireType: fileformat.WireString, Value: "abc"},
+		{ID: 1, WireType: format.WireSint, Value: int64(5)},
+		{ID: 2, WireType: format.WireString, Value: "abc"},
 	}
 	n, err := fieldsBytes(fs)
 	if err != nil {

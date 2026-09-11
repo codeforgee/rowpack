@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // containerSink captures flushed blocks from a builder.
@@ -20,7 +20,7 @@ func (s *containerSink) flush(fb *FlushedBlock) error {
 // buildContainer builds one page-container block over the given records,
 // compressing each page with alg. The returned block is the fresh stored
 // container + its validated parse.
-func buildContainer(tb testing.TB, pageSize, blockSize int, alg fileformat.Compression, want []expectedPageRow, bodies [][]byte) (*FlushedBlock, *RowsContainer) {
+func buildContainer(tb testing.TB, pageSize, blockSize int, alg format.Compression, want []expectedPageRow, bodies [][]byte) (*FlushedBlock, *RowsContainer) {
 	tb.Helper()
 	if pageSize <= 0 {
 		pageSize = 16 << 10
@@ -33,7 +33,7 @@ func buildContainer(tb testing.TB, pageSize, blockSize int, alg fileformat.Compr
 	b.SetPageSize(pageSize)
 	for i := range want {
 		var body []byte
-		if want[i].ct != fileformat.ChangeDelete {
+		if want[i].ct != format.ChangeDelete {
 			body = bodies[i]
 		}
 		if err := b.Add(want[i].rowID, want[i].version, want[i].ct, body); err != nil {
@@ -61,14 +61,14 @@ func TestRowsContainerRoundTripMultiPage(t *testing.T) {
 	// 300 records across several small pages, mixed change types, schema
 	// version runs and unsorted IDs.
 	for i := uint64(1); i <= 300; i++ {
-		var ct fileformat.ChangeType
+		var ct format.ChangeType
 		switch i % 5 {
 		case 0:
-			ct = fileformat.ChangeDelete
+			ct = format.ChangeDelete
 		case 1, 2:
-			ct = fileformat.ChangeInsert
+			ct = format.ChangeInsert
 		default:
-			ct = fileformat.ChangeUpdate
+			ct = format.ChangeUpdate
 		}
 		version := uint32(1)
 		if i >= 150 {
@@ -76,13 +76,13 @@ func TestRowsContainerRoundTripMultiPage(t *testing.T) {
 		}
 		body := pageTestRow(t, schema, i)
 		rec := expectedPageRow{rowID: 1000 - i, version: version, ct: ct} // descending IDs
-		if ct != fileformat.ChangeDelete {
+		if ct != format.ChangeDelete {
 			rec.bodyLen = len(body)
 		}
 		want = append(want, rec)
 		bodies = append(bodies, body)
 	}
-	_, rc := buildContainer(t, 4<<10, 1<<20, fileformat.CompressionNone, want, bodies)
+	_, rc := buildContainer(t, 4<<10, 1<<20, format.CompressionNone, want, bodies)
 
 	// Container-level metadata.
 	if uint32(len(want)) != rc.Header.TotalRecords {
@@ -99,7 +99,7 @@ func TestRowsContainerRoundTripMultiPage(t *testing.T) {
 		if rec.RowID != w.rowID || rec.SchemaVersion != w.version || rec.ChangeType != w.ct {
 			t.Fatalf("ForEach(%d) = {%d v%d ct%d}, want {%d v%d ct%d}", idx, rec.RowID, rec.SchemaVersion, rec.ChangeType, w.rowID, w.version, w.ct)
 		}
-		if w.ct == fileformat.ChangeDelete {
+		if w.ct == format.ChangeDelete {
 			if len(rec.Body) != 0 {
 				t.Fatalf("ForEach(%d): delete carries body", idx)
 			}
@@ -125,7 +125,7 @@ func TestRowsContainerRoundTripMultiPage(t *testing.T) {
 		if rec.RowID != w.rowID || rec.SchemaVersion != w.version || rec.ChangeType != w.ct {
 			t.Fatalf("RecordAt(%d) = {%d v%d ct%d}, want {%d v%d ct%d}", ord, rec.RowID, rec.SchemaVersion, rec.ChangeType, w.rowID, w.version, w.ct)
 		}
-		if w.ct == fileformat.ChangeDelete {
+		if w.ct == format.ChangeDelete {
 			if len(rec.Body) != 0 {
 				t.Fatalf("RecordAt(%d): delete carries body", ord)
 			}
@@ -142,15 +142,15 @@ func TestRowsContainerRoundTripZstd(t *testing.T) {
 	var bodies [][]byte
 	for i := uint64(1); i <= 500; i++ {
 		body := pageTestRow(t, schema, i)
-		rec := expectedPageRow{rowID: i, version: 1, ct: fileformat.ChangeInsert, bodyLen: len(body)}
+		rec := expectedPageRow{rowID: i, version: 1, ct: format.ChangeInsert, bodyLen: len(body)}
 		if i%7 == 0 {
-			rec.ct = fileformat.ChangeDelete
+			rec.ct = format.ChangeDelete
 			rec.bodyLen = 0
 		}
 		want = append(want, rec)
 		bodies = append(bodies, body)
 	}
-	fb, rc := buildContainer(t, 8<<10, 1<<20, fileformat.CompressionZstd, want, bodies)
+	fb, rc := buildContainer(t, 8<<10, 1<<20, format.CompressionZstd, want, bodies)
 	// zstd-compressed StoredSize must be smaller than the raw sum.
 	if int(fb.Header.RawSize) <= int(fb.Header.StoredSize) {
 		t.Fatalf("zstd container stored %d not smaller than raw %d", fb.Header.StoredSize, fb.Header.RawSize)
@@ -161,7 +161,7 @@ func TestRowsContainerRoundTripZstd(t *testing.T) {
 		if rec.RowID != w.rowID || rec.ChangeType != w.ct {
 			t.Fatalf("ForEach(%d) = {%d ct%d}, want {%d ct%d}", idx, rec.RowID, rec.ChangeType, w.rowID, w.ct)
 		}
-		if w.ct != fileformat.ChangeDelete && len(rec.Body) != w.bodyLen {
+		if w.ct != format.ChangeDelete && len(rec.Body) != w.bodyLen {
 			t.Fatalf("ForEach(%d) body %d, want %d", idx, len(rec.Body), w.bodyLen)
 		}
 		idx++
@@ -185,8 +185,8 @@ func TestRowsContainerOversizedPage(t *testing.T) {
 	requireNoErr(t, err)
 	// A single >16 KiB row in a 16 KiB page must form its own oversized page.
 	var want []expectedPageRow
-	want = append(want, expectedPageRow{rowID: 1, version: 1, ct: fileformat.ChangeInsert, bodyLen: len(body)})
-	_, rc := buildContainer(t, 16<<10, 1<<20, fileformat.CompressionNone, want, [][]byte{body})
+	want = append(want, expectedPageRow{rowID: 1, version: 1, ct: format.ChangeInsert, bodyLen: len(body)})
+	_, rc := buildContainer(t, 16<<10, 1<<20, format.CompressionNone, want, [][]byte{body})
 	if rc.Dir[0].Flags&1 == 0 {
 		t.Fatalf("oversized page flag not set")
 	}
@@ -204,15 +204,15 @@ func TestRowsContainerCorruption(t *testing.T) {
 	var bodies [][]byte
 	for i := uint64(1); i <= 100; i++ {
 		body := pageTestRow(t, schema, i)
-		rec := expectedPageRow{rowID: i, version: 1, ct: fileformat.ChangeInsert, bodyLen: len(body)}
+		rec := expectedPageRow{rowID: i, version: 1, ct: format.ChangeInsert, bodyLen: len(body)}
 		want = append(want, rec)
 		bodies = append(bodies, body)
 	}
-	fb, _ := buildContainer(t, 16<<10, 1<<20, fileformat.CompressionNone, want, bodies)
+	fb, _ := buildContainer(t, 16<<10, 1<<20, format.CompressionNone, want, bodies)
 	payload := fb.Stored
 
 	// Truncation at region boundaries must fail cleanly, never panic.
-	for _, cut := range []int{0, 1, fileformat.RowsBlockHeaderSize - 1, fileformat.RowsBlockHeaderSize, fileformat.RowsBlockHeaderSize + 24, len(payload) - 2, len(payload) - 1} {
+	for _, cut := range []int{0, 1, format.RowsBlockHeaderSize - 1, format.RowsBlockHeaderSize, format.RowsBlockHeaderSize + 24, len(payload) - 2, len(payload) - 1} {
 		if _, err := ParseContainer(payload[:cut], fb.Header, DefaultLimits()); err == nil {
 			t.Fatalf("truncated container at %d accepted", cut)
 		}
@@ -220,7 +220,7 @@ func TestRowsContainerCorruption(t *testing.T) {
 
 	// Single-bit flips in the header/directory region must be caught by the
 	// container CRC (or earlier magic/geometry validation).
-	for _, off := range []int{2, 12, 30, fileformat.RowsBlockHeaderSize + 5} {
+	for _, off := range []int{2, 12, 30, format.RowsBlockHeaderSize + 5} {
 		bad := append([]byte(nil), payload...)
 		bad[off] ^= 0x01
 		if _, err := ParseContainer(bad, fb.Header, DefaultLimits()); err == nil {

@@ -3,7 +3,7 @@ package index
 import (
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // FuzzParseRowIndexPages feeds arbitrary page regions to pageParser:
@@ -35,20 +35,20 @@ type throwingSink struct {
 	rows int
 }
 
-func (s *throwingSink) SetSnapshot(fileformat.SnapshotIndexEntry) error { return nil }
-func (s *throwingSink) AddMetadata(fileformat.MetadataIndexEntry) error { return nil }
-func (s *throwingSink) AddBlock(fileformat.BlockIndexEntry) error       { return nil }
-func (s *throwingSink) AddRows(batch []fileformat.RowIndexEntry) error {
+func (s *throwingSink) SetSnapshot(format.SnapshotIndexEntry) error { return nil }
+func (s *throwingSink) AddMetadata(format.MetadataIndexEntry) error { return nil }
+func (s *throwingSink) AddBlock(format.BlockIndexEntry) error       { return nil }
+func (s *throwingSink) AddRows(batch []format.RowIndexEntry) error {
 	s.rows += len(batch)
 	return nil
 }
 
 // buildPageRegion compiles rows into the on-disk page region (pages + fences)
 // with correct StoredOffsets, for a given snapshotID.
-func buildPageRegion(t *testing.T, rows []fileformat.RowIndexEntry, snapshotID uint64) []byte {
+func buildPageRegion(t *testing.T, rows []format.RowIndexEntry, snapshotID uint64) []byte {
 	t.Helper()
 	b := NewBuilder(1)
-	if err := b.SetSnapshot(fileformat.SnapshotIndexEntry{SnapshotID: snapshotID, SnapshotType: fileformat.SnapshotFull}); err != nil {
+	if err := b.SetSnapshot(format.SnapshotIndexEntry{SnapshotID: snapshotID, SnapshotType: format.SnapshotFull}); err != nil {
 		t.Fatal(err)
 	}
 	for i := range rows {
@@ -69,7 +69,7 @@ func buildPageRegion(t *testing.T, rows []fileformat.RowIndexEntry, snapshotID u
 		off += uint64(len(pages[i].stored))
 		out = append(out, pages[i].stored...)
 	}
-	var fbuf [fileformat.IndexFenceEntrySize]byte
+	var fbuf [format.IndexFenceEntrySize]byte
 	for i := range pages {
 		if err := pages[i].fence.MarshalTo(fbuf[:]); err != nil {
 			t.Fatal(err)
@@ -112,7 +112,7 @@ func TestParseRowsForgedPageCount(t *testing.T) {
 func TestParseRowsFenceOffsetOutOfBounds(t *testing.T) {
 	region := buildPageRegion(t, riSeq(100, 25), 9)
 	pageCount := uint32((100 + indexPageEntryCount - 1) / indexPageEntryCount)
-	fenceStart := len(region) - int(pageCount)*fileformat.IndexFenceEntrySize
+	fenceStart := len(region) - int(pageCount)*format.IndexFenceEntrySize
 	// Forge the first fence's StoredOffset (bytes 28..36 in the first fence)
 	// to an absurd in-body value that overflows the page region.
 	offs := fenceStart + 28
@@ -129,7 +129,7 @@ func TestParseRowsFenceOffsetOutOfBounds(t *testing.T) {
 func TestParseRowsFenceSizeZero(t *testing.T) {
 	region := buildPageRegion(t, riSeq(100, 25), 9)
 	pageCount := uint32((100 + indexPageEntryCount - 1) / indexPageEntryCount)
-	fenceStart := len(region) - int(pageCount)*fileformat.IndexFenceEntrySize
+	fenceStart := len(region) - int(pageCount)*format.IndexFenceEntrySize
 	// Zero the first fence's StoredSize (bytes 36..40).
 	for i := 0; i < 4; i++ {
 		region[fenceStart+36+i] = 0
@@ -142,7 +142,7 @@ func TestParseRowsFenceSizeZero(t *testing.T) {
 func TestParseRowsWrongSnapshot(t *testing.T) {
 	region := buildPageRegion(t, riSeq(100, 25), 9)
 	pageCount := uint32((100 + indexPageEntryCount - 1) / indexPageEntryCount)
-	fenceStart := len(region) - int(pageCount)*fileformat.IndexFenceEntrySize
+	fenceStart := len(region) - int(pageCount)*format.IndexFenceEntrySize
 	// Forge the first fence's SnapshotID (bytes 0..8) to a different value.
 	region[fenceStart] = 0x2A
 	region[fenceStart+1] = 0
@@ -156,13 +156,13 @@ func TestParseRowsWrongSnapshot(t *testing.T) {
 func TestParseRowsOverlappingPages(t *testing.T) {
 	region := buildPageRegion(t, riSeq(100, 25), 9)
 	pageCount := uint32((100 + indexPageEntryCount - 1) / indexPageEntryCount)
-	fenceStart := len(region) - int(pageCount)*fileformat.IndexFenceEntrySize
+	fenceStart := len(region) - int(pageCount)*format.IndexFenceEntrySize
 	// Two pages: make the second fence's StoredOffset equal the first's so the
 	// pages overlap instead of being contiguous.
 	if pageCount < 2 {
 		t.Skip("needs 2+ pages")
 	}
-	secondOffset := fenceStart + fileformat.IndexFenceEntrySize + 28
+	secondOffset := fenceStart + format.IndexFenceEntrySize + 28
 	region[secondOffset] = 0
 	region[secondOffset+1] = 0
 	region[secondOffset+2] = 0

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 func testCipher(t *testing.T) *Cipher {
@@ -22,8 +22,8 @@ func testCipher(t *testing.T) *Cipher {
 
 var testUUID = [16]byte{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C}
 
-func pageDir(pageOrdinal, firstOrdinal, recordCount, storedSize, rawSize uint32, minID, maxID uint64) fileformat.RowsPageDirEntry {
-	return fileformat.RowsPageDirEntry{
+func pageDir(pageOrdinal, firstOrdinal, recordCount, storedSize, rawSize uint32, minID, maxID uint64) format.RowsPageDirEntry {
+	return format.RowsPageDirEntry{
 		PageOrdinal:        pageOrdinal,
 		FirstRecordOrdinal: firstOrdinal,
 		RecordCount:        recordCount,
@@ -36,10 +36,10 @@ func pageDir(pageOrdinal, firstOrdinal, recordCount, storedSize, rawSize uint32,
 	}
 }
 
-func blockHdr(blockID uint64, snap uint64, table uint32) fileformat.BlockHeader {
-	return fileformat.BlockHeader{
-		BlockKind:   fileformat.BlockKindRows,
-		Compression: fileformat.CompressionZstd,
+func blockHdr(blockID uint64, snap uint64, table uint32) format.BlockHeader {
+	return format.BlockHeader{
+		BlockKind:   format.BlockKindRows,
+		Compression: format.CompressionZstd,
 		BlockID:     blockID,
 		SnapshotID:  snap,
 		TableID:     table,
@@ -61,7 +61,7 @@ func TestPageNonceDomainSeparation(t *testing.T) {
 	ctx := func(uuid *[16]byte, snapshotID, block uint64, pageOrdinal, keyEpoch uint32) PageContext {
 		return PageContext{
 			UUID: uuid, BlockID: block, SnapshotID: snapshotID,
-			Page: fileformat.RowsPageDirEntry{PageOrdinal: pageOrdinal}, Epoch: keyEpoch,
+			Page: format.RowsPageDirEntry{PageOrdinal: pageOrdinal}, Epoch: keyEpoch,
 		}
 	}
 	pageN := c.NoncePage(ctx(&testUUID, snap, blockID, 0, epoch))
@@ -94,7 +94,7 @@ func TestPageNonceDomainSeparation(t *testing.T) {
 // identity and parse semantics, so a sealed page moved to another block,
 // page ordinal, table, or sealed size cannot authenticate.
 func TestPageAADBinding(t *testing.T) {
-	ctx := func(uuid *[16]byte, p fileformat.RowsPageDirEntry, h fileformat.BlockHeader) PageContext {
+	ctx := func(uuid *[16]byte, p format.RowsPageDirEntry, h format.BlockHeader) PageContext {
 		return PageContext{
 			UUID:        uuid,
 			BlockID:     h.BlockID,
@@ -107,7 +107,7 @@ func TestPageAADBinding(t *testing.T) {
 	}
 	baseAAD := ctx(&testUUID, pageDir(0, 0, 32, 16000, 8000, 1, 32), blockHdr(42, 7, 1)).AAD()
 	// Any single-field change must flip the AAD.
-	mutate := func(f func(*fileformat.RowsPageDirEntry, *fileformat.BlockHeader)) {
+	mutate := func(f func(*format.RowsPageDirEntry, *format.BlockHeader)) {
 		page := pageDir(0, 0, 32, 16000, 8000, 1, 32)
 		h := blockHdr(42, 7, 1)
 		f(&page, &h)
@@ -116,31 +116,31 @@ func TestPageAADBinding(t *testing.T) {
 			t.Fatal("AAD did not bind the mutated field")
 		}
 	}
-	mutate(func(p *fileformat.RowsPageDirEntry, _ *fileformat.BlockHeader) { p.PageOrdinal = 1 })
-	mutate(func(p *fileformat.RowsPageDirEntry, _ *fileformat.BlockHeader) { p.FirstRecordOrdinal = 1 })
-	mutate(func(p *fileformat.RowsPageDirEntry, _ *fileformat.BlockHeader) { p.RecordCount = 33 })
-	mutate(func(p *fileformat.RowsPageDirEntry, _ *fileformat.BlockHeader) { p.StoredSize = 16001 })
-	mutate(func(p *fileformat.RowsPageDirEntry, _ *fileformat.BlockHeader) { p.RawSize = 8001 })
-	mutate(func(p *fileformat.RowsPageDirEntry, _ *fileformat.BlockHeader) { p.MinRowID = 2 })
-	mutate(func(p *fileformat.RowsPageDirEntry, _ *fileformat.BlockHeader) { p.MaxRowID = 33 })
-	mutate(func(_ *fileformat.RowsPageDirEntry, h *fileformat.BlockHeader) { h.BlockID = 43 })
-	mutate(func(_ *fileformat.RowsPageDirEntry, h *fileformat.BlockHeader) { h.SnapshotID = 8 })
-	mutate(func(_ *fileformat.RowsPageDirEntry, h *fileformat.BlockHeader) { h.TableID = 2 })
-	mutate(func(_ *fileformat.RowsPageDirEntry, h *fileformat.BlockHeader) { h.KeyEpoch = 1 })
+	mutate(func(p *format.RowsPageDirEntry, _ *format.BlockHeader) { p.PageOrdinal = 1 })
+	mutate(func(p *format.RowsPageDirEntry, _ *format.BlockHeader) { p.FirstRecordOrdinal = 1 })
+	mutate(func(p *format.RowsPageDirEntry, _ *format.BlockHeader) { p.RecordCount = 33 })
+	mutate(func(p *format.RowsPageDirEntry, _ *format.BlockHeader) { p.StoredSize = 16001 })
+	mutate(func(p *format.RowsPageDirEntry, _ *format.BlockHeader) { p.RawSize = 8001 })
+	mutate(func(p *format.RowsPageDirEntry, _ *format.BlockHeader) { p.MinRowID = 2 })
+	mutate(func(p *format.RowsPageDirEntry, _ *format.BlockHeader) { p.MaxRowID = 33 })
+	mutate(func(_ *format.RowsPageDirEntry, h *format.BlockHeader) { h.BlockID = 43 })
+	mutate(func(_ *format.RowsPageDirEntry, h *format.BlockHeader) { h.SnapshotID = 8 })
+	mutate(func(_ *format.RowsPageDirEntry, h *format.BlockHeader) { h.TableID = 2 })
+	mutate(func(_ *format.RowsPageDirEntry, h *format.BlockHeader) { h.KeyEpoch = 1 })
 }
 
 // TestPageSealOpenRoundTrip seals and opens a page with matching identity,
 // then verifies tampering and cross-context reuse both fail authentication.
 func TestPageSealOpenRoundTrip(t *testing.T) {
 	c := testCipher(t)
-	page := pageDir(0, 0, 32, 16000+fileformat.AESGCMTagLen, 8000, 1, 32)
-	ctx := func(uuid *[16]byte, blockID, snap uint64, table uint32, p fileformat.RowsPageDirEntry, epoch uint32) PageContext {
+	page := pageDir(0, 0, 32, 16000+format.AESGCMTagLen, 8000, 1, 32)
+	ctx := func(uuid *[16]byte, blockID, snap uint64, table uint32, p format.RowsPageDirEntry, epoch uint32) PageContext {
 		return PageContext{
 			UUID:        uuid,
 			BlockID:     blockID,
 			SnapshotID:  snap,
 			TableID:     table,
-			Compression: fileformat.CompressionZstd,
+			Compression: format.CompressionZstd,
 			Page:        p,
 			Epoch:       epoch,
 		}
@@ -150,8 +150,8 @@ func TestPageSealOpenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sealed) != len("compressed page payload")+fileformat.AESGCMTagLen {
-		t.Fatalf("sealed %d bytes, want %d", len(sealed), len("compressed page payload")+fileformat.AESGCMTagLen)
+	if len(sealed) != len("compressed page payload")+format.AESGCMTagLen {
+		t.Fatalf("sealed %d bytes, want %d", len(sealed), len("compressed page payload")+format.AESGCMTagLen)
 	}
 	pt, err := c.OpenPage(ctx(&testUUID, 42, 7, 1, page, 0), sealed)
 	if err != nil {

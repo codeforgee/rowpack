@@ -2,7 +2,7 @@ package rowpack
 
 import (
 	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/seal"
 )
 
@@ -26,7 +26,7 @@ type pageSealer struct {
 // keeps describing the sum of page raw sizes, the per-page CRC still covers the
 // uncompressed page, and the page directory stays plaintext so a reader can
 // locate a page without decrypting the whole container.
-func (s *pageSealer) seal(h *fileformat.BlockHeader, container []byte) ([]byte, error) {
+func (s *pageSealer) seal(h *format.BlockHeader, container []byte) ([]byte, error) {
 	// The incoming container is the unsealed builder output: pages are
 	// compressed (not sealed), so it must be parsed as a plain container
 	// (Encrypted=false). The caller marks h.Encrypted true for the final
@@ -45,7 +45,7 @@ func (s *pageSealer) seal(h *fileformat.BlockHeader, container []byte) ([]byte, 
 		src := container[int(d.StoredOffset) : int(d.StoredOffset)+int(d.StoredSize)]
 		// The AAD binds the on-disk (sealed) StoredSize, so set it before sealing.
 		sealedD := *d
-		sealedD.StoredSize = d.StoredSize + fileformat.AESGCMTagLen
+		sealedD.StoredSize = d.StoredSize + format.AESGCMTagLen
 		sealed, err := s.cipher.SealPage(seal.PageContext{
 			UUID:        s.uuid,
 			BlockID:     h.BlockID,
@@ -62,13 +62,13 @@ func (s *pageSealer) seal(h *fileformat.BlockHeader, container []byte) ([]byte, 
 	}
 	// Recompute the page directory with sealed sizes and re-run the stored
 	// offsets: each sealed page is 16 bytes larger, so the offsets shift.
-	dataStart := fileformat.RowsBlockHeaderSize + n*fileformat.RowsPageDirEntrySize
+	dataStart := format.RowsBlockHeaderSize + n*format.RowsPageDirEntrySize
 	total := dataStart
 	for _, sp := range sealedPages {
 		total += len(sp)
 	}
 	newContainer := make([]byte, 0, total)
-	var hdr [fileformat.RowsBlockHeaderSize]byte
+	var hdr [format.RowsBlockHeaderSize]byte
 	_ = rc.Header.MarshalTo(hdr[:])
 	newContainer = append(newContainer, hdr[:]...)
 	off := dataStart
@@ -77,14 +77,14 @@ func (s *pageSealer) seal(h *fileformat.BlockHeader, container []byte) ([]byte, 
 		d.StoredOffset = uint64(off)
 		d.StoredSize = uint32(len(sealedPages[i]))
 		off += len(sealedPages[i])
-		var e [fileformat.RowsPageDirEntrySize]byte
+		var e [format.RowsPageDirEntrySize]byte
 		_ = d.MarshalTo(e[:])
 		newContainer = append(newContainer, e[:]...)
 	}
 	for _, sp := range sealedPages {
 		newContainer = append(newContainer, sp...)
 	}
-	h.RawCRC32C = fileformat.CRC32C(newContainer[:dataStart])
+	h.RawCRC32C = format.CRC32C(newContainer[:dataStart])
 	h.StoredSize = uint32(len(newContainer))
 	return newContainer, nil
 }

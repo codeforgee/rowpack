@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // PayloadHeaderSize is the fixed 32-byte metadata block payload header.
@@ -31,7 +31,7 @@ func (h *PayloadHeader) MarshalTo(dst []byte) error {
 	for i := range dst {
 		dst[i] = 0
 	}
-	copy(dst[0:8], fileformat.MagicMetaPayload)
+	copy(dst[0:8], format.MagicMetaPayload)
 	binary.LittleEndian.PutUint32(dst[8:], 1)
 	binary.LittleEndian.PutUint32(dst[12:], DirectoryEntrySize)
 	binary.LittleEndian.PutUint32(dst[16:], h.ItemCount)
@@ -45,7 +45,7 @@ func (h *PayloadHeader) Unmarshal(src []byte) error {
 	if len(src) < PayloadHeaderSize {
 		return errors.New("rowpack: truncated metadata payload header")
 	}
-	if !bytes.Equal(src[0:8], []byte(fileformat.MagicMetaPayload)) {
+	if !bytes.Equal(src[0:8], []byte(format.MagicMetaPayload)) {
 		return errors.New("rowpack: bad metadata payload magic")
 	}
 	if binary.LittleEndian.Uint32(src[8:]) != 1 {
@@ -71,7 +71,7 @@ type DirectoryEntry struct {
 	RecordType   uint32
 	RecordOffset uint32
 	RecordLength uint32
-	Operation    fileformat.Operation
+	Operation    format.Operation
 	Critical     bool
 	recordCRC    uint32
 }
@@ -97,7 +97,7 @@ func (e *DirectoryEntry) MarshalTo(dst []byte) error {
 	binary.LittleEndian.PutUint32(dst[20:], e.RecordLength)
 	dst[24] = byte(e.Operation)
 	if e.Critical {
-		dst[25] = fileformat.FlagCritical
+		dst[25] = format.FlagCritical
 	}
 	binary.LittleEndian.PutUint32(dst[28:], e.recordCRC)
 	return nil
@@ -113,8 +113,8 @@ func (e *DirectoryEntry) Unmarshal(src []byte) error {
 	e.RecordType = binary.LittleEndian.Uint32(src[12:])
 	e.RecordOffset = binary.LittleEndian.Uint32(src[16:])
 	e.RecordLength = binary.LittleEndian.Uint32(src[20:])
-	e.Operation = fileformat.Operation(src[24])
-	e.Critical = src[25]&fileformat.FlagCritical != 0
+	e.Operation = format.Operation(src[24])
+	e.Critical = src[25]&format.FlagCritical != 0
 	e.recordCRC = binary.LittleEndian.Uint32(src[28:])
 	return nil
 }
@@ -158,7 +158,7 @@ func Parse(data []byte) (*Payload, error) {
 	}
 	for i := range p.Entries {
 		e := &p.Entries[i]
-		if e.Operation == fileformat.OperationDelete {
+		if e.Operation == format.OperationDelete {
 			if e.RecordOffset != 0 || e.RecordLength != 0 || e.RecordCRC() != 0 {
 				return nil, fmt.Errorf("rowpack: DELETE metadata entry %d carries record bytes", i)
 			}
@@ -171,7 +171,7 @@ func Parse(data []byte) (*Payload, error) {
 			return nil, fmt.Errorf("rowpack: metadata record %d out of bounds", i)
 		}
 		body := data[base+off : base+off+ln]
-		if fileformat.CRC32C(body) != e.RecordCRC() {
+		if format.CRC32C(body) != e.RecordCRC() {
 			return nil, fmt.Errorf("rowpack: metadata record %d CRC mismatch", i)
 		}
 		p.Records = append(p.Records, body)
@@ -200,10 +200,10 @@ func Build(entries []DirectoryEntry, records [][]byte) ([]byte, error) {
 	off := 0
 	for i, e := range entries {
 		body := records[i]
-		if e.Operation != fileformat.OperationDelete {
+		if e.Operation != format.OperationDelete {
 			e.RecordOffset = uint32(off)
 			e.RecordLength = uint32(len(body))
-			e.SetRecordCRC(fileformat.CRC32C(body))
+			e.SetRecordCRC(format.CRC32C(body))
 		}
 		ent := make([]byte, DirectoryEntrySize)
 		if err := e.MarshalTo(ent); err != nil {

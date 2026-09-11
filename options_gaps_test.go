@@ -3,31 +3,31 @@ package rowpack
 import (
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // TestOptionsApplyDefaults covers every default filled by applyDefaults.
 func TestOptionsApplyDefaults(t *testing.T) {
 	o := Options{}.applyDefaults()
-	if o.BlockSize != fileformat.DefaultBlockSize {
+	if o.BlockSize != format.DefaultBlockSize {
 		t.Errorf("BlockSize default = %d", o.BlockSize)
 	}
-	if o.PageSize != fileformat.DefaultPageSize {
+	if o.PageSize != format.DefaultPageSize {
 		t.Errorf("PageSize default = %d", o.PageSize)
 	}
 	if o.Compression != CompressionZstd {
 		t.Errorf("Compression default = %d", o.Compression)
 	}
-	if o.CacheBytes != fileformat.DefaultCacheBytes {
+	if o.CacheBytes != format.DefaultCacheBytes {
 		t.Errorf("CacheBytes default = %d", o.CacheBytes)
 	}
 	l := o.Limits
-	if l.MaxRowBytes != fileformat.DefaultMaxRowBytes ||
-		l.MaxRawBlockBytes != fileformat.DefaultMaxRawBlockBytes ||
-		l.MaxStoredBlockBytes != fileformat.DefaultMaxStoredBlockBytes ||
-		l.MaxColumns != fileformat.DefaultMaxColumns ||
-		l.MaxValueBytes != fileformat.DefaultMaxValueBytes ||
-		l.MaxSnapshotDepth != fileformat.DefaultMaxSnapshotDepth {
+	if l.MaxRowBytes != format.DefaultMaxRowBytes ||
+		l.MaxRawBlockBytes != format.DefaultMaxRawBlockBytes ||
+		l.MaxStoredBlockBytes != format.DefaultMaxStoredBlockBytes ||
+		l.MaxColumns != format.DefaultMaxColumns ||
+		l.MaxValueBytes != format.DefaultMaxValueBytes ||
+		l.MaxSnapshotDepth != format.DefaultMaxSnapshotDepth {
 		t.Errorf("Limits defaults not applied: %+v", l)
 	}
 

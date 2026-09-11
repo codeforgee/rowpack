@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // Page-size sweep baseline (S2 阶段 2 decision data, design §6.1 / §15 #1).
@@ -102,7 +102,7 @@ func BenchmarkRowsPageEncode(b *testing.B) {
 					}
 					pageCount++
 					rawBytes += len(page)
-					z, err := Compress(fileformat.CompressionZstd, 3, page)
+					z, err := Compress(format.CompressionZstd, 3, page)
 					if err != nil {
 						return err
 					}
@@ -117,7 +117,7 @@ func BenchmarkRowsPageEncode(b *testing.B) {
 					}
 					// RowID mirrors a monotonic change stream (unique per row) so
 					// the builder exercises the delta encoder.
-					if err := bld.Add(uint64(batch+1), 1, fileformat.ChangeInsert, body); err != nil {
+					if err := bld.Add(uint64(batch+1), 1, format.ChangeInsert, body); err != nil {
 						b.Fatal(err)
 					}
 				}
@@ -145,7 +145,7 @@ func BenchmarkRowsPageRecordAt32K(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
-		if err := bld.Add(uint64(1), 1, fileformat.ChangeInsert, body); err != nil {
+		if err := bld.Add(uint64(1), 1, format.ChangeInsert, body); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -177,7 +177,7 @@ func BenchmarkRowsPageRecords32K(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
-		if err := bld.Add(uint64(1), 1, fileformat.ChangeInsert, body); err != nil {
+		if err := bld.Add(uint64(1), 1, format.ChangeInsert, body); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -209,7 +209,7 @@ func BenchmarkRowsPageParse32K(b *testing.B) {
 		if bld.NeedsFlush() {
 			break
 		}
-		if err := bld.Add(uint64(bld.countRows()+1), 1, fileformat.ChangeInsert, body); err != nil {
+		if err := bld.Add(uint64(bld.countRows()+1), 1, format.ChangeInsert, body); err != nil {
 			b.Fatal(err)
 		}
 	}

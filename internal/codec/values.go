@@ -12,31 +12,31 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // Type is the logical value type (alias of the disk ValueType).
-type Type = fileformat.ValueType
+type Type = format.ValueType
 
 // Value type constants, re-exported for use inside the codec package.
 const (
-	TypeBool     Type = fileformat.TypeBool
-	TypeInt8     Type = fileformat.TypeInt8
-	TypeInt16    Type = fileformat.TypeInt16
-	TypeInt32    Type = fileformat.TypeInt32
-	TypeInt64    Type = fileformat.TypeInt64
-	TypeUint8    Type = fileformat.TypeUint8
-	TypeUint16   Type = fileformat.TypeUint16
-	TypeUint32   Type = fileformat.TypeUint32
-	TypeUint64   Type = fileformat.TypeUint64
-	TypeFloat32  Type = fileformat.TypeFloat32
-	TypeFloat64  Type = fileformat.TypeFloat64
-	TypeString   Type = fileformat.TypeString
-	TypeBytes    Type = fileformat.TypeBytes
-	TypeDate     Type = fileformat.TypeDate
-	TypeTime     Type = fileformat.TypeTime
-	TypeDateTime Type = fileformat.TypeDateTime
-	TypeDecimal  Type = fileformat.TypeDecimal
+	TypeBool     Type = format.TypeBool
+	TypeInt8     Type = format.TypeInt8
+	TypeInt16    Type = format.TypeInt16
+	TypeInt32    Type = format.TypeInt32
+	TypeInt64    Type = format.TypeInt64
+	TypeUint8    Type = format.TypeUint8
+	TypeUint16   Type = format.TypeUint16
+	TypeUint32   Type = format.TypeUint32
+	TypeUint64   Type = format.TypeUint64
+	TypeFloat32  Type = format.TypeFloat32
+	TypeFloat64  Type = format.TypeFloat64
+	TypeString   Type = format.TypeString
+	TypeBytes    Type = format.TypeBytes
+	TypeDate     Type = format.TypeDate
+	TypeTime     Type = format.TypeTime
+	TypeDateTime Type = format.TypeDateTime
+	TypeDecimal  Type = format.TypeDecimal
 )
 
 // Date is a calendar date as days since the Unix epoch.

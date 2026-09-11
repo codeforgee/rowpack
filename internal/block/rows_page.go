@@ -7,7 +7,7 @@ import (
 	"math/bits"
 
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // Rows Page in-memory builder/reader.
@@ -58,8 +58,8 @@ func NewPageBuilder(targetBytes int) *PageBuilder {
 // (codec.EncodeInto); for deletes pass nil or an empty slice. Call-order
 // semantics are preserved exactly like the v1 change stream; RowIDs need not
 // be sorted.
-func (b *PageBuilder) Add(rowID uint64, schemaVersion uint32, changeType fileformat.ChangeType, tuple []byte) error {
-	packed, err := fileformat.PackChangeType(changeType)
+func (b *PageBuilder) Add(rowID uint64, schemaVersion uint32, changeType format.ChangeType, tuple []byte) error {
+	packed, err := format.PackChangeType(changeType)
 	if err != nil {
 		return err
 	}
@@ -105,7 +105,7 @@ func (b *PageBuilder) Add(rowID uint64, schemaVersion uint32, changeType filefor
 
 // RawBytes returns the current uncompressed page size if flushed now.
 func (b *PageBuilder) rawBytes() int {
-	return fileformat.RowsPageHeaderSize + len(b.rowIDs) + len(b.offsets) +
+	return format.RowsPageHeaderSize + len(b.rowIDs) + len(b.offsets) +
 		len(b.schemaRLE) + len(b.changeBits) + len(b.tuples)
 }
 
@@ -125,7 +125,7 @@ func (b *PageBuilder) Finish() ([]byte, error) {
 	}
 	b.flushRun()
 
-	h := fileformat.RowsPageHeader{
+	h := format.RowsPageHeader{
 		EntryCount:      b.count,
 		RowIDsBytes:     uint32(len(b.rowIDs)),
 		OffsetsBytes:    uint32(len(b.offsets)),
@@ -136,15 +136,15 @@ func (b *PageBuilder) Finish() ([]byte, error) {
 		MinRowID:        b.minRowID,
 		MaxRowID:        b.maxRowID,
 	}
-	page := make([]byte, 0, fileformat.RowsPageHeaderSize+h.StreamsBytes())
-	page = append(page, make([]byte, fileformat.RowsPageHeaderSize)...)
+	page := make([]byte, 0, format.RowsPageHeaderSize+h.StreamsBytes())
+	page = append(page, make([]byte, format.RowsPageHeaderSize)...)
 	page = append(page, b.rowIDs...)
 	page = append(page, b.offsets...)
 	page = append(page, b.schemaRLE...)
 	page = append(page, b.changeBits...)
 	page = append(page, b.tuples...)
-	streams := page[fileformat.RowsPageHeaderSize:]
-	h.CRC32C = fileformat.CRC32C(streams)
+	streams := page[format.RowsPageHeaderSize:]
+	h.CRC32C = format.CRC32C(streams)
 	if err := h.MarshalTo(page); err != nil {
 		return nil, err
 	}
@@ -191,7 +191,7 @@ func appendChange(dst []byte, ordinal uint32, packed uint8) []byte {
 // O(1) instead of an O(ordinal) stream walk; the page is immutable afterwards,
 // so memoized pages can be shared between readers without a lock.
 type RowsPage struct {
-	h     fileformat.RowsPageHeader
+	h     format.RowsPageHeader
 	raw   []byte
 	start int // streams region start within raw (= fileformat.RowsPageHeaderSize)
 
@@ -211,11 +211,11 @@ type RowsPage struct {
 // ParseRowsPage validates the header geometry and the page CRC, then hands
 // back stream views. Corruption is always an error, never a panic.
 func ParseRowsPage(raw []byte) (*RowsPage, error) {
-	var h fileformat.RowsPageHeader
+	var h format.RowsPageHeader
 	if err := h.Unmarshal(raw, len(raw)); err != nil {
 		return nil, err
 	}
-	start := fileformat.RowsPageHeaderSize
+	start := format.RowsPageHeaderSize
 	off := start
 	rowIDs := raw[off : off+int(h.RowIDsBytes)]
 	off += int(h.RowIDsBytes)
@@ -226,7 +226,7 @@ func ParseRowsPage(raw []byte) (*RowsPage, error) {
 	changeBits := raw[off : off+int(h.ChangeBitsBytes)]
 	off += int(h.ChangeBitsBytes)
 	tuples := raw[off : off+int(h.TuplesBytes)]
-	if fileformat.CRC32C(raw[start:]) != h.CRC32C {
+	if format.CRC32C(raw[start:]) != h.CRC32C {
 		return nil, fmt.Errorf("rowpack: rows page %d records CRC mismatch", h.EntryCount)
 	}
 	if err := validateChangeBits(changeBits, h.EntryCount); err != nil {
@@ -366,7 +366,7 @@ func validateChangeBits(stream []byte, count uint32) error {
 }
 
 // Header returns the parsed page header.
-func (p *RowsPage) Header() fileformat.RowsPageHeader { return p.h }
+func (p *RowsPage) Header() format.RowsPageHeader { return p.h }
 
 // RecordAt decodes one record: RowID, schema version, change type and the
 // body view (empty for deletes). O(1) via the parse-time record index; the
@@ -381,12 +381,12 @@ func (p *RowsPage) RecordAt(ordinal uint32) (rec codec.PageRecord, err error) {
 	}
 	end := p.ends[ordinal]
 	packed := (p.changeBits[ordinal/4] >> ((ordinal % 4) * 2)) & 3
-	ct, err := fileformat.UnpackChangeType(packed)
+	ct, err := format.UnpackChangeType(packed)
 	if err != nil {
 		return rec, err
 	}
 	body := p.tuples[startEnd:end]
-	if ct == fileformat.ChangeDelete && len(body) != 0 {
+	if ct == format.ChangeDelete && len(body) != 0 {
 		return rec, fmt.Errorf("rowpack: delete record %d carries a body", ordinal)
 	}
 	return codec.PageRecord{
@@ -445,12 +445,12 @@ func (p *RowsPage) Records(fn func(rec codec.PageRecord) error) error {
 		}
 
 		packed := (p.changeBits[i/4] >> ((i % 4) * 2)) & 3
-		ct, err := fileformat.UnpackChangeType(packed)
+		ct, err := format.UnpackChangeType(packed)
 		if err != nil {
 			return err
 		}
 		body := p.tuples[startEnd:lastEnd]
-		if ct == fileformat.ChangeDelete && len(body) != 0 {
+		if ct == format.ChangeDelete && len(body) != 0 {
 			return fmt.Errorf("rowpack: delete record %d carries a body", i)
 		}
 		if err := fn(codec.PageRecord{

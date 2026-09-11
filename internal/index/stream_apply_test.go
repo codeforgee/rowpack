@@ -3,7 +3,7 @@ package index
 import (
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // TestStreamApplyMatchesBuffered verifies that the Open-path streaming apply
@@ -13,20 +13,20 @@ import (
 // shapes. Every test builds the txn once, applies it both ways, and compares
 // the resulting (RowID, ItemOrdinal, ChangeType, BlockID) per table.
 func TestStreamApplyMatchesBuffered(t *testing.T) {
-	full := fileformat.SnapshotIndexEntry{SnapshotID: 1, SnapshotType: fileformat.SnapshotFull, BlockCount: 1}
+	full := format.SnapshotIndexEntry{SnapshotID: 1, SnapshotType: format.SnapshotFull, BlockCount: 1}
 	cases := []struct {
 		name string
-		rows []fileformat.RowIndexEntry
+		rows []format.RowIndexEntry
 	}{
 		{"empty", nil},
 		{"single-table-seq", riSeq(1000, 40)},
-		{"multi-table", []fileformat.RowIndexEntry{
-			riEntry(1, 1, 1, 0, fileformat.ChangeInsert),
-			riEntry(1, 2, 1, 1, fileformat.ChangeInsert),
-			riEntry(1, 3, 2, 0, fileformat.ChangeDelete),
-			riEntry(2, 1, 3, 0, fileformat.ChangeInsert),
-			riEntry(2, 2, 3, 1, fileformat.ChangeUpdate),
-			riEntry(3, 1, 3, 0, fileformat.ChangeInsert),
+		{"multi-table", []format.RowIndexEntry{
+			riEntry(1, 1, 1, 0, format.ChangeInsert),
+			riEntry(1, 2, 1, 1, format.ChangeInsert),
+			riEntry(1, 3, 2, 0, format.ChangeDelete),
+			riEntry(2, 1, 3, 0, format.ChangeInsert),
+			riEntry(2, 2, 3, 1, format.ChangeUpdate),
+			riEntry(3, 1, 3, 0, format.ChangeInsert),
 		}},
 		{"multi-table-multi-page", mixedRows(5200)},
 	}
@@ -65,15 +65,15 @@ func TestStreamApplyMatchesBuffered(t *testing.T) {
 // pages (indexPageEntryCount entries), forcing table boundaries to fall in the
 // middle of a page. Tables are interleaved in insertion order; the builder
 // sorts by (TableID, RowID) so both paths must agree.
-func mixedRows(n int) []fileformat.RowIndexEntry {
-	rows := make([]fileformat.RowIndexEntry, 0, n)
+func mixedRows(n int) []format.RowIndexEntry {
+	rows := make([]format.RowIndexEntry, 0, n)
 	// Three tables, each with strictly increasing RowIDs; interleave so the
 	// tables are not globally contiguous in insertion order (maliciously
 	// unsorted input) — the encode path re-sorts it.
 	for i := 0; i < n; i++ {
-		rows = append(rows, riEntry(1, uint64(i)+1, uint64(i%97+1), uint32(i%50), fileformat.ChangeInsert))
-		rows = append(rows, riEntry(2, uint64(i)+1, uint64(i%89+1), uint32(i%30), fileformat.ChangeUpdate))
-		rows = append(rows, riEntry(3, uint64(i)+1, uint64(i%83+1), uint32(i%20), fileformat.ChangeDelete))
+		rows = append(rows, riEntry(1, uint64(i)+1, uint64(i%97+1), uint32(i%50), format.ChangeInsert))
+		rows = append(rows, riEntry(2, uint64(i)+1, uint64(i%89+1), uint32(i%30), format.ChangeUpdate))
+		rows = append(rows, riEntry(3, uint64(i)+1, uint64(i%83+1), uint32(i%20), format.ChangeDelete))
 	}
 	return rows
 }

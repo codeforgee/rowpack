@@ -6,10 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/rowpack/rowpack/internal/fault"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
+	"github.com/stretchr/testify/require"
 )
 
 // crashCommit runs Commit with a crash injected at the fault point; the
@@ -277,8 +276,8 @@ func TestCorruptBlockPayloadDamagesRead(t *testing.T) {
 	require.True(t, ok, "row 1 must resolve")
 	rowsBlk := st.view.Block(loc.BlockID)
 	require.NotNil(t, rowsBlk)
-	require.Equal(t, fileformat.BlockKindRows, rowsBlk.Kind)
-	payloadOff := int64(rowsBlk.DataOffset) + fileformat.BlockHeaderSize
+	require.Equal(t, format.BlockKindRows, rowsBlk.Kind)
+	payloadOff := int64(rowsBlk.DataOffset) + format.BlockHeaderSize
 	require.NoError(t, db.Close())
 
 	f, err := os.OpenFile(base+".rpk", os.O_RDWR, 0)

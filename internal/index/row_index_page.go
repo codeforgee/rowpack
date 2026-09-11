@@ -7,7 +7,7 @@ import (
 	"sort"
 
 	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // maxUint32 is used for width checks (a TableID/ItemOrdinal exceeding uint32
@@ -21,7 +21,7 @@ const indexPageEntryCount = 4096
 // encrypted store seals pages under the Index-domain nonce/AAD space.
 // It reuses the row kind because pages are the row index; pages seal under
 // chunk sequences beyond every chunk, so no nonce collision occurs.
-const rowIndexPageChunkKind = fileformat.IndexChunkKindRow
+const rowIndexPageChunkKind = format.IndexChunkKindRow
 
 var errIndexPageCorrupt = errors.New("rowpack: index page corrupt")
 
@@ -32,7 +32,7 @@ var errIndexPageCorrupt = errors.New("rowpack: index page corrupt")
 type pageBuild struct {
 	raw    []byte
 	stored []byte
-	fence  fileformat.RowIndexFenceEntry
+	fence  format.RowIndexFenceEntry
 }
 
 // buildPages sorts the builder's rows by (TableID, RowID), partitions
@@ -69,7 +69,7 @@ func (b *Builder) buildPages(crypto *ChunkCrypto, level int, pageSeqBase uint32)
 			if err != nil {
 				return nil, err
 			}
-			stored, err := block.Compress(fileformat.CompressionZstd, level, page)
+			stored, err := block.Compress(format.CompressionZstd, level, page)
 			if err != nil {
 				return nil, err
 			}
@@ -106,7 +106,7 @@ func appendChange(dst []byte, ordinal uint32, packed uint8) []byte {
 	return dst
 }
 
-func sortRowIndexEntries(entries []fileformat.RowIndexEntry) {
+func sortRowIndexEntries(entries []format.RowIndexEntry) {
 	sort.Slice(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
 		if a.TableID != b.TableID {
@@ -116,7 +116,7 @@ func sortRowIndexEntries(entries []fileformat.RowIndexEntry) {
 	})
 }
 
-func encodePage(entries []fileformat.RowIndexEntry, pageSize int) (page []byte, entryCount int, minRowID, maxRowID uint64, err error) {
+func encodePage(entries []format.RowIndexEntry, pageSize int) (page []byte, entryCount int, minRowID, maxRowID uint64, err error) {
 	if pageSize <= 0 {
 		return nil, 0, 0, 0, errors.New("rowpack: page size must be positive")
 	}
@@ -181,7 +181,7 @@ func encodePage(entries []fileformat.RowIndexEntry, pageSize int) (page []byte, 
 	// ChangeType 2bit stream。
 	changeBits := make([]byte, 0)
 	for i := range entries {
-		packed, err := fileformat.PackChangeType(entries[i].ChangeType)
+		packed, err := format.PackChangeType(entries[i].ChangeType)
 		if err != nil {
 			return nil, 0, 0, 0, err
 		}
@@ -198,7 +198,7 @@ func encodePage(entries []fileformat.RowIndexEntry, pageSize int) (page []byte, 
 		}
 	}
 
-	h := fileformat.RowIndexPageHeader{
+	h := format.RowIndexPageHeader{
 		EntryCount:      uint32(len(entries)),
 		TableRunBytes:   uint32(len(tableRunBytes)),
 		RowIDBytes:      uint32(len(rowIDBytes)),
@@ -210,15 +210,15 @@ func encodePage(entries []fileformat.RowIndexEntry, pageSize int) (page []byte, 
 		MaxRowID:        maxRowID,
 	}
 
-	page = make([]byte, 0, fileformat.IndexPageHeaderSize+len(tableRunBytes)+len(rowIDBytes)+len(blockRunBytes)+len(ordinalBytes)+len(changeBits))
-	page = append(page, make([]byte, fileformat.IndexPageHeaderSize)...)
+	page = make([]byte, 0, format.IndexPageHeaderSize+len(tableRunBytes)+len(rowIDBytes)+len(blockRunBytes)+len(ordinalBytes)+len(changeBits))
+	page = append(page, make([]byte, format.IndexPageHeaderSize)...)
 	page = append(page, tableRunBytes...)
 	page = append(page, rowIDBytes...)
 	page = append(page, blockRunBytes...)
 	page = append(page, ordinalBytes...)
 	page = append(page, changeBits...)
-	streams := page[fileformat.IndexPageHeaderSize:]
-	h.CRC32C = fileformat.CRC32C(streams)
+	streams := page[format.IndexPageHeaderSize:]
+	h.CRC32C = format.CRC32C(streams)
 	if err := h.MarshalTo(page); err != nil {
 		return nil, 0, 0, 0, err
 	}
@@ -226,7 +226,7 @@ func encodePage(entries []fileformat.RowIndexEntry, pageSize int) (page []byte, 
 }
 
 type pageStreams struct {
-	header                    fileformat.RowIndexPageHeader
+	header                    format.RowIndexPageHeader
 	count                     int
 	tableRun, rowID, blockRun []byte
 	ordinal, changeBits       []byte
@@ -235,15 +235,15 @@ type pageStreams struct {
 func splitPage(raw []byte) (pageStreams, error) {
 	var out pageStreams
 	n := len(raw)
-	if n < fileformat.IndexPageHeaderSize {
+	if n < format.IndexPageHeaderSize {
 		return out, errIndexPageCorrupt
 	}
 	if err := out.header.Unmarshal(raw, n); err != nil {
 		return out, err
 	}
 	out.count = int(out.header.EntryCount)
-	start := fileformat.IndexPageHeaderSize
-	if fileformat.CRC32C(raw[start:]) != out.header.CRC32C {
+	start := format.IndexPageHeaderSize
+	if format.CRC32C(raw[start:]) != out.header.CRC32C {
 		return out, fmt.Errorf("rowpack: index page CRC mismatch")
 	}
 	wantBits := (uint64(out.count) + 3) / 4
@@ -284,7 +284,7 @@ func splitPage(raw []byte) (pageStreams, error) {
 	return out, nil
 }
 
-func walkPage(raw []byte, emit func(fileformat.RowIndexEntry) error) error {
+func walkPage(raw []byte, emit func(format.RowIndexEntry) error) error {
 	streams, err := splitPage(raw)
 	if err != nil {
 		return err
@@ -396,7 +396,7 @@ func walkPage(raw []byte, emit func(fileformat.RowIndexEntry) error) error {
 		ordinal = prevOrdinal
 		// ChangeType（2bit）。
 		packed := (changeBits[ti/4] >> ((ti % 4) * 2)) & 3
-		ct, err := fileformat.UnpackChangeType(packed)
+		ct, err := format.UnpackChangeType(packed)
 		if err != nil {
 			return fmt.Errorf("rowpack: index page entry %d: %w", ti, err)
 		}
@@ -421,7 +421,7 @@ func walkPage(raw []byte, emit func(fileformat.RowIndexEntry) error) error {
 				globalMax = rowID
 			}
 		}
-		if err := emit(fileformat.RowIndexEntry{
+		if err := emit(format.RowIndexEntry{
 			TableID:     currentTable,
 			RowID:       rowID,
 			BlockID:     curBlock,
@@ -457,16 +457,16 @@ func walkPage(raw []byte, emit func(fileformat.RowIndexEntry) error) error {
 	return nil
 }
 
-func decodePage(raw []byte) ([]fileformat.RowIndexEntry, error) {
+func decodePage(raw []byte) ([]format.RowIndexEntry, error) {
 	count := 0
-	if len(raw) >= fileformat.IndexPageHeaderSize {
-		var h fileformat.RowIndexPageHeader
+	if len(raw) >= format.IndexPageHeaderSize {
+		var h format.RowIndexPageHeader
 		if err := h.Unmarshal(raw, len(raw)); err == nil {
 			count = int(h.EntryCount)
 		}
 	}
-	out := make([]fileformat.RowIndexEntry, 0, count)
-	if err := walkPage(raw, func(e fileformat.RowIndexEntry) error {
+	out := make([]format.RowIndexEntry, 0, count)
+	if err := walkPage(raw, func(e format.RowIndexEntry) error {
 		out = append(out, e)
 		return nil
 	}); err != nil {
@@ -475,19 +475,19 @@ func decodePage(raw []byte) ([]fileformat.RowIndexEntry, error) {
 	return out, nil
 }
 
-func pageFence(raw []byte, storedSize uint32, snapshotID uint64, storedOffset uint64) (fileformat.RowIndexFenceEntry, error) {
-	if len(raw) < fileformat.IndexPageHeaderSize {
-		return fileformat.RowIndexFenceEntry{}, errIndexPageCorrupt
+func pageFence(raw []byte, storedSize uint32, snapshotID uint64, storedOffset uint64) (format.RowIndexFenceEntry, error) {
+	if len(raw) < format.IndexPageHeaderSize {
+		return format.RowIndexFenceEntry{}, errIndexPageCorrupt
 	}
-	var h fileformat.RowIndexPageHeader
+	var h format.RowIndexPageHeader
 	if err := h.Unmarshal(raw, len(raw)); err != nil {
-		return fileformat.RowIndexFenceEntry{}, err
+		return format.RowIndexFenceEntry{}, err
 	}
 	tid, ok := firstTableIDOfPage(raw)
 	if !ok {
-		return fileformat.RowIndexFenceEntry{}, errIndexPageCorrupt
+		return format.RowIndexFenceEntry{}, errIndexPageCorrupt
 	}
-	return fileformat.RowIndexFenceEntry{
+	return format.RowIndexFenceEntry{
 		SnapshotID:   snapshotID,
 		TableID:      tid,
 		MinRowID:     h.MinRowID,
@@ -501,10 +501,10 @@ func pageFence(raw []byte, storedSize uint32, snapshotID uint64, storedOffset ui
 }
 
 func firstTableIDOfPage(raw []byte) (uint32, bool) {
-	if len(raw) < fileformat.IndexPageHeaderSize {
+	if len(raw) < format.IndexPageHeaderSize {
 		return 0, false
 	}
-	t, n := binary.Uvarint(raw[fileformat.IndexPageHeaderSize:])
+	t, n := binary.Uvarint(raw[format.IndexPageHeaderSize:])
 	if n <= 0 || t > maxUint32 {
 		return 0, false
 	}

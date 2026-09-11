@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // ErrAuth is returned when AEAD authentication fails (tampered AAD,
@@ -39,8 +39,8 @@ const AADSize = 68
 
 // Nonce returns the deterministic 96-bit nonce for (epoch, blockID):
 // epoch(4B, LE) ‖ blockID(8B, LE).
-func Nonce(epoch uint32, blockID uint64) [fileformat.EncNonceLen]byte {
-	var n [fileformat.EncNonceLen]byte
+func Nonce(epoch uint32, blockID uint64) [format.EncNonceLen]byte {
+	var n [format.EncNonceLen]byte
 	n[0] = byte(epoch)
 	n[1] = byte(epoch >> 8)
 	n[2] = byte(epoch >> 16)
@@ -73,7 +73,7 @@ func Nonce(epoch uint32, blockID uint64) [fileformat.EncNonceLen]byte {
 // KeyEpoch and the Encrypted flag are intentionally excluded: KeyEpoch is
 // already part of the nonce, and the Encrypted flag is what selects this code
 // path (a plain block has no nonce/AAD at all).
-func BuildAAD(uuid *[16]byte, h *fileformat.BlockHeader) [AADSize]byte {
+func BuildAAD(uuid *[16]byte, h *format.BlockHeader) [AADSize]byte {
 	var aad [AADSize]byte
 	copy(aad[0:16], aadMagic[:])
 	copy(aad[16:32], uuid[:])
@@ -97,7 +97,7 @@ const IndexDomainBit = uint32(0x80000000)
 
 // NonceIndex returns the deterministic 96-bit nonce for one encrypted index
 // transaction: (epoch | IndexDomainBit)(4B, LE) ‖ txnSequence(8B, LE).
-func NonceIndex(epoch uint32, txnSequence uint64) [fileformat.EncNonceLen]byte {
+func NonceIndex(epoch uint32, txnSequence uint64) [format.EncNonceLen]byte {
 	return Nonce(epoch|IndexDomainBit, txnSequence)
 }
 
@@ -223,8 +223,8 @@ type PageContext struct {
 	BlockID     uint64
 	SnapshotID  uint64
 	TableID     uint32
-	Compression fileformat.Compression
-	Page        fileformat.RowsPageDirEntry
+	Compression format.Compression
+	Page        format.RowsPageDirEntry
 	Epoch       uint32
 }
 
@@ -282,7 +282,7 @@ func (c *Cipher) pageNonceKey() [sha256.Size]byte {
 // store/snapshot/block/page/epoch into the nonce means the AES-GCM nonce is
 // unique per page and domain-separated from block and index-chunk nonces
 // (BINARY_FORMAT_V1 §5.1).
-func (c *Cipher) NoncePage(ctx PageContext) [fileformat.EncNonceLen]byte {
+func (c *Cipher) NoncePage(ctx PageContext) [format.EncNonceLen]byte {
 	hk := c.pageNonceKey()
 	mac := hmac.New(sha256.New, hk[:])
 	mac.Write(pageNonceInfoPrefix)
@@ -296,8 +296,8 @@ func (c *Cipher) NoncePage(ctx PageContext) [fileformat.EncNonceLen]byte {
 	binary.BigEndian.PutUint32(in2[4:8], ctx.Epoch)
 	mac.Write(in2[:])
 	sum := mac.Sum(nil)
-	var n [fileformat.EncNonceLen]byte
-	copy(n[:], sum[:fileformat.EncNonceLen])
+	var n [format.EncNonceLen]byte
+	copy(n[:], sum[:format.EncNonceLen])
 	return n
 }
 
@@ -308,7 +308,7 @@ func (c *Cipher) NoncePage(ctx PageContext) [fileformat.EncNonceLen]byte {
 func (c *Cipher) SealPage(ctx PageContext, plaintext []byte) ([]byte, error) {
 	nonce := c.NoncePage(ctx)
 	aad := ctx.AAD()
-	out := make([]byte, 0, len(plaintext)+fileformat.AESGCMTagLen)
+	out := make([]byte, 0, len(plaintext)+format.AESGCMTagLen)
 	return c.aead.Seal(out, nonce[:], plaintext, aad[:]), nil
 }
 
@@ -343,14 +343,14 @@ func (c *Cipher) OpenIndexChunk(ctx ChunkContext, stored []byte) ([]byte, error)
 
 // SealWith encrypts plaintext under an explicit nonce/AAD pair (index path;
 // the block path uses Seal which derives both from the header).
-func (c *Cipher) SealWith(nonce [fileformat.EncNonceLen]byte, aad []byte, plaintext []byte) []byte {
-	out := make([]byte, 0, len(plaintext)+fileformat.AESGCMTagLen)
+func (c *Cipher) SealWith(nonce [format.EncNonceLen]byte, aad []byte, plaintext []byte) []byte {
+	out := make([]byte, 0, len(plaintext)+format.AESGCMTagLen)
 	return c.aead.Seal(out, nonce[:], plaintext, aad)
 }
 
 // OpenWith authenticates and opens ciphertext under an explicit nonce/AAD
 // pair. On failure it returns ErrAuth wrapped with context.
-func (c *Cipher) OpenWith(nonce [fileformat.EncNonceLen]byte, aad []byte, ciphertext []byte) ([]byte, error) {
+func (c *Cipher) OpenWith(nonce [format.EncNonceLen]byte, aad []byte, ciphertext []byte) ([]byte, error) {
 	pt, err := c.aead.Open(nil, nonce[:], ciphertext, aad)
 	if err != nil {
 		return nil, fmt.Errorf("%w: nonce domain index", ErrAuth)
@@ -385,11 +385,11 @@ func NewCipher(key []byte) (*Cipher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("seal: gcm: %w", err)
 	}
-	if gcm.NonceSize() != fileformat.EncNonceLen {
-		return nil, fmt.Errorf("seal: gcm nonce size %d, want %d", gcm.NonceSize(), fileformat.EncNonceLen)
+	if gcm.NonceSize() != format.EncNonceLen {
+		return nil, fmt.Errorf("seal: gcm nonce size %d, want %d", gcm.NonceSize(), format.EncNonceLen)
 	}
-	if gcm.Overhead() != fileformat.AESGCMTagLen {
-		return nil, fmt.Errorf("seal: gcm overhead %d, want %d", gcm.Overhead(), fileformat.AESGCMTagLen)
+	if gcm.Overhead() != format.AESGCMTagLen {
+		return nil, fmt.Errorf("seal: gcm overhead %d, want %d", gcm.Overhead(), format.AESGCMTagLen)
 	}
 	var key32 [32]byte
 	copy(key32[:], key)
@@ -415,7 +415,7 @@ func (c *Cipher) chunkNonceKey() [sha256.Size]byte {
 // (txnSeq, chunkSeq) rests on HMAC collision resistance. Direct alternatives
 // (truncating txnSeq, XOR-ing the low word) were rejected: both can produce
 // nonce reuse.
-func (c *Cipher) NonceIndexChunk(txnSeq uint64, chunkSeq uint32) [fileformat.EncNonceLen]byte {
+func (c *Cipher) NonceIndexChunk(txnSeq uint64, chunkSeq uint32) [format.EncNonceLen]byte {
 	hk := c.chunkNonceKey()
 	mac := hmac.New(sha256.New, hk[:])
 	mac.Write(chunkNonceInfoPrefix)
@@ -424,8 +424,8 @@ func (c *Cipher) NonceIndexChunk(txnSeq uint64, chunkSeq uint32) [fileformat.Enc
 	binary.BigEndian.PutUint32(in[8:12], chunkSeq)
 	mac.Write(in[:])
 	sum := mac.Sum(nil)
-	var n [fileformat.EncNonceLen]byte
-	copy(n[:], sum[:fileformat.EncNonceLen])
+	var n [format.EncNonceLen]byte
+	copy(n[:], sum[:format.EncNonceLen])
 	return n
 }
 
@@ -433,17 +433,17 @@ func (c *Cipher) NonceIndexChunk(txnSeq uint64, chunkSeq uint32) [fileformat.Enc
 // AESGCMTagLen). plaintext is not modified. The block's identity — BlockID and
 // KeyEpoch — comes from h, which is also what the AAD binds, so the header is
 // the single source of truth for both the nonce and the AAD.
-func (c *Cipher) Seal(uuid *[16]byte, h *fileformat.BlockHeader, plaintext []byte) ([]byte, error) {
+func (c *Cipher) Seal(uuid *[16]byte, h *format.BlockHeader, plaintext []byte) ([]byte, error) {
 	nonce := Nonce(h.KeyEpoch, h.BlockID)
 	aad := BuildAAD(uuid, h)
-	out := make([]byte, 0, len(plaintext)+fileformat.AESGCMTagLen)
+	out := make([]byte, 0, len(plaintext)+format.AESGCMTagLen)
 	return c.aead.Seal(out, nonce[:], plaintext, aad[:]), nil
 }
 
 // Open authenticates ciphertext against (uuid, header) and returns the
 // plaintext in a fresh buffer. On any authentication failure it returns ErrAuth
 // (wrapped with context) and a nil payload.
-func (c *Cipher) Open(uuid *[16]byte, h *fileformat.BlockHeader, ciphertext []byte) ([]byte, error) {
+func (c *Cipher) Open(uuid *[16]byte, h *format.BlockHeader, ciphertext []byte) ([]byte, error) {
 	nonce := Nonce(h.KeyEpoch, h.BlockID)
 	aad := BuildAAD(uuid, h)
 	pt, err := c.aead.Open(nil, nonce[:], ciphertext, aad[:])

@@ -8,7 +8,7 @@ import (
 
 	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/index"
 )
 
@@ -125,7 +125,7 @@ func (br *batchReader) resolve(snapshot uint64, tid uint32, table string, ids []
 		if !ok {
 			return fmt.Errorf("%w: (table %q, row %d) in snapshot %d", ErrNotFound, table, id, snapshot)
 		}
-		if loc.ChangeType == fileformat.ChangeDelete {
+		if loc.ChangeType == format.ChangeDelete {
 			return fmt.Errorf("%w: (table %q, row %d) deleted in snapshot %d", ErrNotFound, table, id, snapshot)
 		}
 		br.reqs = append(br.reqs, batchReq{outIdx: i, blockID: loc.BlockID, ordinal: loc.ItemOrdinal})

@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
-// --- fixtures ---------------------------------------------------------------
-
-func snapEntry(id, parent uint64, typ fileformat.SnapshotType) fileformat.SnapshotIndexEntry {
-	return fileformat.SnapshotIndexEntry{
+func snapEntry(id, parent uint64, typ format.SnapshotType) format.SnapshotIndexEntry {
+	return format.SnapshotIndexEntry{
 		SnapshotID:       id,
 		ParentSnapshotID: parent,
 		SnapshotType:     typ,
@@ -23,13 +21,13 @@ func snapEntry(id, parent uint64, typ fileformat.SnapshotType) fileformat.Snapsh
 	}
 }
 
-func blockEntry(id, snap uint64, table uint32) fileformat.BlockIndexEntry {
-	return fileformat.BlockIndexEntry{
+func blockEntry(id, snap uint64, table uint32) format.BlockIndexEntry {
+	return format.BlockIndexEntry{
 		BlockID:     id,
 		SnapshotID:  snap,
 		TableID:     table,
-		BlockKind:   fileformat.BlockKindRows,
-		Compression: fileformat.CompressionZstd,
+		BlockKind:   format.BlockKindRows,
+		Compression: format.CompressionZstd,
 		DataOffset:  128,
 		RawSize:     4096,
 		StoredSize:  1024,
@@ -38,33 +36,31 @@ func blockEntry(id, snap uint64, table uint32) fileformat.BlockIndexEntry {
 	}
 }
 
-func metaEntry(snap, obj uint64, rectype uint32) fileformat.MetadataIndexEntry {
-	return fileformat.MetadataIndexEntry{
+func metaEntry(snap, obj uint64, rectype uint32) format.MetadataIndexEntry {
+	return format.MetadataIndexEntry{
 		SnapshotID:  snap,
 		ObjectID:    obj,
 		Revision:    2,
 		RecordType:  rectype,
 		BlockID:     1,
 		ItemOrdinal: 3,
-		Operation:   fileformat.OperationUpsert,
+		Operation:   format.OperationUpsert,
 		Critical:    true,
 	}
 }
 
-// --- Builder validation ------------------------------------------------------
-
 func TestBuilderSetSnapshotValidation(t *testing.T) {
 	b := NewBuilder(1)
-	if err := b.SetSnapshot(snapEntry(0, 0, fileformat.SnapshotFull)); err == nil {
+	if err := b.SetSnapshot(snapEntry(0, 0, format.SnapshotFull)); err == nil {
 		t.Fatal("zero snapshot id should error")
 	}
-	if err := b.SetSnapshot(snapEntry(1, 0, fileformat.SnapshotType(9))); err == nil {
+	if err := b.SetSnapshot(snapEntry(1, 0, format.SnapshotType(9))); err == nil {
 		t.Fatal("bad snapshot type should error")
 	}
-	if err := b.SetSnapshot(snapEntry(1, 0, fileformat.SnapshotFull)); err != nil {
+	if err := b.SetSnapshot(snapEntry(1, 0, format.SnapshotFull)); err != nil {
 		t.Fatalf("valid snapshot: %v", err)
 	}
-	if err := b.SetSnapshot(snapEntry(2, 0, fileformat.SnapshotFull)); err == nil {
+	if err := b.SetSnapshot(snapEntry(2, 0, format.SnapshotFull)); err == nil {
 		t.Fatal("second SetSnapshot should error")
 	}
 }
@@ -77,10 +73,10 @@ func TestBuilderEntryOrderingAndMismatch(t *testing.T) {
 	if err := b.AddBlock(blockEntry(1, 1, 1)); err == nil {
 		t.Fatal("AddBlock before SetSnapshot should error")
 	}
-	if err := b.AddRow(riEntry(1, 1, 1, 0, fileformat.ChangeInsert)); err == nil {
+	if err := b.AddRow(riEntry(1, 1, 1, 0, format.ChangeInsert)); err == nil {
 		t.Fatal("AddRow before SetSnapshot should error")
 	}
-	if err := b.SetSnapshot(snapEntry(1, 0, fileformat.SnapshotFull)); err != nil {
+	if err := b.SetSnapshot(snapEntry(1, 0, format.SnapshotFull)); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.AddMetadata(metaEntry(2, 9, 1)); err == nil {
@@ -89,7 +85,7 @@ func TestBuilderEntryOrderingAndMismatch(t *testing.T) {
 	if err := b.AddBlock(blockEntry(1, 2, 1)); err == nil {
 		t.Fatal("block snapshot mismatch should error")
 	}
-	if err := b.AddRow(fileformat.RowIndexEntry{SnapshotID: 2}); err == nil {
+	if err := b.AddRow(format.RowIndexEntry{SnapshotID: 2}); err == nil {
 		t.Fatal("row snapshot mismatch should error")
 	}
 	if err := b.AddMetadata(metaEntry(1, 9, 1)); err != nil {
@@ -102,11 +98,11 @@ func TestBuilderEntryOrderingAndMismatch(t *testing.T) {
 
 func TestBuilderRowDedup(t *testing.T) {
 	b := NewBuilder(1)
-	if err := b.SetSnapshot(snapEntry(1, 0, fileformat.SnapshotFull)); err != nil {
+	if err := b.SetSnapshot(snapEntry(1, 0, format.SnapshotFull)); err != nil {
 		t.Fatal(err)
 	}
-	row := func() fileformat.RowIndexEntry {
-		return fileformat.RowIndexEntry{SnapshotID: 1, TableID: 1, RowID: 7}
+	row := func() format.RowIndexEntry {
+		return format.RowIndexEntry{SnapshotID: 1, TableID: 1, RowID: 7}
 	}
 	if err := b.AddRow(row()); err != nil {
 		t.Fatal(err)
@@ -116,7 +112,7 @@ func TestBuilderRowDedup(t *testing.T) {
 	}
 	b2 := NewBuilder(1)
 	b2.SetRowDedup(false)
-	if err := b2.SetSnapshot(snapEntry(1, 0, fileformat.SnapshotFull)); err != nil {
+	if err := b2.SetSnapshot(snapEntry(1, 0, format.SnapshotFull)); err != nil {
 		t.Fatal(err)
 	}
 	if err := b2.AddRow(row()); err != nil {
@@ -130,7 +126,7 @@ func TestBuilderRowDedup(t *testing.T) {
 func TestBuilderCountsAndReserve(t *testing.T) {
 	b := NewBuilder(1)
 	b.SetRowDedup(false)
-	if err := b.SetSnapshot(snapEntry(1, 0, fileformat.SnapshotFull)); err != nil {
+	if err := b.SetSnapshot(snapEntry(1, 0, format.SnapshotFull)); err != nil {
 		t.Fatal(err)
 	}
 	b.Reserve(4, 4, 4) // pre-allocation must not change observable counts
@@ -144,7 +140,7 @@ func TestBuilderCountsAndReserve(t *testing.T) {
 	if err := b.AddBlock(blockEntry(1, 1, 1)); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.AddRow(fileformat.RowIndexEntry{SnapshotID: 1, TableID: 1, RowID: 1}); err != nil {
+	if err := b.AddRow(format.RowIndexEntry{SnapshotID: 1, TableID: 1, RowID: 1}); err != nil {
 		t.Fatal(err)
 	}
 	meta, blocks, rows = b.Counts()
@@ -153,11 +149,9 @@ func TestBuilderCountsAndReserve(t *testing.T) {
 	}
 }
 
-// --- Build / ParseTxn --------------------------------------------------------
-
 func TestBuildParseTxnRoundtrip(t *testing.T) {
 	b := NewBuilder(7)
-	if err := b.SetSnapshot(snapEntry(3, 0, fileformat.SnapshotFull)); err != nil {
+	if err := b.SetSnapshot(snapEntry(3, 0, format.SnapshotFull)); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.AddMetadata(metaEntry(3, 900, 5)); err != nil {
@@ -221,8 +215,8 @@ func TestBuildParseTxnRoundtrip(t *testing.T) {
 }
 
 // rowBytes serializes a RowIndexEntry for test comparison.
-func rowBytes(e fileformat.RowIndexEntry) []byte {
-	out := make([]byte, fileformat.RowIndexEntrySize)
+func rowBytes(e format.RowIndexEntry) []byte {
+	out := make([]byte, format.RowIndexEntrySize)
 	if err := e.MarshalTo(out); err != nil {
 		panic(err)
 	}
@@ -233,7 +227,7 @@ func TestParseTxnErrors(t *testing.T) {
 	build := func() []byte {
 		t.Helper()
 		b := NewBuilder(1)
-		if err := b.SetSnapshot(snapEntry(1, 0, fileformat.SnapshotFull)); err != nil {
+		if err := b.SetSnapshot(snapEntry(1, 0, format.SnapshotFull)); err != nil {
 			t.Fatal(err)
 		}
 		for _, r := range riSeq(5, 5) {
@@ -254,7 +248,7 @@ func TestParseTxnErrors(t *testing.T) {
 	if _, err := ParseTxn(nil, nil); err == nil {
 		t.Fatal("nil input should error")
 	}
-	if _, err := ParseTxn(data[:fileformat.IndexTxnHeaderSize+fileformat.IndexTxnFooterSize-1], nil); err == nil {
+	if _, err := ParseTxn(data[:format.IndexTxnHeaderSize+format.IndexTxnFooterSize-1], nil); err == nil {
 		t.Fatal("short input should error")
 	}
 	if _, err := ParseTxn(append(append([]byte(nil), data...), 0x00), nil); err == nil {
@@ -270,7 +264,7 @@ func TestParseTxnErrors(t *testing.T) {
 
 	// Forged BodyBytes beyond the input.
 	bad = append([]byte(nil), data...)
-	var h fileformat.IndexTxnHeader
+	var h format.IndexTxnHeader
 	if err := h.Unmarshal(bad); err != nil {
 		t.Fatal(err)
 	}
@@ -283,8 +277,8 @@ func TestParseTxnErrors(t *testing.T) {
 	// Header/footer snapshot id mismatch: re-marshal the footer with a
 	// different snapshot id.
 	bad = append([]byte(nil), data...)
-	ftr := bad[len(bad)-fileformat.IndexTxnFooterSize:]
-	var f fileformat.IndexTxnFooter
+	ftr := bad[len(bad)-format.IndexTxnFooterSize:]
+	var f format.IndexTxnFooter
 	if err := f.Unmarshal(ftr); err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +292,7 @@ func TestParseTxnErrors(t *testing.T) {
 
 	// Corrupted body byte must break a chunk payload check.
 	bad = append([]byte(nil), data...)
-	bad[fileformat.IndexTxnHeaderSize+10] ^= 0xFF
+	bad[format.IndexTxnHeaderSize+10] ^= 0xFF
 	if _, err := ParseTxn(bad, nil); err == nil {
 		t.Fatal("corrupt body should error")
 	}
@@ -306,10 +300,10 @@ func TestParseTxnErrors(t *testing.T) {
 
 func TestBuildStoredPlainMatchesBuild(t *testing.T) {
 	b := NewBuilder(2)
-	if err := b.SetSnapshot(snapEntry(1, 0, fileformat.SnapshotFull)); err != nil {
+	if err := b.SetSnapshot(snapEntry(1, 0, format.SnapshotFull)); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.AddRow(fileformat.RowIndexEntry{SnapshotID: 1, TableID: 1, RowID: 1, BlockID: 1, ChangeType: fileformat.ChangeInsert}); err != nil {
+	if err := b.AddRow(format.RowIndexEntry{SnapshotID: 1, TableID: 1, RowID: 1, BlockID: 1, ChangeType: format.ChangeInsert}); err != nil {
 		t.Fatal(err)
 	}
 	var gotBodyLen int
@@ -346,7 +340,7 @@ func TestBuildStoredPlainMatchesBuild(t *testing.T) {
 func TestViewAccessorsAndChain(t *testing.T) {
 	// Snapshot 1 (FULL): table 1 rows 1..4 all inserts, block 1, meta obj 500.
 	b := NewBuilder(1)
-	if err := b.SetSnapshot(snapEntry(1, 0, fileformat.SnapshotFull)); err != nil {
+	if err := b.SetSnapshot(snapEntry(1, 0, format.SnapshotFull)); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.AddBlock(blockEntry(1, 1, 1)); err != nil {
@@ -355,11 +349,11 @@ func TestViewAccessorsAndChain(t *testing.T) {
 	if err := b.AddMetadata(metaEntry(1, 500, 9)); err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range []fileformat.RowIndexEntry{
-		riEntry(1, 1, 1, 0, fileformat.ChangeInsert),
-		riEntry(1, 2, 1, 1, fileformat.ChangeInsert),
-		riEntry(1, 3, 1, 2, fileformat.ChangeInsert),
-		riEntry(1, 4, 1, 3, fileformat.ChangeInsert),
+	for _, r := range []format.RowIndexEntry{
+		riEntry(1, 1, 1, 0, format.ChangeInsert),
+		riEntry(1, 2, 1, 1, format.ChangeInsert),
+		riEntry(1, 3, 1, 2, format.ChangeInsert),
+		riEntry(1, 4, 1, 3, format.ChangeInsert),
 	} {
 		e := r
 		e.SnapshotID = 1
@@ -378,16 +372,16 @@ func TestViewAccessorsAndChain(t *testing.T) {
 
 	// Snapshot 2 (DELTA, parent 1): delete row 3, insert row 5, block 2.
 	b2 := NewBuilder(2)
-	se := snapEntry(2, 1, fileformat.SnapshotDelta)
+	se := snapEntry(2, 1, format.SnapshotDelta)
 	if err := b2.SetSnapshot(se); err != nil {
 		t.Fatal(err)
 	}
 	if err := b2.AddBlock(blockEntry(2, 2, 1)); err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range []fileformat.RowIndexEntry{
-		riEntry(1, 3, 2, 0, fileformat.ChangeDelete),
-		riEntry(1, 5, 2, 1, fileformat.ChangeInsert),
+	for _, r := range []format.RowIndexEntry{
+		riEntry(1, 3, 2, 0, format.ChangeDelete),
+		riEntry(1, 5, 2, 1, format.ChangeInsert),
 	} {
 		e := r
 		e.SnapshotID = 2
@@ -425,7 +419,7 @@ func TestViewAccessorsAndChain(t *testing.T) {
 	}
 
 	// Row lookups: snapshot 2 sees its own rows; tombstone surfaces as DELETE.
-	if loc, ok := v2.Row(2, 1, 3); !ok || loc.ChangeType != fileformat.ChangeDelete {
+	if loc, ok := v2.Row(2, 1, 3); !ok || loc.ChangeType != format.ChangeDelete {
 		t.Fatalf("Row(2,1,3) = %+v %v", loc, ok)
 	}
 	if _, ok := v2.Row(2, 1, 1); ok {
@@ -488,7 +482,7 @@ func TestViewAccessorsAndChain(t *testing.T) {
 
 	// Original views stay immutable: snapshot 1's layer is untouched by the
 	// second apply (row 3 remains a plain INSERT there).
-	if loc, ok := v1.Row(1, 1, 3); !ok || loc.ChangeType != fileformat.ChangeInsert {
+	if loc, ok := v1.Row(1, 1, 3); !ok || loc.ChangeType != format.ChangeInsert {
 		t.Fatalf("v1 mutated: Row(1,1,3) = %+v %v", loc, ok)
 	}
 }
@@ -497,7 +491,7 @@ func TestApplyStreamingWithBlocksAndMeta(t *testing.T) {
 	// A txn carrying block + metadata entries through the streaming apply
 	// path must produce the same view as the buffered apply.
 	b := NewBuilder(1)
-	if err := b.SetSnapshot(snapEntry(4, 0, fileformat.SnapshotFull)); err != nil {
+	if err := b.SetSnapshot(snapEntry(4, 0, format.SnapshotFull)); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.AddBlock(blockEntry(21, 4, 1)); err != nil {

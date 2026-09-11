@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/stretchr/testify/require"
 )
 
@@ -65,14 +65,14 @@ func TestReaderCount(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 	r := NewReader(ra, limits)
 
-	h := &fileformat.BlockHeader{
+	h := &format.BlockHeader{
 		StoredSize: 100,
 		RawSize:    200,
 	}
 	r.count(h)
 
 	stats := r.Stats()
-	require.Equal(t, uint64(fileformat.BlockHeaderSize+100), stats.ReadBytes)
+	require.Equal(t, uint64(format.BlockHeaderSize+100), stats.ReadBytes)
 	require.Equal(t, uint64(200), stats.DecompressedBytes)
 }
 
@@ -82,34 +82,34 @@ func TestReaderCheckHeader(t *testing.T) {
 	r := NewReader(ra, limits)
 
 	t.Run("stored size exceeds limit", func(t *testing.T) {
-		h := &fileformat.BlockHeader{StoredSize: 200, RawSize: 50}
+		h := &format.BlockHeader{StoredSize: 200, RawSize: 50}
 		err := r.checkHeader(h)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "stored size")
 	})
 
 	t.Run("raw size exceeds limit", func(t *testing.T) {
-		h := &fileformat.BlockHeader{StoredSize: 50, RawSize: 200}
+		h := &format.BlockHeader{StoredSize: 50, RawSize: 200}
 		err := r.checkHeader(h)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "raw size")
 	})
 
 	t.Run("none compression size mismatch", func(t *testing.T) {
-		h := &fileformat.BlockHeader{StoredSize: 100, RawSize: 50, Compression: fileformat.CompressionNone, Encrypted: false}
+		h := &format.BlockHeader{StoredSize: 100, RawSize: 50, Compression: format.CompressionNone, Encrypted: false}
 		err := r.checkHeader(h)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "none-compressed block stored")
 	})
 
 	t.Run("encrypted none compression ok", func(t *testing.T) {
-		h := &fileformat.BlockHeader{StoredSize: 100, RawSize: 50, Compression: fileformat.CompressionNone, Encrypted: true}
+		h := &format.BlockHeader{StoredSize: 100, RawSize: 50, Compression: format.CompressionNone, Encrypted: true}
 		err := r.checkHeader(h)
 		require.NoError(t, err)
 	})
 
 	t.Run("valid header", func(t *testing.T) {
-		h := &fileformat.BlockHeader{StoredSize: 50, RawSize: 50, Compression: fileformat.CompressionNone}
+		h := &format.BlockHeader{StoredSize: 50, RawSize: 50, Compression: format.CompressionNone}
 		err := r.checkHeader(h)
 		require.NoError(t, err)
 	})
@@ -120,7 +120,7 @@ func TestReaderMaybeDecrypt(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 	r := NewReader(ra, limits)
 
-	h := &fileformat.BlockHeader{BlockID: 1, StoredSize: 50, Encrypted: false}
+	h := &format.BlockHeader{BlockID: 1, StoredSize: 50, Encrypted: false}
 
 	t.Run("plain block", func(t *testing.T) {
 		stored := bytes.Repeat([]byte{0x42}, 50)
@@ -130,7 +130,7 @@ func TestReaderMaybeDecrypt(t *testing.T) {
 	})
 
 	t.Run("encrypted without decrypter", func(t *testing.T) {
-		hEncrypted := &fileformat.BlockHeader{BlockID: 1, StoredSize: 50, Encrypted: true}
+		hEncrypted := &format.BlockHeader{BlockID: 1, StoredSize: 50, Encrypted: true}
 		stored := bytes.Repeat([]byte{0x42}, 50)
 		_, err := r.maybeDecrypt(stored, hEncrypted)
 		require.Error(t, err)
@@ -143,7 +143,7 @@ func TestReaderDecompress(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 	r := NewReader(ra, limits)
 
-	h := &fileformat.BlockHeader{BlockID: 1, Compression: fileformat.CompressionNone}
+	h := &format.BlockHeader{BlockID: 1, Compression: format.CompressionNone}
 
 	t.Run("none compression", func(t *testing.T) {
 		stored := []byte("hello world")
@@ -153,9 +153,9 @@ func TestReaderDecompress(t *testing.T) {
 	})
 
 	t.Run("zstd compression", func(t *testing.T) {
-		hZstd := &fileformat.BlockHeader{BlockID: 1, Compression: fileformat.CompressionZstd}
+		hZstd := &format.BlockHeader{BlockID: 1, Compression: format.CompressionZstd}
 		raw := bytes.Repeat([]byte{0x42}, 1000)
-		compressed, err := Compress(fileformat.CompressionZstd, 3, raw)
+		compressed, err := Compress(format.CompressionZstd, 3, raw)
 		require.NoError(t, err)
 		result, err := r.decompress(hZstd, compressed)
 		require.NoError(t, err)
@@ -165,22 +165,22 @@ func TestReaderDecompress(t *testing.T) {
 
 func TestReaderReadAtBlockCopy(t *testing.T) {
 	raw := bytes.Repeat([]byte{0x42}, 1000)
-	compressed, err := Compress(fileformat.CompressionZstd, 3, raw)
+	compressed, err := Compress(format.CompressionZstd, 3, raw)
 	require.NoError(t, err)
 
-	h := fileformat.BlockHeader{
-		BlockKind:   fileformat.BlockKindRows,
-		Compression: fileformat.CompressionZstd,
+	h := format.BlockHeader{
+		BlockKind:   format.BlockKindRows,
+		Compression: format.CompressionZstd,
 		SnapshotID:  1,
 		TableID:     1,
 		ItemCount:   10,
 		RawSize:     uint32(len(raw)),
 		StoredSize:  uint32(len(compressed)),
-		RawCRC32C:   fileformat.CRC32C(raw),
+		RawCRC32C:   format.CRC32C(raw),
 	}
 
 	var buf bytes.Buffer
-	hdr := make([]byte, fileformat.BlockHeaderSize)
+	hdr := make([]byte, format.BlockHeaderSize)
 	_ = h.MarshalTo(hdr)
 	buf.Write(hdr)
 	buf.Write(compressed)
@@ -201,19 +201,19 @@ func TestReaderReadAtBlockCopy(t *testing.T) {
 
 func TestReaderReadAtBlockCopyPlain(t *testing.T) {
 	raw := []byte("plain block data")
-	h := fileformat.BlockHeader{
-		BlockKind:   fileformat.BlockKindMetadata,
-		Compression: fileformat.CompressionNone,
+	h := format.BlockHeader{
+		BlockKind:   format.BlockKindMetadata,
+		Compression: format.CompressionNone,
 		SnapshotID:  1,
 		TableID:     0,
 		ItemCount:   1,
 		RawSize:     uint32(len(raw)),
 		StoredSize:  uint32(len(raw)),
-		RawCRC32C:   fileformat.CRC32C(raw),
+		RawCRC32C:   format.CRC32C(raw),
 	}
 
 	var buf bytes.Buffer
-	hdr := make([]byte, fileformat.BlockHeaderSize)
+	hdr := make([]byte, format.BlockHeaderSize)
 	_ = h.MarshalTo(hdr)
 	buf.Write(hdr)
 	buf.Write(raw)
@@ -229,12 +229,12 @@ func TestReaderReadAtBlockCopyPlain(t *testing.T) {
 
 func TestReaderReadAtBlockCRCError(t *testing.T) {
 	raw := bytes.Repeat([]byte{0x42}, 1000)
-	compressed, err := Compress(fileformat.CompressionZstd, 3, raw)
+	compressed, err := Compress(format.CompressionZstd, 3, raw)
 	require.NoError(t, err)
 
-	h := fileformat.BlockHeader{
-		BlockKind:   fileformat.BlockKindRows,
-		Compression: fileformat.CompressionZstd,
+	h := format.BlockHeader{
+		BlockKind:   format.BlockKindRows,
+		Compression: format.CompressionZstd,
 		SnapshotID:  1,
 		TableID:     1,
 		ItemCount:   10,
@@ -244,7 +244,7 @@ func TestReaderReadAtBlockCRCError(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	hdr := make([]byte, fileformat.BlockHeaderSize)
+	hdr := make([]byte, format.BlockHeaderSize)
 	_ = h.MarshalTo(hdr)
 	buf.Write(hdr)
 	buf.Write(compressed)
@@ -260,22 +260,22 @@ func TestReaderReadAtBlockCRCError(t *testing.T) {
 
 func TestReaderReadAtBlockView(t *testing.T) {
 	raw := bytes.Repeat([]byte{0x42}, 1000)
-	compressed, err := Compress(fileformat.CompressionZstd, 3, raw)
+	compressed, err := Compress(format.CompressionZstd, 3, raw)
 	require.NoError(t, err)
 
-	h := fileformat.BlockHeader{
-		BlockKind:   fileformat.BlockKindRows,
-		Compression: fileformat.CompressionZstd,
+	h := format.BlockHeader{
+		BlockKind:   format.BlockKindRows,
+		Compression: format.CompressionZstd,
 		SnapshotID:  1,
 		TableID:     1,
 		ItemCount:   10,
 		RawSize:     uint32(len(raw)),
 		StoredSize:  uint32(len(compressed)),
-		RawCRC32C:   fileformat.CRC32C(raw),
+		RawCRC32C:   format.CRC32C(raw),
 	}
 
 	var buf bytes.Buffer
-	hdr := make([]byte, fileformat.BlockHeaderSize)
+	hdr := make([]byte, format.BlockHeaderSize)
 	_ = h.MarshalTo(hdr)
 	buf.Write(hdr)
 	buf.Write(compressed)
@@ -294,20 +294,20 @@ func TestReaderReadRowsDir(t *testing.T) {
 	// Create a page with one record using the page builder
 	pageBuilder := NewPageBuilder(32 << 10)
 	simpleTuple := []byte{0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	require.NoError(t, pageBuilder.Add(1, 1, fileformat.ChangeInsert, simpleTuple))
+	require.NoError(t, pageBuilder.Add(1, 1, format.ChangeInsert, simpleTuple))
 	pageRaw, err := pageBuilder.Finish()
 	require.NoError(t, err)
 
-	pageStored, err := Compress(fileformat.CompressionZstd, 3, pageRaw)
+	pageStored, err := Compress(format.CompressionZstd, 3, pageRaw)
 	require.NoError(t, err)
 
-	containerHeader := fileformat.RowsBlockHeader{
+	containerHeader := format.RowsBlockHeader{
 		PageCount:      1,
-		DirectoryBytes: fileformat.RowsPageDirEntrySize,
+		DirectoryBytes: format.RowsPageDirEntrySize,
 		TotalRecords:   1,
 	}
 
-	dirEntry := fileformat.RowsPageDirEntry{
+	dirEntry := format.RowsPageDirEntry{
 		PageOrdinal:        0,
 		FirstRecordOrdinal: 0,
 		RecordCount:        1,
@@ -315,16 +315,16 @@ func TestReaderReadRowsDir(t *testing.T) {
 		RawSize:            uint32(len(pageRaw)),
 		MinRowID:           1,
 		MaxRowID:           1,
-		PageCRC32C:         fileformat.CRC32C(pageRaw),
-		StoredOffset:       uint64(fileformat.RowsBlockHeaderSize + fileformat.RowsPageDirEntrySize),
+		PageCRC32C:         format.CRC32C(pageRaw),
+		StoredOffset:       uint64(format.RowsBlockHeaderSize + format.RowsPageDirEntrySize),
 	}
 
 	var containerBuf bytes.Buffer
-	hdr := make([]byte, fileformat.RowsBlockHeaderSize)
+	hdr := make([]byte, format.RowsBlockHeaderSize)
 	_ = containerHeader.MarshalTo(hdr)
 	containerBuf.Write(hdr)
 
-	dirBuf := make([]byte, fileformat.RowsPageDirEntrySize)
+	dirBuf := make([]byte, format.RowsPageDirEntrySize)
 	_ = dirEntry.MarshalTo(dirBuf)
 	containerBuf.Write(dirBuf)
 
@@ -332,18 +332,18 @@ func TestReaderReadRowsDir(t *testing.T) {
 	headerAndDir := containerBuf.Bytes()
 	containerBuf.Write(pageStored)
 
-	blockHeader := fileformat.BlockHeader{
-		BlockKind:   fileformat.BlockKindRows,
-		Compression: fileformat.CompressionZstd,
+	blockHeader := format.BlockHeader{
+		BlockKind:   format.BlockKindRows,
+		Compression: format.CompressionZstd,
 		SnapshotID:  1,
 		TableID:     1,
 		ItemCount:   1,
 		RawSize:     uint32(len(pageRaw)),
 		StoredSize:  uint32(containerBuf.Len()),
-		RawCRC32C:   fileformat.CRC32C(headerAndDir),
+		RawCRC32C:   format.CRC32C(headerAndDir),
 	}
 
-	hdrBytes := make([]byte, fileformat.BlockHeaderSize)
+	hdrBytes := make([]byte, format.BlockHeaderSize)
 	_ = blockHeader.MarshalTo(hdrBytes)
 
 	fullBuf := bytes.Buffer{}
@@ -365,23 +365,23 @@ func TestReaderReadRowsPage(t *testing.T) {
 	// Create a page with one record using the page builder
 	pageBuilder := NewPageBuilder(32 << 10)
 	simpleTuple := []byte{0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	require.NoError(t, pageBuilder.Add(1, 1, fileformat.ChangeInsert, simpleTuple))
+	require.NoError(t, pageBuilder.Add(1, 1, format.ChangeInsert, simpleTuple))
 	pageRaw, err := pageBuilder.Finish()
 	require.NoError(t, err)
 
 	// The page CRC is over the streams (after the header)
-	pageCRC := fileformat.CRC32C(pageRaw[fileformat.RowsPageHeaderSize:])
+	pageCRC := format.CRC32C(pageRaw[format.RowsPageHeaderSize:])
 
-	pageStored, err := Compress(fileformat.CompressionZstd, 3, pageRaw)
+	pageStored, err := Compress(format.CompressionZstd, 3, pageRaw)
 	require.NoError(t, err)
 
-	containerHeader := fileformat.RowsBlockHeader{
+	containerHeader := format.RowsBlockHeader{
 		PageCount:      1,
-		DirectoryBytes: fileformat.RowsPageDirEntrySize,
+		DirectoryBytes: format.RowsPageDirEntrySize,
 		TotalRecords:   1,
 	}
 
-	dirEntry := fileformat.RowsPageDirEntry{
+	dirEntry := format.RowsPageDirEntry{
 		PageOrdinal:        0,
 		FirstRecordOrdinal: 0,
 		RecordCount:        1,
@@ -390,15 +390,15 @@ func TestReaderReadRowsPage(t *testing.T) {
 		MinRowID:           1,
 		MaxRowID:           1,
 		PageCRC32C:         pageCRC,
-		StoredOffset:       uint64(fileformat.RowsBlockHeaderSize + fileformat.RowsPageDirEntrySize),
+		StoredOffset:       uint64(format.RowsBlockHeaderSize + format.RowsPageDirEntrySize),
 	}
 
 	var containerBuf bytes.Buffer
-	hdr := make([]byte, fileformat.RowsBlockHeaderSize)
+	hdr := make([]byte, format.RowsBlockHeaderSize)
 	_ = containerHeader.MarshalTo(hdr)
 	containerBuf.Write(hdr)
 
-	dirBuf := make([]byte, fileformat.RowsPageDirEntrySize)
+	dirBuf := make([]byte, format.RowsPageDirEntrySize)
 	_ = dirEntry.MarshalTo(dirBuf)
 	containerBuf.Write(dirBuf)
 
@@ -406,18 +406,18 @@ func TestReaderReadRowsPage(t *testing.T) {
 	headerAndDir := containerBuf.Bytes()
 	containerBuf.Write(pageStored)
 
-	blockHeader := fileformat.BlockHeader{
-		BlockKind:   fileformat.BlockKindRows,
-		Compression: fileformat.CompressionZstd,
+	blockHeader := format.BlockHeader{
+		BlockKind:   format.BlockKindRows,
+		Compression: format.CompressionZstd,
 		SnapshotID:  1,
 		TableID:     1,
 		ItemCount:   1,
 		RawSize:     uint32(len(pageRaw)),
 		StoredSize:  uint32(containerBuf.Len()),
-		RawCRC32C:   fileformat.CRC32C(headerAndDir),
+		RawCRC32C:   format.CRC32C(headerAndDir),
 	}
 
-	hdrBytes := make([]byte, fileformat.BlockHeaderSize)
+	hdrBytes := make([]byte, format.BlockHeaderSize)
 	_ = blockHeader.MarshalTo(hdrBytes)
 
 	fullBuf := bytes.Buffer{}
@@ -441,20 +441,20 @@ func TestReaderReadRowsPageEncryptedNoDecrypter(t *testing.T) {
 	// Build a minimal rows block with one page (with one record)
 	pageBuilder := NewPageBuilder(32 << 10)
 	simpleTuple := []byte{0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	require.NoError(t, pageBuilder.Add(1, 1, fileformat.ChangeInsert, simpleTuple))
+	require.NoError(t, pageBuilder.Add(1, 1, format.ChangeInsert, simpleTuple))
 	pageRaw, err := pageBuilder.Finish()
 	require.NoError(t, err)
 
-	pageStored, err := Compress(fileformat.CompressionZstd, 3, pageRaw)
+	pageStored, err := Compress(format.CompressionZstd, 3, pageRaw)
 	require.NoError(t, err)
 
-	containerHeader := fileformat.RowsBlockHeader{
+	containerHeader := format.RowsBlockHeader{
 		PageCount:      1,
-		DirectoryBytes: fileformat.RowsPageDirEntrySize,
+		DirectoryBytes: format.RowsPageDirEntrySize,
 		TotalRecords:   1,
 	}
 
-	dirEntry := fileformat.RowsPageDirEntry{
+	dirEntry := format.RowsPageDirEntry{
 		PageOrdinal:        0,
 		FirstRecordOrdinal: 0,
 		RecordCount:        1,
@@ -462,16 +462,16 @@ func TestReaderReadRowsPageEncryptedNoDecrypter(t *testing.T) {
 		RawSize:            uint32(len(pageRaw)),
 		MinRowID:           1,
 		MaxRowID:           1,
-		PageCRC32C:         fileformat.CRC32C(pageRaw),
-		StoredOffset:       uint64(fileformat.RowsBlockHeaderSize + fileformat.RowsPageDirEntrySize),
+		PageCRC32C:         format.CRC32C(pageRaw),
+		StoredOffset:       uint64(format.RowsBlockHeaderSize + format.RowsPageDirEntrySize),
 	}
 
 	var containerBuf bytes.Buffer
-	hdr := make([]byte, fileformat.RowsBlockHeaderSize)
+	hdr := make([]byte, format.RowsBlockHeaderSize)
 	_ = containerHeader.MarshalTo(hdr)
 	containerBuf.Write(hdr)
 
-	dirBuf := make([]byte, fileformat.RowsPageDirEntrySize)
+	dirBuf := make([]byte, format.RowsPageDirEntrySize)
 	_ = dirEntry.MarshalTo(dirBuf)
 	containerBuf.Write(dirBuf)
 
@@ -479,19 +479,19 @@ func TestReaderReadRowsPageEncryptedNoDecrypter(t *testing.T) {
 	headerAndDir := containerBuf.Bytes()
 	containerBuf.Write(pageStored)
 
-	blockHeader := fileformat.BlockHeader{
-		BlockKind:   fileformat.BlockKindRows,
-		Compression: fileformat.CompressionZstd,
+	blockHeader := format.BlockHeader{
+		BlockKind:   format.BlockKindRows,
+		Compression: format.CompressionZstd,
 		SnapshotID:  1,
 		TableID:     1,
 		ItemCount:   1,
 		RawSize:     uint32(len(pageRaw)),
 		StoredSize:  uint32(containerBuf.Len()),
-		RawCRC32C:   fileformat.CRC32C(headerAndDir),
+		RawCRC32C:   format.CRC32C(headerAndDir),
 		Encrypted:   true,
 	}
 
-	hdrBytes := make([]byte, fileformat.BlockHeaderSize)
+	hdrBytes := make([]byte, format.BlockHeaderSize)
 	_ = blockHeader.MarshalTo(hdrBytes)
 
 	fullBuf := bytes.Buffer{}

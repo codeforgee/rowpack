@@ -7,7 +7,7 @@ import (
 	"sort"
 
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/index"
 	"github.com/rowpack/rowpack/internal/metadata"
 )
@@ -183,9 +183,9 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 		// Decode and group the layer's columns once. Previously every table
 		// rescanned every column, making schema derivation quadratic in tables.
 		columnsByParent := make(map[uint64][]*metadata.Record)
-		for _, cid := range view.MetadataByType(snap, uint32(fileformat.RecordColumn)) {
+		for _, cid := range view.MetadataByType(snap, uint32(format.RecordColumn)) {
 			loc := view.Metadata(snap, cid)
-			if loc == nil || loc.Operation == fileformat.OperationDelete || loc.RecordType != uint32(fileformat.RecordColumn) {
+			if loc == nil || loc.Operation == format.OperationDelete || loc.RecordType != uint32(format.RecordColumn) {
 				continue
 			}
 			rec, err := s.readMetadataCached(view, snap, cid, memo)
@@ -195,10 +195,10 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 			columnsByParent[rec.ParentID] = append(columnsByParent[rec.ParentID], rec)
 		}
 		// Gather table records of this snapshot layer.
-		tableIDs := view.MetadataByType(snap, uint32(fileformat.RecordTable))
+		tableIDs := view.MetadataByType(snap, uint32(format.RecordTable))
 		for _, oid := range tableIDs {
 			loc := view.Metadata(snap, oid)
-			if loc == nil || loc.Operation == fileformat.OperationDelete {
+			if loc == nil || loc.Operation == format.OperationDelete {
 				continue
 			}
 			rec, err := s.readMetadataCached(view, snap, oid, memo)
@@ -470,7 +470,7 @@ func (s *Store) readMetadataCached(view *index.View, snapshot, objectID uint64, 
 	for {
 		loc := view.Metadata(cur, objectID)
 		if loc != nil {
-			if loc.Operation == fileformat.OperationDelete {
+			if loc.Operation == format.OperationDelete {
 				return nil, fmt.Errorf("%w: metadata object %d deleted", ErrNotFound, objectID)
 			}
 			if memo != nil {

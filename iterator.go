@@ -9,7 +9,7 @@ import (
 
 	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/index"
 )
 
@@ -81,7 +81,7 @@ type Iterator struct {
 	heap   rowHeap
 
 	curRowID RowID
-	curType  fileformat.ChangeType // current record's change kind
+	curType  format.ChangeType // current record's change kind
 
 	// buf is the iterator-managed reusable row used when Next is called with
 	// a nil dst. It grows on demand and is overwritten by every Next call.
@@ -309,7 +309,7 @@ func (it *Iterator) nextBlockRecord() (Row, bool) {
 			it.curPageNext++
 			it.curRowID = RowID(rec.RowID)
 			it.curType = rec.ChangeType
-			if rec.ChangeType == fileformat.ChangeDelete {
+			if rec.ChangeType == format.ChangeDelete {
 				return nil, true // tombstone: no payload
 			}
 			decoder, err := it.decoderFor(rec.SchemaVersion)
@@ -398,7 +398,7 @@ func (it *Iterator) nextLoc() (RowID, index.RowLoc, bool) {
 			if it.opts.End > 0 && rowID >= it.opts.End {
 				return 0, index.RowLoc{}, false
 			}
-			if loc.ChangeType == fileformat.ChangeDelete {
+			if loc.ChangeType == format.ChangeDelete {
 				continue // tombstone: hide the row entirely
 			}
 			return rowID, loc, true
@@ -423,7 +423,7 @@ func (it *Iterator) nextLoc() (RowID, index.RowLoc, bool) {
 		if it.opts.End > 0 && rowID >= it.opts.End {
 			return 0, index.RowLoc{}, false
 		}
-		if loc.ChangeType == fileformat.ChangeDelete {
+		if loc.ChangeType == format.ChangeDelete {
 			continue // tombstone: hide the row entirely
 		}
 		return rowID, loc, true

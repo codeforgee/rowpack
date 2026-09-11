@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // testCodec is the row codec shared by the block tests: a roomy limit so
@@ -20,12 +20,12 @@ func TestRowsPageRejectsTupleEndOutsideBody(t *testing.T) {
 	schema := binary.AppendUvarint(nil, 1)
 	schema = binary.AppendUvarint(schema, 1)
 	streams := append(append(append(append([]byte{}, rowIDs...), offsets...), schema...), 0)
-	h := fileformat.RowsPageHeader{
+	h := format.RowsPageHeader{
 		EntryCount: 1, RowIDsBytes: uint32(len(rowIDs)), OffsetsBytes: uint32(len(offsets)),
 		SchemaRLEBytes: uint32(len(schema)), ChangeBitsBytes: 1,
-		FirstRowID: 1, MinRowID: 1, MaxRowID: 1, CRC32C: fileformat.CRC32C(streams),
+		FirstRowID: 1, MinRowID: 1, MaxRowID: 1, CRC32C: format.CRC32C(streams),
 	}
-	raw := make([]byte, fileformat.RowsPageHeaderSize)
+	raw := make([]byte, format.RowsPageHeaderSize)
 	if err := h.MarshalTo(raw); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func pageTestRow(tb testing.TB, schema *codec.Schema, i uint64) []byte {
 type expectedPageRow struct {
 	rowID   uint64
 	version uint32
-	ct      fileformat.ChangeType
+	ct      format.ChangeType
 	bodyLen int
 }
 
@@ -101,7 +101,7 @@ func buildAndVerifyPage(tb testing.TB, target int, want []expectedPageRow, bodie
 	b := NewPageBuilder(target)
 	for i := range want {
 		var body []byte
-		if want[i].ct != fileformat.ChangeDelete {
+		if want[i].ct != format.ChangeDelete {
 			body = bodies[i]
 		}
 		if err := b.Add(want[i].rowID, want[i].version, want[i].ct, body); err != nil {
@@ -147,7 +147,7 @@ func buildAndVerifyPage(tb testing.TB, target int, want []expectedPageRow, bodie
 			tb.Fatalf("RecordAt(%d) = {%d v%d ct%d}, want {%d v%d ct%d}",
 				i, rec.RowID, rec.SchemaVersion, rec.ChangeType, w.rowID, w.version, w.ct)
 		}
-		if want[i].ct == fileformat.ChangeDelete {
+		if want[i].ct == format.ChangeDelete {
 			if len(rec.Body) != 0 {
 				tb.Fatalf("RecordAt(%d): delete carries body", i)
 			}
@@ -184,14 +184,14 @@ func TestRowsPageRoundTripMixed(t *testing.T) {
 	// Sequential IDs, schema-version runs (1 x5, 2 x3, 1 x4), mixed change
 	// types incl. deletes, empty strings, NULLs.
 	for i := uint64(1); i <= 12; i++ {
-		var ct fileformat.ChangeType
+		var ct format.ChangeType
 		switch i % 4 {
 		case 0:
-			ct = fileformat.ChangeDelete
+			ct = format.ChangeDelete
 		case 1, 2:
-			ct = fileformat.ChangeInsert
+			ct = format.ChangeInsert
 		default:
-			ct = fileformat.ChangeUpdate
+			ct = format.ChangeUpdate
 		}
 		version := uint32(1)
 		switch {
@@ -202,7 +202,7 @@ func TestRowsPageRoundTripMixed(t *testing.T) {
 		}
 		body := pageTestRow(t, schema, i)
 		rec := expectedPageRow{rowID: i, version: version, ct: ct}
-		if ct != fileformat.ChangeDelete {
+		if ct != format.ChangeDelete {
 			rec.bodyLen = len(body)
 		}
 		want = append(want, rec)
@@ -223,12 +223,12 @@ func TestRowsPageRoundTripUnsortedAndExtremeIDs(t *testing.T) {
 	)
 	for n, id := range ids {
 		body := pageTestRow(t, schema, uint64(n)+1)
-		ct := fileformat.ChangeInsert
+		ct := format.ChangeInsert
 		if n%3 == 2 {
-			ct = fileformat.ChangeDelete
+			ct = format.ChangeDelete
 		}
 		rec := expectedPageRow{rowID: id, version: 1, ct: ct}
-		if ct != fileformat.ChangeDelete {
+		if ct != format.ChangeDelete {
 			rec.bodyLen = len(body)
 		}
 		want = append(want, rec)
@@ -257,7 +257,7 @@ func TestRowsPageOversizedRowOwnPage(t *testing.T) {
 	if len(body) <= 32<<10 {
 		t.Fatalf("payload too small: %d", len(body))
 	}
-	want := []expectedPageRow{{rowID: 1, version: 1, ct: fileformat.ChangeInsert, bodyLen: len(body)}}
+	want := []expectedPageRow{{rowID: 1, version: 1, ct: format.ChangeInsert, bodyLen: len(body)}}
 	p := buildAndVerifyPage(t, 32<<10, want, [][]byte{body})
 	if p.h.MinRowID != 1 || p.h.MaxRowID != 1 || p.h.FirstRowID != 1 {
 		t.Fatalf("single-row page IDs wrong: %d %d %d", p.h.FirstRowID, p.h.MinRowID, p.h.MaxRowID)
@@ -268,12 +268,12 @@ func TestRowsPageCorruption(t *testing.T) {
 	schema := pageTestSchema()
 	b := NewPageBuilder(64 << 10)
 	for i := uint64(1); i <= 50; i++ {
-		ct := fileformat.ChangeInsert
+		ct := format.ChangeInsert
 		if i%9 == 0 {
-			ct = fileformat.ChangeDelete
+			ct = format.ChangeDelete
 		}
 		body := pageTestRow(t, schema, i)
-		if ct == fileformat.ChangeDelete {
+		if ct == format.ChangeDelete {
 			body = nil
 		}
 		requireNoErr(t, b.Add(i, 1, ct, body))
@@ -301,12 +301,12 @@ func TestRowsPageCorruption(t *testing.T) {
 	// A forged reserved change marker (packed 3) must be rejected even with
 	// a recomputed CRC: flip one change bit to 3 and re-stamp the header CRC.
 	bad := append([]byte(nil), good...)
-	bitsOff := fileformat.RowsPageHeaderSize + int(good[16:20][0]+ /* rowIDs */ 0) // computed below instead
+	bitsOff := format.RowsPageHeaderSize + int(good[16:20][0]+ /* rowIDs */ 0) // computed below instead
 	_ = bitsOff
 	p, err := ParseRowsPage(good)
 	requireNoErr(t, err)
 	h := p.h
-	changeOff := fileformat.RowsPageHeaderSize + int(h.RowIDsBytes+h.OffsetsBytes+h.SchemaRLEBytes)
+	changeOff := format.RowsPageHeaderSize + int(h.RowIDsBytes+h.OffsetsBytes+h.SchemaRLEBytes)
 	bad[changeOff] = (bad[changeOff] &^ 0x30) | 0x30 // entry 0..: set two low bits of second nibble -> 3
 	fixPageCRC(bad)
 	if _, err := ParseRowsPage(bad); err == nil {
@@ -333,15 +333,15 @@ func TestValidateChangeBitsReportsFirstRecordAndIgnoresPadding(t *testing.T) {
 
 // fixPageCRC recomputes the header CRC field after mutation.
 func fixPageCRC(page []byte) {
-	h := fileformat.RowsPageHeader{}
+	h := format.RowsPageHeader{}
 	// Re-parse without geometry/CRC validation by hand: fields at fixed offsets.
 	h.RowIDsBytes = leU32(page[16:])
 	h.OffsetsBytes = leU32(page[20:])
 	h.SchemaRLEBytes = leU32(page[24:])
 	h.ChangeBitsBytes = leU32(page[28:])
 	h.TuplesBytes = leU32(page[32:])
-	streams := page[fileformat.RowsPageHeaderSize:]
-	lePutU32(page[60:], fileformat.CRC32C(streams))
+	streams := page[format.RowsPageHeaderSize:]
+	lePutU32(page[60:], format.CRC32C(streams))
 }
 
 func leU32(b []byte) uint32 {
@@ -361,7 +361,7 @@ func TestRowsPageBuilderReuse(t *testing.T) {
 	for round := 0; round < 3; round++ {
 		for i := uint64(1); i <= 100; i++ {
 			body := pageTestRow(t, schema, i)
-			requireNoErr(t, b.Add(i, 1, fileformat.ChangeInsert, body))
+			requireNoErr(t, b.Add(i, 1, format.ChangeInsert, body))
 		}
 		page, err := b.Finish()
 		requireNoErr(t, err)
@@ -370,7 +370,7 @@ func TestRowsPageBuilderReuse(t *testing.T) {
 		if p.h.EntryCount != 100 {
 			t.Fatalf("round %d: %d entries", round, p.h.EntryCount)
 		}
-		if b.countRows() != 0 || b.rawBytes() != fileformat.RowsPageHeaderSize {
+		if b.countRows() != 0 || b.rawBytes() != format.RowsPageHeaderSize {
 			t.Fatalf("round %d: builder not reset (count %d, raw %d)", round, b.countRows(), b.rawBytes())
 		}
 	}
@@ -392,7 +392,7 @@ func TestRowsPageFlushBoundary(t *testing.T) {
 			pages++
 		}
 		body := pageTestRow(t, schema, i)
-		requireNoErr(t, b.Add(i, 1, fileformat.ChangeInsert, body))
+		requireNoErr(t, b.Add(i, 1, format.ChangeInsert, body))
 		rows++
 	}
 	if _, err := b.Finish(); err != nil {

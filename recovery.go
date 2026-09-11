@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/index"
 	"github.com/rowpack/rowpack/internal/metadata"
 	"github.com/rowpack/rowpack/internal/seal"
@@ -144,7 +144,7 @@ func (s *Store) recover() error {
 				maxObjectID = oid
 			}
 		}
-		for _, oid := range view.MetadataByType(sm.ID, uint32(fileformat.RecordTable)) {
+		for _, oid := range view.MetadataByType(sm.ID, uint32(format.RecordTable)) {
 			if tid, err := metadata.TableID(oid); err == nil && tid > maxTableID {
 				maxTableID = tid
 			}
@@ -184,15 +184,15 @@ func (s *Store) readIndexTxn(c *committedSnapshot) (data []byte, crypto *index.C
 	if _, rerr := s.data.ReadAt(buf, c.txnStart); rerr != nil {
 		return nil, nil, 0, false, fmt.Errorf("rowpack: read IndexTxn of snapshot %d: %w", c.snapshotID, rerr)
 	}
-	if fileformat.CRC32C(buf) != c.ftrTxnCRC {
+	if format.CRC32C(buf) != c.ftrTxnCRC {
 		return nil, nil, 0, false, nil
 	}
-	var h fileformat.IndexTxnHeader
+	var h format.IndexTxnHeader
 	if herr := h.Unmarshal(buf); herr != nil {
 		return nil, nil, 0, false, nil // unreadable header: rebuild
 	}
-	if s.header.EncryptionAlgorithm != fileformat.EncNone {
-		epoch := fileformat.IndexTxnHeaderKeyEpoch(buf)
+	if s.header.EncryptionAlgorithm != format.EncNone {
+		epoch := format.IndexTxnHeaderKeyEpoch(buf)
 		crypto = &index.ChunkCrypto{
 			TxnSequence: h.TxnSequence,
 			SnapshotID:  h.SnapshotID,
@@ -227,11 +227,11 @@ func (s *Store) scanDataFile() ([]committedSnapshot, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	if size < fileformat.DataFileHeaderSize {
+	if size < format.DataFileHeaderSize {
 		return nil, 0, fmt.Errorf("rowpack: store file %d bytes too small", size)
 	}
 	var out []committedSnapshot
-	pos := int64(fileformat.DataFileHeaderSize)
+	pos := int64(format.DataFileHeaderSize)
 	for pos < size {
 		c, complete, next, err := s.walkSnapshot(pos)
 		if err != nil {
@@ -262,20 +262,20 @@ func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, n
 	if err != nil {
 		return c, false, 0, err
 	}
-	var sh [fileformat.SnapshotHeaderSize]byte
-	if size-start < fileformat.SnapshotHeaderSize {
+	var sh [format.SnapshotHeaderSize]byte
+	if size-start < format.SnapshotHeaderSize {
 		return c, false, 0, nil
 	}
 	if _, err := s.data.ReadAt(sh[:], start); err != nil {
 		return c, false, 0, err
 	}
-	var hdr fileformat.SnapshotHeader
+	var hdr format.SnapshotHeader
 	if err := hdr.Unmarshal(sh[:]); err != nil {
 		return c, false, 0, nil // not a valid header: tail
 	}
 	c.snapshotID = hdr.SnapshotID
 	c.start = start
-	c.blocksStart = start + fileformat.SnapshotHeaderSize
+	c.blocksStart = start + format.SnapshotHeaderSize
 	cur := c.blocksStart
 	for cur < size {
 		if size-cur < 8 {
@@ -286,63 +286,63 @@ func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, n
 			return c, false, 0, err
 		}
 		switch string(magic[:]) {
-		case fileformat.MagicBlockHdr:
-			if size-cur < fileformat.BlockHeaderSize {
+		case format.MagicBlockHdr:
+			if size-cur < format.BlockHeaderSize {
 				return c, false, 0, nil
 			}
-			var bhBuf [fileformat.BlockHeaderSize]byte
+			var bhBuf [format.BlockHeaderSize]byte
 			if _, err := s.data.ReadAt(bhBuf[:], cur); err != nil {
 				return c, false, 0, err
 			}
-			var bh fileformat.BlockHeader
+			var bh format.BlockHeader
 			if err := bh.Unmarshal(bhBuf[:]); err != nil {
 				return c, false, 0, nil // broken block header: break
 			}
-			if cur+fileformat.BlockHeaderSize+int64(bh.StoredSize) > size {
+			if cur+format.BlockHeaderSize+int64(bh.StoredSize) > size {
 				return c, false, 0, nil // truncated payload
 			}
 			c.blockIDs = append(c.blockIDs, bh.BlockID)
-			cur += fileformat.BlockHeaderSize + int64(bh.StoredSize)
-		case fileformat.MagicIndexTxnHdr:
-			if size-cur < fileformat.IndexTxnHeaderSize {
+			cur += format.BlockHeaderSize + int64(bh.StoredSize)
+		case format.MagicIndexTxnHdr:
+			if size-cur < format.IndexTxnHeaderSize {
 				return c, false, 0, nil
 			}
-			var thBuf [fileformat.IndexTxnHeaderSize]byte
+			var thBuf [format.IndexTxnHeaderSize]byte
 			if _, err := s.data.ReadAt(thBuf[:], cur); err != nil {
 				return c, false, 0, err
 			}
-			var th fileformat.IndexTxnHeader
+			var th format.IndexTxnHeader
 			if err := th.Unmarshal(thBuf[:]); err != nil {
 				return c, false, 0, nil
 			}
 			body := int64(th.BodyBytes)
-			if body < 0 || cur+fileformat.IndexTxnHeaderSize+body+fileformat.IndexTxnFooterSize > size {
+			if body < 0 || cur+format.IndexTxnHeaderSize+body+format.IndexTxnFooterSize > size {
 				return c, false, 0, nil // truncated txn
 			}
-			ftrOff := cur + fileformat.IndexTxnHeaderSize + body
-			if size-ftrOff < fileformat.IndexTxnFooterSize {
+			ftrOff := cur + format.IndexTxnHeaderSize + body
+			if size-ftrOff < format.IndexTxnFooterSize {
 				return c, false, 0, nil
 			}
-			var tfBuf [fileformat.IndexTxnFooterSize]byte
+			var tfBuf [format.IndexTxnFooterSize]byte
 			if _, err := s.data.ReadAt(tfBuf[:], ftrOff); err != nil {
 				return c, false, 0, err
 			}
-			var tf fileformat.IndexTxnFooter
+			var tf format.IndexTxnFooter
 			if err := tf.Unmarshal(tfBuf[:]); err != nil {
 				return c, false, 0, nil
 			}
 			c.txnStart = cur
-			c.txnEnd = ftrOff + fileformat.IndexTxnFooterSize
+			c.txnEnd = ftrOff + format.IndexTxnFooterSize
 			cur = c.txnEnd
-		case fileformat.MagicSnapshotFtr:
-			if size-cur < fileformat.SnapshotFooterSize {
+		case format.MagicSnapshotFtr:
+			if size-cur < format.SnapshotFooterSize {
 				return c, false, 0, nil // interrupted footer write
 			}
-			var fb [fileformat.SnapshotFooterSize]byte
+			var fb [format.SnapshotFooterSize]byte
 			if _, err := s.data.ReadAt(fb[:], cur); err != nil {
 				return c, false, 0, err
 			}
-			var ftr fileformat.SnapshotFooter
+			var ftr format.SnapshotFooter
 			if err := ftr.Unmarshal(fb[:]); err != nil {
 				return c, false, 0, nil
 			}
@@ -358,10 +358,10 @@ func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, n
 			}
 			c.blocksEnd = blocksEnd
 			c.footerOff = cur
-			c.end = cur + fileformat.SnapshotFooterSize
+			c.end = cur + format.SnapshotFooterSize
 			c.prevFooter = ftr.PreviousFooterOffset
 			c.ftrTxnCRC = ftr.IndexTxnCRC32C
-			c.footerCRC = le32(fb[fileformat.SnapshotFooterCRC32COffset:])
+			c.footerCRC = le32(fb[format.SnapshotFooterCRC32COffset:])
 			c.footerBytes = append([]byte(nil), fb[:]...)
 			c.blockCount = ftr.BlockCount
 			c.metaCount = ftr.MetadataBlockCount
@@ -382,19 +382,19 @@ func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, n
 // negligible. The footer is the commit authority: its presence means earlier
 // bytes in this region are mid-file corruption, never an uncommitted tail.
 func (s *Store) hasValidFooterAfter(from, size int64) bool {
-	for p := from; p+fileformat.SnapshotFooterSize <= size; p++ {
+	for p := from; p+format.SnapshotFooterSize <= size; p++ {
 		var magic [8]byte
 		if _, err := s.data.ReadAt(magic[:], p); err != nil {
 			return false
 		}
-		if string(magic[:]) != fileformat.MagicSnapshotFtr {
+		if string(magic[:]) != format.MagicSnapshotFtr {
 			continue
 		}
-		var fb [fileformat.SnapshotFooterSize]byte
+		var fb [format.SnapshotFooterSize]byte
 		if _, err := s.data.ReadAt(fb[:], p); err != nil {
 			return false
 		}
-		var ftr fileformat.SnapshotFooter
+		var ftr format.SnapshotFooter
 		if err := ftr.Unmarshal(fb[:]); err != nil {
 			continue
 		}
@@ -410,9 +410,9 @@ func (s *Store) hasValidFooterAfter(from, size int64) bool {
 // snapshot whose IndexTxn is missing or corrupt, by reading and parsing its
 // blocks in [BlocksStartOffset, BlocksEndOffset).
 func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
-	var blockEntries []fileformat.BlockIndexEntry
-	var metaEntries []fileformat.MetadataIndexEntry
-	var rowEntries []fileformat.RowIndexEntry
+	var blockEntries []format.BlockIndexEntry
+	var metaEntries []format.MetadataIndexEntry
+	var rowEntries []format.RowIndexEntry
 	// Footer counts passed CRC validation, but remain untrusted input. Bound
 	// capacity hints to avoid turning a forged footer into an OOM request.
 	const maxPreallocBytes = uint64(64 << 20)
@@ -423,22 +423,22 @@ func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
 		}
 		return int(count)
 	}
-	blockEntries = make([]fileformat.BlockIndexEntry, 0, boundedCap(uint64(c.blockCount), fileformat.BlockIndexEntrySize))
-	metaEntries = make([]fileformat.MetadataIndexEntry, 0, boundedCap(uint64(c.metaCount), fileformat.MetadataIndexEntrySize))
-	rowEntries = make([]fileformat.RowIndexEntry, 0, boundedCap(c.rowCount, fileformat.RowIndexEntrySize))
+	blockEntries = make([]format.BlockIndexEntry, 0, boundedCap(uint64(c.blockCount), format.BlockIndexEntrySize))
+	metaEntries = make([]format.MetadataIndexEntry, 0, boundedCap(uint64(c.metaCount), format.MetadataIndexEntrySize))
+	rowEntries = make([]format.RowIndexEntry, 0, boundedCap(c.rowCount, format.RowIndexEntrySize))
 	var rowCount uint64
 
 	cur := c.blocksStart
 	for cur < c.blocksEnd {
-		var bhBuf [fileformat.BlockHeaderSize]byte
+		var bhBuf [format.BlockHeaderSize]byte
 		if _, err := s.data.ReadAt(bhBuf[:], cur); err != nil {
 			return nil, err
 		}
-		var bh fileformat.BlockHeader
+		var bh format.BlockHeader
 		if err := bh.Unmarshal(bhBuf[:]); err != nil {
 			return nil, fmt.Errorf("rowpack: block header at %d: %w", cur, err)
 		}
-		blockEntries = append(blockEntries, fileformat.BlockIndexEntry{
+		blockEntries = append(blockEntries, format.BlockIndexEntry{
 			BlockID:     bh.BlockID,
 			SnapshotID:  bh.SnapshotID,
 			TableID:     bh.TableID,
@@ -451,7 +451,7 @@ func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
 			RawCRC32C:   bh.RawCRC32C,
 		})
 		switch bh.BlockKind {
-		case fileformat.BlockKindRows:
+		case format.BlockKindRows:
 			// Rebuild the row index from the page container stream: iterate
 			// every record (decompressing one page at a time) and emit the
 			// RowID/ChangeType each record carries. The whole block is never
@@ -461,7 +461,7 @@ func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
 				return nil, err
 			}
 			err = rc.ForEach(func(rec codec.PageRecord) error {
-				rowEntries = append(rowEntries, fileformat.RowIndexEntry{
+				rowEntries = append(rowEntries, format.RowIndexEntry{
 					SnapshotID: bh.SnapshotID, TableID: bh.TableID,
 					ChangeType: rec.ChangeType, RowID: rec.RowID,
 					BlockID: bh.BlockID, ItemOrdinal: uint32(len(rowEntries)),
@@ -472,7 +472,7 @@ func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
 			if err != nil {
 				return nil, err
 			}
-		case fileformat.BlockKindMetadata:
+		case format.BlockKindMetadata:
 			blk, err := s.loader.Load(cur, bh.BlockID)
 			if err != nil {
 				return nil, err
@@ -482,7 +482,7 @@ func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
 				return nil, err
 			}
 			for i := range mp.Entries {
-				metaEntries = append(metaEntries, fileformat.MetadataIndexEntry{
+				metaEntries = append(metaEntries, format.MetadataIndexEntry{
 					SnapshotID: bh.SnapshotID, ObjectID: mp.Entries[i].ObjectID,
 					Revision: mp.Entries[i].Revision, RecordType: mp.Entries[i].RecordType,
 					BlockID: bh.BlockID, ItemOrdinal: uint32(i),
@@ -490,21 +490,21 @@ func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
 				})
 			}
 		}
-		cur += fileformat.BlockHeaderSize + int64(bh.StoredSize)
+		cur += format.BlockHeaderSize + int64(bh.StoredSize)
 	}
 
-	var shBuf [fileformat.SnapshotHeaderSize]byte
+	var shBuf [format.SnapshotHeaderSize]byte
 	if _, err := s.data.ReadAt(shBuf[:], c.start); err != nil {
 		return nil, err
 	}
-	var sh fileformat.SnapshotHeader
+	var sh format.SnapshotHeader
 	if err := sh.Unmarshal(shBuf[:]); err != nil {
 		return nil, err
 	}
 
 	builder := index.NewBuilder(0) // sequence filled by the writer on commit
 	builder.Reserve(len(metaEntries), len(blockEntries), len(rowEntries))
-	snapEntry := fileformat.SnapshotIndexEntry{
+	snapEntry := format.SnapshotIndexEntry{
 		SnapshotID:       sh.SnapshotID,
 		ParentSnapshotID: sh.ParentSnapshotID,
 		SnapshotType:     sh.SnapshotType,

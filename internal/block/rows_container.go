@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // RowsContainer is a validated Rows Block page container:
@@ -32,13 +32,13 @@ import (
 // Corruption is always an error, never a panic; lengths/counts/offsets are
 // validated before any allocation or slice.
 type RowsContainer struct {
-	Header fileformat.RowsBlockHeader
-	Dir    []fileformat.RowsPageDirEntry
+	Header format.RowsBlockHeader
+	Dir    []format.RowsPageDirEntry
 
 	// blockH is the block header that produced this container (carries the
 	// compression / encryption context used to decode pages).
-	blockH fileformat.BlockHeader
-	comp   fileformat.Compression
+	blockH format.BlockHeader
+	comp   format.Compression
 	limits Limits
 
 	// stored is the whole container plaintext when mode==whole; nil when lazy.
@@ -83,7 +83,7 @@ func (c *RowsContainer) StoredLen() int {
 	if c.stored != nil {
 		return len(c.stored)
 	}
-	return fileformat.RowsBlockHeaderSize + len(c.Dir)*fileformat.RowsPageDirEntrySize
+	return format.RowsBlockHeaderSize + len(c.Dir)*format.RowsPageDirEntrySize
 }
 
 // SetCacheAccounting installs the owning cache's size updater. It must be
@@ -116,7 +116,7 @@ func (c *RowsContainer) setCounter(p *atomic.Uint64) { c.decompCounter = p }
 // RecordsRegionStart is the byte offset (within stored) where the first page's
 // stored bytes begin.
 func (c *RowsContainer) RecordsRegionStart() int {
-	return fileformat.RowsBlockHeaderSize + len(c.Dir)*fileformat.RowsPageDirEntrySize
+	return format.RowsBlockHeaderSize + len(c.Dir)*format.RowsPageDirEntrySize
 }
 
 // PageCount returns the number of pages.
@@ -127,32 +127,32 @@ func (c *RowsContainer) PageCount() int { return int(c.Header.PageCount) }
 // CRC (BlockHeader.RawCRC32C), every page's bounds (inside the container,
 // non-overlapping, within limits) and the logical TotalRecords == ItemCount.
 // It never decompresses a page. Corruption is always an error, never a panic.
-func ParseContainer(container []byte, h fileformat.BlockHeader, limits Limits) (*RowsContainer, error) {
-	if h.BlockKind != fileformat.BlockKindRows {
+func ParseContainer(container []byte, h format.BlockHeader, limits Limits) (*RowsContainer, error) {
+	if h.BlockKind != format.BlockKindRows {
 		return nil, fmt.Errorf("rowpack: block %d is kind %d, not rows", h.BlockID, h.BlockKind)
 	}
 	// h.StoredSize is the on-disk size; an encrypted block carries an extra
 	// AEAD tag, so the container plaintext is StoredSize - tag.
 	plainLen := int(h.StoredSize)
 	if h.Encrypted {
-		plainLen -= fileformat.AESGCMTagLen
+		plainLen -= format.AESGCMTagLen
 	}
 	if len(container) != plainLen {
 		return nil, fmt.Errorf("rowpack: container %d bytes, want %d", len(container), plainLen)
 	}
-	if len(container) < fileformat.RowsBlockHeaderSize {
+	if len(container) < format.RowsBlockHeaderSize {
 		return nil, fmt.Errorf("rowpack: container too short for header")
 	}
-	var rh fileformat.RowsBlockHeader
-	if err := rh.Unmarshal(container[:fileformat.RowsBlockHeaderSize]); err != nil {
+	var rh format.RowsBlockHeader
+	if err := rh.Unmarshal(container[:format.RowsBlockHeaderSize]); err != nil {
 		return nil, err
 	}
 	// The header/directory region is authenticated by the block header CRC.
-	dirEnd := fileformat.RowsBlockHeaderSize + int(rh.DirectoryBytes)
+	dirEnd := format.RowsBlockHeaderSize + int(rh.DirectoryBytes)
 	if dirEnd > len(container) {
 		return nil, fmt.Errorf("rowpack: container directory %d bytes overruns %d", rh.DirectoryBytes, len(container))
 	}
-	if fileformat.CRC32C(container[:dirEnd]) != h.RawCRC32C {
+	if format.CRC32C(container[:dirEnd]) != h.RawCRC32C {
 		return nil, fmt.Errorf("rowpack: block %d container header/dir CRC mismatch", h.BlockID)
 	}
 	if err := validateRowCounts(&rh, h, limits); err != nil {
@@ -163,7 +163,7 @@ func ParseContainer(container []byte, h fileformat.BlockHeader, limits Limits) (
 		return nil, err
 	}
 	c := &RowsContainer{Header: rh, Dir: dir, blockH: h, comp: h.Compression, limits: limits, stored: container}
-	if err := c.checkBounds(fileformat.RowsBlockHeaderSize + len(dir)*fileformat.RowsPageDirEntrySize); err != nil {
+	if err := c.checkBounds(format.RowsBlockHeaderSize + len(dir)*format.RowsPageDirEntrySize); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -174,8 +174,8 @@ func ParseContainer(container []byte, h fileformat.BlockHeader, limits Limits) (
 // reads (and, for per-page-encrypted blocks, OPENs) pages on demand through
 // the reader. The directory is plaintext for plain and encrypted blocks alike,
 // so this is the read entry point for both.
-func ParseRowsDir(offset int64, r *Reader, h fileformat.BlockHeader, limits Limits) (*RowsContainer, error) {
-	if h.BlockKind != fileformat.BlockKindRows {
+func ParseRowsDir(offset int64, r *Reader, h format.BlockHeader, limits Limits) (*RowsContainer, error) {
+	if h.BlockKind != format.BlockKindRows {
 		return nil, fmt.Errorf("rowpack: block %d is kind %d, not rows", h.BlockID, h.BlockKind)
 	}
 	// The block header + container header + page directory are all plaintext
@@ -185,11 +185,11 @@ func ParseRowsDir(offset int64, r *Reader, h fileformat.BlockHeader, limits Limi
 	// encryption on the read path.
 	// Read the container header first (it carries PageCount so we know the
 	// directory length).
-	var ch [fileformat.RowsBlockHeaderSize]byte
-	if _, err := r.ra.ReadAt(ch[:], offset+fileformat.BlockHeaderSize); err != nil {
-		return nil, fmt.Errorf("rowpack: read container header at %d: %w", offset+fileformat.BlockHeaderSize, err)
+	var ch [format.RowsBlockHeaderSize]byte
+	if _, err := r.ra.ReadAt(ch[:], offset+format.BlockHeaderSize); err != nil {
+		return nil, fmt.Errorf("rowpack: read container header at %d: %w", offset+format.BlockHeaderSize, err)
 	}
-	var rh fileformat.RowsBlockHeader
+	var rh format.RowsBlockHeader
 	if err := rh.Unmarshal(ch[:]); err != nil {
 		return nil, err
 	}
@@ -197,16 +197,16 @@ func ParseRowsDir(offset int64, r *Reader, h fileformat.BlockHeader, limits Limi
 		return nil, err
 	}
 	// Read the directory region.
-	dirEnd := fileformat.RowsBlockHeaderSize + int(rh.DirectoryBytes)
+	dirEnd := format.RowsBlockHeaderSize + int(rh.DirectoryBytes)
 	if dirEnd > int(h.StoredSize) {
 		return nil, fmt.Errorf("rowpack: container directory %d bytes overruns stored %d", rh.DirectoryBytes, h.StoredSize)
 	}
 	dirBytes := make([]byte, dirEnd)
-	if _, err := r.ra.ReadAt(dirBytes, offset+fileformat.BlockHeaderSize); err != nil {
-		return nil, fmt.Errorf("rowpack: read container directory at %d: %w", offset+fileformat.BlockHeaderSize, err)
+	if _, err := r.ra.ReadAt(dirBytes, offset+format.BlockHeaderSize); err != nil {
+		return nil, fmt.Errorf("rowpack: read container directory at %d: %w", offset+format.BlockHeaderSize, err)
 	}
 	// The header/directory region is authenticated by the block header CRC.
-	if fileformat.CRC32C(dirBytes) != h.RawCRC32C {
+	if format.CRC32C(dirBytes) != h.RawCRC32C {
 		return nil, fmt.Errorf("rowpack: block %d container header/dir CRC mismatch", h.BlockID)
 	}
 	dir, err := parsePageDir(dirBytes, &rh)
@@ -215,37 +215,37 @@ func ParseRowsDir(offset int64, r *Reader, h fileformat.BlockHeader, limits Limi
 	}
 	c := &RowsContainer{Header: rh, Dir: dir, blockH: h, comp: h.Compression, limits: limits, reader: r, blockOffset: offset}
 	c.pageCtrs = r.pageCounts()
-	if err := c.checkBounds(fileformat.RowsBlockHeaderSize + len(dir)*fileformat.RowsPageDirEntrySize); err != nil {
+	if err := c.checkBounds(format.RowsBlockHeaderSize + len(dir)*format.RowsPageDirEntrySize); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
 // validateRowCounts cross-checks the container header against the block header.
-func validateRowCounts(rh *fileformat.RowsBlockHeader, h fileformat.BlockHeader, limits Limits) error {
+func validateRowCounts(rh *format.RowsBlockHeader, h format.BlockHeader, limits Limits) error {
 	if rh.TotalRecords != h.ItemCount {
 		return fmt.Errorf("rowpack: container total records %d != block item count %d", rh.TotalRecords, h.ItemCount)
 	}
-	wantDir := uint64(rh.PageCount) * uint64(fileformat.RowsPageDirEntrySize)
+	wantDir := uint64(rh.PageCount) * uint64(format.RowsPageDirEntrySize)
 	if wantDir > uint64(h.StoredSize) || uint64(rh.DirectoryBytes) != wantDir {
-		return fmt.Errorf("rowpack: container directory %d != pageCount %d * %d", rh.DirectoryBytes, rh.PageCount, fileformat.RowsPageDirEntrySize)
+		return fmt.Errorf("rowpack: container directory %d != pageCount %d * %d", rh.DirectoryBytes, rh.PageCount, format.RowsPageDirEntrySize)
 	}
 	return nil
 }
 
 // parsePageDir parses the PageCount directory entries from the header+dir region.
-func parsePageDir(containerOrHeader []byte, rh *fileformat.RowsBlockHeader) ([]fileformat.RowsPageDirEntry, error) {
-	dir := make([]fileformat.RowsPageDirEntry, rh.PageCount)
-	pos := fileformat.RowsBlockHeaderSize
-	dirEnd := fileformat.RowsBlockHeaderSize + int(rh.DirectoryBytes)
+func parsePageDir(containerOrHeader []byte, rh *format.RowsBlockHeader) ([]format.RowsPageDirEntry, error) {
+	dir := make([]format.RowsPageDirEntry, rh.PageCount)
+	pos := format.RowsBlockHeaderSize
+	dirEnd := format.RowsBlockHeaderSize + int(rh.DirectoryBytes)
 	for i := range dir {
-		if pos+fileformat.RowsPageDirEntrySize > dirEnd {
+		if pos+format.RowsPageDirEntrySize > dirEnd {
 			return nil, fmt.Errorf("rowpack: container directory truncated")
 		}
-		if err := dir[i].Unmarshal(containerOrHeader[pos : pos+fileformat.RowsPageDirEntrySize]); err != nil {
+		if err := dir[i].Unmarshal(containerOrHeader[pos : pos+format.RowsPageDirEntrySize]); err != nil {
 			return nil, err
 		}
-		pos += fileformat.RowsPageDirEntrySize
+		pos += format.RowsPageDirEntrySize
 	}
 	return dir, nil
 }
@@ -284,7 +284,7 @@ func (c *RowsContainer) checkBounds(recordsStart int) error {
 		// None-compression pages are stored == raw, EXCEPT per-page-encrypted
 		// blocks where the stored bytes are the sealed page (raw + tag) and
 		// the raw size is recovered after OPEN.
-		if c.comp == fileformat.CompressionNone && !c.blockH.Encrypted && e.StoredSize != e.RawSize {
+		if c.comp == format.CompressionNone && !c.blockH.Encrypted && e.StoredSize != e.RawSize {
 			return fmt.Errorf("rowpack: none-compressed page %d stored %d != raw %d", i, e.StoredSize, e.RawSize)
 		}
 		expectedOff += int(e.StoredSize)
@@ -324,7 +324,7 @@ func (c *RowsContainer) decompress(i int, buf *rawBuf) ([]byte, error) {
 	dir := &c.Dir[i]
 	stored := c.stored[int(dir.StoredOffset) : int(dir.StoredOffset)+int(dir.StoredSize)]
 	var raw []byte
-	if c.comp == fileformat.CompressionNone {
+	if c.comp == format.CompressionNone {
 		if uint32(len(stored)) > c.limits.MaxRawBytes {
 			return nil, fmt.Errorf("rowpack: page %d stored size %d exceeds limit %d", i, len(stored), c.limits.MaxRawBytes)
 		}

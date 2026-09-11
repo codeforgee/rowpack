@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // plainReaderAt is an io.ReaderAt without the viewer interface, forcing the
@@ -16,21 +16,21 @@ func plainReaderAt(data []byte) io.ReaderAt { return bytes.NewReader(data) }
 
 func TestReaderReadAtBlockCopyNonViewer(t *testing.T) {
 	raw := []byte("copy-path block payload")
-	compressed, err := Compress(fileformat.CompressionZstd, 3, raw)
+	compressed, err := Compress(format.CompressionZstd, 3, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := fileformat.BlockHeader{
-		BlockKind:   fileformat.BlockKindRows,
-		Compression: fileformat.CompressionZstd,
+	h := format.BlockHeader{
+		BlockKind:   format.BlockKindRows,
+		Compression: format.CompressionZstd,
 		SnapshotID:  1,
 		TableID:     2,
 		ItemCount:   1,
 		RawSize:     uint32(len(raw)),
 		StoredSize:  uint32(len(compressed)),
-		RawCRC32C:   fileformat.CRC32C(raw),
+		RawCRC32C:   format.CRC32C(raw),
 	}
-	hdr := make([]byte, fileformat.BlockHeaderSize)
+	hdr := make([]byte, format.BlockHeaderSize)
 	if err := h.MarshalTo(hdr); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestReaderReadAtBlockCopyNonViewer(t *testing.T) {
 
 	// CRC mismatch is caught on the copy path too.
 	bad := append([]byte(nil), buf...)
-	bad[fileformat.BlockHeaderSize] ^= 0xFF
+	bad[format.BlockHeaderSize] ^= 0xFF
 	r2 := NewReader(plainReaderAt(bad), limits)
 	if _, err := r2.ReadAtBlock(0); err == nil {
 		t.Fatal("corrupt payload should error")
@@ -72,14 +72,14 @@ func TestRowsContainerAccountingHooks(t *testing.T) {
 	var rows []expectedPageRow
 	var bodies [][]byte
 	for i := 1; i <= 8; i++ {
-		rows = append(rows, expectedPageRow{rowID: uint64(i), version: 1, ct: fileformat.ChangeInsert, bodyLen: 8})
+		rows = append(rows, expectedPageRow{rowID: uint64(i), version: 1, ct: format.ChangeInsert, bodyLen: 8})
 		bodies = append(bodies, []byte{byte(i), 0, 0, 0, 0, 0, 0, 0})
 	}
 	_ = schema
-	fb, rc := buildContainer(t, 0, 0, fileformat.CompressionNone, rows, bodies)
+	fb, rc := buildContainer(t, 0, 0, format.CompressionNone, rows, bodies)
 
 	// RecordsRegionStart: header + directory.
-	if got := rc.RecordsRegionStart(); got != fileformat.RowsBlockHeaderSize+len(rc.Dir)*fileformat.RowsPageDirEntrySize {
+	if got := rc.RecordsRegionStart(); got != format.RowsBlockHeaderSize+len(rc.Dir)*format.RowsPageDirEntrySize {
 		t.Fatalf("RecordsRegionStart = %d", got)
 	}
 	// StoredLen covers the whole plaintext container.
@@ -129,10 +129,10 @@ func TestRowsContainerForEachPropagatesError(t *testing.T) {
 	var rows []expectedPageRow
 	var bodies [][]byte
 	for i := 1; i <= 4; i++ {
-		rows = append(rows, expectedPageRow{rowID: uint64(i), version: 1, ct: fileformat.ChangeInsert, bodyLen: 4})
+		rows = append(rows, expectedPageRow{rowID: uint64(i), version: 1, ct: format.ChangeInsert, bodyLen: 4})
 		bodies = append(bodies, []byte{1, 2, 3, 4})
 	}
-	_, rc := buildContainer(t, 0, 0, fileformat.CompressionNone, rows, bodies)
+	_, rc := buildContainer(t, 0, 0, format.CompressionNone, rows, bodies)
 	sentinel := errPageTruncated
 	err := rc.ForEach(func(codec.PageRecord) error { return sentinel })
 	if err == nil {
@@ -144,7 +144,7 @@ func TestRowsPageBuilderResetAndDecodedIDs(t *testing.T) {
 	var want []expectedPageRow
 	var bodies [][]byte
 	for i := 1; i <= 5; i++ {
-		want = append(want, expectedPageRow{rowID: uint64(i) * 10, version: 2, ct: fileformat.ChangeInsert, bodyLen: 4})
+		want = append(want, expectedPageRow{rowID: uint64(i) * 10, version: 2, ct: format.ChangeInsert, bodyLen: 4})
 		bodies = append(bodies, []byte{9, 9, 9, 9})
 	}
 	page := buildAndVerifyPage(t, 16<<10, want, bodies)

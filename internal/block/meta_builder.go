@@ -3,7 +3,7 @@ package block
 import (
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/metadata"
 )
 
@@ -14,7 +14,7 @@ type MetadataBuilder struct {
 	snapshotID uint64
 	tableID    uint32
 	blockSize  int
-	compress   fileformat.Compression
+	compress   format.Compression
 	level      int
 	limits     Limits
 
@@ -83,7 +83,7 @@ func (b *MetadataBuilder) Flush() error {
 		return err
 	}
 	var compressed []byte
-	if b.enc != nil && b.compress == fileformat.CompressionZstd {
+	if b.enc != nil && b.compress == format.CompressionZstd {
 		compressed, err = EncodeZstdInto(b.enc, &b.encDst, raw)
 	} else {
 		compressed, err = Compress(b.compress, b.level, raw)
@@ -91,15 +91,15 @@ func (b *MetadataBuilder) Flush() error {
 	if err != nil {
 		return err
 	}
-	h := fileformat.BlockHeader{
-		BlockKind:   fileformat.BlockKindMetadata,
+	h := format.BlockHeader{
+		BlockKind:   format.BlockKindMetadata,
 		Compression: b.compress,
 		SnapshotID:  b.snapshotID,
 		TableID:     b.tableID,
 		ItemCount:   b.count,
 		RawSize:     uint32(len(raw)),
 		StoredSize:  uint32(len(compressed)),
-		RawCRC32C:   fileformat.CRC32C(raw),
+		RawCRC32C:   format.CRC32C(raw),
 	}
 	if err := b.onFlush(&FlushedBlock{Header: h, Stored: compressed, Raw: raw, Meta: b.entries}); err != nil {
 		return err

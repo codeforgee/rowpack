@@ -10,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // Field is one TLV field of a metadata record. Value holds the decoded Go
@@ -19,7 +19,7 @@ import (
 // bytes are kept in raw and written back verbatim for lossless passthrough).
 type Field struct {
 	ID       uint16
-	WireType fileformat.WireType
+	WireType format.WireType
 	Critical bool
 	Repeated bool
 	Value    any
@@ -58,12 +58,12 @@ func fieldValueLen(f *Field) (int, error) {
 		return len(f.raw), nil
 	}
 	switch f.WireType {
-	case fileformat.WireSint:
+	case format.WireSint:
 		if v, ok := f.Value.(int64); ok {
 			return sintWidth(v), nil
 		}
 		return 0, fmt.Errorf("rowpack: WireSint field %d has value %T", f.ID, f.Value)
-	case fileformat.WireString:
+	case format.WireString:
 		if v, ok := f.Value.(string); ok {
 			return len(v), nil
 		}
@@ -94,10 +94,10 @@ func encodeField(dst []byte, f *Field) ([]byte, error) {
 	dst = append(dst, byte(f.WireType))
 	var flags byte
 	if f.Critical {
-		flags |= fileformat.FieldFlagCritical
+		flags |= format.FieldFlagCritical
 	}
 	if f.Repeated {
-		flags |= fileformat.FieldFlagRepeated
+		flags |= format.FieldFlagRepeated
 	}
 	dst = append(dst, flags)
 	dst = appendU32(dst, uint32(vl))
@@ -113,13 +113,13 @@ func encodeFieldValue(f *Field) ([]byte, error) {
 		return f.raw, nil
 	}
 	switch f.WireType {
-	case fileformat.WireSint:
+	case format.WireSint:
 		v := f.Value.(int64)
 		w := sintWidth(v)
 		var tmp [8]byte
 		binary.LittleEndian.PutUint64(tmp[:], uint64(v))
 		return tmp[:w], nil
-	case fileformat.WireString:
+	case format.WireString:
 		return []byte(f.Value.(string)), nil
 	}
 	return nil, fmt.Errorf("%w %d on field %d", errUnsupportedWireType, f.WireType, f.ID)
@@ -135,11 +135,11 @@ func decodeField(src []byte) (Field, int, error) {
 	}
 	f := Field{
 		ID:       binary.LittleEndian.Uint16(src[0:]),
-		WireType: fileformat.WireType(src[2]),
+		WireType: format.WireType(src[2]),
 	}
 	flags := src[3]
-	f.Critical = flags&fileformat.FieldFlagCritical != 0
-	f.Repeated = flags&fileformat.FieldFlagRepeated != 0
+	f.Critical = flags&format.FieldFlagCritical != 0
+	f.Repeated = flags&format.FieldFlagRepeated != 0
 	vl := binary.LittleEndian.Uint32(src[4:])
 	pos := 8
 	if int(vl) > len(src)-pos {
@@ -163,7 +163,7 @@ func decodeField(src []byte) (Field, int, error) {
 
 func decodeFieldValue(f Field, src []byte) (any, error) {
 	switch f.WireType {
-	case fileformat.WireSint:
+	case format.WireSint:
 		var v int64
 		switch len(src) {
 		case 1:
@@ -178,7 +178,7 @@ func decodeFieldValue(f Field, src []byte) (any, error) {
 			return nil, fmt.Errorf("rowpack: WireSint field %d length %d", f.ID, len(src))
 		}
 		return v, nil
-	case fileformat.WireString:
+	case format.WireString:
 		return string(src), nil
 	}
 	return nil, fmt.Errorf("%w %d on field %d", errUnsupportedWireType, f.WireType, f.ID)

@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // Compression selects the block compression at Create time. The API enum is
@@ -80,10 +80,10 @@ func (o Options) resolved() (Options, error) {
 
 func (o Options) applyDefaults() Options {
 	if o.BlockSize <= 0 {
-		o.BlockSize = fileformat.DefaultBlockSize
+		o.BlockSize = format.DefaultBlockSize
 	}
 	if o.PageSize <= 0 {
-		o.PageSize = fileformat.DefaultPageSize
+		o.PageSize = format.DefaultPageSize
 	}
 	// A page cannot exceed its enclosing block's target: small test blocks
 	// clamp the page down to the block, so a 1024 B block still makes pages.
@@ -94,26 +94,26 @@ func (o Options) applyDefaults() Options {
 		o.Compression = CompressionZstd
 	}
 	if o.CacheBytes == 0 {
-		o.CacheBytes = fileformat.DefaultCacheBytes
+		o.CacheBytes = format.DefaultCacheBytes
 	}
 	l := &o.Limits
 	if l.MaxRowBytes == 0 {
-		l.MaxRowBytes = fileformat.DefaultMaxRowBytes
+		l.MaxRowBytes = format.DefaultMaxRowBytes
 	}
 	if l.MaxRawBlockBytes == 0 {
-		l.MaxRawBlockBytes = fileformat.DefaultMaxRawBlockBytes
+		l.MaxRawBlockBytes = format.DefaultMaxRawBlockBytes
 	}
 	if l.MaxStoredBlockBytes == 0 {
-		l.MaxStoredBlockBytes = fileformat.DefaultMaxStoredBlockBytes
+		l.MaxStoredBlockBytes = format.DefaultMaxStoredBlockBytes
 	}
 	if l.MaxColumns == 0 {
-		l.MaxColumns = fileformat.DefaultMaxColumns
+		l.MaxColumns = format.DefaultMaxColumns
 	}
 	if l.MaxValueBytes == 0 {
-		l.MaxValueBytes = fileformat.DefaultMaxValueBytes
+		l.MaxValueBytes = format.DefaultMaxValueBytes
 	}
 	if l.MaxSnapshotDepth == 0 {
-		l.MaxSnapshotDepth = fileformat.DefaultMaxSnapshotDepth
+		l.MaxSnapshotDepth = format.DefaultMaxSnapshotDepth
 	}
 	return o
 }
@@ -152,14 +152,14 @@ func (o Options) validate() error {
 }
 
 // diskCompression maps the API enum to the disk enum.
-func (o Options) diskCompression() fileformat.Compression {
+func (o Options) diskCompression() format.Compression {
 	switch o.Compression {
 	case CompressionNone:
-		return fileformat.CompressionNone
+		return format.CompressionNone
 	case CompressionZstd:
-		return fileformat.CompressionZstd
+		return format.CompressionZstd
 	}
-	return fileformat.CompressionNone
+	return format.CompressionNone
 }
 
 // codecLimits builds the codec limits from Options.

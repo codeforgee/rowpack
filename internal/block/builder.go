@@ -3,7 +3,7 @@ package block
 import (
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/metadata"
 )
 
@@ -19,11 +19,11 @@ import (
 // blocks) are builder-owned scratch: they alias reused buffers and are only
 // valid during the call, so a callback that needs them later must copy.
 type FlushedBlock struct {
-	Header fileformat.BlockHeader
+	Header format.BlockHeader
 	Stored []byte
 	Raw    []byte
-	Rows   []fileformat.RowDirectoryEntry // rows blocks only
-	Meta   []metadata.DirectoryEntry      // metadata blocks only
+	Rows   []format.RowDirectoryEntry // rows blocks only
+	Meta   []metadata.DirectoryEntry  // metadata blocks only
 	// OversizedPages is the number of pages in this block that hold a single
 	// record larger than the page target (Flags bit 0).
 	OversizedPages uint32
@@ -45,7 +45,7 @@ type RowsBuilder struct {
 	tableID    uint32
 	blockSize  int
 	pageSize   int
-	compress   fileformat.Compression
+	compress   format.Compression
 	level      int
 	limits     Limits
 
@@ -58,13 +58,13 @@ type RowsBuilder struct {
 	// RecordOffset/RecordLength are unused). This exact slice is handed to
 	// FlushedBlock.Rows for index building, so the writer's index build needs
 	// no change.
-	entries []fileformat.RowDirectoryEntry
+	entries []format.RowDirectoryEntry
 
 	// dirEntries + storedPages hold the finished stored pages of the current
 	// block. rawSize is the Σ page raw sizes; recordOrdinal is the count of
 	// records across finished pages (it seeds the next page's
 	// FirstRecordOrdinal and equals len(entries) once the current page flushes).
-	dirEntries    []fileformat.RowsPageDirEntry
+	dirEntries    []format.RowsPageDirEntry
 	storedPages   [][]byte
 	rawSize       int
 	recordOrdinal uint32
@@ -88,7 +88,7 @@ type RowsBuilder struct {
 // they are the builder's identity, not its configuration.
 type Config struct {
 	BlockSize   int
-	Compression fileformat.Compression
+	Compression format.Compression
 	Level       int
 	Limits      Limits
 	OnFlush     func(*FlushedBlock) error
@@ -98,7 +98,7 @@ type Config struct {
 // the default page size (fileformat.DefaultPageSize); override it with
 // SetPageSize before the first Add.
 func NewRowsBuilder(snapshotID uint64, tableID uint32, cfg Config) *RowsBuilder {
-	ps := fileformat.DefaultPageSize
+	ps := format.DefaultPageSize
 	if ps > cfg.BlockSize {
 		ps = cfg.BlockSize
 	}
@@ -139,7 +139,7 @@ func (b *RowsBuilder) SetZstdEncoder(e *ZstdEncoder) { b.enc = e }
 // A record larger than pageSize occupies its own oversized page; a record
 // larger than blockSize additionally flushes the current block first so it
 // sits in a block by itself.
-func (b *RowsBuilder) Add(rowID uint64, schemaVersion uint32, change fileformat.ChangeType, row []byte) error {
+func (b *RowsBuilder) Add(rowID uint64, schemaVersion uint32, change format.ChangeType, row []byte) error {
 	if uint32(len(row)) > b.limits.MaxRawBytes {
 		return fmt.Errorf("rowpack: row of %d bytes exceeds limit %d", len(row), b.limits.MaxRawBytes)
 	}
@@ -158,7 +158,7 @@ func (b *RowsBuilder) Add(rowID uint64, schemaVersion uint32, change fileformat.
 		if err := b.page.Add(rowID, schemaVersion, change, row); err != nil {
 			return err
 		}
-		b.entries = append(b.entries, fileformat.RowDirectoryEntry{RowID: rowID, SchemaVersion: schemaVersion, ChangeType: change})
+		b.entries = append(b.entries, format.RowDirectoryEntry{RowID: rowID, SchemaVersion: schemaVersion, ChangeType: change})
 		rawPage, err := b.page.Finish()
 		if err != nil {
 			return err
@@ -179,7 +179,7 @@ func (b *RowsBuilder) Add(rowID uint64, schemaVersion uint32, change fileformat.
 	if err := b.page.Add(rowID, schemaVersion, change, row); err != nil {
 		return err
 	}
-	b.entries = append(b.entries, fileformat.RowDirectoryEntry{RowID: rowID, SchemaVersion: schemaVersion, ChangeType: change})
+	b.entries = append(b.entries, format.RowDirectoryEntry{RowID: rowID, SchemaVersion: schemaVersion, ChangeType: change})
 	if b.page.NeedsFlush() {
 		if err := b.finishPage(); err != nil {
 			return err
@@ -210,7 +210,7 @@ func (b *RowsBuilder) finishPage() error {
 func (b *RowsBuilder) storePage(rawPage []byte, oversized bool) error {
 	var stored []byte
 	var err error
-	if b.enc != nil && b.compress == fileformat.CompressionZstd {
+	if b.enc != nil && b.compress == format.CompressionZstd {
 		stored, err = EncodeZstdInto(b.enc, &b.encDst, rawPage)
 	} else {
 		stored, err = Compress(b.compress, b.level, rawPage)
@@ -218,13 +218,13 @@ func (b *RowsBuilder) storePage(rawPage []byte, oversized bool) error {
 	if err != nil {
 		return err
 	}
-	var h fileformat.RowsPageHeader
+	var h format.RowsPageHeader
 	if err := h.Unmarshal(rawPage, len(rawPage)); err != nil {
 		// A page this builder created can never be malformed; treat as a
 		// coding error surfaced through the normal error path.
 		return fmt.Errorf("rowpack: internal page re-parse failed: %w", err)
 	}
-	dir := fileformat.RowsPageDirEntry{
+	dir := format.RowsPageDirEntry{
 		PageOrdinal:        uint32(len(b.dirEntries)),
 		FirstRecordOrdinal: b.recordOrdinal,
 		RecordCount:        h.EntryCount,
@@ -257,14 +257,14 @@ func (b *RowsBuilder) Flush() error {
 		return nil
 	}
 	n := uint32(len(b.dirEntries))
-	header := fileformat.RowsBlockHeader{
+	header := format.RowsBlockHeader{
 		PageCount:      n,
-		DirectoryBytes: n * fileformat.RowsPageDirEntrySize,
+		DirectoryBytes: n * format.RowsPageDirEntrySize,
 		TotalRecords:   uint32(len(b.entries)),
 	}
 	// Resolve per-page StoredOffset now that the directory length is known
 	// (the directory sits between the container header and the first page).
-	dataStart := fileformat.RowsBlockHeaderSize + int(n)*fileformat.RowsPageDirEntrySize
+	dataStart := format.RowsBlockHeaderSize + int(n)*format.RowsPageDirEntrySize
 	off := dataStart
 	for i := range b.dirEntries {
 		b.dirEntries[i].StoredOffset = uint64(off)
@@ -275,28 +275,28 @@ func (b *RowsBuilder) Flush() error {
 	// allocation per block rather than a reused scratch. make zeroes it, so
 	// no clearContainer pass is needed.
 	container := make([]byte, off)
-	var hdr [fileformat.RowsBlockHeaderSize]byte
+	var hdr [format.RowsBlockHeaderSize]byte
 	_ = header.MarshalTo(hdr[:])
-	copy(container[0:fileformat.RowsBlockHeaderSize], hdr[:])
-	dir := container[fileformat.RowsBlockHeaderSize:dataStart]
+	copy(container[0:format.RowsBlockHeaderSize], hdr[:])
+	dir := container[format.RowsBlockHeaderSize:dataStart]
 	for i := range b.dirEntries {
-		var e [fileformat.RowsPageDirEntrySize]byte
+		var e [format.RowsPageDirEntrySize]byte
 		_ = b.dirEntries[i].MarshalTo(e[:])
-		copy(dir[i*fileformat.RowsPageDirEntrySize:], e[:])
+		copy(dir[i*format.RowsPageDirEntrySize:], e[:])
 	}
 	for i := range b.storedPages {
 		start := int(b.dirEntries[i].StoredOffset)
 		copy(container[start:start+len(b.storedPages[i])], b.storedPages[i])
 	}
-	h := fileformat.BlockHeader{
-		BlockKind:   fileformat.BlockKindRows,
+	h := format.BlockHeader{
+		BlockKind:   format.BlockKindRows,
 		Compression: b.compress,
 		SnapshotID:  b.snapshotID,
 		TableID:     b.tableID,
 		ItemCount:   uint32(len(b.entries)),
 		RawSize:     uint32(b.rawSize),
 		StoredSize:  uint32(len(container)),
-		RawCRC32C:   fileformat.CRC32C(container[:dataStart]),
+		RawCRC32C:   format.CRC32C(container[:dataStart]),
 	}
 	fb := &FlushedBlock{Header: h, Stored: container, Raw: container, Rows: b.entries, OversizedPages: b.oversizedPages}
 	if err := b.onFlush(fb); err != nil {

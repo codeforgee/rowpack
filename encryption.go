@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/seal"
 )
 
@@ -42,8 +42,8 @@ func (c *EncryptionConfig) validate() error {
 	if c.KeyID == "" {
 		return fmt.Errorf("%w: encryption key id is empty", ErrInvalidArgument)
 	}
-	if len(c.KeyID) > fileformat.FileHeaderKeyIDMaxLen {
-		return fmt.Errorf("%w: encryption key id %d bytes exceeds %d", ErrInvalidArgument, len(c.KeyID), fileformat.FileHeaderKeyIDMaxLen)
+	if len(c.KeyID) > format.FileHeaderKeyIDMaxLen {
+		return fmt.Errorf("%w: encryption key id %d bytes exceeds %d", ErrInvalidArgument, len(c.KeyID), format.FileHeaderKeyIDMaxLen)
 	}
 	return nil
 }
@@ -84,7 +84,7 @@ func newDecrypter(provider KeyProvider, keyID string, uuid [16]byte) *decrypter 
 
 // Decrypt implements block.Decrypter. The returned plaintext is a fresh
 // buffer owned by the caller.
-func (d *decrypter) Decrypt(h fileformat.BlockHeader, ciphertext []byte) ([]byte, error) {
+func (d *decrypter) Decrypt(h format.BlockHeader, ciphertext []byte) ([]byte, error) {
 	c, err := d.cipherFor(h.KeyEpoch)
 	if err != nil {
 		return nil, err
@@ -101,7 +101,7 @@ func (d *decrypter) Decrypt(h fileformat.BlockHeader, ciphertext []byte) ([]byte
 // and the AAD binds the page-directory fields and block identity
 // (BINARY_FORMAT_V1 §5.1). The returned plaintext is the page's compressed
 // payload.
-func (d *decrypter) OpenPage(h fileformat.BlockHeader, page fileformat.RowsPageDirEntry, ciphertext []byte) ([]byte, error) {
+func (d *decrypter) OpenPage(h format.BlockHeader, page format.RowsPageDirEntry, ciphertext []byte) ([]byte, error) {
 	c, err := d.cipherFor(h.KeyEpoch)
 	if err != nil {
 		return nil, err

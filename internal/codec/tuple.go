@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"unicode/utf8"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // TypedTuple v1 row encoding:
@@ -304,7 +304,7 @@ type Sink struct {
 type PageRecord struct {
 	RowID         uint64
 	SchemaVersion uint32
-	ChangeType    fileformat.ChangeType
+	ChangeType    format.ChangeType
 	Body          []byte
 }
 

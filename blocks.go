@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"sort"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/index"
 )
 
@@ -37,7 +37,7 @@ func (s *Store) blocksByTable(view *index.View, snap uint64, tid TableID) ([]Blo
 	// Own-txn rows blocks, ascending BlockID (= physical write order).
 	var locs []*index.BlockLoc
 	for _, bl := range view.Blocks() {
-		if bl.SnapshotID == snap && bl.TableID == uint32(tid) && bl.Kind == fileformat.BlockKindRows {
+		if bl.SnapshotID == snap && bl.TableID == uint32(tid) && bl.Kind == format.BlockKindRows {
 			locs = append(locs, bl)
 		}
 	}

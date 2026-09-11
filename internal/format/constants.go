@@ -10,7 +10,7 @@
 // multi-byte integers are hand-written Little Endian, all top-level structures
 // are 8-byte aligned, and no field may depend on the host word size or struct
 // layout.
-package fileformat
+package format
 
 // Format version. VersionMajor=1 is the single-file line; minor starts at 0.
 const (

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 )
 
 // Schema describes the ordered column layout of one table version. It is the
@@ -122,9 +122,9 @@ type Limits struct {
 // DefaultLimits returns the v1 default safety limits.
 func DefaultLimits() Limits {
 	return Limits{
-		MaxColumns:    fileformat.DefaultMaxColumns,
-		MaxValueBytes: fileformat.DefaultMaxValueBytes,
-		MaxRowBytes:   fileformat.DefaultMaxRowBytes,
+		MaxColumns:    format.DefaultMaxColumns,
+		MaxValueBytes: format.DefaultMaxValueBytes,
+		MaxRowBytes:   format.DefaultMaxRowBytes,
 	}
 }
 

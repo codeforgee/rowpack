@@ -1,4 +1,4 @@
-package fileformat
+package format
 
 import (
 	"errors"

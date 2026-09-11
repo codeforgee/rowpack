@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fileformat"
+	"github.com/rowpack/rowpack/internal/format"
 	"github.com/stretchr/testify/require"
 )
 
@@ -253,7 +253,7 @@ func TestEncryptionTamperDetect(t *testing.T) {
 	// page so the AEAD authenticates (a flip in the plaintext header would be
 	// caught by structure validation, not authentication). Read the container
 	// header for PageCount, then jump past the directory to page 0.
-	var chdr [fileformat.RowsBlockHeaderSize]byte
+	var chdr [format.RowsBlockHeaderSize]byte
 	require.NoError(t, db.Close())
 
 	f, err := os.OpenFile(base+".rpk", os.O_RDWR, 0)
@@ -262,7 +262,7 @@ func TestEncryptionTamperDetect(t *testing.T) {
 	require.NoError(t, err)
 	pageCount := le32(chdr[12:]) // RowsBlockHeader.PageCount
 	require.Greater(t, pageCount, uint32(0))
-	page0Stored := blkOff + int64(fileformat.RowsBlockHeaderSize) + int64(pageCount)*int64(fileformat.RowsPageDirEntrySize)
+	page0Stored := blkOff + int64(format.RowsBlockHeaderSize) + int64(pageCount)*int64(format.RowsPageDirEntrySize)
 	payload := make([]byte, 16)
 	_, err = f.ReadAt(payload, page0Stored)
 	require.NoError(t, err)

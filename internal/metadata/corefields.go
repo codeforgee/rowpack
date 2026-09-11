@@ -2,7 +2,7 @@ package metadata
 
 import "github.com/rowpack/rowpack/internal/format"
 
-// Table field IDs (RecordType 2). FieldIDs are allocated densely from 1 per
+// Table field IDs (RecordType 1 = format.RecordTable). FieldIDs are allocated densely from 1 per
 // record type: a number is only frozen once some file has been written with it,
 // so an unused reservation is reclaimed rather than left as a gap.
 const (
@@ -10,7 +10,7 @@ const (
 	TableNS   uint16 = 2
 )
 
-// Column field IDs (RecordType 3). ColumnID leads so that the record's
+// Column field IDs (RecordType 2 = format.RecordColumn). ColumnID leads so that the record's
 // first field identifies the column position; the rest follow in DefineSchema
 // semantic order.
 const (

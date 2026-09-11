@@ -15,18 +15,18 @@ make baseline MODE=1m            # 1M 行档（scan1m/getrand1m）
 BASELINE_LABEL=m1pro make baseline   # 文件名加标签：<date>-m1pro.txt
 BENCHTIME=2s BENCHCOUNT=5 make baseline   # 覆盖时长/重复次数
 
-# 对比两个归档，标出超过阈值的回退/改进（有回退时退出码 1，可作为 CI 闸门）
+# 对比两个归档，标出超阈值回退/改进（有回退时退出码 1，可作 CI 闸门）
 make baseline-diff OLD=2026-09-10 NEW=2026-09-11
 THRESHOLD=5 VERBOSE=1 make baseline-diff OLD=2026-09-10 NEW=2026-09-11
 ```
 
-- 输出直接写入 `testdata/baseline/`，**按日期命名**，同名自动追加 `-2/-3…`，不覆盖历史；
-- 每个文件开头固定写入统一标注：日期 / git rev（dirty 标记）/ Go / OS-arch / CPU / 内存 /
-  zstd 版本 / 格式版本 / 基准参数 / 数据集行数 / 复现命令，随后是完整 `go test -bench` 输出；
-- 标注最后一行是机器可读的 `# json: {...}`，供 `baseline-diff` 做元数据一致性校验与脚本化解析；
-- `baseline-diff` 按指标方向（ns/op·B/op·p50/p95/p99 越小越好，kget/s·krows/s·MB/s·hitpct 越大越好）
-  计算变化率，并校验两次运行的 go/CPU/config/rows 等字段是否一致；
-- 归档文件纳入版本库，作为该日期的可比基线；`bench/results*.txt` 仍是可丢弃的临时输出。
+输出写入 `testdata/baseline/`，**按日期命名**，同名自动追加 `-2/-3…`，不覆盖历史。文件开头固定
+写入统一标注（日期 / git rev（dirty 标记）/ Go / OS-arch / CPU / 内存 / zstd 版本 / 格式版本 /
+基准参数 / 数据集行数 / 复现命令），随后是完整 `go test -bench` 输出；标注最后一行是机器可读的
+`# json: {...}`，供 `baseline-diff` 校验元数据一致性与解析。`baseline-diff` 按指标方向
+（ns/op·B/op·p50/p95/p99 越小越好，kget/s·krows/s·MB/s·hitpct 越大越好）计算变化率，并校验两次
+运行的 go/CPU/config/rows 等字段是否一致。归档文件纳入版本库作为可比基线；`bench/results*.txt`
+仍是可丢弃的临时输出。
 
 ## 1. 环境与口径（2026-09-10 运行）
 
@@ -110,8 +110,8 @@ I/O 路径（mmap vs ReadAt）在热读/扫描上差异在噪声内。
 | EncryptedWrite | 208.6 ms / 100k · 30.68 MB/s |
 | EncryptedGetHot（20k 行） | 275.7 ns · 1 alloc · 17 B |
 
-说明：独立加密基准使用 1 KiB 测试块，其 BlockSize 与默认档不同，不能与上表默认档直接比较；
-`ENCRYPTION_V1.md` 的“热读 ≤1%”门槛需在同配置矩阵下复测（当前基线无同配置证据）。
+独立加密基准使用 1 KiB 测试块，BlockSize 与默认档不同，不能与上表默认档直接比较；
+`ENCRYPTION_V1.md` 的「热读 ≤1%」门槛需在同配置矩阵下复测（当前基线无同配置证据）。
 
 ## 7. 文件几何（100k 行 × 7 列，默认档）
 
@@ -126,10 +126,10 @@ I/O 路径（mmap vs ReadAt）在热读/扫描上差异在噪声内。
 
 ## 8. 与旧基线的对照
 
-本基线与仓库历史 README 参考档一致：FULL 写 ~100–110 万行/秒、Get 热读 ~270 万次/秒
-（矩阵档）、Scan 100k ~14 ms。格式 v2→v1 的改动只涉及 Magic/主版本号字节，不改变布局，
-因此性能与 v2 冻结时等同。旧 `docs/baseline/`（S0 双口径、方差档、1000 万行 Open 内存档）
-已移除；`BenchmarkOpenMemory10M` 基准不存在，故本基线不含 10M Open 内存档。
+本基线与早期参考档同量级：FULL 写 ~100–110 万行/秒、Get 热读 ~270 万次/秒（矩阵档）、Scan 100k
+~14 ms。单文件 v1 取代的是从未发布的双文件草案（`.rpk`+`.rpi`，内部曾称 v2，draft magic
+`ROWPACKD`）；那次改动只涉及 Magic/主版本号字节，不改变布局，因此性能与草案冻结时等同。旧 `docs/baseline/`（S0 双口径、方差档、1000 万行 Open 内存档）已移除；
+`BenchmarkOpenMemory10M` 基准不存在，故本基线不含 10M Open 内存档。
 
 <details>
 <summary>附录：原始输出摘要（testdata/baseline/2026-09-10.txt）</summary>
@@ -165,12 +165,10 @@ BenchmarkEncryptedGetHot-8                           275.7 ns/op    17 B/op   1 
 
 ## 9. 维护约定
 
-- 修改磁盘布局、编码、压缩级别、缓存策略或索引结构后，必须 `make baseline` 重新归档并更新本表；
-- 新旧对比用 `make baseline-diff OLD=<date> NEW=<date>`；热读/冷读/扫描/写入任一核心指标
-  回退 >10% 需在提交说明中给出原因（回退 >10% 时 diff 退出码为 1）；
-- 本表为单机单次结果，用于相对回归，不用于跨机绝对比较；需要方差档时用
-  `BENCHCOUNT=5 make baseline` 重跑，归档文件即方差证据；
-- 对照新旧基线时，先看 diff 的「元数据」段：环境不一致时数值差异不能直接归因于代码变更。
-
-SIMD/SWAR 候选内核另有 `make bench-simd` 微基准；设计边界、当前内核和实施路线见
-[SIMD_OPTIMIZATION.md](SIMD_OPTIMIZATION.md)。微基准只用于定位内核变化，最终验收仍以本基线为准。
+生成与对比命令见 §0。修改磁盘布局/编码/压缩级别/缓存策略/索引结构后必须 `make baseline` 重新
+归档并更新本表；`make baseline-diff OLD=<date> NEW=<date>` 按指标方向比对，热读/冷读/扫描/写入
+任一核心指标回退 >10% 需在提交说明中给出原因（回退 >10% 时 diff 退出码为 1）。对照新旧基线时
+先看 diff 的「元数据」段：环境不一致时数值差异不能归因于代码变更。本表是单机单次结果，仅作相对
+回归而非跨机绝对比较；需要方差档用 `BENCHCOUNT=5 make baseline` 重跑，归档文件即方差证据。
+SIMD/SWAR 候选内核另有 `make bench-simd` 微基准（边界与路线见
+[SIMD_OPTIMIZATION.md](SIMD_OPTIMIZATION.md)），微基准只用于定位内核变化，最终验收仍以本基线为准。

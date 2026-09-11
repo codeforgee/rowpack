@@ -59,7 +59,7 @@ const (
 
 // IndexChunkHeader is the fixed 64-byte header of one index txn chunk.
 //
-//	 0..7  Magic "RPICHNK"
+//	 0..7  Magic "RPICHNK1"
 //	 8..9  HeaderSize (=64)
 //	10     EntryKind
 //	11     Compression

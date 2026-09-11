@@ -6,20 +6,12 @@
 
 ## 1. 目标与范围
 
-IndexTxn 是每个已提交 Snapshot 的派生导航结构，提供：
-
-```text
-(SnapshotID, TableID, RowID) → (BlockID, ItemOrdinal)
-```
-
-以及快照、元数据、块的位置索引。目标：
-
-1. 降低索引落盘体积（快照/元数据/块条目分 chunk 压缩，行条目用排序页压缩）；
-2. 保留完整重放、按 chunk/页定位和损坏隔离能力；
-3. 加密场景下不降低完整性与 nonce 安全性；
-4. 单条索引记录不要求磁盘级随机读取（Get 依赖内存 `index.View`）。
-
-不在范围内：改变内存中的 `index.View` 表示、改变 Block/Rows Page/TypedTuple 编码。
+IndexTxn 是每个已提交 Snapshot 的派生导航结构，提供
+`(SnapshotID, TableID, RowID) → (BlockID, ItemOrdinal)` 以及快照、元数据、块的位置索引。目标：
+降低索引落盘体积（快照/元数据/块条目分 chunk 压缩，行条目用排序页压缩）；保留完整重放、按
+chunk/页定位和损坏隔离能力；加密场景下不降低完整性与 nonce 安全性；单条索引记录不要求磁盘级
+随机读取（Get 依赖内存 `index.View`）。不在范围内：改变内存中的 `index.View` 表示、改变
+Block/Rows Page/TypedTuple 编码。
 
 ## 2. 整体布局
 
@@ -37,12 +29,12 @@ IndexTxn 位于对应 Snapshot 的 Blocks 之后、SnapshotFooter 之前：
 ```
 
 - 行条目**不**走 chunk，而是排序 Row Index Page + Fence Directory（§5）；
-  `IndexChunkHeader.EntryKind` 仍保留 `Row(=4)` 枚举值，写路径不再产生 Row chunk。
-- `ChunkDirectory` 明文（加密 store 亦然），使读取器无需密钥即可定位 chunk；只暴露
-  chunk 尺寸与条目数。
-- `IndexTxnHeader.BodyBytes` 统一为 **stored 语义**：Header 与 Footer 之间的落盘字节数
-  （chunks + directory + pages + fence，加密时含每 chunk/page 的 tag），plain 与
-  encrypted store 一致。扫描器据此跳过整条 txn，无需理解 chunk 布局。
+  `IndexChunkHeader.EntryKind` 仍保留 `Row(=4)` 枚举值，写路径不再产生 Row chunk；
+- `ChunkDirectory` 明文（加密 store 亦然），使读取器无需密钥即可定位 chunk，只暴露 chunk 尺寸与
+  条目数；
+- `IndexTxnHeader.BodyBytes` 统一为 **stored 语义**：Header 与 Footer 之间的落盘字节数（chunks
+  + directory + pages + fence，加密时含每 chunk/page 的 tag），plain 与 encrypted store 一致，
+  扫描器据此跳过整条 txn，无需理解 chunk 布局；
 - IndexTxnFooter 不承担最终提交语义，提交权威是 SnapshotFooter
   （[BINARY_FORMAT_V1.md](BINARY_FORMAT_V1.md) §7）。
 
@@ -65,8 +57,8 @@ offset  size  field
 76      4     KeyEpoch                 // 加密 store；plain 为 0
 ```
 
-`RowIndexPageCount` 必须 ≤ `RowEntryCount`（每页 ≥1 条）。`KeyEpoch` 与
-`RowIndexPageCount` 分处 12..16 与 76..80 两个 reserved 字，互不冲突。
+`RowIndexPageCount` 必须 ≤ `RowEntryCount`（每页 ≥1 条）。`KeyEpoch` 与 `RowIndexPageCount` 分处
+12..16 与 76..80 两个 reserved 字，互不冲突。
 
 ## 4. Chunk（快照 / 元数据 / 块条目）
 
@@ -93,16 +85,16 @@ offset  size  field
 ```
 
 `IndexChunkHeader.CheckLimits` 在解压前强制上限（防整数溢出与压缩炸弹）：
-`EntryCount ∈ [1, 1<<20]`、`RawBytes ∈ [1, 16<<20]`、`StoredBytes ∈ [1, 16<<20]`；
-加密 chunk 的 `StoredBytes ≥ tag`；`None` 压缩要求 `RawBytes == StoredBytes - tag`。
+`EntryCount ∈ [1, 1<<20]`、`RawBytes ∈ [1, 16<<20]`、`StoredBytes ∈ [1, 16<<20]`；加密 chunk 的
+`StoredBytes ≥ tag`；`None` 压缩要求 `RawBytes == StoredBytes - tag`。
 
 ### 4.2 分 chunk 规则
 
 - 快照条目单独成 chunk（seq 0）；元数据和块条目各自按 kind 流式切 chunk；
-- 切分阈值：每 chunk ≤ `IndexChunkTargetEntries`（4096）条且
-  ≤ `IndexChunkTargetRawBytes`（256 KiB）；
-- 快照 chunk 恒不压缩：其 stored 大小固定（72B / 88B 加密），使正文总长可在一次构建中
-  解析（快照条目的 `DataEnd` 依赖正文长度）。
+- 切分阈值：每 chunk ≤ `IndexChunkTargetEntries`（4096）条且 ≤
+  `IndexChunkTargetRawBytes`（256 KiB）；
+- 快照 chunk 恒不压缩：其 stored 大小固定（72B / 88B 加密），使正文总长可在一次构建中解析
+  （快照条目的 `DataEnd` 依赖正文长度）。
 
 ### 4.3 条目编码
 
@@ -163,10 +155,9 @@ offset  size  field
 | ItemOrdinal | zigzag delta |
 | ChangeType | 2 bit |
 
-- 每页 `(TableID, RowID)` 升序，**按表切页**（一个页绝不跨表 run；末页可少、表边界
-  可产生较小页）；这使页内 `TableID` 唯一、`MinRowID`/`MaxRowID` 属于该表，Fence 成为
-  `(TableID, RowID)` 的单调二叉索引——Lazy 二分定位正确的前提（跨表页会让全局
-  `MinRowID` 随页非单调）；
+- 每页 `(TableID, RowID)` 升序，**按表切页**（一个页绝不跨表 run；末页可少、表边界可产生较小
+  页）；这使页内 `TableID` 唯一、`MinRowID`/`MaxRowID` 属于该表，Fence 成为 `(TableID, RowID)`
+  的单调二叉索引——Lazy 二分定位正确的前提（跨表页会让全局 `MinRowID` 随页非单调）；
 - 每页条目上限 4096（`indexPageEntryCount`）；
 - Page CRC 覆盖流区。
 
@@ -185,8 +176,8 @@ offset  size  field
 48      4     PageCRC32C
 ```
 
-Fence 按 `StoredOffset` 递增排列，由正文 CRC 认证；`RowIndexPageCount == 0` 表示快照
-无行条目（pages == fences == 0）。
+Fence 按 `StoredOffset` 递增排列，由正文 CRC 认证；`RowIndexPageCount == 0` 表示快照无行条目
+（pages == fences == 0）。
 
 ## 6. 压缩与加密
 
@@ -196,8 +187,8 @@ Fence 按 `StoredOffset` 递增排列，由正文 CRC 认证；`RowIndexPageCoun
 条目编码 → Zstd 压缩 → AES-256-GCM Seal → 写入
 ```
 
-快照 chunk 不压缩（长度必须内容无关）。读取顺序固定：
-认证解密 → 长度检查 → Zstd 解压 → 条目数量检查 → 条目解析。
+快照 chunk 不压缩（长度必须内容无关）。读取顺序固定：认证解密 → 长度检查 → Zstd 解压 → 条目
+数量检查 → 条目解析。
 
 ### 6.2 未加密 Store
 
@@ -209,38 +200,32 @@ Fence 按 `StoredOffset` 递增排列，由正文 CRC 认证；`RowIndexPageCoun
 
 ### 6.3 加密 Store
 
-每个 chunk / 每个 Row Index Page 独立认证：一个单元的认证失败不会被误认为另一个单元的
-有效数据。加密只发生在 body；Header/Footer 保持明文（扫描与 Footer 校验不依赖密钥）。
+每个 chunk / 每个 Row Index Page 独立认证：一个单元的认证失败不会被误认为另一个单元的有效数据。
+加密只发生在 body；Header/Footer 保持明文（扫描与 Footer 校验不依赖密钥）。
 
 ### 6.4 Nonce
 
-每个 chunk/page 必须拥有全局唯一 nonce。`NonceIndex` 的 96-bit 空间已满，无法容纳
-`ChunkSequence`，因此用 HMAC 派生：
+每个 chunk/page 必须拥有全局唯一 nonce，由 HMAC-SHA256 从独立子密钥派生（`NonceIndex` 的 96-bit
+空间已满，放不下 `ChunkSequence`）：
 
 ```text
 chunkNonceKey = HMAC-SHA256(dataKey, "RowPack index chunk nonce key v1")  // 每 Cipher 派生一次
 Nonce(unit)   = Trunc12(HMAC-SHA256(chunkNonceKey, BE(TxnSequence) || BE(ChunkSequence)))
 ```
 
-Row Index Page 复用同一 index 域，其 `ChunkSequence` 接着 chunk 序号继续编号，保证与
-chunk 两两不同。已否决：截断 TxnSequence（超长生命周期 store 有碰撞风险）、
-nonce 低位 XOR ChunkSequence（`1⊕2 == 3⊕0` 会复用 nonce）。派生子钥按 Cipher 惰性缓存。
-
-禁止：同密钥下复用 nonce；Block nonce 与 Index nonce 混用；只绑 `ChunkSequence` 而不绑
-`TxnSequence`；重写/重试复用旧事务 nonce。
+Row Index Page 复用同一 index 域，其 `ChunkSequence` 接着 chunk 序号继续编号，与 chunk 两两不同。
+已否决：截断 TxnSequence（超长生命周期 store 有碰撞风险）、nonce 低位 XOR ChunkSequence
+（`1⊕2 == 3⊕0` 会复用 nonce）。禁止：同密钥下复用 nonce；Block nonce 与 Index nonce 混用；只绑
+`ChunkSequence` 不绑 `TxnSequence`；重写/重试复用旧事务 nonce。子密钥按 Cipher 惰性缓存，域分离
+与推导细节见 [ENCRYPTION_V1.md](ENCRYPTION_V1.md) §5。
 
 ### 6.5 AAD
 
-AAD 至少绑定：
-
-```text
-StoreUUID · SnapshotID · TxnSequence · ChunkSequence · EntryKind
-· FirstEntryOrdinal · RawBytes · StoredBytes · KeyEpoch
-```
-
-**AAD 不绑定文件偏移（有意决策）**：StoredBytes 依赖压缩结果，而 Footer 的
-TxnStart/TxnEndOffset 又依赖全部 stored 长度之和；绑定偏移会形成“先有偏移才能加密、
-先加密才知道偏移”的循环。偏移防挪用由 Footer 对整个落盘区域的 CRC 与精确字节范围承担。
+AAD 至少绑定 `StoreUUID · SnapshotID · TxnSequence · ChunkSequence · EntryKind ·
+FirstEntryOrdinal · RawBytes · StoredBytes · KeyEpoch`。**刻意不绑定文件偏移**：StoredBytes 依赖
+压缩结果，而 Footer 的 TxnStart/TxnEndOffset 又依赖全部 stored 长度之和，绑定会形成「先有偏移
+才能加密、先加密才知道偏移」的循环；偏移防挪用由 Footer 对整个落盘区域的 CRC 与精确字节范围
+承担。完整 AAD 字段与长度见 [ENCRYPTION_V1.md](ENCRYPTION_V1.md) §6。
 
 ## 7. 关键条目结构
 
@@ -267,8 +252,8 @@ BlockID(8) · SnapshotID(8) · TableID(4) · BlockKind(1) · Compression(1)
 · EntryCRC32C(4) · reserved(4)
 ```
 
-Block 条目引用同一文件中更早的 Block offset。批量 planner 的
-MinRowID/MaxRowIDExclusive 由内存索引按 RowIndexEntry 集合派生，不在磁盘块头存 envelope。
+Block 条目引用同一文件中更早的 Block offset。批量 planner 的 MinRowID/MaxRowIDExclusive 由内存
+索引按 RowIndexEntry 集合派生，不在磁盘块头存 envelope。
 
 ## 8. IndexTxnFooter（80B）
 
@@ -288,9 +273,9 @@ offset  size  field
 68      12    reserved (0)
 ```
 
-Footer 交叉校验正文与对应数据 Footer，因此 IndexTxn 只有在 footer、entries 与数据 footer
-三者一致时才有效。`BodyCRC32C` 一律对落盘字节计算（加密 store 即密文），使撕裂/位腐的
-密文在无密钥路径即可检出。
+Footer 交叉校验正文与对应数据 Footer，因此 IndexTxn 只有在 footer、entries 与数据 footer 三者
+一致时才有效。`BodyCRC32C` 一律对落盘字节计算（加密 store 即密文），使撕裂/位腐的密文在无密钥
+路径即可检出。
 
 ## 9. 读取模型
 
@@ -319,26 +304,15 @@ Footer 交叉校验正文与对应数据 Footer，因此 IndexTxn 只有在 foot
 ### 9.3 损坏与重建
 
 - 数据 Block 损坏仍是硬错误；
-- IndexTxn 损坏（Footer/Blocks 有效）时按 [BINARY_FORMAT_V1.md](BINARY_FORMAT_V1.md)
-  §10.2 从当前 Snapshot 的 Block 重建内存索引；
+- IndexTxn 损坏（Footer/Blocks 有效）时按 [BINARY_FORMAT_V1.md](BINARY_FORMAT_V1.md) §10.2 从
+  当前 Snapshot 的 Block 重建内存索引；
 - 不原地覆盖损坏字节，必要时通过 Rewrite 生成新文件；
 - 认证失败触发重建，而不是跳过损坏 chunk/page 后继续使用不完整索引。
 
 ## 10. 尺寸与限制
 
-| 结构 | 尺寸 |
-| --- | --- |
-| IndexTxnHeader | 80 |
-| IndexTxnFooter | 80 |
-| IndexChunkHeader | 64 |
-| IndexChunkDirEntry | 32 |
-| SnapshotIndexEntry | 72 |
-| MetadataIndexEntry | 48 |
-| BlockIndexEntry | 56 |
-| RowIndexPageHeader | 64 |
-| RowIndexFenceEntry | 52 |
-
-- 每 chunk 上限：4096 条 / 256 KiB raw；硬解析上限见 §4.1；
-- 每 Row Index Page 上限 4096 条，按表切页；
-- Directory 扩展性：每 Directory Entry 32B；超大事务场景需预留 directory 自身分 chunk
-  的演进空间。
+结构尺寸（8 字节对齐，字段布局见对应小节）：IndexTxnHeader 80、IndexTxnFooter 80、
+IndexChunkHeader 64、IndexChunkDirEntry 32、SnapshotIndexEntry 72、MetadataIndexEntry 48、
+BlockIndexEntry 56、RowIndexPageHeader 64、RowIndexFenceEntry 52。每 chunk 上限 4096 条 /
+256 KiB raw（硬解析上限见 §4.1）；每 Row Index Page 上限 4096 条并按表切页。Directory 每 Entry
+32B，超大事务场景需预留 directory 自身分 chunk 的演进空间。

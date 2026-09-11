@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/rowpack/rowpack/internal/block"
@@ -284,7 +285,75 @@ func splitPage(raw []byte) (pageStreams, error) {
 	return out, nil
 }
 
+// pageRows is one decoded index page in columnar form — the same layout the
+// in-memory rowShard uses, so a sink can append a whole page without a
+// per-entry closure or interface call. The streaming parser reuses one
+// instance across pages, so decoding a page allocates nothing after warmup.
+type pageRows struct {
+	rowIDs   []uint64 // sorted by RowID within each table run
+	ordinals []uint32 // ItemOrdinal per entry
+	changes  []uint8  // ChangeType per entry
+
+	// Table runs: tableIDs[t] owns entries
+	// [tableRunStart[t], tableRunStart[t+1]). A page normally holds exactly
+	// one table, but the decoder accepts any number of ascending table runs.
+	tableRunStart []uint32
+	tableIDs      []uint32
+
+	// Block runs: blockIDs[b] owns entries
+	// [blockRunStart[b], blockRunStart[b+1]). Runs are global over the page and
+	// may cross a table boundary.
+	blockRunStart []uint32
+	blockIDs      []uint64
+}
+
+// tableOf returns the table ID owning entry i, advancing the caller's run
+// cursor. Entries must be visited in ascending order.
+func (p *pageRows) tableOf(i int, t *int) uint32 {
+	for int(p.tableRunStart[*t+1]) <= i {
+		*t = *t + 1
+	}
+	return p.tableIDs[*t]
+}
+
+// blockOf returns the BlockID owning entry i, advancing the caller's run
+// cursor. Entries must be visited in ascending order.
+func (p *pageRows) blockOf(i int, b *int) uint64 {
+	for int(p.blockRunStart[*b+1]) <= i {
+		*b = *b + 1
+	}
+	return p.blockIDs[*b]
+}
+
+// walkPage decodes one index page and emits every entry in ascending order.
+// Callers that consume a whole page should prefer decodePageInto, which skips
+// the per-entry callback; walkPage remains for the buffered path and tests.
 func walkPage(raw []byte, emit func(format.RowIndexEntry) error) error {
+	var p pageRows
+	if err := decodePageInto(&p, raw); err != nil {
+		return err
+	}
+	ti, bi := 0, 0
+	for i := range p.rowIDs {
+		e := format.RowIndexEntry{
+			TableID:     p.tableOf(i, &ti),
+			RowID:       p.rowIDs[i],
+			BlockID:     p.blockOf(i, &bi),
+			ItemOrdinal: p.ordinals[i],
+			ChangeType:  format.ChangeType(p.changes[i]),
+		}
+		if err := emit(e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// decodePageInto decodes and fully validates one index page into p, reusing
+// p's buffers. It performs every check walkPage performs and reports the same
+// entry indices in its errors; the decoded columns and run directories are the
+// exact shape a rowShard stores, so a sink can append them wholesale.
+func decodePageInto(p *pageRows, raw []byte) error {
 	streams, err := splitPage(raw)
 	if err != nil {
 		return err
@@ -301,6 +370,14 @@ func walkPage(raw []byte, emit func(format.RowIndexEntry) error) error {
 		*pos += num
 		return v, nil
 	}
+
+	p.rowIDs = slices.Grow(p.rowIDs[:0], count)
+	p.ordinals = slices.Grow(p.ordinals[:0], count)
+	p.changes = slices.Grow(p.changes[:0], count)
+	p.tableRunStart = p.tableRunStart[:0]
+	p.tableIDs = p.tableIDs[:0]
+	p.blockRunStart = p.blockRunStart[:0]
+	p.blockIDs = p.blockIDs[:0]
 
 	var (
 		tp, rp, bp, op, ti   int
@@ -338,6 +415,8 @@ func walkPage(raw []byte, emit func(format.RowIndexEntry) error) error {
 			currentTable = uint32(tv)
 			tableRunLeft = int(rl)
 			rowRunFirst = true
+			p.tableIDs = append(p.tableIDs, currentTable)
+			p.tableRunStart = append(p.tableRunStart, uint32(ti))
 		}
 		var rowID uint64
 		if rowRunFirst {
@@ -369,6 +448,8 @@ func walkPage(raw []byte, emit func(format.RowIndexEntry) error) error {
 			}
 			curBlock = bid
 			curBlockLeft = int(rl)
+			p.blockIDs = append(p.blockIDs, curBlock)
+			p.blockRunStart = append(p.blockRunStart, uint32(ti))
 		}
 		curBlockLeft--
 		var ordinal uint32
@@ -421,18 +502,16 @@ func walkPage(raw []byte, emit func(format.RowIndexEntry) error) error {
 				globalMax = rowID
 			}
 		}
-		if err := emit(format.RowIndexEntry{
-			TableID:     currentTable,
-			RowID:       rowID,
-			BlockID:     curBlock,
-			ItemOrdinal: ordinal,
-			ChangeType:  ct,
-		}); err != nil {
-			return err
-		}
+		p.rowIDs = append(p.rowIDs, rowID)
+		p.ordinals = append(p.ordinals, ordinal)
+		p.changes = append(p.changes, uint8(ct))
 		tableRunLeft--
 		ti++
 	}
+	// Terminal sentinels: run r owns [start[r], start[r+1]).
+	p.tableRunStart = append(p.tableRunStart, uint32(count))
+	p.blockRunStart = append(p.blockRunStart, uint32(count))
+
 	if tp != len(tableRun) {
 		return fmt.Errorf("rowpack: index page table run has %d trailing bytes", len(tableRun)-tp)
 	}

@@ -16,6 +16,7 @@ import (
 type Appender struct {
 	f      *os.File
 	offset int64
+	size   int64
 	mapper *readMapper
 }
 
@@ -35,7 +36,7 @@ func OpenAppender(path string, create bool) (*Appender, error) {
 		f.Close()
 		return nil, err
 	}
-	return &Appender{f: f, offset: fi.Size(), mapper: newReadMapper(f)}, nil
+	return &Appender{f: f, offset: fi.Size(), size: fi.Size(), mapper: newReadMapper(f)}, nil
 }
 
 // View returns a stable view of [offset, offset+n). On platforms with mmap
@@ -63,6 +64,7 @@ func (a *Appender) Append(b []byte) (int64, error) {
 		return start, errors.New("rowpack: short write")
 	}
 	a.offset += int64(n)
+	a.size = a.offset
 	return start, nil
 }
 
@@ -82,6 +84,7 @@ func (a *Appender) AppendZeroes(n int) (int64, error) {
 		a.offset += int64(len(chunk))
 		remaining -= len(chunk)
 	}
+	a.size = a.offset
 	return start, nil
 }
 
@@ -98,6 +101,7 @@ func (a *Appender) Truncate(n int64) error {
 	if n < a.offset {
 		a.offset = n
 	}
+	a.size = n
 	a.mapper.unmap()
 	return nil
 }
@@ -105,14 +109,11 @@ func (a *Appender) Truncate(n int64) error {
 // ReadAt reads from the file without touching the write offset.
 func (a *Appender) ReadAt(b []byte, off int64) (int, error) { return a.f.ReadAt(b, off) }
 
-// Size returns the current file size.
-func (a *Appender) Size() (int64, error) {
-	fi, err := a.f.Stat()
-	if err != nil {
-		return 0, err
-	}
-	return fi.Size(), nil
-}
+// Size returns the current file size. The Appender is the file's only writer
+// (single-writer model), so the size it tracks across Append/AppendZeroes/
+// Truncate is authoritative; the read path (recover, Stats) never needs a
+// per-call fstat, and the accessor cannot fail.
+func (a *Appender) Size() int64 { return a.size }
 
 // Close unmaps any read view and closes the file.
 func (a *Appender) Close() error {

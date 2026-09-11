@@ -120,10 +120,7 @@ func (s *Store) recover() error {
 	s.txnSeq.Store(lastSeq)
 
 	// 4. Handle the data tail.
-	dataSize, err := s.data.Size()
-	if err != nil {
-		return err
-	}
+	dataSize := s.data.Size()
 	if tailStart < dataSize {
 		report.performed = true
 		report.dataTailIgnored = uint64(dataSize - tailStart)
@@ -223,10 +220,7 @@ func (s *Store) readIndexTxn(c *committedSnapshot) (data []byte, crypto *index.C
 // authority), NOT a SnapshotHeader: an IndexTxn header whose magic is
 // bit-rotted must not demote a committed snapshot to an uncommitted tail.
 func (s *Store) scanDataFile() ([]committedSnapshot, int64, error) {
-	size, err := s.data.Size()
-	if err != nil {
-		return nil, 0, err
-	}
+	size := s.data.Size()
 	if size < format.DataFileHeaderSize {
 		return nil, 0, fmt.Errorf("rowpack: store file %d bytes too small", size)
 	}
@@ -258,10 +252,7 @@ func (s *Store) scanDataFile() ([]committedSnapshot, int64, error) {
 // corruption). Structural inconsistencies between the header and a later
 // committed footer (IDs disagreeing) are reported as an error here.
 func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, next int64, err error) {
-	size, err := s.data.Size()
-	if err != nil {
-		return c, false, 0, err
-	}
+	size := s.data.Size()
 	var sh [format.SnapshotHeaderSize]byte
 	if size-start < format.SnapshotHeaderSize {
 		return c, false, 0, nil

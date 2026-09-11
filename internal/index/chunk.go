@@ -417,6 +417,14 @@ type RowHintSink interface {
 	ReserveRows(hint int)
 }
 
+// rowBatchSink is the optional bulk path for the Eager Open: the parser
+// decodes a whole index page into a reusable columnar pageRows and hands it
+// over in one call, instead of invoking a callback and an interface method
+// per entry.
+type rowBatchSink interface {
+	AddRowBatch(b *pageRows, snapshotID uint64) error
+}
+
 // RowEntrySink is an optional TxnSink extension for row entries: instead of
 // handing the parser bounded []RowIndexEntry batches via AddRows, the sink
 // receives each decoded entry individually via AddRowEntry. The page decoder
@@ -761,6 +769,8 @@ func (p *pageParser) parse() (crc uint32, rows uint64, err error) {
 		return 0, 0, nil
 	}
 	// Decode each page and hand its entries to the sink.
+	var batch pageRows
+	batchSink, batchOK := p.sink.(rowBatchSink)
 	for i := range fences {
 		f := &fences[i]
 		stored := p.region[int(f.StoredOffset) : int(f.StoredOffset)+int(f.StoredSize)]
@@ -784,9 +794,23 @@ func (p *pageParser) parse() (crc uint32, rows uint64, err error) {
 		}
 		// The page encodes (TableID, RowID, BlockID, ItemOrdinal, ChangeType)
 		// without SnapshotID (txn-wide); stamp it before handing to the sink.
-		// A RowEntrySink receives entries one at a time via walkPage —
-		// no []RowIndexEntry page materialization, no []RowKeyLoc intermediate
-		// Sinks that do not implement RowEntrySink fall back to the batched path.
+		// A batch sink receives the whole page as columns; a RowEntrySink
+		// receives entries one at a time via walkPage — no []RowIndexEntry
+		// page materialization either way, and no []RowKeyLoc intermediate.
+		if batchOK {
+			if err := decodePageInto(&batch, pageRaw); err != nil {
+				return 0, 0, fmt.Errorf("rowpack: row index page %d: %w", i, err)
+			}
+			if uint32(len(batch.rowIDs)) != f.EntryCount {
+				return 0, 0, fmt.Errorf("rowpack: row index page %d %d entries, fence says %d", i, len(batch.rowIDs), f.EntryCount)
+			}
+			if err := batchSink.AddRowBatch(&batch, p.snapshotID); err != nil {
+				return 0, 0, fmt.Errorf("rowpack: row index page %d: %w", i, err)
+			}
+			p.rowCount += uint64(len(batch.rowIDs))
+			p.plainCRC = format.CRC32CConcat(p.plainCRC, pageRaw)
+			continue
+		}
 		if es, ok := p.sink.(RowEntrySink); ok {
 			emitted := 0
 			if err := walkPage(pageRaw, func(e format.RowIndexEntry) error {

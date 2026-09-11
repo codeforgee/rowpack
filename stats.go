@@ -95,9 +95,7 @@ func (s *Store) Stats() Stats {
 	}
 	stt.IndexMemoryBytes = view.MemoryBytes()
 	stt.OversizedRowPages = s.oversizedPages.Load()
-	if sz, err := s.data.Size(); err == nil {
-		stt.DataFileBytes = sz
-	}
+	stt.DataFileBytes = s.data.Size()
 	if l := s.loader; l != nil {
 		stt.Cache.CapacityBytes, stt.Cache.UsedBytes, stt.Cache.Hits, stt.Cache.Misses, stt.Cache.Evictions, stt.Cache.Loads = l.cacheStats()
 		stt.ScanCache.CapacityBytes, stt.ScanCache.UsedBytes, stt.ScanCache.Hits, stt.ScanCache.Misses, stt.ScanCache.Evictions, stt.ScanCache.Loads = l.scanStats()

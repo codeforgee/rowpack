@@ -143,8 +143,7 @@ func TestTornTailTruncation(t *testing.T) {
 	require.NoError(t, w.DefineTable("users", usersSchema()))
 	insertUsers(t, w, 5)
 	full, _ := w.Commit(ctx)
-	sizeBefore, err := db.data.Size()
-	require.NoError(t, err)
+	sizeBefore := db.data.Size()
 	require.NoError(t, db.Close())
 
 	f, err := os.OpenFile(base+".rpk", os.O_RDWR|os.O_APPEND, 0)
@@ -166,7 +165,7 @@ func TestTornTailTruncation(t *testing.T) {
 	rec := ro.Stats().Recovery
 	require.True(t, rec.Performed)
 	require.Equal(t, uint64(len(garbage)), rec.DataTailIgnored)
-	sz, _ := ro.data.Size()
+	sz := ro.data.Size()
 	require.Equal(t, sizeBefore+int64(len(garbage)), sz, "read-only open must not truncate")
 	require.NoError(t, ro.Close())
 
@@ -174,7 +173,7 @@ func TestTornTailTruncation(t *testing.T) {
 	dbrw, err := Open(base, Options{BlockSize: 1024})
 	require.NoError(t, err)
 	t.Cleanup(func() { dbrw.Close() })
-	sz, _ = dbrw.data.Size()
+	sz = dbrw.data.Size()
 	require.Equal(t, sizeBefore, sz, "read-write open truncates the uncommitted tail")
 	snaps, err = dbrw.ListSnapshots(ctx)
 	require.NoError(t, err)

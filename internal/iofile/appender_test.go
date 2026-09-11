@@ -198,10 +198,7 @@ func TestReadAllAndSize(t *testing.T) {
 	if _, err := a.Append([]byte("one-two")); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	sz, err := a.Size()
-	if err != nil {
-		t.Fatalf("Size: %v", err)
-	}
+	sz := a.Size()
 	if sz != 7 {
 		t.Fatalf("size %d, want 7", sz)
 	}
@@ -233,7 +230,7 @@ func TestTruncate(t *testing.T) {
 	if a.Offset() != 4 {
 		t.Fatalf("offset after truncate %d, want 4", a.Offset())
 	}
-	sz, _ := a.Size()
+	sz := a.Size()
 	if sz != 4 {
 		t.Fatalf("size after truncate %d, want 4", sz)
 	}

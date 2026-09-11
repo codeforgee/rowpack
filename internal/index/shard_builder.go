@@ -83,6 +83,65 @@ func (b *rowShardBuilder) AddRowEntry(e format.RowIndexEntry) error {
 	return nil
 }
 
+// AddPageRows appends one decoded index page in bulk: a table switch
+// finalizes the current shard, ascending order and duplicates are validated
+// over the whole batch (including across the page boundary), and the columns
+// plus block runs are appended wholesale. This replaces one AddRowEntry call
+// per row with a handful of calls per page.
+func (b *rowShardBuilder) AddPageRows(p *pageRows, snapID uint64) error {
+	if len(p.rowIDs) == 0 {
+		return nil
+	}
+	if snapID != b.snapID {
+		return fmt.Errorf("rowpack: row entry wrong snapshot")
+	}
+	for t := 0; t < len(p.tableIDs); t++ {
+		start, end := int(p.tableRunStart[t]), int(p.tableRunStart[t+1])
+		if b.have && p.tableIDs[t] != b.table {
+			if err := b.finalize(); err != nil {
+				return err
+			}
+		}
+		b.table, b.have = p.tableIDs[t], true
+		base := len(b.rowIDs)
+		if base > 0 {
+			last, first := b.rowIDs[base-1], p.rowIDs[start]
+			if first < last {
+				return fmt.Errorf("rowpack: rows not ascending at %d", first)
+			}
+			if first == last {
+				return fmt.Errorf("rowpack: duplicate row %d in snapshot", first)
+			}
+		}
+		for i := start + 1; i < end; i++ {
+			if p.rowIDs[i] < p.rowIDs[i-1] {
+				return fmt.Errorf("rowpack: rows not ascending at %d", p.rowIDs[i])
+			}
+			if p.rowIDs[i] == p.rowIDs[i-1] {
+				return fmt.Errorf("rowpack: duplicate row %d in snapshot", p.rowIDs[i])
+			}
+		}
+		// Block runs intersecting this table run. A run continuing from the
+		// previous page (same BlockID) keeps its existing run start.
+		for r := 0; r < len(p.blockIDs); r++ {
+			lo, hi := int(p.blockRunStart[r]), int(p.blockRunStart[r+1])
+			if lo >= end || hi <= start {
+				continue
+			}
+			bid := p.blockIDs[r]
+			if !b.haveBlock || bid != b.prevBlock {
+				b.runStart = append(b.runStart, uint32(base+max(lo, start)-start))
+				b.blockIDs = append(b.blockIDs, bid)
+				b.prevBlock, b.haveBlock = bid, true
+			}
+		}
+		b.rowIDs = append(b.rowIDs, p.rowIDs[start:end]...)
+		b.ordinals = append(b.ordinals, p.ordinals[start:end]...)
+		b.changes = append(b.changes, p.changes[start:end]...)
+	}
+	return nil
+}
+
 // finalize closes the current table's shard: append the terminal runStart
 // sentinel, install the completed rowShard, and reset the per-table arrays for
 // the next table. No-op when no table is active.

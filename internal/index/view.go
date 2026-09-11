@@ -632,9 +632,26 @@ func (a *streamApply) AddMetadata(e format.MetadataIndexEntry) error {
 	return nil
 }
 
+// AddRowBatch implements rowBatchSink: the page parser decodes a whole index
+// page into columnar form and hands it over in one call, so the shard columns
+// are appended and validated per page instead of per row.
+func (a *streamApply) AddRowBatch(b *pageRows, snapshotID uint64) error {
+	if a.ap == nil {
+		return fmt.Errorf("rowpack: row entry before snapshot")
+	}
+	if snapshotID != a.ap.snapID {
+		return fmt.Errorf("rowpack: row entry wrong snapshot")
+	}
+	if a.shards == nil {
+		a.shards = newRowShardBuilder(a.ap.snapID, a.hint)
+	}
+	return a.shards.AddPageRows(b, snapshotID)
+}
+
 // AddRowEntry implements RowEntrySink: the page parser (via walkPage)
 // hands each decoded entry straight to the shard builder, one at a time, so
-// no per-page []RowIndexEntry is materialized.
+// no per-page []RowIndexEntry is materialized. It is the fallback for sinks
+// that do not implement rowBatchSink.
 func (a *streamApply) AddRowEntry(e format.RowIndexEntry) error {
 	if a.ap == nil {
 		return fmt.Errorf("rowpack: row entry before snapshot")

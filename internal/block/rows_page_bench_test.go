@@ -198,6 +198,64 @@ func BenchmarkRowsPageRecords32K(b *testing.B) {
 	}
 }
 
+// BenchmarkRowsPageParse32K isolates page CRC, packed-change validation and
+// metadata-stream expansion. It is the primary before/after signal for
+// portable SWAR or architecture-specific SIMD work in the page parser.
+func BenchmarkRowsPageParse32K(b *testing.B) {
+	schema := pageBenchSchema()
+	bodies := benchPageRows(b, schema)
+	bld := NewPageBuilder(32 << 10)
+	for _, body := range bodies {
+		if bld.NeedsFlush() {
+			break
+		}
+		if err := bld.Add(uint64(bld.countRows()+1), 1, fileformat.ChangeInsert, body); err != nil {
+			b.Fatal(err)
+		}
+	}
+	page, err := bld.Finish()
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(page)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := ParseRowsPage(page); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkValidateChangeBits(b *testing.B) {
+	const entries = 4096
+	stream := make([]byte, entries/4)
+	b.SetBytes(entries / 4)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if err := validateChangeBits(stream, entries); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkValidateChangeBitsScalar preserves the pre-SWAR algorithm as a
+// benchmark-only control. Keeping both implementations in the same process
+// makes the speedup measurable without relying on an archived machine run.
+func BenchmarkValidateChangeBitsScalar(b *testing.B) {
+	const entries = 4096
+	stream := make([]byte, entries/4)
+	b.SetBytes(entries / 4)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		for ordinal := uint32(0); ordinal < entries; ordinal++ {
+			if (stream[ordinal/4]>>((ordinal%4)*2))&3 == 3 {
+				b.Fatal("unexpected reserved marker")
+			}
+		}
+	}
+}
+
 func fmtTarget(kb int) string {
 	switch kb {
 	case 16 << 10:

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/bits"
 
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/fileformat"
@@ -103,17 +104,17 @@ func (b *PageBuilder) Add(rowID uint64, schemaVersion uint32, changeType filefor
 }
 
 // RawBytes returns the current uncompressed page size if flushed now.
-func (b *PageBuilder) RawBytes() int {
+func (b *PageBuilder) rawBytes() int {
 	return fileformat.RowsPageHeaderSize + len(b.rowIDs) + len(b.offsets) +
 		len(b.schemaRLE) + len(b.changeBits) + len(b.tuples)
 }
 
 // Count returns the number of buffered records.
-func (b *PageBuilder) Count() uint32 { return b.count }
+func (b *PageBuilder) countRows() uint32 { return b.count }
 
 // NeedsFlush reports whether the pending page has reached the target size.
 func (b *PageBuilder) NeedsFlush() bool {
-	return b.count > 0 && b.RawBytes() >= b.target
+	return b.count > 0 && b.rawBytes() >= b.target
 }
 
 // Finish serializes the buffered records into one page and resets the
@@ -150,9 +151,6 @@ func (b *PageBuilder) Finish() ([]byte, error) {
 	b.reset()
 	return page, nil
 }
-
-// Reset clears all buffers for reuse.
-func (b *PageBuilder) Reset() { b.reset() }
 
 func (b *PageBuilder) reset() {
 	b.rowIDs = b.rowIDs[:0]
@@ -261,6 +259,8 @@ func (p *RowsPage) buildIndex() error {
 		runEnd  uint32
 		runVer  uint32
 		lastEnd uint32
+		minID   uint64
+		maxID   uint64
 	)
 	for i := uint32(0); i < count; i++ {
 		v, n := binary.Uvarint(p.rowIDs[idsPos:])
@@ -274,6 +274,16 @@ func (p *RowsPage) buildIndex() error {
 			rowID = uint64(int64(rowID) + unzigzag64(v))
 		}
 		p.ids[i] = rowID
+		if i == 0 {
+			minID, maxID = rowID, rowID
+		} else {
+			if rowID < minID {
+				minID = rowID
+			}
+			if rowID > maxID {
+				maxID = rowID
+			}
+		}
 
 		d, n2 := binary.Uvarint(p.offsets[offPos:])
 		if n2 <= 0 {
@@ -323,15 +333,6 @@ func (p *RowsPage) buildIndex() error {
 	if p.ids[0] != p.h.FirstRowID {
 		return fmt.Errorf("rowpack: page first row id %d, want %d", p.h.FirstRowID, p.ids[0])
 	}
-	minID, maxID := p.ids[0], p.ids[0]
-	for _, id := range p.ids[1:] {
-		if id < minID {
-			minID = id
-		}
-		if id > maxID {
-			maxID = id
-		}
-	}
 	if minID != p.h.MinRowID || maxID != p.h.MaxRowID {
 		return fmt.Errorf("rowpack: page row id range [%d,%d], header [%d,%d]", minID, maxID, p.h.MinRowID, p.h.MaxRowID)
 	}
@@ -340,9 +341,24 @@ func (p *RowsPage) buildIndex() error {
 
 // validateChangeBits rejects the reserved packed value 3 anywhere in the
 // stream — the format-level corruption marker.
-func validateChangeBits(bits []byte, count uint32) error {
-	for i := uint32(0); i < count; i++ {
-		if (bits[i/4]>>((i%4)*2))&3 == 3 {
+func validateChangeBits(stream []byte, count uint32) error {
+	// Four 2-bit entries share each byte. For a lane to equal binary 11, its
+	// low bit and the adjacent high bit must both be set. Folding the high bits
+	// down and masking with 0x55 tests all four lanes in parallel. Besides
+	// reducing branches this shape is friendly to wider compiler/assembly
+	// implementations later, while keeping the portable scalar path cheap.
+	full := count / 4
+	for byteIdx := uint32(0); byteIdx < full; byteIdx++ {
+		x := stream[byteIdx]
+		bad := x & (x >> 1) & 0x55
+		if bad != 0 {
+			lane := uint32(bits.TrailingZeros8(bad) / 2)
+			return fmt.Errorf("rowpack: rows page record %d: illegal change type marker", byteIdx*4+lane)
+		}
+	}
+	// Ignore the unused high lanes in the final byte, matching the v1 format.
+	for i := full * 4; i < count; i++ {
+		if (stream[i/4]>>((i%4)*2))&3 == 3 {
 			return fmt.Errorf("rowpack: rows page record %d: illegal change type marker", i)
 		}
 	}
@@ -351,28 +367,6 @@ func validateChangeBits(bits []byte, count uint32) error {
 
 // Header returns the parsed page header.
 func (p *RowsPage) Header() fileformat.RowsPageHeader { return p.h }
-
-// Raw returns the full page bytes.
-func (p *RowsPage) Raw() []byte { return p.raw }
-
-// RowIDAt decodes the RowID of one record (stream walk, O(ordinal)).
-func (p *RowsPage) RowIDAt(ordinal uint32) (uint64, error) {
-	var rowID uint64
-	pos := 0
-	for i := uint32(0); i <= ordinal; i++ {
-		v, n := binary.Uvarint(p.rowIDs[pos:])
-		if n <= 0 {
-			return 0, errPageTruncated
-		}
-		pos += n
-		if i == 0 {
-			rowID = v
-		} else {
-			rowID = uint64(int64(rowID) + unzigzag64(v))
-		}
-	}
-	return rowID, nil
-}
 
 // RecordAt decodes one record: RowID, schema version, change type and the
 // body view (empty for deletes). O(1) via the parse-time record index; the

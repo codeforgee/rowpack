@@ -198,7 +198,7 @@ func TestGoldenRowsPayloadAllTypes(t *testing.T) {
 	}}
 	// Body-only TypedTuple: the Rows Page layout carries ColumnCount and
 	// NullBitmapBytes out of band (resolved from the schema).
-	row, err := codec.DefaultCodec().EncodeInto(schema, Row{
+	row, err := (codec.Codec{Limits: codec.DefaultLimits()}).EncodeInto(schema, Row{
 		Bool(true),
 		Int64(-987654321012345),
 		Uint32(4294967295),

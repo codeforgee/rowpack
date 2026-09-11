@@ -110,14 +110,12 @@ type Iterator struct {
 	curPageRel   func() // returns the current page's pooled scratch
 	curPageNext  int    // block-scan: next record ordinal within page
 
-	// curSchema memoizes the codec schema resolved for the current block
-	// cursor keyed by the record's SchemaVersion: the alternative is a
-	// two-level map walk per record, while records within a block
-	// overwhelmingly share one version. Invalidated whenever the block cursor
-	// moves.
-	curSchemaVer uint32
-	curSchema    *codec.Schema
-	curSchemaOK  bool
+	// curDecoder memoizes the schema-bound decoder for the current block and
+	// SchemaVersion. Besides avoiding the schema map walk, it hoists invariant
+	// schema/bitmap work out of every row decode.
+	curDecoderVer uint32
+	curDecoder    codec.Decoder
+	curDecoderOK  bool
 
 	// Block-scan mode (scanModeBlocks): the raw per-block change stream.
 	blockIDs []uint64 // blocks to visit, ascending
@@ -314,13 +312,13 @@ func (it *Iterator) nextBlockRecord() (Row, bool) {
 			if rec.ChangeType == fileformat.ChangeDelete {
 				return nil, true // tombstone: no payload
 			}
-			schema, err := it.schemaFor(rec.SchemaVersion)
+			decoder, err := it.decoderFor(rec.SchemaVersion)
 			if err != nil {
 				it.err = err
 				it.releasePage()
 				return nil, false
 			}
-			row, err := it.store.rowCodec().DecodeInto(it.buf, rec.Body, schema, it.sink)
+			row, err := decoder.DecodeInto(it.buf, rec.Body, it.sink)
 			if err != nil {
 				it.err = err
 				it.releasePage()
@@ -378,7 +376,7 @@ func (it *Iterator) loadBlock(bl *index.BlockLoc) error {
 	it.curPageRel = nil
 	it.curPageIdx = -1
 	it.curPageNext = 0
-	it.curSchemaOK = false
+	it.curDecoderOK = false
 	return nil
 }
 
@@ -464,28 +462,27 @@ func (it *Iterator) rowAt(loc index.RowLoc, dst Row) (Row, error) {
 	if err != nil {
 		return nil, err
 	}
-	schema, err := it.schemaFor(rec.SchemaVersion)
+	decoder, err := it.decoderFor(rec.SchemaVersion)
 	if err != nil {
 		return nil, err
 	}
-	return it.store.rowCodec().DecodeInto(dst, rec.Body, schema, it.sink)
+	return decoder.DecodeInto(dst, rec.Body, it.sink)
 }
 
-// schemaFor returns the codec schema for the given record schema version
-// under the current block cursor, memoizing the two-level map walk until the
-// block cursor moves or the version differs. The cursor must be loaded.
-func (it *Iterator) schemaFor(ver uint32) (*codec.Schema, error) {
-	if it.curSchemaOK && it.curSchemaVer == ver {
-		return it.curSchema, nil
+// decoderFor returns the prepared decoder for a record schema version under
+// the current block cursor. The cursor must be loaded.
+func (it *Iterator) decoderFor(ver uint32) (codec.Decoder, error) {
+	if it.curDecoderOK && it.curDecoderVer == ver {
+		return it.curDecoder, nil
 	}
-	schema, err := it.state.schemas.schemaFor(it.curBlk, ver)
+	decoder, err := it.state.schemas.decoderFor(it.curBlk, ver)
 	if err != nil {
-		return nil, err
+		return codec.Decoder{}, err
 	}
-	it.curSchemaVer = ver
-	it.curSchema = schema
-	it.curSchemaOK = true
-	return schema, nil
+	it.curDecoderVer = ver
+	it.curDecoder = decoder
+	it.curDecoderOK = true
+	return decoder, nil
 }
 
 // locateBlock loads the page container of loc's block, reusing the current
@@ -509,7 +506,7 @@ func (it *Iterator) locateBlock(loc index.RowLoc) error {
 	it.curPage = nil
 	it.curPageRel = nil
 	it.curPageIdx = -1
-	it.curSchemaOK = false
+	it.curDecoderOK = false
 	return nil
 }
 

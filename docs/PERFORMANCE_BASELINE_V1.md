@@ -171,3 +171,6 @@ BenchmarkEncryptedGetHot-8                           275.7 ns/op    17 B/op   1 
 - 本表为单机单次结果，用于相对回归，不用于跨机绝对比较；需要方差档时用
   `BENCHCOUNT=5 make baseline` 重跑，归档文件即方差证据；
 - 对照新旧基线时，先看 diff 的「元数据」段：环境不一致时数值差异不能直接归因于代码变更。
+
+SIMD/SWAR 候选内核另有 `make bench-simd` 微基准；设计边界、当前内核和实施路线见
+[SIMD_OPTIMIZATION.md](SIMD_OPTIMIZATION.md)。微基准只用于定位内核变化，最终验收仍以本基线为准。

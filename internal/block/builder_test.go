@@ -65,13 +65,13 @@ func TestRowsBlockBuilderPending(t *testing.T) {
 
 	builder := NewRowsBuilder(1, 1, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
-	require.Equal(t, 0, builder.Pending())
+	require.Equal(t, 0, len(builder.entries))
 
 	for i := uint64(1); i <= 5; i++ {
 		tuple := []byte{0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, byte(i), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 		err := builder.Add(i, 1, fileformat.ChangeInsert, tuple)
 		require.NoError(t, err)
-		require.Equal(t, int(i), builder.Pending())
+		require.Equal(t, int(i), len(builder.entries))
 	}
 }
 
@@ -231,14 +231,14 @@ func TestMetadataBlockBuilderPending(t *testing.T) {
 
 	builder := NewMetadataBuilder(1, 0, Config{BlockSize: 1024, Compression: fileformat.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
-	require.Equal(t, 0, builder.Pending())
+	require.Equal(t, 0, int(builder.count))
 
 	for i := uint32(1); i <= 3; i++ {
 		entry := metadata.DirectoryEntry{ObjectID: 1, Revision: 1, RecordType: 2, Operation: 1}
 		record := []byte{byte(i)}
 		err := builder.Add(entry, record)
 		require.NoError(t, err)
-		require.Equal(t, int(i), builder.Pending())
+		require.Equal(t, int(i), int(builder.count))
 	}
 }
 

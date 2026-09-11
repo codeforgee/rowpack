@@ -109,6 +109,3 @@ func (b *MetadataBuilder) Flush() error {
 	b.count = 0
 	return nil
 }
-
-// Pending returns the number of buffered records.
-func (b *MetadataBuilder) Pending() int { return int(b.count) }

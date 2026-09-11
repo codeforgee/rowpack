@@ -25,7 +25,7 @@ import (
 var ErrSchemaMismatch = errors.New("rowpack: schema mismatch")
 
 // bitmapScratch is a zeroed stack buffer used to zero-fill the null bitmap in
-// EncodeTupleInto without a per-row allocation. 2 KiB covers the 16384-column
+// EncodeInto without a per-row allocation. 2 KiB covers the 16384-column
 // default limit; larger schemas fall back to make().
 var bitmapScratch [2048]byte
 
@@ -41,54 +41,185 @@ type Codec struct {
 	Limits Limits
 }
 
-// DefaultCodec returns the codec with the v1 default safety limits, for callers
-// that have no store policy of their own (the public Schema.Validate path and
-// tests).
-func DefaultCodec() Codec { return Codec{Limits: DefaultLimits()} }
-
-// Encode serializes row against schema into a freshly allocated slice.
-// The schema must already be validated (see Schema.Validate) before it is
-// first used; Encode itself only enforces per-value and per-row limits.
-func (c Codec) Encode(schema *Schema, row []Value) ([]byte, error) {
-	return c.EncodeTupleInto(schema, row, nil)
+// Decoder is a schema-bound body decoder. It hoists schema validation and
+// bitmap geometry out of repeated DecodeInto calls, which is useful for page
+// scans and batches where many adjacent records share one schema version.
+// Decoder is immutable and safe for concurrent use; dst and Sink retain the
+// same ownership rules as Codec.DecodeInto.
+type Decoder struct {
+	codec       Codec
+	schema      *Schema
+	bitmapBytes int
+	fixedBytes  int
+	fixed       bool
 }
 
-// EncodeTupleInto is Encode with a caller-provided scratch buffer that is reused
-// across calls (the returned slice may alias reuse). The caller must not hold
-// the returned slice across the next EncodeTupleInto call unless it copies it.
-// Like Encode it requires an already-validated schema; per-value
-// type/null/scale/UTF-8/time/limit checks are still performed on every call.
-func (c Codec) EncodeTupleInto(schema *Schema, row []Value, reuse []byte) ([]byte, error) {
+// Columns returns the compiled row width.
+func (d Decoder) Columns() int { return len(d.schema.Columns) }
+
+// CompileDecoder binds a validated schema to the codec. The returned decoder
+// avoids repeating invariant checks for every row in a homogeneous batch.
+func (c Codec) CompileDecoder(schema *Schema) (Decoder, error) {
 	if schema == nil {
-		return nil, errors.New("rowpack: nil schema")
+		return Decoder{}, errors.New("rowpack: nil schema")
 	}
 	if len(schema.Columns) > int(c.Limits.MaxColumns) {
-		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), c.Limits.MaxColumns)
+		return Decoder{}, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), c.Limits.MaxColumns)
 	}
-	if len(row) != len(schema.Columns) {
-		return nil, fmt.Errorf("%w: row has %d values, schema has %d columns", ErrSchemaMismatch, len(row), len(schema.Columns))
+	d := Decoder{codec: c, schema: schema, bitmapBytes: (len(schema.Columns) + 7) / 8, fixed: true}
+	for _, col := range schema.Columns {
+		width := fixedWidth(col.Type)
+		if col.Type == TypeBool {
+			width = 1
+		}
+		if col.Nullable || width == 0 {
+			d.fixed = false
+			break
+		}
+		d.fixedBytes += width
 	}
+	return d, nil
+}
 
-	bitmapBytes := (len(schema.Columns) + 7) / 8
-	// Estimate: header + bitmap + worst-case 9 bytes per value (u64).
-	need := 8 + bitmapBytes + 9*len(schema.Columns)
-	var buf []byte
-	if cap(reuse) >= need {
-		buf = reuse[:0]
-	} else {
-		buf = make([]byte, 0, need)
+// DecodeInto decodes one body using the schema invariants bound by
+// CompileDecoder.
+func (d Decoder) DecodeInto(dst []Value, body []byte, sink *Sink) ([]Value, error) {
+	if d.fixed && len(body) == d.bitmapBytes+d.fixedBytes {
+		if bitmapIsZero(body[:d.bitmapBytes]) {
+			if row, ok := d.decodeFixedInto(dst, body[d.bitmapBytes:]); ok {
+				return row, nil
+			}
+		}
 	}
-	buf = appendU32(buf, uint32(len(schema.Columns)))
-	buf = appendU32(buf, uint32(bitmapBytes))
-	return c.encodeBodyInto(buf, schema, row)
+	return d.codec.decodeBodyIntoPrepared(dst, body, d.schema, d.bitmapBytes, sink)
+}
+
+// DecodeBatchInto decodes homogeneous body-only tuples into one contiguous
+// Value slab. The returned slice contains len(bodies)*Columns values in row
+// order; row i is result[i*ncols:(i+1)*ncols]. dst is appended to, allowing
+// callers to create row views without one allocation per row.
+func (d Decoder) DecodeBatchInto(dst []Value, bodies [][]byte, sink *Sink) ([]Value, error) {
+	ncols := len(d.schema.Columns)
+	maxInt := int(^uint(0) >> 1)
+	if ncols != 0 && len(bodies) > (maxInt-len(dst))/ncols {
+		return nil, fmt.Errorf("rowpack: decode batch size overflows int")
+	}
+	need := len(bodies) * ncols
+	if need > cap(dst)-len(dst) {
+		grown := make([]Value, len(dst), len(dst)+need)
+		copy(grown, dst)
+		dst = grown
+	}
+	for batch, body := range bodies {
+		start := len(dst)
+		dst = dst[:start+ncols]
+		var (
+			row []Value
+			err error
+		)
+		if d.fixed && len(body) == d.bitmapBytes+d.fixedBytes && bitmapIsZero(body[:d.bitmapBytes]) {
+			var ok bool
+			row, ok = d.decodeFixedInto(dst[start:start+ncols], body[d.bitmapBytes:])
+			if !ok {
+				row, err = d.codec.decodeBodyIntoPrepared(dst[start:start+ncols], body, d.schema, d.bitmapBytes, sink)
+			}
+		} else {
+			row, err = d.codec.decodeBodyIntoPrepared(dst[start:start+ncols], body, d.schema, d.bitmapBytes, sink)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("rowpack: decode batch row %d: %w", batch, err)
+		}
+		if len(row) != ncols {
+			return nil, fmt.Errorf("rowpack: decode batch row %d produced %d columns, want %d", batch, len(row), ncols)
+		}
+	}
+	return dst, nil
+}
+
+func bitmapIsZero(bitmap []byte) bool {
+	for _, b := range bitmap {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// decodeFixedInto is the valid-data fast path for non-nullable, fixed-width
+// schemas. Geometry has already been checked by DecodeInto, so each column
+// needs no individual bounds check. ok=false requests the fully validating
+// generic path for invalid bool/time values, preserving its error messages.
+func (d Decoder) decodeFixedInto(dst []Value, payload []byte) ([]Value, bool) {
+	row := dst
+	if cap(row) < len(d.schema.Columns) {
+		row = make([]Value, len(d.schema.Columns))
+	}
+	row = row[:len(d.schema.Columns)]
+	pos := 0
+	for i, col := range d.schema.Columns {
+		switch col.Type {
+		case TypeBool:
+			x := payload[pos]
+			if x > 1 {
+				return nil, false
+			}
+			row[i] = Value{typ: TypeBool, b: x == 1}
+			pos++
+		case TypeInt8:
+			row[i] = Value{typ: TypeInt8, i: int64(int8(payload[pos]))}
+			pos++
+		case TypeInt16:
+			row[i] = Value{typ: TypeInt16, i: int64(int16(binary.LittleEndian.Uint16(payload[pos:])))}
+			pos += 2
+		case TypeInt32:
+			row[i] = Value{typ: TypeInt32, i: int64(int32(binary.LittleEndian.Uint32(payload[pos:])))}
+			pos += 4
+		case TypeInt64:
+			row[i] = Value{typ: TypeInt64, i: int64(binary.LittleEndian.Uint64(payload[pos:]))}
+			pos += 8
+		case TypeUint8:
+			row[i] = Value{typ: TypeUint8, u: uint64(payload[pos])}
+			pos++
+		case TypeUint16:
+			row[i] = Value{typ: TypeUint16, u: uint64(binary.LittleEndian.Uint16(payload[pos:]))}
+			pos += 2
+		case TypeUint32:
+			row[i] = Value{typ: TypeUint32, u: uint64(binary.LittleEndian.Uint32(payload[pos:]))}
+			pos += 4
+		case TypeUint64:
+			row[i] = Value{typ: TypeUint64, u: binary.LittleEndian.Uint64(payload[pos:])}
+			pos += 8
+		case TypeFloat32:
+			row[i] = Value{typ: TypeFloat32, f32: math.Float32frombits(binary.LittleEndian.Uint32(payload[pos:]))}
+			pos += 4
+		case TypeFloat64:
+			row[i] = Value{typ: TypeFloat64, f64: math.Float64frombits(binary.LittleEndian.Uint64(payload[pos:]))}
+			pos += 8
+		case TypeDate:
+			row[i] = Value{typ: TypeDate, i: int64(int32(binary.LittleEndian.Uint32(payload[pos:])))}
+			pos += 4
+		case TypeTime:
+			x := int64(binary.LittleEndian.Uint64(payload[pos:]))
+			if x < 0 || x >= MaxTimeOfDay {
+				return nil, false
+			}
+			row[i] = Value{typ: TypeTime, i: x}
+			pos += 8
+		case TypeDateTime:
+			row[i] = Value{typ: TypeDateTime, i: int64(binary.LittleEndian.Uint64(payload[pos:]))}
+			pos += 8
+		default:
+			return nil, false
+		}
+	}
+	return row, true
 }
 
 // EncodeInto encodes the body of a TypedTuple — null bitmap + values,
 // without the 8-byte ColumnCount/NullBitmapBytes header — for page layouts
 // that carry the schema out of band (Rows Page). The returned slice may
-// alias reuse; per-value checks are identical to EncodeTupleInto except that the
-// MaxRowBytes intermediate check counts body bytes only (8-byte header slack
-// is immaterial at the 64 MiB default limit).
+// alias reuse. Type, nullability, size and decimal-scale constraints are
+// checked for every value.
 func (c Codec) EncodeInto(schema *Schema, row []Value, reuse []byte) ([]byte, error) {
 	if schema == nil {
 		return nil, errors.New("rowpack: nil schema")
@@ -151,15 +282,6 @@ func (c Codec) encodeBodyInto(buf []byte, schema *Schema, row []Value) ([]byte, 
 	return buf, nil
 }
 
-// Decode parses a TypedTuple payload against schema into a freshly allocated
-// Row. It validates every length before allocation, requires exactly the
-// expected bitmap size, rejects trailing bytes and unused bitmap bits, and
-// enforces limits, so malformed payloads can never panic. The schema must
-// already be validated (see Schema.Validate).
-func (c Codec) Decode(data []byte, schema *Schema) ([]Value, error) {
-	return c.DecodeTupleInto(nil, data, schema, nil)
-}
-
 // Sink lets decode paths that control payload-buffer lifetime (iterators)
 // materialize String/Bytes payloads as zero-copy views instead of fresh
 // copies. A nil *Sink, or a nil func field, keeps the copy semantics of
@@ -174,58 +296,10 @@ type Sink struct {
 	Bytes func(payload []byte) []byte
 }
 
-// DecodeTupleInto is the single decode entry: it writes the decoded values into
-// dst (growing it when the schema has more columns than dst can hold) and the
-// returned Row aliases dst; the caller owns it and must not retain it across
-// the next reuses of dst. Column values are copied with the same ownership
-// semantics as Decode, except that the dst slot's own buffers are reused where
-// it already holds one (Decimal's *big.Int, Bytes' backing array when it is
-// large enough), so a retained Value struct may observe a rewritten
-// Bytes/Decimal after the next decode into the same dst. String is always
-// copied or materialized through sink, since strings are immutable. Like
-// Decode it requires an already-validated schema and enforces all
-// length/bounds/limit checks, so malformed payloads never panic.
-func (c Codec) DecodeTupleInto(dst []Value, data []byte, schema *Schema, sink *Sink) ([]Value, error) {
-	if schema == nil {
-		return nil, errors.New("rowpack: nil schema")
-	}
-	if len(schema.Columns) > int(c.Limits.MaxColumns) {
-		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), c.Limits.MaxColumns)
-	}
-	if len(data) < 8 {
-		return nil, fmt.Errorf("rowpack: truncated tuple header")
-	}
-	colCount := binary.LittleEndian.Uint32(data[0:])
-	if int(colCount) != len(schema.Columns) {
-		return nil, fmt.Errorf("%w: tuple has %d columns, schema has %d", ErrSchemaMismatch, colCount, len(schema.Columns))
-	}
-	expectBitmap := (len(schema.Columns) + 7) / 8
-	bitmapBytes := binary.LittleEndian.Uint32(data[4:])
-	if int(bitmapBytes) != expectBitmap {
-		return nil, fmt.Errorf("rowpack: bitmap bytes = %d, want %d", bitmapBytes, expectBitmap)
-	}
-	return c.decodeBodyInto(dst, data[8:], schema, sink)
-}
-
-// DecodeInto decodes a body-only TypedTuple — null bitmap + values,
-// without the 8-byte ColumnCount/NullBitmapBytes header — against schema.
-// Semantics (dst reuse, sink materialization, boundary checks) are identical
-// to DecodeTupleInto; the bitmap size is derived from the schema rather than read
-// from the payload, and decoding must end exactly at the body boundary.
-func (c Codec) DecodeInto(dst []Value, body []byte, schema *Schema, sink *Sink) ([]Value, error) {
-	if schema == nil {
-		return nil, errors.New("rowpack: nil schema")
-	}
-	if len(schema.Columns) > int(c.Limits.MaxColumns) {
-		return nil, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), c.Limits.MaxColumns)
-	}
-	return c.decodeBodyInto(dst, body, schema, sink)
-}
-
 // PageRecord is one decoded Rows Page record (page layout): identity and
 // metadata from the page streams plus a view of the body-only TypedTuple.
 // Body aliases the page buffer and is empty for deletes; callers decode it
-// against the record's schema version via Codec.DecodeInto and must not
+// against the record's schema version via Decoder.DecodeInto and must not
 // retain it beyond the page's lifetime.
 type PageRecord struct {
 	RowID         uint64
@@ -234,10 +308,8 @@ type PageRecord struct {
 	Body          []byte
 }
 
-// decodeBodyInto is the shared bitmap+values decoder behind DecodeTupleInto and
-// DecodeInto.
-func (c Codec) decodeBodyInto(dst []Value, body []byte, schema *Schema, sink *Sink) ([]Value, error) {
-	expectBitmap := (len(schema.Columns) + 7) / 8
+// decodeBodyIntoPrepared is the validating general-purpose compiled decoder.
+func (c Codec) decodeBodyIntoPrepared(dst []Value, body []byte, schema *Schema, expectBitmap int, sink *Sink) ([]Value, error) {
 	if len(body) < expectBitmap {
 		return nil, fmt.Errorf("rowpack: truncated null bitmap")
 	}

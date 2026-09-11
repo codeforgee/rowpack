@@ -138,18 +138,12 @@ func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc index.RowLoc,
 	if rec.ChangeType == fileformat.ChangeDelete {
 		return nil, 0, fmt.Errorf("rowpack: row is a tombstone in block %d", bl.BlockID)
 	}
-	row, err := s.decodeInto(rec, dst, rowDecodeContext{block: bl, schema: si})
+	decoder, err := si.decoderFor(bl, rec.SchemaVersion)
+	if err != nil {
+		return nil, 0, err
+	}
+	row, err := decoder.DecodeInto(dst, rec.Body, nil)
 	return row, rec.SchemaVersion, err
-}
-
-// rowDecodeContext is the per-row decode context: the block the record was
-// read from (schema-version resolution), the snapshot's schema index, and the
-// optional materialization sink (non-nil for batch/scan arena views, nil for
-// copy-semantics Get).
-type rowDecodeContext struct {
-	block  *index.BlockLoc
-	schema *schemaIndex
-	sink   *codec.Sink
 }
 
 // rowCodec returns the store's row codec: the codec limits derived from opts.
@@ -158,15 +152,6 @@ type rowDecodeContext struct {
 // limits never travel as a loose argument.
 func (s *Store) rowCodec() codec.Codec {
 	return codec.Codec{Limits: s.opts.codecLimits()}
-}
-
-// decodeInto decodes a page record (body-only TypedTuple) into dst under ctx.
-func (s *Store) decodeInto(rec codec.PageRecord, dst Row, ctx rowDecodeContext) (Row, error) {
-	schema, err := ctx.schema.schemaFor(ctx.block, rec.SchemaVersion)
-	if err != nil {
-		return nil, err
-	}
-	return s.rowCodec().DecodeInto(dst, rec.Body, schema, ctx.sink)
 }
 
 // Schema returns the schema of a table version at a snapshot. The table is

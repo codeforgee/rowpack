@@ -175,10 +175,10 @@ func putEncodeDst(b []byte) {
 	encodeDstPools[c-poolClassMinBits].Put(&b)
 }
 
-// EncodeZstdWith compresses src with a caller-owned encoder, returning a
+// encodeZstdWith compresses src with a caller-owned encoder, returning a
 // freshly allocated frame (like Compress). Callers that compress many buffers
 // in a row should prefer EncodeZstdInto with a scratch they keep.
-func EncodeZstdWith(enc *ZstdEncoder, src []byte) ([]byte, error) {
+func encodeZstdWith(enc *ZstdEncoder, src []byte) ([]byte, error) {
 	dst := getEncodeDst(len(src))
 	out := enc.EncodeAll(src, dst[:0])
 	res := make([]byte, len(out))
@@ -192,7 +192,7 @@ func EncodeZstdWith(enc *ZstdEncoder, src []byte) ([]byte, error) {
 	return res, nil
 }
 
-// EncodeZstdInto is EncodeZstdWith with a caller-owned EncodeAll scratch,
+// EncodeZstdInto is encodeZstdWith with a caller-owned EncodeAll scratch,
 // reused across calls through *scratch; the stored frame is still freshly
 // allocated for the caller. Builders flush single-threaded owning one scratch
 // each, mirroring the store-owned encoder (NewZstdEncoder).
@@ -215,7 +215,7 @@ func EncodeZstdInto(enc *ZstdEncoder, scratch *[]byte, src []byte) ([]byte, erro
 func compressZstd(level int, src []byte) ([]byte, error) {
 	pool := poolForLevel(level)
 	enc := pool.Get().(*zstd.Encoder)
-	res, err := EncodeZstdWith(enc, src)
+	res, err := encodeZstdWith(enc, src)
 	pool.Put(enc)
 	return res, err
 }

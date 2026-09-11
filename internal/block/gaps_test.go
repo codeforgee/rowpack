@@ -120,7 +120,7 @@ func TestRowsContainerAccountingHooks(t *testing.T) {
 		t.Fatalf("PageScratch: %v", err)
 	}
 	release()
-	if p == nil || len(p.Raw()) == 0 {
+	if p == nil || len(p.raw) == 0 {
 		t.Fatal("PageScratch returned an empty page")
 	}
 }
@@ -140,7 +140,7 @@ func TestRowsContainerForEachPropagatesError(t *testing.T) {
 	}
 }
 
-func TestRowsPageBuilderResetAndRowIDAt(t *testing.T) {
+func TestRowsPageBuilderResetAndDecodedIDs(t *testing.T) {
 	var want []expectedPageRow
 	var bodies [][]byte
 	for i := 1; i <= 5; i++ {
@@ -149,18 +149,11 @@ func TestRowsPageBuilderResetAndRowIDAt(t *testing.T) {
 	}
 	page := buildAndVerifyPage(t, 16<<10, want, bodies)
 
-	// RowIDAt walks the varint stream to the ordinal.
 	for i, w := range want {
-		got, err := page.RowIDAt(uint32(i))
-		if err != nil {
-			t.Fatalf("RowIDAt(%d): %v", i, err)
-		}
+		got := page.ids[i]
 		if got != w.rowID {
-			t.Fatalf("RowIDAt(%d) = %d, want %d", i, got, w.rowID)
+			t.Fatalf("decoded id %d = %d, want %d", i, got, w.rowID)
 		}
-	}
-	if _, err := page.RowIDAt(uint32(len(want))); err == nil {
-		t.Fatal("RowIDAt past the end should error")
 	}
 
 	// Reset clears the builder for reuse.
@@ -170,14 +163,14 @@ func TestRowsPageBuilderResetAndRowIDAt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if b.Count() != uint32(len(want)) {
-		t.Fatalf("count %d, want %d", b.Count(), len(want))
+	if b.countRows() != uint32(len(want)) {
+		t.Fatalf("count %d, want %d", b.countRows(), len(want))
 	}
 	if _, err := b.Finish(); err != nil {
 		t.Fatal(err)
 	}
-	b.Reset()
-	if b.Count() != 0 {
-		t.Fatalf("builder not empty after Reset: %d rows", b.Count())
+	b.reset()
+	if b.countRows() != 0 {
+		t.Fatalf("builder not empty after reset: %d rows", b.countRows())
 	}
 }

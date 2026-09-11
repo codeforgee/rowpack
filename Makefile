@@ -10,7 +10,7 @@ BENCH_PATTERN = Benchmark(Env|MainMatrix|Latency|WriteFull|GetHot|GetCold|GetCol
 BENCH_ARGS = -run '^$$' -bench '$(BENCH_PATTERN)$$' -benchmem
 
 .PHONY: all build test race vet lint staticcheck fmt clean golden \
-        bench bench-quick bench-1m bench-batch bench-profile baseline baseline-diff
+		bench bench-quick bench-1m bench-batch bench-simd bench-profile baseline baseline-diff
 
 all: fmt vet test
 
@@ -57,6 +57,14 @@ bench-1m:
 # 批量读对比：逐行 Get 基线 vs ReadBatch。
 bench-batch:
 	$(GO) test -run '^$$' -bench 'Benchmark(GetLoop1000|ReadBatch1000)$$' -benchmem -benchtime=10s -count=1 .
+
+# SIMD/SWAR 候选内核的稳定微基准。结果应与同机、同 Go 版本的旧提交比较；
+# 端到端收益仍以 make baseline 为准。
+bench-simd:
+	mkdir -p bench
+	$(GO) test ./internal/block ./internal/codec -run '^$$' \
+		-bench 'Benchmark(RowsPageParse32K|RowsPageRecords32K|ValidateChangeBits|ValidateChangeBitsScalar|PreparedDecodeBody|PreparedDecodeBatch128)$$' \
+		-benchmem -benchtime=$(BENCHTIME) -count=$(BENCHCOUNT) 2>&1 | tee bench/results-simd.txt
 
 # CPU/heap profile → bench/*.out，用 go tool pprof 查看。
 bench-profile:

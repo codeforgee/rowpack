@@ -191,13 +191,10 @@ func (b *RowsBuilder) Add(rowID uint64, schemaVersion uint32, change fileformat.
 	return nil
 }
 
-// Pending returns the number of buffered records (finished + current page).
-func (b *RowsBuilder) Pending() int { return len(b.entries) }
-
 // finishPage compresses and stores the current (non-empty) page, if
 // any, appending its directory entry and updating the running counters.
 func (b *RowsBuilder) finishPage() error {
-	if b.page.Count() == 0 {
+	if b.page.countRows() == 0 {
 		return nil
 	}
 	rawPage, err := b.page.Finish()

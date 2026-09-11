@@ -105,19 +105,6 @@ func (a *Appender) Truncate(n int64) error {
 // ReadAt reads from the file without touching the write offset.
 func (a *Appender) ReadAt(b []byte, off int64) (int, error) { return a.f.ReadAt(b, off) }
 
-// ReadAll reads the whole file content (used to load the index into memory).
-func (a *Appender) ReadAll() ([]byte, error) {
-	fi, err := a.f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	b := make([]byte, fi.Size())
-	if _, err := a.f.ReadAt(b, 0); err != nil {
-		return nil, err
-	}
-	return b, nil
-}
-
 // Size returns the current file size.
 func (a *Appender) Size() (int64, error) {
 	fi, err := a.f.Stat()
@@ -126,9 +113,6 @@ func (a *Appender) Size() (int64, error) {
 	}
 	return fi.Size(), nil
 }
-
-// File returns the underlying file handle (read-only use).
-func (a *Appender) File() *os.File { return a.f }
 
 // Close unmaps any read view and closes the file.
 func (a *Appender) Close() error {

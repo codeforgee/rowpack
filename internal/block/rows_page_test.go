@@ -3,6 +3,7 @@ package block
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/codec"
@@ -313,6 +314,23 @@ func TestRowsPageCorruption(t *testing.T) {
 	}
 }
 
+func TestValidateChangeBitsReportsFirstRecordAndIgnoresPadding(t *testing.T) {
+	for want := uint32(0); want < 12; want++ {
+		stream := make([]byte, 3)
+		stream[want/4] = 3 << ((want % 4) * 2)
+		err := validateChangeBits(stream, 12)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("record %d:", want)) {
+			t.Fatalf("record %d: error = %v", want, err)
+		}
+	}
+	// With five entries only the low lane of the second byte belongs to a
+	// record. Reserved-looking bits in the three padding lanes remain ignored,
+	// preserving the v1 behavior of the previous per-record loop.
+	if err := validateChangeBits([]byte{0, 0xfc}, 5); err != nil {
+		t.Fatalf("padding bits rejected: %v", err)
+	}
+}
+
 // fixPageCRC recomputes the header CRC field after mutation.
 func fixPageCRC(page []byte) {
 	h := fileformat.RowsPageHeader{}
@@ -352,8 +370,8 @@ func TestRowsPageBuilderReuse(t *testing.T) {
 		if p.h.EntryCount != 100 {
 			t.Fatalf("round %d: %d entries", round, p.h.EntryCount)
 		}
-		if b.Count() != 0 || b.RawBytes() != fileformat.RowsPageHeaderSize {
-			t.Fatalf("round %d: builder not reset (count %d, raw %d)", round, b.Count(), b.RawBytes())
+		if b.countRows() != 0 || b.rawBytes() != fileformat.RowsPageHeaderSize {
+			t.Fatalf("round %d: builder not reset (count %d, raw %d)", round, b.countRows(), b.rawBytes())
 		}
 	}
 }

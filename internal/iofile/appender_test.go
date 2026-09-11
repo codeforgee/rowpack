@@ -205,18 +205,12 @@ func TestReadAllAndSize(t *testing.T) {
 	if sz != 7 {
 		t.Fatalf("size %d, want 7", sz)
 	}
-	b, err := a.ReadAll()
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
+	b := make([]byte, 7)
+	if _, err := a.ReadAt(b, 0); err != nil {
+		t.Fatalf("ReadAt: %v", err)
 	}
 	if string(b) != "one-two" {
-		t.Fatalf("ReadAll got %q", b)
-	}
-	// ReadAll on a closed appender surfaces the Stat error.
-	_, c := newTestAppender(t)
-	c.Close()
-	if _, err := c.ReadAll(); err == nil {
-		t.Fatal("ReadAll on closed appender should error")
+		t.Fatalf("ReadAt got %q", b)
 	}
 }
 
@@ -275,10 +269,6 @@ func TestSyncAndFile(t *testing.T) {
 	if err := a.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
-	if a.File() == nil {
-		t.Fatal("File() returned nil")
-	}
-
 	fi, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)

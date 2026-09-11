@@ -87,9 +87,8 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 				verr := rc.ForEach(func(rec codec.PageRecord) error {
 					rep.RowsChecked++
 					if rec.ChangeType != fileformat.ChangeDelete {
-						schema := st.schemas.schema(bl.SnapshotID, bl.TableID, rec.SchemaVersion)
-						if schema != nil {
-							if _, err := s.rowCodec().DecodeInto(nil, rec.Body, schema, nil); err != nil {
+						if decoder, err := st.schemas.decoderFor(bl, rec.SchemaVersion); err == nil {
+							if _, err := decoder.DecodeInto(nil, rec.Body, nil); err != nil {
 								return fmt.Errorf("row %d: %v", rec.RowID, err)
 							}
 						}

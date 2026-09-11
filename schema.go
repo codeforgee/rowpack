@@ -62,6 +62,7 @@ func addressIndex(tables map[uint32]*tableSchemas) map[string]TableID {
 type tableSchemas struct {
 	versions []uint32 // sorted ascending
 	byVer    map[uint32]*codec.Schema
+	decoders map[uint32]codec.Decoder
 	ns       string
 }
 
@@ -129,15 +130,18 @@ func (si *schemaIndex) tableID(snapshot uint64, address string) (TableID, bool) 
 	return tid, ok
 }
 
-// schemaFor resolves the codec schema for one block's version, reporting
-// ErrSchemaMismatch when the metadata layer has no such schema version.
-// Shared by the Get/Scan/batch decode paths.
-func (si *schemaIndex) schemaFor(bl *index.BlockLoc, version uint32) (*codec.Schema, error) {
-	schema := si.schema(bl.SnapshotID, bl.TableID, version)
-	if schema == nil {
-		return nil, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, version)
+// decoderFor resolves the immutable, schema-compiled row decoder created
+// while the schema index was built. Read paths never compile execution plans.
+func (si *schemaIndex) decoderFor(bl *index.BlockLoc, version uint32) (codec.Decoder, error) {
+	ts := si.bySnapshot[bl.SnapshotID][bl.TableID]
+	if ts == nil {
+		return codec.Decoder{}, fmt.Errorf("%w: schema for table %d version %d not found", ErrSchemaMismatch, bl.TableID, version)
 	}
-	return schema, nil
+	decoder, ok := ts.decoders[version]
+	if !ok {
+		return codec.Decoder{}, fmt.Errorf("%w: decoder for table %d version %d not found", ErrSchemaMismatch, bl.TableID, version)
+	}
+	return decoder, nil
 }
 
 // buildIndex derives schemas for every snapshot in the view by reading
@@ -207,7 +211,7 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 			}
 			ts := result[tableID]
 			if ts == nil {
-				ts = &tableSchemas{byVer: make(map[uint32]*codec.Schema)}
+				ts = &tableSchemas{byVer: make(map[uint32]*codec.Schema), decoders: make(map[uint32]codec.Decoder)}
 				result[tableID] = ts
 			}
 			before := len(ts.versions)
@@ -284,7 +288,12 @@ func (s *Store) addSchema(ts *tableSchemas, tableRec *metadata.Record, columnRec
 	if err := schema.Validate(codec.DefaultLimits()); err != nil {
 		return err
 	}
+	decoder, err := s.rowCodec().CompileDecoder(schema)
+	if err != nil {
+		return err
+	}
 	ts.byVer[version] = schema
+	ts.decoders[version] = decoder
 	ts.versions = append(ts.versions, version)
 	return nil
 }

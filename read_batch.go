@@ -24,6 +24,32 @@ type batchReq struct {
 // stay small while the batch kernel still amortises per-row decode overhead.
 const decodeChunkRows = 128
 
+// batchBuffer is the internal working set of one batch read: the request
+// list, the caller-visible output slice, the value slab and the string arena.
+// The zero value is ready to use and buffers are rewound, not reallocated, so
+// a batch read that reuses one performs no allocation after warmup.
+//
+// Lifetime: rows returned through a buffer — including every String/Bytes
+// view — are valid only until the next read that reuses it. ReadBatch gives
+// each call a fresh buffer, so its rows live until the caller drops them;
+// readBatchInto exists so internal callers and tests can reuse one.
+// A batchBuffer must not be copied after first use.
+type batchBuffer struct {
+	_ noCopy
+
+	reqs  []batchReq // requests grouped by (blockID, ordinal)
+	out   []Row      // result, indexed by the caller's id slot
+	slab  []Value    // one contiguous value slab shared by every decoded row
+	arena strArena
+}
+
+// noCopy makes go vet's copylocks check flag copies of a batchBuffer: copies
+// would share the slab and output backing arrays and overwrite each other.
+type noCopy struct{}
+
+func (*noCopy) Lock()   {}
+func (*noCopy) Unlock() {}
+
 // ReadBatch reads a set of rows in one call, aggregating the request by
 // block: every block touched by the batch is loaded, CRC-verified and
 // decompressed at most once, no matter how many requested rows fall inside
@@ -47,6 +73,23 @@ const decodeChunkRows = 128
 // clustered ids, Blocks << len(ids) and the same payload is decompressed
 // once per batch instead of once per row).
 func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string, ids []RowID) ([]Row, error) {
+	// A fresh buffer per call keeps the returned rows independent of any later
+	// call; see readBatchInto for the reuse entry point used internally.
+	var buf batchBuffer
+	return s.readBatchInto(ctx, snapshot, table, ids, &buf)
+}
+
+// readBatchInto is ReadBatch writing through a caller-owned batchBuffer, so a
+// repeated batch read does not reallocate the request, output and decode slab
+// (~700 B/row at 7 columns) on every call. Unexported on purpose: reusing a
+// buffer invalidates the previous call's rows, a contract only code in this
+// package may take on.
+//
+// buf must not be nil, and must not be reused concurrently.
+func (s *Store) readBatchInto(ctx context.Context, snapshot SnapshotID, table string, ids []RowID, buf *batchBuffer) ([]Row, error) {
+	if buf == nil {
+		return nil, fmt.Errorf("%w: nil batchBuffer", ErrInvalidArgument)
+	}
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
 	st, err := s.captureState()
@@ -63,13 +106,15 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	var arena strArena
-	sink := strArenaSink(&arena)
 	var br batchReader
-	br.init(s, st, snapshot, uint32(tid), len(ids))
+	br.init(s, st, snapshot, uint32(tid), len(ids), buf)
 	if err := br.resolve(snapshot, uint32(tid), table, ids); err != nil {
 		return nil, err
 	}
+	// The sink is a per-call local (not a field): its closures never escape, so
+	// it and the arena stay on the stack instead of adding per-call heap
+	// objects. Only the arena's chunk is retained by buf.
+	sink := strArenaSink(&buf.arena)
 	if err := br.readBlocks(sink); err != nil {
 		return nil, err
 	}
@@ -77,21 +122,18 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 	s.batchRows.Add(uint64(len(ids)))
 	s.batchBlocks.Add(br.blocks)
 	s.batchRawBytes.Add(br.rawBytes)
-	return br.out, nil
+	return buf.out, nil
 }
 
 // batchReader decodes one ReadBatch call. The requests are resolved and sorted
 // by (block, ordinal) up front, so the reader only walks the sorted slice:
 // block by block, page by page, decoding one homogeneous schema-version chunk
-// at a time.
+// at a time. Its buffers live in the caller's batchBuffer.
 type batchReader struct {
 	store   *Store
 	schemas *schemaIndex
 	view    *index.View
-
-	reqs []batchReq // sorted by (blockID, ordinal)
-	out  []Row      // result, indexed by the caller's id slot
-	slab []Value    // one contiguous value slab shared by every decoded row
+	buf     *batchBuffer
 
 	// curBlock plus the decoder memo belong to the block being read: blocks
 	// normally hold a single schema version, so repeated pages of one block
@@ -105,15 +147,31 @@ type batchReader struct {
 	rawBytes uint64
 }
 
-// init sizes the per-call request, output and value buffers; maxColumns sizes
-// the value slab so no decode ever grows it.
-func (br *batchReader) init(s *Store, st *publishedState, snapshot uint64, tid uint32, n int) {
+// init rewinds the caller's buffers for a batch of n ids, growing each only
+// when this batch is larger than any previous one. maxColumns sizes the value
+// slab so no decode ever grows it.
+func (br *batchReader) init(s *Store, st *publishedState, snapshot uint64, tid uint32, n int, buf *batchBuffer) {
 	br.store = s
 	br.schemas = st.schemas
 	br.view = st.view
-	br.reqs = make([]batchReq, 0, n)
-	br.out = make([]Row, n)
-	br.slab = make([]Value, 0, n*st.schemas.maxColumns(snapshot, tid))
+	br.buf = buf
+
+	if cap(buf.reqs) < n {
+		buf.reqs = make([]batchReq, 0, n)
+	} else {
+		buf.reqs = buf.reqs[:0]
+	}
+	if cap(buf.out) < n {
+		buf.out = make([]Row, n)
+	} else {
+		buf.out = buf.out[:n]
+	}
+	if need := n * st.schemas.maxColumns(snapshot, tid); cap(buf.slab) < need {
+		buf.slab = make([]Value, 0, need)
+	} else {
+		buf.slab = buf.slab[:0]
+	}
+	buf.arena.reset()
 }
 
 // resolve maps every id to its row location along the parent chain and groups
@@ -128,12 +186,12 @@ func (br *batchReader) resolve(snapshot uint64, tid uint32, table string, ids []
 		if loc.ChangeType == format.ChangeDelete {
 			return fmt.Errorf("%w: (table %q, row %d) deleted in snapshot %d", ErrNotFound, table, id, snapshot)
 		}
-		br.reqs = append(br.reqs, batchReq{outIdx: i, blockID: loc.BlockID, ordinal: loc.ItemOrdinal})
+		br.buf.reqs = append(br.buf.reqs, batchReq{outIdx: i, blockID: loc.BlockID, ordinal: loc.ItemOrdinal})
 	}
 	// (BlockID, ItemOrdinal) order reads blocks in file order and keeps every
 	// page of a block one contiguous run, so each page is decompressed once.
 	// Duplicates stay adjacent: repeated Gets, in sorted order.
-	slices.SortFunc(br.reqs, func(a, b batchReq) int {
+	slices.SortFunc(br.buf.reqs, func(a, b batchReq) int {
 		if a.blockID != b.blockID {
 			return cmp.Compare(a.blockID, b.blockID)
 		}
@@ -143,12 +201,12 @@ func (br *batchReader) resolve(snapshot uint64, tid uint32, table string, ids []
 }
 
 // readBlocks walks the sorted requests one block at a time. sink is the
-// per-call decode sink, threaded as a parameter (not a field) so its arena
-// stays on the caller's stack instead of escaping to the heap.
+// per-call decode sink, threaded rather than stored so it does not escape.
 func (br *batchReader) readBlocks(sink *codec.Sink) error {
-	for i := 0; i < len(br.reqs); {
+	reqs := br.buf.reqs
+	for i := 0; i < len(reqs); {
 		end := i + 1
-		for end < len(br.reqs) && br.reqs[end].blockID == br.reqs[i].blockID {
+		for end < len(reqs) && reqs[end].blockID == reqs[i].blockID {
 			end++
 		}
 		if err := br.readBlock(i, end, sink); err != nil {
@@ -163,9 +221,9 @@ func (br *batchReader) readBlocks(sink *codec.Sink) error {
 // container is loaded once and each page's requests are decoded in ordinal
 // order.
 func (br *batchReader) readBlock(i, end int, sink *codec.Sink) error {
-	bl := br.view.Block(br.reqs[i].blockID)
+	bl := br.view.Block(br.buf.reqs[i].blockID)
 	if bl == nil {
-		return fmt.Errorf("rowpack: block %d missing from view", br.reqs[i].blockID)
+		return fmt.Errorf("rowpack: block %d missing from view", br.buf.reqs[i].blockID)
 	}
 	rc, err := br.store.loader.LoadRows(int64(bl.DataOffset), bl.BlockID)
 	if err != nil {
@@ -193,13 +251,14 @@ func (br *batchReader) readBlock(i, end int, sink *codec.Sink) error {
 // run of requests inside that same page. reqs are ordinal-sorted, so the run
 // is a contiguous slice.
 func (br *batchReader) pageRun(rc *block.RowsContainer, i, end int) (int, int, error) {
-	pi, err := rc.PageFor(br.reqs[i].ordinal)
+	reqs := br.buf.reqs
+	pi, err := rc.PageFor(reqs[i].ordinal)
 	if err != nil {
 		return 0, 0, err
 	}
 	stop := i + 1
 	for stop < end {
-		next, err := rc.PageFor(br.reqs[stop].ordinal)
+		next, err := rc.PageFor(reqs[stop].ordinal)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -243,22 +302,23 @@ func (br *batchReader) readPage(rc *block.RowsContainer, pi, i, end int, sink *c
 // output slot into bodies and slots. It returns the run's schema version and
 // length.
 func (br *batchReader) collectChunk(page *block.RowsPage, first uint32, i, end int, bodies [][]byte, slots []int) (uint32, int, error) {
-	rec, err := page.RecordAt(br.reqs[i].ordinal - first)
+	reqs := br.buf.reqs
+	rec, err := page.RecordAt(reqs[i].ordinal - first)
 	if err != nil {
 		return 0, 0, err
 	}
 	ver := rec.SchemaVersion
-	bodies[0], slots[0] = rec.Body, br.reqs[i].outIdx
+	bodies[0], slots[0] = rec.Body, reqs[i].outIdx
 	n := 1
 	for n < len(bodies) && i+n < end {
-		rec, err := page.RecordAt(br.reqs[i+n].ordinal - first)
+		rec, err := page.RecordAt(reqs[i+n].ordinal - first)
 		if err != nil {
 			return 0, 0, err
 		}
 		if rec.SchemaVersion != ver {
 			break
 		}
-		bodies[n], slots[n] = rec.Body, br.reqs[i+n].outIdx
+		bodies[n], slots[n] = rec.Body, reqs[i+n].outIdx
 		n++
 	}
 	return ver, n, nil
@@ -271,15 +331,16 @@ func (br *batchReader) decodeChunk(ver uint32, bodies [][]byte, slots []int, sin
 	if err != nil {
 		return err
 	}
+	buf := br.buf
 	columns := decoder.Columns()
-	start := len(br.slab)
-	br.slab, err = decoder.DecodeBatchInto(br.slab, bodies, sink)
+	start := len(buf.slab)
+	buf.slab, err = decoder.DecodeBatchInto(buf.slab, bodies, sink)
 	if err != nil {
 		return err
 	}
 	for k, slot := range slots {
 		rowStart := start + k*columns
-		br.out[slot] = br.slab[rowStart : rowStart+columns]
+		buf.out[slot] = buf.slab[rowStart : rowStart+columns]
 	}
 	return nil
 }

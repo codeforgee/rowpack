@@ -163,6 +163,9 @@ func (s *Store) Blocks(ctx context.Context, snapshot SnapshotID, table string) (
 - 返回顺序与输入 `ids` 一一对应，**重复输入重复返回，不静默去重**；
 - 返回的行归调用方所有、互不别名。
 
+`ReadBatch` 每次调用分配输出与工作缓冲（7 列时约 700 B/行，主要是 `Value` slab）；
+聚合、顺序和错误语义与 `Get` 逐行一致，没有额外的复用接口。
+
 ### Scan / Iterator
 
 ```go

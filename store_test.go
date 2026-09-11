@@ -242,6 +242,77 @@ func TestReadByTableName(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidArgument)
 }
 
+// TestReadBatchInto covers the reusable-buffer entry point: repeated calls
+// overwrite the previous result in place (Get's dst contract) and, once the
+// buffer is warm, allocate nothing.
+func TestReadBatchInto(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t, Options{})
+	w, _ := db.Begin(ctx, NoParent)
+	require.NoError(t, w.DefineTable("u", []Column{
+		{Name: "id", Type: TypeUint64},
+		{Name: "name", Type: TypeString},
+	}))
+	const n = 64
+	for i := 1; i <= n; i++ {
+		require.NoError(t, w.Insert("u", uint64(i), Row{Uint64(uint64(i)), String(fmt.Sprintf("v-%d", i))}))
+	}
+	snap, err := w.Commit(ctx)
+	require.NoError(t, err)
+
+	ids := make([]RowID, n)
+	for i := range ids {
+		ids[i] = RowID(i + 1)
+	}
+	var buf batchBuffer
+	check := func(rows []Row) {
+		t.Helper()
+		require.Len(t, rows, n)
+		for i, r := range rows {
+			id, ok := r[0].Uint64()
+			require.True(t, ok)
+			require.Equal(t, uint64(i+1), id)
+			name, ok := r[1].String()
+			require.True(t, ok)
+			require.Equal(t, fmt.Sprintf("v-%d", i+1), name)
+		}
+	}
+	rows, err := db.readBatchInto(ctx, snap, "u", ids, &buf)
+	require.NoError(t, err)
+	check(rows)
+	rows2, err := db.readBatchInto(ctx, snap, "u", ids, &buf)
+	require.NoError(t, err)
+	check(rows2)
+	require.True(t, &rows[0] == &rows2[0], "the output buffer must be reused, not reallocated")
+
+	// Warm buffer: a call allocates nothing.
+	if _, err := db.readBatchInto(ctx, snap, "u", ids, &buf); err != nil {
+		t.Fatal(err)
+	}
+	allocs := testing.AllocsPerRun(10, func() {
+		if _, err := db.readBatchInto(ctx, snap, "u", ids, &buf); err != nil {
+			t.Fatal(err)
+		}
+	})
+	require.Zero(t, allocs, "readBatchInto must not allocate once the buffer is warm")
+
+	// Empty batch is legal and does not touch the buffer; a nil buffer is not.
+	out, err := db.readBatchInto(ctx, snap, "u", nil, &buf)
+	require.NoError(t, err)
+	require.Nil(t, out)
+	_, err = db.readBatchInto(ctx, snap, "u", ids, nil)
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	// Errors keep the same sentinel as ReadBatch.
+	_, err = db.readBatchInto(ctx, snap, "u", []RowID{1, 999}, &buf)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	// ReadBatch and readBatchInto agree.
+	want, err := db.ReadBatch(ctx, snap, "u", ids)
+	require.NoError(t, err)
+	check(want)
+}
+
 // TestWriterErrors covers the error sentinels on the write path.
 func TestWriterErrors(t *testing.T) {
 	db := testDB(t, Options{})

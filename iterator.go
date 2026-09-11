@@ -156,6 +156,11 @@ func (a *strArena) materializeBytes(payload []byte) []byte {
 	return a.chunk[off:len(a.chunk):len(a.chunk)]
 }
 
+// reset rewinds the current chunk so the next batch reuses its capacity.
+// Views handed out before the reset are invalidated, which is exactly the
+// batchBuffer reuse contract; the iterator never calls it.
+func (a *strArena) reset() { a.chunk = a.chunk[:0] }
+
 // layerIter walks one snapshot layer's sorted incremental row index. It holds
 // a RowKeyIter over the compact shard (no materialized []RowKeyLoc, so a scan
 // does not allocate a transient 24 B/row copy per layer).

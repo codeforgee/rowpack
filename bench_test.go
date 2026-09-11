@@ -250,6 +250,30 @@ func BenchmarkReadBatch1000(b *testing.B) {
 	}
 }
 
+// BenchmarkReadBatchInto1000 is BenchmarkReadBatch1000 writing through a
+// reused batchBuffer: same ids, no per-call working allocation.
+func BenchmarkReadBatchInto1000(b *testing.B) {
+	ctx := context.Background()
+	db, snap := benchStore(b, Options{}, benchRows)
+	b.Cleanup(func() { db.Close() })
+	ids := make([]RowID, 1000)
+	for i := range ids {
+		ids[i] = RowID(i) + 1
+	}
+	var buf batchBuffer
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, err := db.readBatchInto(ctx, snap, "t", ids, &buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(rows) != 1000 {
+			b.Fatalf("batch returned %d rows", len(rows))
+		}
+	}
+}
+
 // BenchmarkGetLoop1000 is the per-row baseline of the same 1000 RowIDs.
 func BenchmarkGetLoop1000(b *testing.B) {
 	ctx := context.Background()

@@ -47,11 +47,13 @@ type Codec struct {
 // Decoder is immutable and safe for concurrent use; dst and Sink retain the
 // same ownership rules as Codec.DecodeInto.
 type Decoder struct {
-	codec       Codec
-	schema      *Schema
-	bitmapBytes int
-	fixedBytes  int
-	fixed       bool
+	codec          Codec
+	schema         *Schema
+	bitmapBytes    int
+	steps          []decodeStep
+	tailBitmapMask byte
+	fixed          bool
+	fixedBytes     int
 }
 
 // Columns returns the compiled row width.
@@ -66,17 +68,17 @@ func (c Codec) CompileDecoder(schema *Schema) (Decoder, error) {
 	if len(schema.Columns) > int(c.Limits.MaxColumns) {
 		return Decoder{}, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), c.Limits.MaxColumns)
 	}
-	d := Decoder{codec: c, schema: schema, bitmapBytes: (len(schema.Columns) + 7) / 8, fixed: true}
-	for _, col := range schema.Columns {
-		width := fixedWidth(col.Type)
-		if col.Type == TypeBool {
-			width = 1
-		}
-		if col.Nullable || width == 0 {
-			d.fixed = false
-			break
-		}
-		d.fixedBytes += width
+	steps, fixed := compileDecodeSteps(schema)
+	d := Decoder{
+		codec:          c,
+		schema:         schema,
+		bitmapBytes:    (len(schema.Columns) + 7) / 8,
+		steps:          steps,
+		tailBitmapMask: tailBitmapMask(len(schema.Columns)),
+		fixed:          fixed,
+	}
+	for _, st := range steps {
+		d.fixedBytes += st.width
 	}
 	return d, nil
 }
@@ -84,12 +86,17 @@ func (c Codec) CompileDecoder(schema *Schema) (Decoder, error) {
 // DecodeInto decodes one body using the schema invariants bound by
 // CompileDecoder.
 func (d Decoder) DecodeInto(dst []Value, body []byte, sink *Sink) ([]Value, error) {
+	// Fully-fixed schemas are common enough to keep the specialised kernel:
+	// with no NULLs and no length prefixes it needs neither a bitmap test nor
+	// a position that can move dynamically.
 	if d.fixed && len(body) == d.bitmapBytes+d.fixedBytes {
 		if bitmapIsZero(body[:d.bitmapBytes]) {
 			if row, ok := d.decodeFixedInto(dst, body[d.bitmapBytes:]); ok {
 				return row, nil
 			}
 		}
+	} else if row, ok := d.fastDecode(dst, body, sink); ok {
+		return row, nil
 	}
 	return d.codec.decodeBodyIntoPrepared(dst, body, d.schema, d.bitmapBytes, sink)
 }
@@ -123,6 +130,8 @@ func (d Decoder) DecodeBatchInto(dst []Value, bodies [][]byte, sink *Sink) ([]Va
 			if !ok {
 				row, err = d.codec.decodeBodyIntoPrepared(dst[start:start+ncols], body, d.schema, d.bitmapBytes, sink)
 			}
+		} else if r, ok := d.fastDecode(dst[start:start+ncols], body, sink); ok {
+			row = r
 		} else {
 			row, err = d.codec.decodeBodyIntoPrepared(dst[start:start+ncols], body, d.schema, d.bitmapBytes, sink)
 		}
@@ -136,6 +145,7 @@ func (d Decoder) DecodeBatchInto(dst []Value, bodies [][]byte, sink *Sink) ([]Va
 	return dst, nil
 }
 
+// bitmapIsZero reports whether every bit of bitmap is clear (no NULL).
 func bitmapIsZero(bitmap []byte) bool {
 	for _, b := range bitmap {
 		if b != 0 {
@@ -143,6 +153,16 @@ func bitmapIsZero(bitmap []byte) bool {
 		}
 	}
 	return true
+}
+
+// tailBitmapMask returns the mask of the unused high bits of the last null
+// bitmap byte (0 when every bit is used). Rejecting those bits matches the
+// generic decoder, which treats them as corruption.
+func tailBitmapMask(ncols int) byte {
+	if bits := ncols % 8; bits != 0 {
+		return byte(0xFF << uint(bits))
+	}
+	return 0
 }
 
 // decodeFixedInto is the valid-data fast path for non-nullable, fixed-width

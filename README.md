@@ -177,7 +177,7 @@ st := db.Stats().Batch // Calls/Rows/Blocks/RawBytes：聚合效果可量化（B
 
 冷缓存连续 1000 行场景较逐行 Get 提升数百倍（`make bench-batch` 对比
 `BenchmarkGetLoop1000` vs `BenchmarkReadBatch1000`）；热读千行批量
-~240 µs · **4 allocs**，逐行 Get 基线 ~237 µs · 1,000 allocs。
+`ReadBatch` ~175 µs · 5 allocs，逐行 Get 基线 ~237 µs · 1,000 allocs。
 
 ## 文档
 

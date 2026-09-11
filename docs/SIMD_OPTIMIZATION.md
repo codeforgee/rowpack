@@ -40,6 +40,12 @@ schema 全部为非 NULL fixed-width 类型时，prepared decoder 还会启用�
 总长度和 NULL bitmap，随后直接加载连续 payload，省去逐列 bounds check、宽度计算和通用函数
 调度。异常 bitmap、bool、time 或长度仍回退完整校验路径，因此损坏检测语义不变。
 
+其余 schema 走 `decode_plan.go` 的**列计划**：编译期为每列预解出 opcode（dense jump table）、
+payload 宽度、bitmap 字节与掩码，行解码循环因此没有 `col.Type` switch、`fixedWidth` 查表和
+`need()` 闭包；NULL 位、截断、bool/time/UTF-8 异常和 limits 一致则直接接受，否则本行回退通用
+校验路径产出原有错误。实测混合 schema（含 String/Bytes）单行解码 -58%，固定宽度 -5%；
+端到端 Get 热读 -34%、Scan -50%、ReadBatch -22%（`make bench-simd` 收录 `PreparedDecodeMixed`）。
+
 `Decoder.DecodeBatchInto` 接收同 schema 的多个 body，并把结果写入连续 `Value` slab。`ReadBatch`
 在每个 page 内按 schema version 和最多 128 行组块，使用栈上 body/output 索引数组提交批次；这既
 保持返回顺序，也不增加 heap allocation。固定宽度批次复用紧凑内核，变长或 nullable 批次仍逐行

@@ -620,3 +620,44 @@ func TestConcurrentGetSharedPage(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestBlocksMaxRowIDOverflow: a block whose max RowID is MaxUint64 makes the
+// exclusive MaxRowID overflow to 0; the block catalog must not report the
+// block as empty [0,0) because of it (regression: the old MaxRowID==0
+// emptiness test conflated the two).
+func TestBlocksMaxRowIDOverflow(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Create(dir+"/s", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	tx, err := s.Begin(context.Background(), NoParent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.DefineTable("t", []Column{{Name: "a", Type: TypeInt64}}); err != nil {
+		t.Fatal(err)
+	}
+	id := RowID(^uint64(0))
+	if err := tx.Insert("t", id, Row{Int64(1)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := s.Blocks(context.Background(), SnapshotID(1), "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(blocks))
+	}
+	if blocks[0].ItemCount != 1 || blocks[0].MinRowID != id {
+		t.Fatalf("block = item %d range [%d,%d), want item 1 min %d", blocks[0].ItemCount, blocks[0].MinRowID, blocks[0].MaxRowID, id)
+	}
+	// A row must be Get-able at that id too (round trip sanity).
+	if _, err := s.Get(context.Background(), SnapshotID(1), "t", id, nil); err != nil {
+		t.Fatalf("get max-u64 row: %v", err)
+	}
+}

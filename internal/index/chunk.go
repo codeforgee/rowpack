@@ -526,10 +526,11 @@ func (p *bodyParser) parse() (*storedBody, error) {
 		if (p.crypto != nil) != (h.Encryption == format.IndexChunkEncryptionAESGCM) {
 			return nil, fmt.Errorf("rowpack: chunk %d encryption %d inconsistent with store", seq, h.Encryption)
 		}
-		stored := p.region[pos+format.IndexChunkHeaderSize : pos+format.IndexChunkHeaderSize+int(h.StoredBytes)]
-		if uint32(len(stored)) != h.StoredBytes {
-			return nil, fmt.Errorf("rowpack: chunk %d payload truncated", seq)
+		chunkEnd := pos + format.IndexChunkHeaderSize + int(h.StoredBytes)
+		if chunkEnd > len(p.region) {
+			return nil, fmt.Errorf("rowpack: chunk %d payload %d bytes overruns body %d", seq, h.StoredBytes, len(p.region))
 		}
+		stored := p.region[pos+format.IndexChunkHeaderSize : chunkEnd]
 		if format.CRC32C(stored) != h.PayloadCRC32C {
 			return nil, fmt.Errorf("rowpack: chunk %d payload CRC mismatch", seq)
 		}
@@ -705,6 +706,9 @@ func (p *pageParser) parseFences() (fences []format.RowIndexFenceEntry, pageEnd 
 		}
 		if f.StoredSize == 0 || f.RawSize == 0 || f.EntryCount == 0 {
 			return nil, 0, fmt.Errorf("rowpack: row index fence %d zero size/entry", i)
+		}
+		if f.RawSize < format.IndexPageHeaderSize {
+			return nil, 0, fmt.Errorf("rowpack: row index fence %d raw size %d below page header %d", i, f.RawSize, format.IndexPageHeaderSize)
 		}
 		if f.StoredOffset < uint64(p.pageStart) || f.StoredOffset > uint64(pageEnd) ||
 			uint64(f.StoredSize) > uint64(pageEnd)-f.StoredOffset {

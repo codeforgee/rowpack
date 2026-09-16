@@ -3,6 +3,7 @@ package index
 import (
 	"testing"
 
+	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/format"
 )
 
@@ -181,5 +182,30 @@ func TestParseRowsPageCorruptCompressed(t *testing.T) {
 	region[3] ^= 0xFF
 	if _, err := parseCorruptPages(region, pageCount, 9); err == nil {
 		t.Fatal("corrupt compressed page = nil error")
+	}
+}
+
+// TestParseRowsFenceRawSizeBelowHeaderRejected: a fence whose RawSize is
+// smaller than the 64-byte Row Index Page header must be rejected with an
+// error, not a slice panic on pageRaw[RagePageHeaderSize:].
+func TestParseRowsFenceRawSizeBelowHeaderRejected(t *testing.T) {
+	frameSrc := make([]byte, 30)
+	frame, err := block.Compress(format.CompressionZstd, 3, frameSrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fence format.RowIndexFenceEntry
+	fence.SnapshotID = 9
+	fence.StoredOffset = 0
+	fence.StoredSize = uint32(len(frame))
+	fence.RawSize = 30 // below the 64-byte page header
+	fence.EntryCount = 3
+	var fbuf [format.IndexFenceEntrySize]byte
+	if err := fence.MarshalTo(fbuf[:]); err != nil {
+		t.Fatal(err)
+	}
+	region := append(append([]byte{}, frame...), fbuf[:]...)
+	if _, err := parseCorruptPages(region, 1, 9); err == nil {
+		t.Fatal("fence raw size below page header = nil error")
 	}
 }

@@ -61,11 +61,16 @@ func (s *Store) blocksByTable(view *index.View, snap uint64, tid TableID) ([]Blo
 		byID[bl.BlockID] = &out[len(out)-1]
 	}
 	it := view.RowIter(snap, uint32(tid))
+	// hit tracks blocks that actually hold a row: MaxRowID is the exclusive
+	// end (max+1), so a block whose max RowID is MaxUint64 overflows to 0 and
+	// must not be mistaken for an empty block by the MaxRowID==0 test below.
+	hit := make(map[uint64]bool, len(locs))
 	if it != nil {
 		for !it.Done() {
 			rowID := it.RowID()
 			loc := it.Loc()
 			if b := byID[loc.BlockID]; b != nil {
+				hit[loc.BlockID] = true
 				if RowID(rowID) < b.MinRowID {
 					b.MinRowID = RowID(rowID)
 				}
@@ -77,7 +82,7 @@ func (s *Store) blocksByTable(view *index.View, snap uint64, tid TableID) ([]Blo
 		}
 	}
 	for i := range out {
-		if out[i].MaxRowID == 0 { // no indexed record: keep the empty range
+		if !hit[out[i].BlockID] { // no indexed record: keep the empty range
 			out[i].MinRowID = 0
 		}
 	}

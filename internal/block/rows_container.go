@@ -411,12 +411,17 @@ func (c *RowsContainer) pageOwned(i int) (*RowsPage, error) {
 	}
 	c.pages[i] = p
 	c.retainedBytes += rowsPageRetainedBytes(p)
-	retained := c.retainedBytes
-	update := c.onRetainedChange
-	c.pagesMu.Unlock()
-	if update != nil {
-		update(retained)
+	// Install and LRU accounting update under one pagesMu critical section:
+	// two goroutines memoizing different pages of the same container must not
+	// apply their absolute retained sizes out of order (a stale, smaller
+	// update landing last would permanently under-count the LRU entry, letting
+	// memoized pages bypass CacheBytes). The LRU lock is never acquired in
+	// reverse order (nothing calls pagesMu while holding the LRU lock), so
+	// taking it here is deadlock-free.
+	if c.onRetainedChange != nil {
+		c.onRetainedChange(c.retainedBytes)
 	}
+	c.pagesMu.Unlock()
 	return p, nil
 }
 

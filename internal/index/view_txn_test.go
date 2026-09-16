@@ -1,6 +1,8 @@
 package index
 
 import (
+	"encoding/binary"
+
 	"bytes"
 	"testing"
 
@@ -577,5 +579,43 @@ func TestDecodeIndexPage(t *testing.T) {
 	}
 	if _, err := decodePage([]byte{1, 2, 3}); err == nil {
 		t.Fatal("garbage page should error")
+	}
+}
+
+// TestParseChunkStoredBytesOverrunRejected: a chunk header whose StoredBytes
+// reach past the end of the txn body must be rejected with an error, not
+// panic on the payload slice.
+func TestParseChunkStoredBytesOverrunRejected(t *testing.T) {
+	b := NewBuilder(7)
+	if err := b.SetSnapshot(format.SnapshotIndexEntry{SnapshotID: 1, SnapshotType: format.SnapshotFull}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.AddMetadata(format.MetadataIndexEntry{SnapshotID: 1, ObjectID: 3, Revision: 1, RecordType: 2}); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := b.Build(BodyBounds{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Patch the second chunk (metadata, zstd-compressed so CheckLimits does
+	// not pin StoredBytes == RawBytes) with a StoredBytes past the body end,
+	// then recompute the chunk header CRC (covers the 64-byte header with
+	// bytes 44..47 zeroed).
+	pos := format.IndexTxnHeaderSize
+	for i := 0; i < 1; i++ {
+		var h format.IndexChunkHeader
+		if err := h.Unmarshal(out[pos:]); err != nil {
+			t.Fatal(err)
+		}
+		pos += format.IndexChunkHeaderSize + int(h.StoredBytes)
+	}
+	binary.LittleEndian.PutUint32(out[pos+32:], 1<<16)
+	for j := 48; j < 64; j++ {
+		out[pos+j] = 0
+	}
+	c := format.CRC32C(out[pos : pos+64])
+	binary.LittleEndian.PutUint32(out[pos+44:], c)
+	if _, err := ParseTxn(out, nil); err == nil {
+		t.Fatal("chunk stored bytes overrun = nil error")
 	}
 }

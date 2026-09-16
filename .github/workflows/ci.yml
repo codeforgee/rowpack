@@ -11,7 +11,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        go: ["1.24.x", "1.25.x"]
+        # go.mod 要求 go >= 1.27.0：更低版本的工具链根本编译不了本模块
+        # （GOTOOLCHAIN=local 下直接报错），所以矩阵只跟 go.mod 对齐。
+        go: ["1.27.x"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +29,11 @@ jobs:
       - name: Race tests
         run: go test -race ./...
         if: runner.os != 'windows'
-      - name: Fuzz smoke
-        run: go test ./internal/... -run '^$' -fuzz '^Fuzz' -fuzztime=5s
+      # -fuzz 不能与多包同时使用（每个测试二进制只允许一个 fuzz 目标），
+      # 所以每个 fuzz 目标一步。Windows 跳过：语料目录与 mmap 路径差异大。
+      - name: Fuzz smoke (store open)
+        run: go test . -run '^$' -fuzz '^Fuzz' -fuzztime=5s
+        if: runner.os != 'windows'
+      - name: Fuzz smoke (row index page parser)
+        run: go test ./internal/index -run '^$' -fuzz '^Fuzz' -fuzztime=5s
         if: runner.os != 'windows'

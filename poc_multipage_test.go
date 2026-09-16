@@ -223,13 +223,13 @@ func TestOversizedRowMultiPage(t *testing.T) {
 		return string(b)
 	}
 	rows := map[RowID]string{
-		1:  big(64),   // fits a page
-		2:  big(300),  // oversized row (> page, < block)
-		3:  big(80),   // normal
-		4:  big(700),  // oversized row (> block): isolated block
-		5:  big(90),   // normal after oversized
-		6:  big(600),  // another oversized
-		7:  big(70),   // normal
+		1: big(64),  // fits a page
+		2: big(300), // oversized row (> page, < block)
+		3: big(80),  // normal
+		4: big(700), // oversized row (> block): isolated block
+		5: big(90),  // normal after oversized
+		6: big(600), // another oversized
+		7: big(70),  // normal
 	}
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)

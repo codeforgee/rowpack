@@ -1,9 +1,9 @@
 package rowpack
 
 import (
-	"runtime"
 	"context"
 	"math/rand"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"

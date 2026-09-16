@@ -1,8 +1,8 @@
 package rowpack
 
 import (
-	"fmt"
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/format"
@@ -52,11 +52,11 @@ func TestUnknownColumnTypeForwardCompat(t *testing.T) {
 		},
 	}
 	futureColumn := &metadata.Record{
-		RecordType:  uint32(format.RecordColumn),
-		ObjectID:    futureColumnOID,
-		ParentID:    futureTableOID,
-		Revision:    1,
-		Namespace:   format.NamespaceCore,
+		RecordType: uint32(format.RecordColumn),
+		ObjectID:   futureColumnOID,
+		ParentID:   futureTableOID,
+		Revision:   1,
+		Namespace:  format.NamespaceCore,
 		Fields: []metadata.Field{
 			{ID: metadata.ColColumnID, WireType: format.WireSint, Value: int64(1)},
 			{ID: metadata.ColColumnName, WireType: format.WireString, Value: "payload"},

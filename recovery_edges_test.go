@@ -36,8 +36,8 @@ func TestSnapshotWithoutIndexTxn(t *testing.T) {
 	var out []byte
 	out = append(out, raw[:format.DataFileHeaderSize]...)
 	out = append(out, raw[format.DataFileHeaderSize:snap1.end]...)
-	out = append(out, raw[snap2.start:snap2.txnStart]...)  // header + blocks（无 txn）
-	out = append(out, raw[snap2.footerOff:snap2.end]...)   // footer
+	out = append(out, raw[snap2.start:snap2.txnStart]...) // header + blocks（无 txn）
+	out = append(out, raw[snap2.footerOff:snap2.end]...)  // footer
 
 	rebuilt := filepath.Join(tmpdb(t), "notxn2")
 	require.NoError(t, os.WriteFile(rebuilt+".rpk", out, 0o644))

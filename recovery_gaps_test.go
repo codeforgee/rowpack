@@ -66,7 +66,7 @@ func TestWalkTailBranches(t *testing.T) {
 		// 合法 txn 头 + BodyBytes 巨大 -> 截断 txn。
 		{"txn-body-overrun", nil}, // 特殊构造，见下
 		// 合法 txn 头 + 过短的 footer。
-		{"txn-footer-short", nil},  // 特殊构造，见下
+		{"txn-footer-short", nil}, // 特殊构造，见下
 		// 合法块头 + StoredSize 超文件 -> 截断 payload。
 		{"block-payload-overrun", nil}, // 特殊构造，见下
 	}
@@ -215,7 +215,7 @@ func TestWalkFooterIDMismatchRejected(t *testing.T) {
 	_, err = f.ReadAt(fb[:], ftrOff)
 	require.NoError(t, err)
 	binary.LittleEndian.PutUint64(fb[16:], last.snapshotID+100) // SnapshotID
-	binary.LittleEndian.PutUint32(fb[136:], 0)                   // FooterCRC32C 占位
+	binary.LittleEndian.PutUint32(fb[136:], 0)                  // FooterCRC32C 占位
 	c := format.CRC32C(fb[:])
 	binary.LittleEndian.PutUint32(fb[136:], c)
 	_, err = f.WriteAt(fb[:], ftrOff)

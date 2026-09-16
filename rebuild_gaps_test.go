@@ -54,8 +54,6 @@ func TestRebuildFailsOnCorruptBlock(t *testing.T) {
 	_ = ctx
 }
 
-
-
 // TestOpenTinyFile：数据文件小于固定头长度时 Open 必须报错。
 func TestOpenTinyFile(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "tiny")

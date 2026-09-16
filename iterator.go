@@ -333,10 +333,11 @@ func (it *Iterator) nextBlockRecord() (Row, bool) {
 			return row, true
 		}
 		// Page exhausted: advance to the next page within the block, then the
-		// next block.
+		// next block. next must be captured before releasePage, which resets
+		// curPageIdx to -1.
 		if it.curContainer != nil && it.curPageIdx+1 < it.curContainer.PageCount() {
-			it.releasePage()
 			next := it.curPageIdx + 1
+			it.releasePage()
 			page, release, err := it.curContainer.PageScratch(next)
 			if err != nil {
 				it.err = err

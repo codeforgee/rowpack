@@ -253,7 +253,12 @@ func (r *Reader) checkHeader(h *format.BlockHeader) error {
 	if h.RawSize > r.limits.MaxRawBytes {
 		return fmt.Errorf("rowpack: raw size %d exceeds limit %d", h.RawSize, r.limits.MaxRawBytes)
 	}
-	if !h.Encrypted && h.Compression == format.CompressionNone && h.StoredSize != h.RawSize {
+	// Rows blocks are page containers: StoredSize additionally carries the
+	// container header + page directory on top of the stored page bytes
+	// (RawSize = sum of page raw sizes), so the None-compression size
+	// equality only applies to whole-payload blocks (metadata). Per-page
+	// equality for plain containers is enforced by RowsContainer.checkBounds.
+	if h.BlockKind != format.BlockKindRows && !h.Encrypted && h.Compression == format.CompressionNone && h.StoredSize != h.RawSize {
 		return fmt.Errorf("rowpack: none-compressed block stored %d != raw %d", h.StoredSize, h.RawSize)
 	}
 	return nil

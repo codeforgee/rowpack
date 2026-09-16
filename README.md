@@ -192,6 +192,18 @@ make baseline-diff OLD=2026-09-10 NEW=2026-09-11 # 对比两个基线，>10% 回
 make golden # 重新生成 golden files（格式变更时人工审查）
 ```
 
+### 只读检查工具
+
+```sh
+go run ./cmd/rowpack-inspect header <base>            # 文件头 + 统计（含 recovery 报告）
+go run ./cmd/rowpack-inspect list <base>             # 快照与表（含表地址 address=…）
+go run ./cmd/rowpack-inspect verify <base>           # VerifyFull，失败退出码 1
+go run ./cmd/rowpack-inspect dump <base> <snap> <tableID>  # 按表 ID dump 可见行（跨 ns 表同样可读）
+```
+
+命令实现放在 `internal/inspect`（`Run(ctx, argv, stdout, stderr)`），`cmd/` 只做退出码映射，
+因此四条命令与全部参数错误分支都有测试。退出码：0 成功、1 store 错误、2 用法错误。
+
 ## 参考基准
 
 统一套件由 `make bench` 复现（`BenchmarkEnv` + 64 格 `BenchmarkMainMatrix` + `BenchmarkLatency`

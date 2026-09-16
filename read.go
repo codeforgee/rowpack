@@ -144,7 +144,10 @@ func (s *Store) readRowInto(view *index.View, si *schemaIndex, snap SnapshotID, 
 		return nil, 0, s.recordError(bl, snap, table, err)
 	}
 	row, err := decoder.DecodeInto(dst, rec.Body, nil)
-	return row, rec.SchemaVersion, s.recordError(bl, snap, table, err)
+	if err != nil {
+		err = s.recordError(bl, snap, table, err)
+	}
+	return row, rec.SchemaVersion, err
 }
 
 // rowCodec returns the store's row codec: the codec limits derived from opts.

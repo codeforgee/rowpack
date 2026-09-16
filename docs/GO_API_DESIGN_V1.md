@@ -222,7 +222,9 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 ```
 
 - `Stats` 是近似只读快照，不建立事务屏障：包含快照/表/块/逻辑行计数、缓存（随机读缓存 + 有界
-  扫描窗口）、累计物理读放大（`Read`）和批量聚合（`Batch`）；
+  扫描窗口）、累计物理读放大（`Read`）和批量聚合（`Batch`）；`Tables`/`LogicalRows` 按**最新快照
+  可见的表集**统计（沿父链解析后的可见行数，包含未被本事务触碰的祖先表），而不是本事务自己
+  写过行的表——尾部是空 DELTA 时也不得报 0 行；
 - `VerifyQuick` 校验头部、IndexTxn、Footer、边界和父链；`VerifyFull` 额外解压所有块、校验每行
   CRC 与可解码性。失败返回结构化 `CorruptionError`。
 
@@ -242,6 +244,12 @@ ErrKeyRequired ErrKeyUnavailable ErrKeyIDNotFound ErrAuthFailed
 
 - `CorruptionError`（Kind + 文件/offset/Snapshot/Table/Block/Cause）描述完整性失败，`Unwrap` 同时
   挂 `ErrCorruptData`/`ErrCorruptIndex` 与底层 `Cause`；
+- **分类范围覆盖到行与目录记录**：不止块头/目录/AEAD 失败（loader 层），行层失败
+  （页读取/解压/页流解析、`RecordAt` 语义冲突、schema 版本解析、tuple 解码）与元数据
+  记录解码失败同样必须包成 `CorruptionError`，即 `errors.Is(err, ErrCorruptData)` 对
+  `Get`/`Scan`/`ScanBlocks`/`ReadBatch`/`Verify`/`Open`（目录损坏）都成立；底层原因留在
+  `Cause` 上（例如 `ErrSchemaMismatch`），两个哨兵可同时匹配；已经带完整性/认证/版本哨兵
+  的错误原样返回，不得二次包装；
 - `CommitError`：`Unknown=true` 表示同步开始后失败、提交结果未知，必须按 SnapshotID 查询而不是
   盲目重放；store 同时进入 must-reopen 状态，新写者返回 `ErrMustReopen`，读仍自洽；
 - 批量读取中不可见行不是整个 Batch 的错误（`ReadBatch` 整批 `ErrNotFound`，见 §4）。

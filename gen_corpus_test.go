@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// TestGenerateFuzzCorpus regenerates the committed seed corpus for
+// TestGenerateFuzzCorpus generates the local seed corpus for
 // FuzzOpenMutated. Run explicitly (not by CI):
 //
 //	go test -run TestGenerateFuzzCorpus .

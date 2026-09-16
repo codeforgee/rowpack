@@ -13,7 +13,8 @@ import (
 // corruption branch in the format, block, index and codec layers.
 //
 // The seed corpus lives in testdata/fuzz/FuzzOpenMutated/seed.store (auto-
-// loaded by `go test -fuzz`) and is regenerated with:
+// loaded by `go test -fuzz`). The directory is gitignored: regenerate it
+// locally once with:
 //
 //	go test -run TestGenerateFuzzCorpus .
 //

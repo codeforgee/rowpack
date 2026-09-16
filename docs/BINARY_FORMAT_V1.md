@@ -165,7 +165,10 @@ IndexTxn 与 Snapshot 的关系：
 - IndexTxnFooter 不承担最终提交语义（提交权威见 §7）；
 - IndexTxn 必须位于对应 Snapshot 的 Blocks 之后、SnapshotFooter 之前；
 - Entry 引用同一文件中更早的 Block offset；
-- Row Index 提供 `(SnapshotID, TableID, RowID) → BlockID, ItemOrdinal`。
+- Row Index 提供 `(SnapshotID, TableID, RowID) → BlockID, ItemOrdinal`。**ItemOrdinal 是记录在
+  自身 Rows Block 内的位置序号**（从 0 起、跨页连续，等于该块 `RowsContainer.RecordAt` 的入参），
+  必须与 `BlockID` 成对使用；它不是快照内的累计记录计数。由 Block 扫描重建内存索引时同样按
+  「每块重新计数」写入——跨块累加会造出一张打开不报错、但把行解析到别的位置的错位索引。
 
 IndexTxn 内的 SnapshotID/offset/CRC 字段如需精简，必须同步修改 ParseTxn/Replay/verifier 三处的
 读取契约，并保持入口尺寸 8 字节对齐。IndexTxn 是派生导航结构：SnapshotFooter 有效但 IndexTxn

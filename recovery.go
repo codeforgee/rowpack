@@ -451,12 +451,18 @@ func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
 			if err != nil {
 				return nil, err
 			}
+			// ItemOrdinal is the record's position inside its own block (that is what
+			// RowsContainer.RecordAt/PageFor resolve), so the counter restarts per
+			// block. A snapshot spanning more than one rows block must not carry a
+			// running total across blocks.
+			var ordinal uint32
 			err = rc.ForEach(func(rec codec.PageRecord) error {
 				rowEntries = append(rowEntries, format.RowIndexEntry{
 					SnapshotID: bh.SnapshotID, TableID: bh.TableID,
 					ChangeType: rec.ChangeType, RowID: rec.RowID,
-					BlockID: bh.BlockID, ItemOrdinal: uint32(len(rowEntries)),
+					BlockID: bh.BlockID, ItemOrdinal: ordinal,
 				})
+				ordinal++
 				rowCount++
 				return nil
 			})

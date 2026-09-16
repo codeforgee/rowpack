@@ -158,6 +158,8 @@ offset  size  field
 - 每页 `(TableID, RowID)` 升序，**按表切页**（一个页绝不跨表 run；末页可少、表边界可产生较小
   页）；这使页内 `TableID` 唯一、`MinRowID`/`MaxRowID` 属于该表，Fence 成为 `(TableID, RowID)`
   的单调二叉索引——Lazy 二分定位正确的前提（跨表页会让全局 `MinRowID` 随页非单调）；
+- `ItemOrdinal` 相对 `BlockID`：记录在自身 Rows Block 内的序号（0 起、跨页连续）。`BlockID` 与
+  `ItemOrdinal` 的 zigzag delta 都以排序后的条目顺序为基准，二者必须成对解释；
 - 每页条目上限 4096（`indexPageEntryCount`）；
 - Page CRC 覆盖流区。
 

@@ -86,10 +86,16 @@ func (s *Store) Stats() Stats {
 		stt.RawBytes += uint64(b.RawSize)
 		stt.StoredBytes += uint64(b.StoredSize)
 	}
-	// Tables + logical rows from the latest snapshot.
+	// Tables + logical rows at the latest snapshot. The table set is the catalog
+	// visible at that snapshot (resolved along the parent chain by
+	// deriveTables), NOT the tables whose rows this transaction wrote itself:
+	// a DELTA that touches only one of five tables, or an empty checkpoint
+	// DELTA, still carries every ancestor row, and summing only the touched
+	// tables understates the store's logical row count (0 for an empty tail
+	// snapshot).
 	if latest := view.LatestSnapshot(); latest != nil {
 		stt.Tables = uint64(len(st.schemas.bySnapshot[latest.ID]))
-		for _, tid := range view.RowTables(latest.ID) {
+		for tid := range st.schemas.bySnapshot[latest.ID] {
 			stt.LogicalRows += view.LogicalRowCount(latest.ID, tid)
 		}
 	}

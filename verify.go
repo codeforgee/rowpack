@@ -81,16 +81,22 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 			// every page, verifying each record's page CRC and decodability.
 			rc, err := s.loader.LoadRows(int64(bl.DataOffset), bl.BlockID)
 			if err != nil {
-				return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: err.Error()}
+				return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: reasonOf(err)}
 			}
 			if mode == VerifyFull {
 				verr := rc.ForEach(func(rec codec.PageRecord) error {
 					rep.RowsChecked++
 					if rec.ChangeType != format.ChangeDelete {
-						if decoder, err := st.schemas.decoderFor(bl, rec.SchemaVersion); err == nil {
-							if _, err := decoder.DecodeInto(nil, rec.Body, nil); err != nil {
-								return fmt.Errorf("row %d: %v", rec.RowID, err)
-							}
+						// A record whose schema version is absent from the catalog is
+						// an index/metadata inconsistency just like an undecodable
+						// body: skipping it would let Verify certify a store whose
+						// rows can never be read.
+						decoder, err := st.schemas.decoderFor(bl, rec.SchemaVersion)
+						if err != nil {
+							return fmt.Errorf("row %d: %w", rec.RowID, err)
+						}
+						if _, err := decoder.DecodeInto(nil, rec.Body, nil); err != nil {
+							return fmt.Errorf("row %d: %w", rec.RowID, err)
 						}
 					}
 					return nil
@@ -98,18 +104,18 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 				if verr != nil {
 					// Preserve the underlying cause (e.g. ErrAuthFailed) so
 					// errors.Is(ErrAuthFailed) works on the tamper path.
-					return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: verr, Reason: verr.Error()}
+					return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: verr, Reason: reasonOf(verr)}
 				}
 			}
 			continue
 		}
 		blk, err := s.loader.Load(int64(bl.DataOffset), bl.BlockID)
 		if err != nil {
-			return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: err.Error()}
+			return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: reasonOf(err)}
 		}
 		if mode == VerifyFull && bl.Kind == format.BlockKindMetadata {
 			if _, err := metadata.Parse(blk.Raw); err != nil {
-				return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, Kind: ErrCorruptData, Reason: err.Error()}
+				return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, Kind: ErrCorruptData, Cause: err, Reason: reasonOf(err)}
 			}
 		}
 	}

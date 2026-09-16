@@ -307,7 +307,7 @@ func (it *Iterator) nextBlockRecord() (Row, bool) {
 		if it.curContainer != nil && it.curPage != nil && it.curPageNext < int(it.curPage.Header().EntryCount) {
 			rec, err := it.curPage.RecordAt(uint32(it.curPageNext))
 			if err != nil {
-				it.err = err
+				it.fail(err)
 				it.releasePage()
 				return nil, false
 			}
@@ -319,13 +319,13 @@ func (it *Iterator) nextBlockRecord() (Row, bool) {
 			}
 			decoder, err := it.decoderFor(rec.SchemaVersion)
 			if err != nil {
-				it.err = err
+				it.fail(err)
 				it.releasePage()
 				return nil, false
 			}
 			row, err := decoder.DecodeInto(it.buf, rec.Body, it.sink)
 			if err != nil {
-				it.err = err
+				it.fail(err)
 				it.releasePage()
 				return nil, false
 			}
@@ -340,7 +340,7 @@ func (it *Iterator) nextBlockRecord() (Row, bool) {
 			it.releasePage()
 			page, release, err := it.curContainer.PageScratch(next)
 			if err != nil {
-				it.err = err
+				it.fail(err)
 				return nil, false
 			}
 			it.curPage = page
@@ -445,20 +445,22 @@ func (l *layerIter) advance(h *rowHeap) {
 }
 
 // rowAt resolves one row into dst, reusing the current block's page container
-// and the currently decompressed page when the location is inside it.
+// and the currently decompressed page when the location is inside it. Every
+// failure is classified as a CorruptionError for the iterator's snapshot and
+// table.
 func (it *Iterator) rowAt(loc index.RowLoc, dst Row) (Row, error) {
 	if err := it.locateBlock(loc); err != nil {
 		return nil, err
 	}
 	pi, err := it.curContainer.PageFor(loc.ItemOrdinal)
 	if err != nil {
-		return nil, err
+		return nil, it.store.recordError(it.curBlk, it.snapshot, it.table, err)
 	}
 	if it.curPage == nil || it.curPageIdx != pi {
 		it.releasePage()
 		page, release, err := it.curContainer.PageScratch(pi)
 		if err != nil {
-			return nil, err
+			return nil, it.store.recordError(it.curBlk, it.snapshot, it.table, err)
 		}
 		it.curPage = page
 		it.curPageRel = release
@@ -466,13 +468,24 @@ func (it *Iterator) rowAt(loc index.RowLoc, dst Row) (Row, error) {
 	}
 	rec, err := it.curPage.RecordAt(loc.ItemOrdinal - it.curContainer.Dir[pi].FirstRecordOrdinal)
 	if err != nil {
-		return nil, err
+		return nil, it.store.recordError(it.curBlk, it.snapshot, it.table, err)
 	}
 	decoder, err := it.decoderFor(rec.SchemaVersion)
 	if err != nil {
-		return nil, err
+		return nil, it.store.recordError(it.curBlk, it.snapshot, it.table, err)
 	}
-	return decoder.DecodeInto(dst, rec.Body, it.sink)
+	row, err := decoder.DecodeInto(dst, rec.Body, it.sink)
+	if err != nil {
+		return nil, it.store.recordError(it.curBlk, it.snapshot, it.table, err)
+	}
+	return row, nil
+}
+
+// fail latches a record-level read failure on the iterator, classified against
+// the current block/snapshot/table context. Callers must not clear it.curBlk
+// before calling it when the block identity matters.
+func (it *Iterator) fail(err error) {
+	it.err = it.store.recordError(it.curBlk, it.snapshot, it.table, err)
 }
 
 // decoderFor returns the prepared decoder for a record schema version under

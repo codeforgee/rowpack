@@ -116,7 +116,7 @@ func (s *Store) readBatchInto(ctx context.Context, snapshot SnapshotID, table st
 	// objects. Only the arena's chunk is retained by buf.
 	sink := strArenaSink(&buf.arena)
 	if err := br.readBlocks(sink); err != nil {
-		return nil, err
+		return nil, s.recordError(br.curBlock, snapshot, tid, err)
 	}
 	s.batchCalls.Add(1)
 	s.batchRows.Add(uint64(len(ids)))

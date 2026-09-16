@@ -507,10 +507,11 @@ func (s *Store) decodeRecord(view *index.View, loc *index.MetadataLoc, objectID 
 	}
 	payload, err := metadata.Parse(blk.Raw)
 	if err != nil {
-		return nil, err
+		return nil, s.recordError(bl, SnapshotID(bl.SnapshotID), TableID(bl.TableID), err)
 	}
 	if int(loc.ItemOrdinal) >= len(payload.Records) {
-		return nil, fmt.Errorf("rowpack: metadata object %d ordinal %d out of range", objectID, loc.ItemOrdinal)
+		return nil, s.recordError(bl, SnapshotID(bl.SnapshotID), TableID(bl.TableID),
+			fmt.Errorf("rowpack: metadata object %d ordinal %d out of range", objectID, loc.ItemOrdinal))
 	}
 	rec := &metadata.Record{}
 	raw := payload.Records[loc.ItemOrdinal]
@@ -518,7 +519,7 @@ func (s *Store) decodeRecord(view *index.View, loc *index.MetadataLoc, objectID 
 		rec.RecordType = binary.LittleEndian.Uint32(raw[4:])
 	}
 	if err := rec.Decode(raw, metadata.CoreFieldSchemas[rec.RecordType]); err != nil {
-		return nil, err
+		return nil, s.recordError(bl, SnapshotID(bl.SnapshotID), TableID(bl.TableID), err)
 	}
 	return rec, nil
 }

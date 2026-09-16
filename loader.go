@@ -1,8 +1,6 @@
 package rowpack
 
 import (
-	"errors"
-
 	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/cache"
 )
@@ -82,17 +80,7 @@ func newLoader(reader *block.Reader, file string, cacheBytes, scanCacheBytes int
 // carry a corruption or auth sentinel are returned unchanged so Verify and
 // the recovery rebuild never double-wrap.
 func (l *blockLoader) readError(offset int64, blockID uint64, err error) error {
-	if errors.Is(err, ErrCorruptData) || errors.Is(err, ErrAuthFailed) {
-		return err
-	}
-	return &CorruptionError{
-		File:    l.file,
-		Offset:  offset,
-		BlockID: blockID,
-		Kind:    ErrCorruptData,
-		Cause:   err,
-		Reason:  err.Error(),
-	}
+	return corruptError(l.file, offset, 0, 0, blockID, err)
 }
 
 // Load returns the validated block at offset with the given block ID, serving

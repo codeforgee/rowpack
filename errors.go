@@ -3,8 +3,10 @@ package rowpack
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/rowpack/rowpack/internal/codec"
+	"github.com/rowpack/rowpack/internal/index"
 )
 
 // Sentinel errors. All public APIs return errors that support errors.Is against
@@ -72,6 +74,64 @@ func (e *CorruptionError) Unwrap() []error {
 		return []error{e.Kind, e.Cause}
 	}
 	return []error{e.Kind}
+}
+
+// corruptError classifies an integrity failure into the structured
+// CorruptionError that public APIs promise (every read failure must be
+// matchable with errors.Is, never by string). Causes that already carry a
+// corruption/auth/version sentinel pass through unchanged so the chain is
+// never double-wrapped; everything else becomes an ErrCorruptData failure with
+// the original error kept on the chain, so errors.Is matches the sentinel, the
+// underlying Cause (e.g. ErrSchemaMismatch) and ErrCorruptData at once.
+func corruptError(file string, offset int64, snap SnapshotID, table TableID, blockID uint64, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	for _, sentinel := range []error{ErrCorruptData, ErrCorruptIndex, ErrAuthFailed, ErrVersionUnsupported} {
+		if errors.Is(cause, sentinel) {
+			return cause
+		}
+	}
+	return &CorruptionError{
+		File:       file,
+		Offset:     offset,
+		SnapshotID: snap,
+		TableID:    table,
+		BlockID:    blockID,
+		Kind:       ErrCorruptData,
+		Cause:      cause,
+		Reason:     reasonOf(cause),
+	}
+}
+
+// reasonOf renders a cause for CorruptionError.Reason. The package prefix is
+// dropped (the outer error already carries it), and a loader-wrapped failure
+// contributes its own Reason instead of its full message, which would repeat
+// file/offset/block inside the outer error.
+func reasonOf(err error) string {
+	if err == nil {
+		return ""
+	}
+	var cerr *CorruptionError
+	if errors.As(err, &cerr) {
+		if cerr.Reason != "" {
+			return cerr.Reason
+		}
+		return reasonOf(cerr.Cause)
+	}
+	return strings.TrimPrefix(err.Error(), "rowpack: ")
+}
+
+// recordError classifies a failure hit while locating or decoding one record
+// inside an already-resolved Rows block (page access, schema resolution, tuple
+// decode). The loader already wraps block header/directory/AEAD failures; this
+// covers everything above it, which would otherwise escape errors.Is.
+// bl may be nil (failure before the block was resolved).
+func (s *Store) recordError(bl *index.BlockLoc, snap SnapshotID, table TableID, cause error) error {
+	if bl == nil {
+		return corruptError(s.dataPath, 0, snap, table, 0, cause)
+	}
+	return corruptError(s.dataPath, int64(bl.DataOffset), snap, table, bl.BlockID, cause)
 }
 
 // CommitError reports a snapshot commit failure. Unknown is true when the

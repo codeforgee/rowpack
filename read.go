@@ -86,7 +86,7 @@ func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowI
 	if loc.ChangeType == format.ChangeDelete {
 		return nil, fmt.Errorf("%w: (table %d, row %d) deleted in snapshot %d", ErrNotFound, tid, rowID, snapshot)
 	}
-	row, _, err := s.readRowInto(view, st.schemas, loc, dst)
+	row, _, err := s.readRowInto(view, st.schemas, snapshot, tid, loc, dst)
 	if err != nil {
 		return nil, err
 	}
@@ -120,8 +120,9 @@ func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, r
 // readRowInto reads and decodes a single row into dst from its block via the
 // page container: the block directory locates the page, only that page is
 // decompressed, and the record is decoded against its schema version. A
-// single-row read no longer decompresses the whole block.
-func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc index.RowLoc, dst Row) (Row, SchemaVersion, error) {
+// single-row read no longer decompresses the whole block. Any failure below
+// the block layer is classified as a CorruptionError for (snapshot, table).
+func (s *Store) readRowInto(view *index.View, si *schemaIndex, snap SnapshotID, table TableID, loc index.RowLoc, dst Row) (Row, SchemaVersion, error) {
 	bl := view.Block(loc.BlockID)
 	if bl == nil {
 		return nil, 0, fmt.Errorf("rowpack: block %d missing from view", loc.BlockID)
@@ -132,18 +133,18 @@ func (s *Store) readRowInto(view *index.View, si *schemaIndex, loc index.RowLoc,
 	}
 	rec, release, err := rc.RecordAt(loc.ItemOrdinal)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, s.recordError(bl, snap, table, err)
 	}
 	defer release()
 	if rec.ChangeType == format.ChangeDelete {
-		return nil, 0, fmt.Errorf("rowpack: row is a tombstone in block %d", bl.BlockID)
+		return nil, 0, s.recordError(bl, snap, table, fmt.Errorf("rowpack: row is a tombstone in block %d", bl.BlockID))
 	}
 	decoder, err := si.decoderFor(bl, rec.SchemaVersion)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, s.recordError(bl, snap, table, err)
 	}
 	row, err := decoder.DecodeInto(dst, rec.Body, nil)
-	return row, rec.SchemaVersion, err
+	return row, rec.SchemaVersion, s.recordError(bl, snap, table, err)
 }
 
 // rowCodec returns the store's row codec: the codec limits derived from opts.

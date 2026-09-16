@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/format"
+	"github.com/stretchr/testify/require"
 )
 
 // entrySink is a TxnSink that implements RowEntrySink (but deliberately not
@@ -168,4 +169,58 @@ func TestParseSinkDispatchPathsEquivalence(t *testing.T) {
 			compareRowShards(t, vBuf, vRows)
 		})
 	}
+}
+
+// TestStreamApplyFallbackDelegates exercises the streamApply per-entry and
+// AddRows fallbacks directly: ApplyStreaming always selects the batch path,
+// so these delegates would otherwise stay uncovered forever.
+func TestStreamApplyFallbackDelegates(t *testing.T) {
+	full := format.SnapshotIndexEntry{SnapshotID: 7, SnapshotType: format.SnapshotFull, BlockCount: 1}
+
+	ap := &streamApply{old: EmptyView(), maxDepth: 32}
+	require.Error(t, ap.AddRowEntry(format.RowIndexEntry{}), "entry before snapshot")
+	require.NoError(t, ap.AddRows(nil), "empty batch is a no-op even before a snapshot")
+	require.Error(t, ap.AddRows([]format.RowIndexEntry{{}}), "rows before snapshot")
+	require.Error(t, ap.AddBlock(format.BlockIndexEntry{}), "block before snapshot")
+	require.Error(t, ap.AddMetadata(format.MetadataIndexEntry{}), "metadata before snapshot")
+
+	require.NoError(t, ap.SetSnapshot(full))
+	require.Error(t, ap.AddRowEntry(format.RowIndexEntry{}), "wrong snapshot")
+	require.NoError(t, ap.AddRowEntry(format.RowIndexEntry{
+		SnapshotID: 7, TableID: 1, RowID: 1, BlockID: 1, ChangeType: format.ChangeInsert,
+	}))
+	require.NoError(t, ap.AddRows([]format.RowIndexEntry{
+		{SnapshotID: 7, TableID: 1, RowID: 2, BlockID: 1, ChangeType: format.ChangeInsert},
+	}))
+	require.NoError(t, ap.AddBlock(format.BlockIndexEntry{BlockID: 1, SnapshotID: 7}))
+	require.NoError(t, ap.AddMetadata(format.MetadataIndexEntry{ObjectID: 1, SnapshotID: 7}))
+	require.NoError(t, ap.finish())
+
+	// Compare against the batch path for the same entries.
+	b := NewBuilder(7)
+	b.SetRowDedup(false)
+	require.NoError(t, b.SetSnapshot(full))
+	for _, e := range []format.RowIndexEntry{
+		{SnapshotID: 7, TableID: 1, RowID: 1, BlockID: 1, ChangeType: format.ChangeInsert},
+		{SnapshotID: 7, TableID: 1, RowID: 2, BlockID: 1, ChangeType: format.ChangeInsert},
+	} {
+		require.NoError(t, b.AddRow(e))
+	}
+	data, _, err := b.Build(BodyBounds{}, 0)
+	require.NoError(t, err)
+	vBatch, err := EmptyView().ApplyStreaming(data, nil, 32)
+	require.NoError(t, err)
+	vEntry := EmptyView()
+	vEntry.rows[7] = map[uint32]*rowShard(nil)
+	entryShards, err := ap.shards.finish()
+	require.NoError(t, err)
+	vEntry.rows[7] = entryShards
+	compareRowShards(t, vBatch, vEntry)
+
+	// Guards: duplicate snapshot chunk; finish without SetSnapshot.
+	ap2 := &streamApply{old: EmptyView(), maxDepth: 32}
+	require.NoError(t, ap2.SetSnapshot(full))
+	require.Error(t, ap2.SetSnapshot(full))
+	ap3 := &streamApply{old: EmptyView(), maxDepth: 32}
+	require.Error(t, ap3.finish(), "finish without a snapshot chunk must fail")
 }

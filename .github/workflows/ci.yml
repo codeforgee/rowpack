@@ -11,9 +11,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # go.mod 要求 go >= 1.27.0：更低版本的工具链根本编译不了本模块
+        # go.mod 要求 go >= 1.25.0：更低版本的工具链根本编译不了本模块
         # （GOTOOLCHAIN=local 下直接报错），所以矩阵只跟 go.mod 对齐。
-        go: ["1.27.x"]
+        go: ["1.25.x"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

@@ -15,7 +15,9 @@ func FuzzParseRowIndexPages(f *testing.F) {
 	f.Add([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, byte(0))
 	f.Add([]byte{0x52, 0x50, 0x4B, 0x49, 0x44, 0x58, 0x50, 0x47, 0x01, 0, 0, 0}, byte(1))
 	f.Fuzz(func(t *testing.T, region []byte, countByte byte) {
-		if len(region) > 1<<20 {
+		// Keep the CI smoke fuzz bounded on slower platforms. Larger regions are
+		// still covered by the deterministic corruption tests below.
+		if len(region) > 64<<10 {
 			t.Skip()
 		}
 		defer func() {

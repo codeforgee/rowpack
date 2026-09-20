@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/format"
@@ -132,6 +133,9 @@ func TestCreateSingleFailureSemantics(t *testing.T) {
 	require.Equal(t, int64(format.DataFileHeaderSize), size())
 
 	// Unwritable directory fails and leaves no file behind.
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not honor Unix directory permission bits")
+	}
 	nested := filepath.Join(dir, "sub")
 	require.NoError(t, os.Mkdir(nested, 0o755))
 	require.NoError(t, os.Chmod(nested, 0o555))

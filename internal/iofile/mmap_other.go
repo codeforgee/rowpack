@@ -23,6 +23,13 @@ func (m *readMapper) view(offset, n int64) ([]byte, func(), error) {
 	if n < 0 || offset < 0 {
 		return nil, nil, fmt.Errorf("rowpack: invalid view range [%d,%d)", offset, offset+n)
 	}
+	fi, err := m.f.Stat()
+	if err != nil {
+		return nil, nil, fmt.Errorf("rowpack: stat file for view: %w", err)
+	}
+	if offset+n > fi.Size() {
+		return nil, nil, fmt.Errorf("rowpack: view [%d,%d) beyond file size %d", offset, offset+n, fi.Size())
+	}
 	b := make([]byte, n)
 	if _, err := m.f.ReadAt(b, offset); err != nil {
 		return nil, nil, err

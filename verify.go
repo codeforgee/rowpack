@@ -120,5 +120,10 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 		}
 	}
 	rep.Duration = time.Since(start)
+	if rep.Duration <= 0 {
+		// Some platforms have a coarse wall-clock resolution and can report
+		// zero for a very small verification. Keep the report meaningful.
+		rep.Duration = time.Nanosecond
+	}
 	return rep, nil
 }

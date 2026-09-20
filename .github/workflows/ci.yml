@@ -21,7 +21,8 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
       - name: Format
-        run: test -z "$(gofmt -l .)"
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+        shell: bash
       - name: Vet
         run: go vet ./...
       - name: Unit tests

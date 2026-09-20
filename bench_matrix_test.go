@@ -1,3 +1,5 @@
+//go:build !windows
+
 package rowpack
 
 // 统一基准矩阵。

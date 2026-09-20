@@ -2,11 +2,6 @@
 
 package lockfile
 
-import (
-	"fmt"
-	"os"
-)
-
 // Lock is a cross-process writer lock. On platforms without flock support the
 // lock is reported as unsupported rather than silently degraded.
 type Lock struct{}
@@ -14,7 +9,6 @@ type Lock struct{}
 // Acquire reports ErrUnsupportedLocking on platforms without a supported
 // locking primitive.
 func Acquire(path string) (*Lock, error) {
-	_ = os.Stat(path)
 	return nil, ErrUnsupportedLocking
 }
 

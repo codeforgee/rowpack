@@ -131,10 +131,7 @@ func appendDecimalBytes(buf []byte, u *big.Int, maxValue uint32) ([]byte, error)
 		buf = appendU32(buf, uint32(n))
 		return appendInt64(buf, v), nil
 	}
-	raw, err := encodeBig(u)
-	if err != nil {
-		return nil, err
-	}
+	raw := encodeBig(u)
 	if uint32(len(raw)) > maxValue {
 		return nil, fmt.Errorf("decimal unscaled of %d bytes exceeds limit %d", len(raw), maxValue)
 	}
@@ -199,17 +196,17 @@ func appendInt64(buf []byte, v int64) []byte {
 
 // encodeBig is the general big.Int path for decimals that do not fit
 // int64, preserving the original v1 canonical encoding.
-func encodeBig(u *big.Int) ([]byte, error) {
+func encodeBig(u *big.Int) []byte {
 	if u.Sign() == 0 {
-		return []byte{0x00}, nil
+		return []byte{0x00}
 	}
 	raw := u.Bytes() // magnitude, big-endian
 	if u.Sign() > 0 {
 		// Positive: ensure the top byte's high bit is clear, else prepend 0x00.
 		if raw[0]&0x80 != 0 {
-			return append([]byte{0x00}, raw...), nil
+			return append([]byte{0x00}, raw...)
 		}
-		return raw, nil
+		return raw
 	}
 	// Negative: find the minimal two's-complement width w in bytes. A negative
 	// value with magnitude m fits in w bytes iff m <= 2^(8w-1).
@@ -218,16 +215,11 @@ func encodeBig(u *big.Int) ([]byte, error) {
 	w := (b1.BitLen() + 8) / 8
 	mod := new(big.Int).Lsh(big.NewInt(1), uint(8*w))
 	v := new(big.Int).Add(u, mod)
-	tc := v.Bytes()
-	if len(tc) < w {
-		pad := make([]byte, w-len(tc))
-		tc = append(pad, tc...)
-	}
-	// Strip redundant leading 0xFF bytes while the next byte's high bit is set.
-	for len(tc) > 1 && tc[0] == 0xFF && tc[1]&0x80 != 0 {
-		tc = tc[1:]
-	}
-	return tc, nil
+	// By construction m <= 2^(8w-1), so v = u + 2^(8w) lies in
+	// [2^(8w-1), 2^(8w)-1]: its big-endian form is exactly w bytes with the
+	// top bit set, which is already the canonical minimal form — no padding
+	// or leading-0xFF stripping is ever needed.
+	return v.Bytes()
 }
 
 // canonicalBytes checks the canonical big-endian two's-complement

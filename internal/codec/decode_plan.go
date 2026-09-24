@@ -181,8 +181,6 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 				row[i] = Value{typ: s.typ, i: ns}
 			case decodeDateTime:
 				row[i] = Value{typ: s.typ, i: int64(binary.LittleEndian.Uint64(payload[pos:]))}
-			default:
-				return nil, false
 			}
 			pos += w
 			continue

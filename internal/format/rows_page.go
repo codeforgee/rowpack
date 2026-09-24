@@ -85,6 +85,10 @@ func (h *RowsPageHeader) MarshalTo(dst []byte) error {
 
 // Unmarshal validates src and fills h. Geometry (stream sums) is validated
 // against totalLen, the full page length; pass 0 to skip that check.
+//
+// The field reads below have no per-field bounds checks: the single top-level
+// length check guarantees len(src) >= RowsPageHeaderSize, and every field
+// offset is fixed, so each LittleEndian read is in-bounds by construction.
 func (h *RowsPageHeader) Unmarshal(src []byte, totalLen int) error {
 	if len(src) < RowsPageHeaderSize {
 		return formatError("RowsPageHeader", -1, errShortInput)
@@ -98,37 +102,16 @@ func (h *RowsPageHeader) Unmarshal(src []byte, totalLen int) error {
 	if src[9] != 0 || src[10] != 0 || src[11] != 0 {
 		return formatError("RowsPageHeader", 9, "reserved bytes must be zero")
 	}
-	var ok bool
-	if h.EntryCount, ok = getU32(src[12:]); !ok {
-		return formatError("RowsPageHeader", 12, errShortInput)
-	}
-	if h.RowIDsBytes, ok = getU32(src[16:]); !ok {
-		return formatError("RowsPageHeader", 16, errShortInput)
-	}
-	if h.OffsetsBytes, ok = getU32(src[20:]); !ok {
-		return formatError("RowsPageHeader", 20, errShortInput)
-	}
-	if h.SchemaRLEBytes, ok = getU32(src[24:]); !ok {
-		return formatError("RowsPageHeader", 24, errShortInput)
-	}
-	if h.ChangeBitsBytes, ok = getU32(src[28:]); !ok {
-		return formatError("RowsPageHeader", 28, errShortInput)
-	}
-	if h.TuplesBytes, ok = getU32(src[32:]); !ok {
-		return formatError("RowsPageHeader", 32, errShortInput)
-	}
-	if h.FirstRowID, ok = getU64(src[36:]); !ok {
-		return formatError("RowsPageHeader", 36, errShortInput)
-	}
-	if h.MinRowID, ok = getU64(src[44:]); !ok {
-		return formatError("RowsPageHeader", 44, errShortInput)
-	}
-	if h.MaxRowID, ok = getU64(src[52:]); !ok {
-		return formatError("RowsPageHeader", 52, errShortInput)
-	}
-	if h.CRC32C, ok = getU32(src[60:]); !ok {
-		return formatError("RowsPageHeader", 60, errShortInput)
-	}
+	h.EntryCount = binary.LittleEndian.Uint32(src[12:])
+	h.RowIDsBytes = binary.LittleEndian.Uint32(src[16:])
+	h.OffsetsBytes = binary.LittleEndian.Uint32(src[20:])
+	h.SchemaRLEBytes = binary.LittleEndian.Uint32(src[24:])
+	h.ChangeBitsBytes = binary.LittleEndian.Uint32(src[28:])
+	h.TuplesBytes = binary.LittleEndian.Uint32(src[32:])
+	h.FirstRowID = binary.LittleEndian.Uint64(src[36:])
+	h.MinRowID = binary.LittleEndian.Uint64(src[44:])
+	h.MaxRowID = binary.LittleEndian.Uint64(src[52:])
+	h.CRC32C = binary.LittleEndian.Uint32(src[60:])
 	if h.EntryCount == 0 {
 		return formatError("RowsPageHeader", 12, "page must carry at least one record")
 	}
@@ -189,42 +172,23 @@ func (e *RowsPageDirEntry) MarshalTo(dst []byte) error {
 	return nil
 }
 
-// Unmarshal validates src and fills e.
+// Unmarshal validates src and fills e. The field reads have no per-field
+// bounds checks: the single top-level length check guarantees
+// len(src) >= RowsPageDirEntrySize and every offset is fixed.
 func (e *RowsPageDirEntry) Unmarshal(src []byte) error {
 	if len(src) < RowsPageDirEntrySize {
 		return formatError("RowsPageDirEntry", -1, errShortInput)
 	}
-	var ok bool
-	if e.PageOrdinal, ok = getU32(src[0:]); !ok {
-		return formatError("RowsPageDirEntry", 0, errShortInput)
-	}
-	if e.FirstRecordOrdinal, ok = getU32(src[4:]); !ok {
-		return formatError("RowsPageDirEntry", 4, errShortInput)
-	}
-	if e.RecordCount, ok = getU32(src[8:]); !ok {
-		return formatError("RowsPageDirEntry", 8, errShortInput)
-	}
-	if e.StoredOffset, ok = getU64(src[12:]); !ok {
-		return formatError("RowsPageDirEntry", 12, errShortInput)
-	}
-	if e.StoredSize, ok = getU32(src[20:]); !ok {
-		return formatError("RowsPageDirEntry", 20, errShortInput)
-	}
-	if e.RawSize, ok = getU32(src[24:]); !ok {
-		return formatError("RowsPageDirEntry", 24, errShortInput)
-	}
-	if e.MinRowID, ok = getU64(src[28:]); !ok {
-		return formatError("RowsPageDirEntry", 28, errShortInput)
-	}
-	if e.MaxRowID, ok = getU64(src[36:]); !ok {
-		return formatError("RowsPageDirEntry", 36, errShortInput)
-	}
-	if e.PageCRC32C, ok = getU32(src[44:]); !ok {
-		return formatError("RowsPageDirEntry", 44, errShortInput)
-	}
-	if e.Flags, ok = getU32(src[48:]); !ok {
-		return formatError("RowsPageDirEntry", 48, errShortInput)
-	}
+	e.PageOrdinal = binary.LittleEndian.Uint32(src[0:])
+	e.FirstRecordOrdinal = binary.LittleEndian.Uint32(src[4:])
+	e.RecordCount = binary.LittleEndian.Uint32(src[8:])
+	e.StoredOffset = binary.LittleEndian.Uint64(src[12:])
+	e.StoredSize = binary.LittleEndian.Uint32(src[20:])
+	e.RawSize = binary.LittleEndian.Uint32(src[24:])
+	e.MinRowID = binary.LittleEndian.Uint64(src[28:])
+	e.MaxRowID = binary.LittleEndian.Uint64(src[36:])
+	e.PageCRC32C = binary.LittleEndian.Uint32(src[44:])
+	e.Flags = binary.LittleEndian.Uint32(src[48:])
 	return nil
 }
 
@@ -255,11 +219,4 @@ func UnpackChangeType(v uint8) (ChangeType, error) {
 		return ChangeDelete, nil
 	}
 	return 0, formatError("UnpackChangeType", -1, "illegal packed change type %d", v)
-}
-
-func getU64(src []byte) (uint64, bool) {
-	if len(src) < 8 {
-		return 0, false
-	}
-	return binary.LittleEndian.Uint64(src), true
 }

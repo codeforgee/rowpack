@@ -2,6 +2,7 @@ package format
 
 import (
 	"bytes"
+	"encoding/binary"
 )
 
 // Row Index Page / Fence on-disk structures (BINARY_FORMAT_V1.md §5.3/§6).
@@ -86,7 +87,9 @@ func (h *RowIndexPageHeader) MarshalTo(dst []byte) error {
 }
 
 // Unmarshal validates src and fills h. totalLen is the full page length; when
-// nonzero the streams geometry is cross-checked against it.
+// nonzero the streams geometry is cross-checked against it. Field reads have
+// no per-field bounds checks: the single top-level length check guarantees
+// len(src) >= IndexPageHeaderSize and every offset is fixed.
 func (h *RowIndexPageHeader) Unmarshal(src []byte, totalLen int) error {
 	if len(src) < IndexPageHeaderSize {
 		return formatError("RowIndexPageHeader", -1, errShortInput)
@@ -100,37 +103,16 @@ func (h *RowIndexPageHeader) Unmarshal(src []byte, totalLen int) error {
 	if src[9] != 0 || src[10] != 0 || src[11] != 0 {
 		return formatError("RowIndexPageHeader", 9, "reserved bytes must be zero")
 	}
-	var ok bool
-	if h.EntryCount, ok = getU32(src[12:]); !ok {
-		return formatError("RowIndexPageHeader", 12, errShortInput)
-	}
-	if h.TableRunBytes, ok = getU32(src[16:]); !ok {
-		return formatError("RowIndexPageHeader", 16, errShortInput)
-	}
-	if h.RowIDBytes, ok = getU32(src[20:]); !ok {
-		return formatError("RowIndexPageHeader", 20, errShortInput)
-	}
-	if h.BlockRunBytes, ok = getU32(src[24:]); !ok {
-		return formatError("RowIndexPageHeader", 24, errShortInput)
-	}
-	if h.OrdinalBytes, ok = getU32(src[28:]); !ok {
-		return formatError("RowIndexPageHeader", 28, errShortInput)
-	}
-	if h.ChangeBitsBytes, ok = getU32(src[32:]); !ok {
-		return formatError("RowIndexPageHeader", 32, errShortInput)
-	}
-	if h.FirstRowID, ok = getU64(src[36:]); !ok {
-		return formatError("RowIndexPageHeader", 36, errShortInput)
-	}
-	if h.MinRowID, ok = getU64(src[44:]); !ok {
-		return formatError("RowIndexPageHeader", 44, errShortInput)
-	}
-	if h.MaxRowID, ok = getU64(src[52:]); !ok {
-		return formatError("RowIndexPageHeader", 52, errShortInput)
-	}
-	if h.CRC32C, ok = getU32(src[60:]); !ok {
-		return formatError("RowIndexPageHeader", 60, errShortInput)
-	}
+	h.EntryCount = binary.LittleEndian.Uint32(src[12:])
+	h.TableRunBytes = binary.LittleEndian.Uint32(src[16:])
+	h.RowIDBytes = binary.LittleEndian.Uint32(src[20:])
+	h.BlockRunBytes = binary.LittleEndian.Uint32(src[24:])
+	h.OrdinalBytes = binary.LittleEndian.Uint32(src[28:])
+	h.ChangeBitsBytes = binary.LittleEndian.Uint32(src[32:])
+	h.FirstRowID = binary.LittleEndian.Uint64(src[36:])
+	h.MinRowID = binary.LittleEndian.Uint64(src[44:])
+	h.MaxRowID = binary.LittleEndian.Uint64(src[52:])
+	h.CRC32C = binary.LittleEndian.Uint32(src[60:])
 	if h.EntryCount == 0 {
 		return formatError("RowIndexPageHeader", 12, "index page must carry at least one entry")
 	}
@@ -186,39 +168,22 @@ func (e *RowIndexFenceEntry) MarshalTo(dst []byte) error {
 	return nil
 }
 
-// Unmarshal validates src and fills e.
+// Unmarshal validates src and fills e. Field reads have no per-field bounds
+// checks: the single top-level length check guarantees
+// len(src) >= IndexFenceEntrySize and every offset is fixed.
 func (e *RowIndexFenceEntry) Unmarshal(src []byte) error {
 	if len(src) < IndexFenceEntrySize {
 		return formatError("RowIndexFenceEntry", -1, errShortInput)
 	}
-	var ok bool
-	if e.SnapshotID, ok = getU64(src[0:]); !ok {
-		return formatError("RowIndexFenceEntry", 0, errShortInput)
-	}
-	if e.TableID, ok = getU32(src[8:]); !ok {
-		return formatError("RowIndexFenceEntry", 8, errShortInput)
-	}
-	if e.MinRowID, ok = getU64(src[12:]); !ok {
-		return formatError("RowIndexFenceEntry", 12, errShortInput)
-	}
-	if e.MaxRowID, ok = getU64(src[20:]); !ok {
-		return formatError("RowIndexFenceEntry", 20, errShortInput)
-	}
-	if e.StoredOffset, ok = getU64(src[28:]); !ok {
-		return formatError("RowIndexFenceEntry", 28, errShortInput)
-	}
-	if e.StoredSize, ok = getU32(src[36:]); !ok {
-		return formatError("RowIndexFenceEntry", 36, errShortInput)
-	}
-	if e.RawSize, ok = getU32(src[40:]); !ok {
-		return formatError("RowIndexFenceEntry", 40, errShortInput)
-	}
-	if e.EntryCount, ok = getU32(src[44:]); !ok {
-		return formatError("RowIndexFenceEntry", 44, errShortInput)
-	}
-	if e.PageCRC32C, ok = getU32(src[48:]); !ok {
-		return formatError("RowIndexFenceEntry", 48, errShortInput)
-	}
+	e.SnapshotID = binary.LittleEndian.Uint64(src[0:])
+	e.TableID = binary.LittleEndian.Uint32(src[8:])
+	e.MinRowID = binary.LittleEndian.Uint64(src[12:])
+	e.MaxRowID = binary.LittleEndian.Uint64(src[20:])
+	e.StoredOffset = binary.LittleEndian.Uint64(src[28:])
+	e.StoredSize = binary.LittleEndian.Uint32(src[36:])
+	e.RawSize = binary.LittleEndian.Uint32(src[40:])
+	e.EntryCount = binary.LittleEndian.Uint32(src[44:])
+	e.PageCRC32C = binary.LittleEndian.Uint32(src[48:])
 	if e.EntryCount == 0 {
 		return formatError("RowIndexFenceEntry", 44, "fence entry has zero entries")
 	}

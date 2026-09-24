@@ -303,36 +303,31 @@ func TestAppendDecimalInt64Into(t *testing.T) {
 func TestEncodeDecimalBig(t *testing.T) {
 	t.Run("zero", func(t *testing.T) {
 		u := big.NewInt(0)
-		raw, err := encodeBig(u)
-		require.NoError(t, err)
+		raw := encodeBig(u)
 		require.Equal(t, []byte{0x00}, raw)
 	})
 
 	t.Run("positive no leading 0x80", func(t *testing.T) {
 		u := big.NewInt(12345)
-		raw, err := encodeBig(u)
-		require.NoError(t, err)
+		raw := encodeBig(u)
 		require.Equal(t, []byte{0x30, 0x39}, raw)
 	})
 
 	t.Run("positive with leading 0x80", func(t *testing.T) {
 		u := big.NewInt(128)
-		raw, err := encodeBig(u)
-		require.NoError(t, err)
+		raw := encodeBig(u)
 		require.Equal(t, []byte{0x00, 0x80}, raw)
 	})
 
 	t.Run("negative", func(t *testing.T) {
 		u := big.NewInt(-1)
-		raw, err := encodeBig(u)
-		require.NoError(t, err)
+		raw := encodeBig(u)
 		require.Equal(t, []byte{0xff}, raw)
 	})
 
 	t.Run("negative multi-byte", func(t *testing.T) {
 		u := big.NewInt(-129)
-		raw, err := encodeBig(u)
-		require.NoError(t, err)
+		raw := encodeBig(u)
 		require.Equal(t, []byte{0xff, 0x7f}, raw)
 	})
 }
@@ -393,7 +388,7 @@ func TestDecodeDecimalBytesInto(t *testing.T) {
 
 	t.Run("large positive", func(t *testing.T) {
 		u := new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil)
-		raw, _ := encodeBig(u)
+		raw := encodeBig(u)
 		dst := new(big.Int)
 		err := decodeBytesInto(dst, raw)
 		require.NoError(t, err)
@@ -402,7 +397,7 @@ func TestDecodeDecimalBytesInto(t *testing.T) {
 
 	t.Run("large negative", func(t *testing.T) {
 		u := new(big.Int).Neg(new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil))
-		raw, _ := encodeBig(u)
+		raw := encodeBig(u)
 		dst := new(big.Int)
 		err := decodeBytesInto(dst, raw)
 		require.NoError(t, err)

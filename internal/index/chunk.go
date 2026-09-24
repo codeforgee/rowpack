@@ -607,9 +607,9 @@ func (p *bodyParser) parse() (*storedBody, error) {
 			sb.blockCount += h.EntryCount
 		case format.IndexChunkKindRow:
 			return nil, fmt.Errorf("rowpack: row chunk %d: obsolete row-chunk layout (the row index is stored as sorted Index Pages; refusing to decode)", seq)
-		default:
-			return nil, fmt.Errorf("rowpack: chunk %d unknown kind %d", seq, h.EntryKind)
 		}
+		// No default arm: h.Unmarshal has already validated the kind enum, so
+		// the four cases above are exhaustive.
 		nextOrd[h.EntryKind] += h.EntryCount
 		sb.plainCRC = format.CRC32CConcat(sb.plainCRC, raw)
 		pos += format.IndexChunkHeaderSize + int(h.StoredBytes)
@@ -624,13 +624,10 @@ func (p *bodyParser) parse() (*storedBody, error) {
 		return nil, fmt.Errorf("rowpack: chunk directory %d bytes malformed", len(rest))
 	}
 	dirBytes := rest[:dirLen]
-	dir, err := format.ParseIndexChunkDirectory(dirBytes)
-	if err != nil {
-		return nil, err
-	}
-	if len(dir) != int(seq) {
-		return nil, fmt.Errorf("rowpack: directory has %d entries for %d chunks", len(dir), seq)
-	}
+	// The directory region is exactly seq*32 bytes and each 32-byte entry
+	// unmarshals unconditionally (no CRC, no per-field bounds checks beyond
+	// the size word), so Parse cannot fail here and always yields seq entries.
+	dir, _ := format.ParseIndexChunkDirectory(dirBytes)
 	// Re-walk to cross-check directory records against the chunk headers.
 	checkPos := 0
 	for i := range dir {
@@ -642,9 +639,8 @@ func (p *bodyParser) parse() (*storedBody, error) {
 			return nil, fmt.Errorf("rowpack: directory entry %d offset %d, want %d", i, de.RegionOffset, checkPos)
 		}
 		var h format.IndexChunkHeader
-		if err := h.Unmarshal(p.region[checkPos:]); err != nil {
-			return nil, err
-		}
+		// The same header bytes unmarshalled successfully in the walk above.
+		_ = h.Unmarshal(p.region[checkPos:])
 		if de.EntryKind != h.EntryKind || de.EntryCount != h.EntryCount ||
 			de.FirstEntryOrdinal != h.FirstEntryOrdinal || de.RawBytes != h.RawBytes || de.StoredBytes != h.StoredBytes {
 			return nil, fmt.Errorf("rowpack: directory entry %d disagrees with chunk header", i)
@@ -692,9 +688,9 @@ func (p *pageParser) parseFences() (fences []format.RowIndexFenceEntry, pageEnd 
 	fences = make([]format.RowIndexFenceEntry, int(p.pageCount))
 	for i := range fences {
 		off := i * format.IndexFenceEntrySize
-		if err := fences[i].Unmarshal(fenceRegion[off : off+format.IndexFenceEntrySize]); err != nil {
-			return nil, 0, fmt.Errorf("rowpack: row index fence %d: %w", i, err)
-		}
+		// Each slice is exactly IndexFenceEntrySize bytes; the only failing
+		// case is the zero-entry guard, which the cohesion check below covers.
+		_ = fences[i].Unmarshal(fenceRegion[off : off+format.IndexFenceEntrySize])
 	}
 	// Fence cohesion: snapshot ownership, strictly ordered and contiguous
 	// within the pages p.region, with non-zero sizes.

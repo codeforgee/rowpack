@@ -73,15 +73,13 @@ func (h *FileHeader) unmarshal(src []byte, magic string) (uint32, error) {
 	if !bytes.Equal(src[0:8], []byte(magic)) {
 		return 0, formatError("FileHeader", 0, "%s: got %q", errBadMagic, src[0:8])
 	}
-	maj, ok := getU16(src[8:])
-	if !ok || maj != VersionMajor {
-		v, _ := getU16(src[8:])
-		return 0, formatError("FileHeader", 8, "%s: major=%d want %d", errBadVersion, v, VersionMajor)
+	maj := binary.LittleEndian.Uint16(src[8:])
+	if maj != VersionMajor {
+		return 0, formatError("FileHeader", 8, "%s: major=%d want %d", errBadVersion, maj, VersionMajor)
 	}
-	sz, ok := getU32(src[12:])
-	if !ok || sz != DataFileHeaderSize {
-		v, _ := getU32(src[12:])
-		return 0, formatError("FileHeader", 12, "%s: size=%d want %d", errBadSize, v, DataFileHeaderSize)
+	sz := binary.LittleEndian.Uint32(src[12:])
+	if sz != DataFileHeaderSize {
+		return 0, formatError("FileHeader", 12, "%s: size=%d want %d", errBadSize, sz, DataFileHeaderSize)
 	}
 	crc, err := verifyCRC(src[:DataFileHeaderSize], DataFileHeaderCRC32COffset)
 	if err != nil {
@@ -142,16 +140,9 @@ func putU16(dst []byte, v uint16) { binary.LittleEndian.PutUint16(dst, v) }
 func putU32(dst []byte, v uint32) { binary.LittleEndian.PutUint32(dst, v) }
 func putU64(dst []byte, v uint64) { binary.LittleEndian.PutUint64(dst, v) }
 
-// Get helpers read Little Endian values with bounds validation. The bool
-// result is false when src is shorter than the field, so untrusted input can
-// never trigger an out-of-range panic.
-func getU16(src []byte) (uint16, bool) {
-	if len(src) < 2 {
-		return 0, false
-	}
-	return binary.LittleEndian.Uint16(src), true
-}
-
+// getU32 reads a Little Endian u32 with bounds validation. The bool result is
+// false when src is shorter than the field, so untrusted input can never
+// trigger an out-of-range panic.
 func getU32(src []byte) (uint32, bool) {
 	if len(src) < 4 {
 		return 0, false

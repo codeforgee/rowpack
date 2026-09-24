@@ -117,12 +117,3 @@ func TestPackUnpackChangeType(t *testing.T) {
 		t.Fatal("reserved packed value 3 accepted")
 	}
 }
-
-func TestGetU64ShortInput(t *testing.T) {
-	if v, ok := getU64([]byte{1, 2, 3}); ok || v != 0 {
-		t.Fatalf("getU64 short input = (%d,%v)", v, ok)
-	}
-	if v, ok := getU64([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9}); !ok || v != 0x0807060504030201 {
-		t.Fatalf("getU64 = (%d,%v)", v, ok)
-	}
-}

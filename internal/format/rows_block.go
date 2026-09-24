@@ -68,7 +68,8 @@ func (h *RowsBlockHeader) MarshalTo(dst []byte) error {
 }
 
 // Unmarshal validates src and fills h, cross-checking DirectoryBytes against
-// PageCount.
+// PageCount. Field reads have no per-field bounds checks: the single
+// top-level length check guarantees len(src) >= RowsBlockHeaderSize.
 func (h *RowsBlockHeader) Unmarshal(src []byte) error {
 	if len(src) < RowsBlockHeaderSize {
 		return formatError("RowsBlockHeader", -1, errShortInput)
@@ -79,19 +80,12 @@ func (h *RowsBlockHeader) Unmarshal(src []byte) error {
 	if v := src[8]; v != RowsBlockVersion {
 		return formatError("RowsBlockHeader", 8, "unsupported block version %d", v)
 	}
-	if v, ok := getU16(src[10:]); !ok || v != 0 {
+	if binary.LittleEndian.Uint16(src[10:]) != 0 {
 		return formatError("RowsBlockHeader", 10, "reserved bytes must be zero")
 	}
-	var ok bool
-	if h.PageCount, ok = getU32(src[12:]); !ok {
-		return formatError("RowsBlockHeader", 12, errShortInput)
-	}
-	if h.DirectoryBytes, ok = getU32(src[16:]); !ok {
-		return formatError("RowsBlockHeader", 16, errShortInput)
-	}
-	if h.TotalRecords, ok = getU32(src[20:]); !ok {
-		return formatError("RowsBlockHeader", 20, errShortInput)
-	}
+	h.PageCount = binary.LittleEndian.Uint32(src[12:])
+	h.DirectoryBytes = binary.LittleEndian.Uint32(src[16:])
+	h.TotalRecords = binary.LittleEndian.Uint32(src[20:])
 	want, valid := rowsDirectoryBytes(h.PageCount)
 	if !valid || h.DirectoryBytes != want {
 		return formatError("RowsBlockHeader", 16, "directory bytes %d != pageCount %d * %d", h.DirectoryBytes, h.PageCount, RowsPageDirEntrySize)

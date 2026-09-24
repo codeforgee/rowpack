@@ -302,9 +302,6 @@ func TestRowDirectoryEntryResistsTruncation(t *testing.T) {
 // TestHeaderHelpersShortInput covers the bounds-guarded little-endian
 // readers and the header patch/epoch helpers on undersized input.
 func TestHeaderHelpersShortInput(t *testing.T) {
-	if _, ok := getU16([]byte{0x01}); ok {
-		t.Fatal("getU16 accepted 1 byte")
-	}
 	if _, ok := getU32([]byte{0x01, 0x02, 0x03}); ok {
 		t.Fatal("getU32 accepted 3 bytes")
 	}

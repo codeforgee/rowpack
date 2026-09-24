@@ -228,8 +228,6 @@ func (d Decoder) decodeFixedInto(dst []Value, payload []byte) ([]Value, bool) {
 		case TypeDateTime:
 			row[i] = Value{typ: TypeDateTime, i: int64(binary.LittleEndian.Uint64(payload[pos:]))}
 			pos += 8
-		default:
-			return nil, false
 		}
 	}
 	return row, true

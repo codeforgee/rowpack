@@ -247,10 +247,10 @@ func splitPage(raw []byte) (pageStreams, error) {
 	if format.CRC32C(raw[start:]) != out.header.CRC32C {
 		return out, fmt.Errorf("rowpack: index page CRC mismatch")
 	}
-	wantBits := (uint64(out.count) + 3) / 4
-	if uint64(out.header.ChangeBitsBytes) != wantBits {
-		return out, fmt.Errorf("rowpack: index page change bits %d, want %d for %d entries", out.header.ChangeBitsBytes, wantBits, out.count)
-	}
+	// ChangeBitsBytes vs EntryCount and the streams-sum-vs-page-length
+	// geometry were already cross-checked by header.Unmarshal above, so the
+	// sequential takes below can only run out of bytes if the sums lie —
+	// which they can't.
 	off := start
 	take := func(byteLen uint32) ([]byte, error) {
 		if byteLen > uint32(n-off) {

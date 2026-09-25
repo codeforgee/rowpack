@@ -1,8 +1,10 @@
 package index
 
 import (
+	"encoding/binary"
 	"math"
 	"math/rand"
+	"strings"
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/format"
@@ -306,4 +308,55 @@ func changeBitsOffsetRI(page []byte) int {
 		return -1
 	}
 	return off
+}
+
+// TestEncodeCrossTableDescending pins the cross-table ascending check: rows
+// are sorted by (TableID, RowID), so a smaller TableID after a larger one is
+// a builder bug and must be rejected.
+func TestEncodeCrossTableDescending(t *testing.T) {
+	desc := []format.RowIndexEntry{
+		riEntry(2, 1, 1, 0, format.ChangeInsert),
+		riEntry(1, 9, 1, 1, format.ChangeInsert),
+	}
+	_, _, _, _, err := encodePage(desc, indexPageEntryCount)
+	if err == nil || !strings.Contains(err.Error(), "table ids not ascending") {
+		t.Fatalf("encode(table-descending) = %v, want table-ids-not-ascending", err)
+	}
+}
+
+// TestSplitCountExceedsRowIDStream forges a page whose header geometry is
+// fully consistent (sums, change-bits width, body CRC all restamped) but whose
+// EntryCount exceeds the decodable row-id stream: splitPage must reject it
+// before the columnar decoder indexes out of the shorter streams.
+func TestSplitCountExceedsRowIDStream(t *testing.T) {
+	rows := riSeq(200, 50)
+	page, _, _, _, err := encodePage(rows, indexPageEntryCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := cloneRI(t, page)
+	// Drop the last byte of the row-id stream (offset HeaderSize+TableRun+RowID-1)
+	// and shift the three trailing streams left one byte, shrinking the page by
+	// one byte. RowIDBytes then decodes one value short of EntryCount.
+	const (
+		offTableRun        = format.IndexPageHeaderSize
+		rowIDBytesOff      = 20
+		blockRunBytesOff   = 24
+		ordinalBytesOff    = 28
+		changeBitsBytesOff = 32
+		crcOff             = 60
+	)
+	tableRun := binary.LittleEndian.Uint32(m[16:20])
+	rowIDBytes := binary.LittleEndian.Uint32(m[20:24])
+	drop := offTableRun + tableRun + rowIDBytes - 1 // last row-id byte
+	copy(m[drop:len(m)-1], m[drop+1:])
+	m = m[:len(m)-1]
+	binary.LittleEndian.PutUint32(m[rowIDBytesOff:], rowIDBytes-1)
+	// BlockRun/Ordinal/ChangeBits sizes unchanged in value; their regions just
+	// moved. EntryCount stays 200 (> decoded 199). Restamp the body CRC.
+	binary.LittleEndian.PutUint32(m[crcOff:], format.CRC32C(m[format.IndexPageHeaderSize:]))
+
+	if _, err := decodePage(m); err == nil || !strings.Contains(err.Error(), "exceeds row id stream") {
+		t.Fatalf("decode(short row-id stream) = %v, want exceeds-row-id-stream", err)
+	}
 }

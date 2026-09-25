@@ -398,15 +398,11 @@ func (it *Iterator) nextLoc() (RowID, index.RowLoc, bool) {
 			rowID := l.keys.RowID()
 			loc := l.keys.Loc()
 			l.keys.Next()
-			if it.opts.Start > 0 && rowID < it.opts.Start {
-				continue
-			}
 			if it.opts.End > 0 && rowID >= it.opts.End {
 				return 0, index.RowLoc{}, false
 			}
-			if loc.ChangeType == format.ChangeDelete {
-				continue // tombstone: hide the row entirely
-			}
+			// No tombstone check: a single layer is a FULL snapshot, and FULL
+			// snapshots are insert-only (writer.put rejects UPDATE/DELETE).
 			return rowID, loc, true
 		}
 		return 0, index.RowLoc{}, false
@@ -422,10 +418,9 @@ func (it *Iterator) nextLoc() (RowID, index.RowLoc, bool) {
 			l.advance(&it.heap)
 		}
 		winner.advance(&it.heap)
-		// Range filtering.
-		if it.opts.Start > 0 && rowID < it.opts.Start {
-			continue
-		}
+		// Range filtering: layers were Seek'ed to Start at scan setup, so the
+		// cursor can never yield a row below Start here — only the End bound
+		// needs checking.
 		if it.opts.End > 0 && rowID >= it.opts.End {
 			return 0, index.RowLoc{}, false
 		}

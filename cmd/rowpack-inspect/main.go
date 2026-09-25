@@ -37,6 +37,8 @@ func run(argv []string, stdout, stderr io.Writer) int {
 	if errors.As(err, &ee) {
 		return ee.Code
 	}
+	// Defensive: every inspect.Run error is an *ExitError today; this keeps a
+	// future bare error from exiting 0 silently.
 	fmt.Fprintln(stderr, "rowpack-inspect:", err)
 	return inspect.ExitFailure
 }

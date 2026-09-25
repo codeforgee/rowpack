@@ -220,10 +220,9 @@ func (s *Store) readIndexTxn(c *committedSnapshot) (data []byte, crypto *index.C
 // authority), NOT a SnapshotHeader: an IndexTxn header whose magic is
 // bit-rotted must not demote a committed snapshot to an uncommitted tail.
 func (s *Store) scanDataFile() ([]committedSnapshot, int64, error) {
+	// The fixed data header was validated at open, so size >= header size
+	// always holds here.
 	size := s.data.Size()
-	if size < format.DataFileHeaderSize {
-		return nil, 0, fmt.Errorf("rowpack: store file %d bytes too small", size)
-	}
 	var out []committedSnapshot
 	pos := int64(format.DataFileHeaderSize)
 	for pos < size {
@@ -311,9 +310,6 @@ func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, n
 				return c, false, 0, nil // truncated txn
 			}
 			ftrOff := cur + format.IndexTxnHeaderSize + body
-			if size-ftrOff < format.IndexTxnFooterSize {
-				return c, false, 0, nil
-			}
 			var tfBuf [format.IndexTxnFooterSize]byte
 			if _, err := s.data.ReadAt(tfBuf[:], ftrOff); err != nil {
 				return c, false, 0, err

@@ -95,6 +95,8 @@ func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowI
 
 // Exists reports whether a row is visible (not deleted) at the snapshot.
 // It resolves only the index/tombstone chain and does not read a block.
+// An unknown snapshot or unknown table is ErrNotFound, matching Get/Blocks;
+// only a known row that is absent (or deleted) reports (false, nil).
 func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, rowID RowID) (bool, error) {
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
@@ -107,7 +109,7 @@ func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, r
 	}
 	tid, ok := st.schemas.tableID(uint64(snapshot), table)
 	if !ok {
-		return false, nil
+		return false, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
 	}
 	view := st.view
 	loc, ok := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))

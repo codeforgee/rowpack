@@ -5,6 +5,8 @@ import (
 	"io"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/format"
 )
@@ -38,9 +40,7 @@ func TestReaderReadAtBlockCopyNonViewer(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 	r := NewReader(plainReaderAt(buf), limits)
 	blk, err := r.ReadAtBlock(0)
-	if err != nil {
-		t.Fatalf("ReadAtBlock: %v", err)
-	}
+	require.NoError(t, err, "ReadAtBlock")
 	if !bytes.Equal(blk.Raw, raw) {
 		t.Fatalf("raw mismatch: %q", blk.Raw)
 	}
@@ -92,9 +92,8 @@ func TestRowsContainerAccountingHooks(t *testing.T) {
 	rc.SetCacheAccounting(func(delta int64) { reported += delta })
 
 	var n int
-	if err := rc.ForEach(func(codec.PageRecord) error { n++; return nil }); err != nil {
-		t.Fatalf("ForEach: %v", err)
-	}
+	err := rc.ForEach(func(codec.PageRecord) error { n++; return nil })
+	require.NoError(t, err, "ForEach")
 	if n != len(rows) {
 		t.Fatalf("ForEach visited %d records, want %d", n, len(rows))
 	}
@@ -108,9 +107,7 @@ func TestRowsContainerAccountingHooks(t *testing.T) {
 
 	// PageScratch returns memoized pages with a no-op release.
 	p, release, err := rc.PageScratch(0)
-	if err != nil {
-		t.Fatalf("PageScratch: %v", err)
-	}
+	require.NoError(t, err, "PageScratch")
 	release()
 	if p == nil || len(p.raw) == 0 {
 		t.Fatal("PageScratch returned an empty page")
@@ -127,9 +124,7 @@ func TestRowsContainerForEachPropagatesError(t *testing.T) {
 	_, rc := buildContainer(t, 0, 0, format.CompressionNone, rows, bodies)
 	sentinel := errPageTruncated
 	err := rc.ForEach(func(codec.PageRecord) error { return sentinel })
-	if err == nil {
-		t.Fatal("ForEach must propagate the callback error")
-	}
+	require.Error(t, err, "ForEach must propagate the callback error")
 }
 
 func TestRowsPageBuilderResetAndDecodedIDs(t *testing.T) {

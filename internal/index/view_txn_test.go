@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 )
 
@@ -53,49 +55,28 @@ func metaEntry(snap, obj uint64, rectype uint32) format.MetadataIndexEntry {
 
 func TestBuilderSetSnapshotValidation(t *testing.T) {
 	b := NewBuilder(1)
-	if err := b.SetSnapshot(snapEntry(0, 0, format.SnapshotFull)); err == nil {
-		t.Fatal("zero snapshot id should error")
-	}
-	if err := b.SetSnapshot(snapEntry(1, 0, format.SnapshotType(9))); err == nil {
-		t.Fatal("bad snapshot type should error")
-	}
-	if err := b.SetSnapshot(snapEntry(1, 0, format.SnapshotFull)); err != nil {
-		t.Fatalf("valid snapshot: %v", err)
-	}
-	if err := b.SetSnapshot(snapEntry(2, 0, format.SnapshotFull)); err == nil {
-		t.Fatal("second SetSnapshot should error")
-	}
+	require.Error(t, b.SetSnapshot(snapEntry(0, 0, format.SnapshotFull)), "zero snapshot id should error")
+	require.Error(t, b.SetSnapshot(snapEntry(1, 0, format.SnapshotType(9))), "bad snapshot type should error")
+	err := b.SetSnapshot(snapEntry(1, 0, format.SnapshotFull))
+	require.NoError(t, err, "valid snapshot")
+	require.Error(t, b.SetSnapshot(snapEntry(2, 0, format.SnapshotFull)), "second SetSnapshot should error")
 }
 
 func TestBuilderEntryOrderingAndMismatch(t *testing.T) {
 	b := NewBuilder(1)
-	if err := b.AddMetadata(metaEntry(1, 9, 1)); err == nil {
-		t.Fatal("AddMetadata before SetSnapshot should error")
-	}
-	if err := b.AddBlock(blockEntry(1, 1, 1)); err == nil {
-		t.Fatal("AddBlock before SetSnapshot should error")
-	}
-	if err := b.AddRow(riEntry(1, 1, 1, 0, format.ChangeInsert)); err == nil {
-		t.Fatal("AddRow before SetSnapshot should error")
-	}
+	require.Error(t, b.AddMetadata(metaEntry(1, 9, 1)), "AddMetadata before SetSnapshot should error")
+	require.Error(t, b.AddBlock(blockEntry(1, 1, 1)), "AddBlock before SetSnapshot should error")
+	require.Error(t, b.AddRow(riEntry(1, 1, 1, 0, format.ChangeInsert)), "AddRow before SetSnapshot should error")
 	if err := b.SetSnapshot(snapEntry(1, 0, format.SnapshotFull)); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.AddMetadata(metaEntry(2, 9, 1)); err == nil {
-		t.Fatal("metadata snapshot mismatch should error")
-	}
-	if err := b.AddBlock(blockEntry(1, 2, 1)); err == nil {
-		t.Fatal("block snapshot mismatch should error")
-	}
-	if err := b.AddRow(format.RowIndexEntry{SnapshotID: 2}); err == nil {
-		t.Fatal("row snapshot mismatch should error")
-	}
-	if err := b.AddMetadata(metaEntry(1, 9, 1)); err != nil {
-		t.Fatalf("valid metadata entry: %v", err)
-	}
-	if err := b.AddBlock(blockEntry(1, 1, 1)); err != nil {
-		t.Fatalf("valid block entry: %v", err)
-	}
+	require.Error(t, b.AddMetadata(metaEntry(2, 9, 1)), "metadata snapshot mismatch should error")
+	require.Error(t, b.AddBlock(blockEntry(1, 2, 1)), "block snapshot mismatch should error")
+	require.Error(t, b.AddRow(format.RowIndexEntry{SnapshotID: 2}), "row snapshot mismatch should error")
+	err := b.AddMetadata(metaEntry(1, 9, 1))
+	require.NoError(t, err, "valid metadata entry")
+	err = b.AddBlock(blockEntry(1, 1, 1))
+	require.NoError(t, err, "valid block entry")
 }
 
 func TestBuilderRowDedup(t *testing.T) {
@@ -109,9 +90,7 @@ func TestBuilderRowDedup(t *testing.T) {
 	if err := b.AddRow(row()); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.AddRow(row()); err == nil {
-		t.Fatal("duplicate (table, row) should error with dedup on")
-	}
+	require.Error(t, b.AddRow(row()), "duplicate (table, row) should error with dedup on")
 	b2 := NewBuilder(1)
 	b2.SetRowDedup(false)
 	if err := b2.SetSnapshot(snapEntry(1, 0, format.SnapshotFull)); err != nil {
@@ -120,9 +99,8 @@ func TestBuilderRowDedup(t *testing.T) {
 	if err := b2.AddRow(row()); err != nil {
 		t.Fatal(err)
 	}
-	if err := b2.AddRow(row()); err != nil {
-		t.Fatalf("duplicate should pass with dedup off: %v", err)
-	}
+	err := b2.AddRow(row())
+	require.NoError(t, err, "duplicate should pass with dedup off")
 }
 
 func TestBuilderCountsAndReserve(t *testing.T) {
@@ -170,9 +148,7 @@ func TestBuildParseTxnRoundtrip(t *testing.T) {
 		}
 	}
 	data, txn, err := b.Build(BodyBounds{DataStart: 500, DataEnd: 900, TxnStart: 1000, TxnEnd: 2000}, 42)
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	require.NoError(t, err, "Build")
 	if txn.Header.SnapshotID != 3 || txn.Header.TxnSequence != 7 {
 		t.Fatalf("header mismatch: %+v", txn.Header)
 	}
@@ -184,9 +160,7 @@ func TestBuildParseTxnRoundtrip(t *testing.T) {
 	}
 
 	parsed, err := ParseTxn(data, nil)
-	if err != nil {
-		t.Fatalf("ParseTxn: %v", err)
-	}
+	require.NoError(t, err, "ParseTxn")
 	if parsed.Header.TxnSequence != 7 || parsed.Header.SnapshotID != 3 {
 		t.Fatalf("parsed header: %+v", parsed.Header)
 	}
@@ -208,9 +182,7 @@ func TestBuildParseTxnRoundtrip(t *testing.T) {
 
 	// Parsing the same bytes again must be deterministic.
 	parsed2, err := ParseTxn(data, nil)
-	if err != nil {
-		t.Fatalf("ParseTxn: %v", err)
-	}
+	require.NoError(t, err, "ParseTxn")
 	if !bytes.Equal(rowBytes(parsed.Rows[0]), rowBytes(parsed2.Rows[0])) {
 		t.Fatal("repeated ParseTxn diverges")
 	}
@@ -313,9 +285,7 @@ func TestBuildStoredPlainMatchesBuild(t *testing.T) {
 		gotBodyLen = bodyLen
 		return BodyBounds{DataStart: 10, DataEnd: 20, TxnStart: 30, TxnEnd: 40}
 	}, 55, 0)
-	if err != nil {
-		t.Fatalf("BuildStored: %v", err)
-	}
+	require.NoError(t, err, "BuildStored")
 	if gotBodyLen <= 0 {
 		t.Fatalf("resolveBounds bodyLen = %d", gotBodyLen)
 	}
@@ -323,9 +293,7 @@ func TestBuildStoredPlainMatchesBuild(t *testing.T) {
 		t.Fatalf("resolved bounds not captured: %+v", txn)
 	}
 	parsed, err := ParseTxn(data, nil)
-	if err != nil {
-		t.Fatalf("ParseTxn: %v", err)
-	}
+	require.NoError(t, err, "ParseTxn")
 	if parsed.Footer.TxnStartOffset != 30 || parsed.Footer.TxnEndOffset != 40 {
 		t.Fatalf("footer bounds: %+v", parsed.Footer)
 	}
@@ -368,9 +336,7 @@ func TestViewAccessorsAndChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	v1, err := EmptyView().Apply(txn1, 32)
-	if err != nil {
-		t.Fatalf("apply snap 1 full: %v", err)
-	}
+	require.NoError(t, err, "apply snap 1 full")
 
 	// Snapshot 2 (DELTA, parent 1): delete row 3, insert row 5, block 2.
 	b2 := NewBuilder(2)
@@ -396,9 +362,7 @@ func TestViewAccessorsAndChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	v2, err := v1.Apply(txn2, 32)
-	if err != nil {
-		t.Fatalf("apply snap 2: %v", err)
-	}
+	require.NoError(t, err, "apply snap 2")
 
 	if v1.Snapshot(1) == nil || v1.Snapshot(99) != nil {
 		t.Fatal("Snapshot lookup broken")
@@ -515,13 +479,9 @@ func TestApplyStreamingWithBlocksAndMeta(t *testing.T) {
 	}
 
 	buffered, err := EmptyView().Apply(txn, 32)
-	if err != nil {
-		t.Fatalf("buffered apply: %v", err)
-	}
+	require.NoError(t, err, "buffered apply")
 	streamed, err := EmptyView().ApplyStreaming(data, nil, 32)
-	if err != nil {
-		t.Fatalf("streaming apply: %v", err)
-	}
+	require.NoError(t, err, "streaming apply")
 
 	if streamed.Block(21) == nil || streamed.Metadata(4, 700) == nil {
 		t.Fatalf("streaming apply lost block/meta entries: block=%v meta=%v",
@@ -560,16 +520,12 @@ func TestSortHelpers(t *testing.T) {
 func TestDecodeIndexPage(t *testing.T) {
 	rows := riSeq(64, 8)
 	page, n, _, _, err := encodePage(rows, indexPageEntryCount)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
+	require.NoError(t, err, "encode")
 	if n != len(rows) {
 		t.Fatalf("entryCount = %d, want %d", n, len(rows))
 	}
 	got, err := decodePage(page)
-	if err != nil {
-		t.Fatalf("decodePage: %v", err)
-	}
+	require.NoError(t, err, "decodePage")
 	if !rowsEq(got, rows) {
 		t.Fatalf("roundtrip mismatch: got %d rows, want %d", len(got), len(rows))
 	}

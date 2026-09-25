@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // 生命周期错误路径：句柄失效（Close 之后）或文件被截短时，每个写入口都必须把
@@ -16,9 +18,8 @@ func TestOperationsAfterCloseReportErrors(t *testing.T) {
 	if _, err := a.Append([]byte("0123456789")); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if err := a.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	err := a.Close()
+	require.NoError(t, err, "Close")
 	off, size := a.Offset(), a.Size()
 
 	if _, err := a.Append([]byte("more")); err == nil {
@@ -27,12 +28,8 @@ func TestOperationsAfterCloseReportErrors(t *testing.T) {
 	if _, err := a.AppendZeroes(3 * 8192); err == nil {
 		t.Fatal("AppendZeroes after Close must fail")
 	}
-	if err := a.Truncate(0); err == nil {
-		t.Fatal("Truncate after Close must fail")
-	}
-	if err := a.Sync(); err == nil {
-		t.Fatal("Sync after Close must fail")
-	}
+	require.Error(t, a.Truncate(0), "Truncate after Close must fail")
+	require.Error(t, a.Sync(), "Sync after Close must fail")
 	if _, _, err := a.View(0, 4); err == nil {
 		t.Fatal("View after Close must fail")
 	} else if !strings.Contains(err.Error(), "stat file for view") {
@@ -60,18 +57,15 @@ func TestTruncateDropsStaleMapping(t *testing.T) {
 		t.Fatalf("Append: %v", err)
 	}
 	v, done, err := a.View(0, 16) // 建立覆盖 16 字节的映射
-	if err != nil {
-		t.Fatalf("View: %v", err)
-	}
+	require.NoError(t, err, "View")
 	if string(v) != "0123456789abcdef" {
 		done()
 		t.Fatalf("view %q", v)
 	}
 	done()
 
-	if err := a.Truncate(4); err != nil {
-		t.Fatalf("Truncate: %v", err)
-	}
+	err = a.Truncate(4)
+	require.NoError(t, err, "Truncate")
 	if fi, err := os.Stat(path); err != nil || fi.Size() != 4 {
 		t.Fatalf("file size after truncate = %v %v, want 4", fi, err)
 	}
@@ -79,9 +73,7 @@ func TestTruncateDropsStaleMapping(t *testing.T) {
 		t.Fatalf("stale mapping survived Truncate: %v", err)
 	}
 	v2, done2, err := a.View(0, 4)
-	if err != nil {
-		t.Fatalf("View after truncate: %v", err)
-	}
+	require.NoError(t, err, "View after truncate")
 	defer done2()
 	if string(v2) != "0123" {
 		t.Fatalf("view after truncate %q, want %q", v2, "0123")
@@ -100,9 +92,7 @@ func TestViewRemapsAfterGrowth(t *testing.T) {
 		t.Fatalf("Append: %v", err)
 	}
 	v1, done1, err := a.View(0, 4) // 建立 4 字节映射
-	if err != nil {
-		t.Fatalf("first View: %v", err)
-	}
+	require.NoError(t, err, "first View")
 	if string(v1) != "aaaa" {
 		done1()
 		t.Fatalf("first view %q, want %q", v1, "aaaa")
@@ -114,9 +104,7 @@ func TestViewRemapsAfterGrowth(t *testing.T) {
 		t.Fatalf("Append growth: %v", err)
 	}
 	v2, done2, err := a.View(0, a.Offset())
-	if err != nil {
-		t.Fatalf("second View: %v", err)
-	}
+	require.NoError(t, err, "second View")
 	defer done2()
 	if len(v2) != 4100 {
 		t.Fatalf("remapped view length %d, want 4100", len(v2))
@@ -126,9 +114,7 @@ func TestViewRemapsAfterGrowth(t *testing.T) {
 	}
 	// 中段视图仍需命中新映射（不再触发重映射）。
 	v3, done3, err := a.View(100, 8)
-	if err != nil {
-		t.Fatalf("third View: %v", err)
-	}
+	require.NoError(t, err, "third View")
 	defer done3()
 	if string(v3) != strings.Repeat("b", 8) {
 		t.Fatalf("mid-file view %q", v3)
@@ -141,14 +127,11 @@ func TestViewRemapsAfterGrowth(t *testing.T) {
 func TestCreateSingleNeverDestroysExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "store.rpk")
-	if err := CreateSingle(path, []byte("HEADER")); err != nil {
-		t.Fatalf("CreateSingle: %v", err)
-	}
-	if err := CreateSingle(path, []byte("X")); err == nil {
-		t.Fatal("CreateSingle over an existing file must fail")
-	} else if !strings.Contains(err.Error(), "create store file") {
-		t.Fatalf("error = %v, want the create-store-file diagnosis", err)
-	}
+	err := CreateSingle(path, []byte("HEADER"))
+	require.NoError(t, err, "CreateSingle")
+	err = CreateSingle(path, []byte("X"))
+	require.Error(t, err, "CreateSingle over an existing file must fail")
+	require.Contains(t, err.Error(), "create store file")
 	b, err := os.ReadFile(path)
 	if err != nil || string(b) != "HEADER" {
 		t.Fatalf("failed create destroyed the existing store: %q (%v)", b, err)
@@ -156,12 +139,9 @@ func TestCreateSingleNeverDestroysExistingFile(t *testing.T) {
 
 	// 目标已经是目录：同样只能在打开阶段失败，且绝不能把目录删掉。
 	dpath := filepath.Join(dir, "adir")
-	if err := os.Mkdir(dpath, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := CreateSingle(dpath, []byte("X")); err == nil {
-		t.Fatal("CreateSingle onto a directory must fail")
-	}
+	err = os.Mkdir(dpath, 0o755)
+	require.NoError(t, err, "mkdir")
+	require.Error(t, CreateSingle(dpath, []byte("X")), "CreateSingle onto a directory must fail")
 	if fi, err := os.Stat(dpath); err != nil || !fi.IsDir() {
 		t.Fatalf("directory damaged by a failed create: %v %v", fi, err)
 	}

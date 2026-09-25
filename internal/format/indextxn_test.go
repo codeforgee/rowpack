@@ -1,6 +1,10 @@
 package format
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // TestIndexTxnHeaderRowIndexPageCount round-trips the RowIndexPageCount word
 // (offset 12..16) and locks that it is independent of the KeyEpoch word
@@ -42,9 +46,8 @@ func TestIndexTxnHeaderRowIndexPageCount(t *testing.T) {
 	if got := IndexTxnHeaderKeyEpoch(b[:]); got != 5 {
 		t.Fatalf("key epoch after patch = %d, want 5", got)
 	}
-	if err := got.Unmarshal(b[:]); err != nil {
-		t.Fatalf("header with patched key epoch/body does not unmarshal: %v", err)
-	}
+	err := got.Unmarshal(b[:])
+	require.NoError(t, err, "header with patched key epoch/body does not unmarshal")
 	if got.RowIndexPageCount != 7 {
 		t.Fatalf("round trip count after patch = %d, want 7", got.RowIndexPageCount)
 	}

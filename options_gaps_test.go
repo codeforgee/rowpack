@@ -3,6 +3,8 @@ package rowpack
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 )
 
@@ -41,9 +43,8 @@ func TestOptionsApplyDefaults(t *testing.T) {
 // TestOptionsValidateErrors exercises every rejection branch of validate.
 func TestOptionsValidateErrors(t *testing.T) {
 	valid := Options{}.applyDefaults()
-	if err := valid.validate(); err != nil {
-		t.Fatalf("default options must validate: %v", err)
-	}
+	err := valid.validate()
+	require.NoError(t, err, "default options must validate")
 
 	cases := []struct {
 		name  string
@@ -73,9 +74,7 @@ func TestOptionsValidateErrors(t *testing.T) {
 // TestOptionsResolvedRoundtrip checks resolved() applies defaults and passes.
 func TestOptionsResolvedRoundtrip(t *testing.T) {
 	o, err := Options{}.resolved()
-	if err != nil {
-		t.Fatalf("resolved: %v", err)
-	}
+	require.NoError(t, err, "resolved")
 	if o.BlockSize == 0 || o.PageSize == 0 {
 		t.Fatal("resolved options missing defaults")
 	}

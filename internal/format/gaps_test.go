@@ -2,6 +2,8 @@ package format
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestFormatErrorMessage(t *testing.T) {
@@ -29,23 +31,15 @@ func TestIndexChunkDirEntryRoundtrip(t *testing.T) {
 		t.Fatalf("Size = %d, want %d", e.Size(), IndexChunkDirEntrySize)
 	}
 	dst := make([]byte, IndexChunkDirEntrySize)
-	if err := e.MarshalTo(dst); err != nil {
-		t.Fatalf("MarshalTo: %v", err)
-	}
-	if err := e.MarshalTo(make([]byte, IndexChunkDirEntrySize-1)); err == nil {
-		t.Fatal("short destination should error")
-	}
+	err := e.MarshalTo(dst)
+	require.NoError(t, err, "MarshalTo")
+	require.Error(t, e.MarshalTo(make([]byte, IndexChunkDirEntrySize-1)), "short destination should error")
 
 	var got IndexChunkDirEntry
-	if err := got.Unmarshal(dst); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if got != e {
-		t.Fatalf("roundtrip mismatch: %+v vs %+v", got, e)
-	}
-	if err := got.Unmarshal(dst[:IndexChunkDirEntrySize-1]); err == nil {
-		t.Fatal("truncated input should error")
-	}
+	err = got.Unmarshal(dst)
+	require.NoError(t, err, "Unmarshal")
+	require.Equal(t, e, got, "roundtrip mismatch: %+v vs %+v", got, e)
+	require.Error(t, got.Unmarshal(dst[:IndexChunkDirEntrySize-1]), "truncated input should error")
 }
 
 func TestParseIndexChunkDirectory(t *testing.T) {
@@ -60,9 +54,7 @@ func TestParseIndexChunkDirectory(t *testing.T) {
 		}
 	}
 	got, err := ParseIndexChunkDirectory(dir)
-	if err != nil {
-		t.Fatalf("ParseIndexChunkDirectory: %v", err)
-	}
+	require.NoError(t, err, "ParseIndexChunkDirectory")
 	if len(got) != 2 || got[1].ChunkSequence != 1 || got[0].EntryCount != 10 {
 		t.Fatalf("parsed directory: %+v", got)
 	}
@@ -84,67 +76,48 @@ func TestIndexChunkHeaderCheckLimits(t *testing.T) {
 		RawBytes:    100,
 		StoredBytes: 60,
 	}
-	if err := valid.CheckLimits(); err != nil {
-		t.Fatalf("valid header: %v", err)
-	}
+	err := valid.CheckLimits()
+	require.NoError(t, err, "valid header")
 
 	zero := valid
 	zero.EntryCount = 0
-	if err := zero.CheckLimits(); err == nil {
-		t.Fatal("zero entry count should fail")
-	}
+	require.Error(t, zero.CheckLimits(), "zero entry count should fail")
 	huge := valid
 	huge.EntryCount = IndexChunkMaxEntries + 1
-	if err := huge.CheckLimits(); err == nil {
-		t.Fatal("oversized entry count should fail")
-	}
+	require.Error(t, huge.CheckLimits(), "oversized entry count should fail")
 	zeroRaw := valid
 	zeroRaw.RawBytes = 0
-	if err := zeroRaw.CheckLimits(); err == nil {
-		t.Fatal("zero raw bytes should fail")
-	}
+	require.Error(t, zeroRaw.CheckLimits(), "zero raw bytes should fail")
 	hugeRaw := valid
 	hugeRaw.RawBytes = IndexChunkMaxRawBytes + 1
-	if err := hugeRaw.CheckLimits(); err == nil {
-		t.Fatal("oversized raw bytes should fail")
-	}
+	require.Error(t, hugeRaw.CheckLimits(), "oversized raw bytes should fail")
 	zeroStored := valid
 	zeroStored.StoredBytes = 0
-	if err := zeroStored.CheckLimits(); err == nil {
-		t.Fatal("zero stored bytes should fail")
-	}
+	require.Error(t, zeroStored.CheckLimits(), "zero stored bytes should fail")
 	hugeStored := valid
 	hugeStored.StoredBytes = IndexChunkMaxStoredBytes + 1
-	if err := hugeStored.CheckLimits(); err == nil {
-		t.Fatal("oversized stored bytes should fail")
-	}
+	require.Error(t, hugeStored.CheckLimits(), "oversized stored bytes should fail")
 
 	// Encrypted chunk smaller than the GCM tag.
 	short := valid
 	short.Encryption = IndexChunkEncryptionAESGCM
 	short.StoredBytes = AESGCMTagLen - 1
-	if err := short.CheckLimits(); err == nil {
-		t.Fatal("encrypted stored < tag should fail")
-	}
+	require.Error(t, short.CheckLimits(), "encrypted stored < tag should fail")
 
 	// Uncompressed chunk must have stored == raw (+tag when encrypted).
 	plain := valid
 	plain.Compression = IndexChunkCompressionNone
 	plain.StoredBytes = plain.RawBytes + 1
-	if err := plain.CheckLimits(); err == nil {
-		t.Fatal("none-compression stored != raw should fail")
-	}
+	require.Error(t, plain.CheckLimits(), "none-compression stored != raw should fail")
 	plain.StoredBytes = plain.RawBytes
-	if err := plain.CheckLimits(); err != nil {
-		t.Fatalf("none-compression stored == raw: %v", err)
-	}
+	err = plain.CheckLimits()
+	require.NoError(t, err, "none-compression stored == raw")
 	enc := valid
 	enc.Compression = IndexChunkCompressionNone
 	enc.Encryption = IndexChunkEncryptionAESGCM
 	enc.StoredBytes = enc.RawBytes + AESGCMTagLen
-	if err := enc.CheckLimits(); err != nil {
-		t.Fatalf("encrypted none-compression stored == raw + tag: %v", err)
-	}
+	err = enc.CheckLimits()
+	require.NoError(t, err, "encrypted none-compression stored == raw + tag")
 }
 
 func TestFrozenStructSizes(t *testing.T) {

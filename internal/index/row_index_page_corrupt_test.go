@@ -3,6 +3,8 @@ package index
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/format"
 )
@@ -91,12 +93,8 @@ func parseCorruptPages(region []byte, pageCount uint32, snapshotID uint64) (int,
 func TestParseRowsValid(t *testing.T) {
 	region := buildPageRegion(t, riSeq(100, 25), 9)
 	rows, err := parseCorruptPages(region, uint32(len(riSeq(100, 25))/indexPageEntryCount+1), 9)
-	if err != nil {
-		t.Fatalf("valid parse rejected: %v", err)
-	}
-	if rows != 100 {
-		t.Fatalf("rows = %d, want 100", rows)
-	}
+	require.NoError(t, err, "valid parse rejected")
+	require.Equal(t, 100, rows, "rows = %d, want 100", rows)
 }
 
 func TestParseRowsForgedPageCount(t *testing.T) {

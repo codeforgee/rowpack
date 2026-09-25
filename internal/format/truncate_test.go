@@ -2,6 +2,8 @@ package format
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // truncationCases lists every fixed-size structure's Unmarshal with a zero
@@ -187,37 +189,26 @@ func TestRowIndexPageHeaderSemanticRejects(t *testing.T) {
 		return h.Unmarshal(src, 0) // totalLen 0 skips the streams-sum check
 	}
 	valid := build(4, 1) // 4 entries -> ceil(4/4) = 1 change-bits byte
-	if err := is(valid); err != nil {
-		t.Fatalf("valid header rejected: %v", err)
-	}
+	err := is(valid)
+	require.NoError(t, err, "valid header rejected")
 
 	badMagic := append([]byte(nil), valid...)
 	copy(badMagic[0:8], "XXXXXXXX")
-	if err := is(badMagic); err == nil {
-		t.Fatal("bad magic should be rejected")
-	}
+	require.Error(t, is(badMagic), "bad magic should be rejected")
 
 	badVersion := append([]byte(nil), valid...)
 	badVersion[8] = IndexPageVersion + 1
-	if err := is(badVersion); err == nil {
-		t.Fatal("unknown version should be rejected")
-	}
+	require.Error(t, is(badVersion), "unknown version should be rejected")
 
 	reserved := append([]byte(nil), valid...)
 	reserved[9] = 1
-	if err := is(reserved); err == nil {
-		t.Fatal("non-zero reserved bits should be rejected")
-	}
+	require.Error(t, is(reserved), "non-zero reserved bits should be rejected")
 
 	zero := build(0, 0)
-	if err := is(zero); err == nil {
-		t.Fatal("zero entry count should be rejected")
-	}
+	require.Error(t, is(zero), "zero entry count should be rejected")
 
 	mismatch := build(5, 1) // 5 entries need ceil(5/4) = 2 bytes
-	if err := is(mismatch); err == nil {
-		t.Fatal("change-bits mismatch should be rejected")
-	}
+	require.Error(t, is(mismatch), "change-bits mismatch should be rejected")
 }
 
 // TestIndexChunkHeaderSemanticRejects covers unknown kind/compression/
@@ -243,18 +234,11 @@ func TestIndexChunkHeaderSemanticRejects(t *testing.T) {
 		var h IndexChunkHeader
 		return h.Unmarshal(src)
 	}
-	if err := is(build(IndexChunkKindRow, IndexChunkCompressionNone, IndexChunkEncryptionNone)); err != nil {
-		t.Fatalf("valid header rejected: %v", err)
-	}
-	if err := is(build(99, IndexChunkCompressionNone, IndexChunkEncryptionNone)); err == nil {
-		t.Fatal("unknown entry kind should be rejected")
-	}
-	if err := is(build(IndexChunkKindRow, 99, IndexChunkEncryptionNone)); err == nil {
-		t.Fatal("unknown compression should be rejected")
-	}
-	if err := is(build(IndexChunkKindRow, IndexChunkCompressionNone, 99)); err == nil {
-		t.Fatal("unknown encryption should be rejected")
-	}
+	err := is(build(IndexChunkKindRow, IndexChunkCompressionNone, IndexChunkEncryptionNone))
+	require.NoError(t, err, "valid header rejected")
+	require.Error(t, is(build(99, IndexChunkCompressionNone, IndexChunkEncryptionNone)), "unknown entry kind should be rejected")
+	require.Error(t, is(build(IndexChunkKindRow, 99, IndexChunkEncryptionNone)), "unknown compression should be rejected")
+	require.Error(t, is(build(IndexChunkKindRow, IndexChunkCompressionNone, 99)), "unknown encryption should be rejected")
 }
 
 // TestBlockHeaderMarshalsWithEnums confirms the block header accepts both

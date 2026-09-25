@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/block"
 	"github.com/rowpack/rowpack/internal/format"
 )
@@ -204,9 +206,7 @@ func reframeTxn(t *testing.T, data []byte, chunks []chunkInfo, dirOff, fenceOff 
 		if c.raw.Compression == format.IndexChunkCompressionZstd {
 			var err error
 			raw, err = block.Decompress(format.CompressionZstd, nil, stored, c.raw.RawBytes)
-			if err != nil {
-				t.Fatalf("reframe: decompress chunk %d: %v", i, err)
-			}
+			require.Nil(t, err, "reframe: decompress chunk %d: %v", i, err)
 		}
 		if payloads != nil && payloads[i] != nil {
 			raw = payloads[i]
@@ -216,9 +216,7 @@ func reframeTxn(t *testing.T, data []byte, chunks []chunkInfo, dirOff, fenceOff 
 			muts[i](&h)
 		}
 		comp, err := block.Compress(format.CompressionZstd, 0, raw)
-		if err != nil {
-			t.Fatalf("reframe: compress chunk %d: %v", i, err)
-		}
+		require.Nil(t, err, "reframe: compress chunk %d: %v", i, err)
 		h.Compression = format.IndexChunkCompressionZstd
 		h.RawBytes = uint32(len(raw))
 		h.StoredBytes = uint32(len(comp))
@@ -265,9 +263,7 @@ func reframeTxn(t *testing.T, data []byte, chunks []chunkInfo, dirOff, fenceOff 
 		}
 		stored := data[base+f.StoredOffset : base+f.StoredOffset+uint64(f.StoredSize)]
 		raw, err := block.Decompress(format.CompressionZstd, nil, stored, f.RawSize)
-		if err != nil {
-			t.Fatalf("reframe: decompress page %d: %v", i, err)
-		}
+		require.Nil(t, err, "reframe: decompress page %d: %v", i, err)
 		crc = format.CRC32CConcat(crc, raw)
 	}
 	crc = format.CRC32CConcat(crc, fenceBytes)
@@ -303,9 +299,7 @@ func TestTxnParseRejectsCorruptions(t *testing.T) {
 	if len(chunks) != 3 {
 		t.Fatalf("want 3 chunks (snapshot, metadata, block), got %d", len(chunks))
 	}
-	if pageCount != 3 {
-		t.Fatalf("want 3 row index pages, got %d", pageCount)
-	}
+	require.Equal(t, uint32(3), pageCount, "want 3 row index pages, got %d", pageCount)
 
 	// mut returns the (possibly re-framed) txn bytes.
 	cases := []struct {
@@ -529,9 +523,7 @@ func TestTxnParseRejectsCorruptions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mutated := tc.mut(t, append([]byte(nil), data...))
 			_, err := parseStream(mutated, nil, nil)
-			if err == nil {
-				t.Fatalf("corruption accepted")
-			}
+			require.Error(t, err, "corruption accepted")
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error %q, want substring %q", err, tc.want)
 			}

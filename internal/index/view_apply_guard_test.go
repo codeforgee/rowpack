@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 )
 
@@ -131,16 +133,12 @@ func TestApplyRejectsInvalidTxns(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			v, err := tc.run()
-			if err == nil {
-				t.Fatalf("accepted")
-			}
+			require.Error(t, err, "accepted")
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error %q, want substring %q", err, tc.want)
 			}
 			// The receiver must stay unmodified on failure.
-			if v != nil {
-				t.Fatalf("failed apply returned a non-nil view")
-			}
+			require.Nil(t, v, "failed apply returned a non-nil view")
 		})
 	}
 }

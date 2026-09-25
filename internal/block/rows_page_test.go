@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/format"
 )
@@ -326,9 +328,8 @@ func TestValidateChangeBitsReportsFirstRecordAndIgnoresPadding(t *testing.T) {
 	// With five entries only the low lane of the second byte belongs to a
 	// record. Reserved-looking bits in the three padding lanes remain ignored,
 	// preserving the v1 behavior of the previous per-record loop.
-	if err := validateChangeBits([]byte{0, 0xfc}, 5); err != nil {
-		t.Fatalf("padding bits rejected: %v", err)
-	}
+	err := validateChangeBits([]byte{0, 0xfc}, 5)
+	require.NoError(t, err, "padding bits rejected")
 }
 
 // fixPageCRC recomputes the header CRC field after mutation.

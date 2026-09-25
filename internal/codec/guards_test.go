@@ -41,13 +41,9 @@ func TestEncodeIntoGuards(t *testing.T) {
 	// reuse with sufficient capacity must be used (len(cap) path).
 	reuse := make([]byte, 0, 4096)
 	enc, err := testCodec.EncodeInto(schema, row, reuse)
-	if err != nil {
-		t.Fatalf("EncodeInto reuse: %v", err)
-	}
+	require.NoError(t, err, "EncodeInto reuse")
 	ref, err := testCodec.EncodeInto(schema, row, nil)
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
+	require.NoError(t, err, "Encode")
 	require.Equal(t, ref, enc)
 }
 
@@ -76,26 +72,21 @@ func TestCheckDuplicateColumnNamesMapPath(t *testing.T) {
 		dup[i] = Column{Name: fmt.Sprintf("c%d", i), Type: TypeUint64}
 	}
 	dup[n-1].Name = "c0" // duplicate with the first column
-	if err := checkDuplicateColumnNames(&Schema{Name: "s", Columns: dup}, 1<<20); err == nil {
-		t.Fatal("duplicate column name above threshold should error")
-	}
+	require.Error(t, checkDuplicateColumnNames(&Schema{Name: "s", Columns: dup}, 1<<20), "duplicate column name above threshold should error")
 
 	empty := make([]Column, n)
 	for i := range empty {
 		empty[i] = Column{Name: fmt.Sprintf("c%d", i), Type: TypeUint64}
 	}
 	empty[5].Name = ""
-	if err := checkDuplicateColumnNames(&Schema{Name: "s", Columns: empty}, 1<<20); err == nil {
-		t.Fatal("empty column name above threshold should error")
-	}
+	require.Error(t, checkDuplicateColumnNames(&Schema{Name: "s", Columns: empty}, 1<<20), "empty column name above threshold should error")
 
 	ok := make([]Column, n)
 	for i := range ok {
 		ok[i] = Column{Name: fmt.Sprintf("c%d", i), Type: TypeUint64}
 	}
-	if err := checkDuplicateColumnNames(&Schema{Name: "s", Columns: ok}, 1<<20); err != nil {
-		t.Fatalf("unique names above threshold should pass: %v", err)
-	}
+	err := checkDuplicateColumnNames(&Schema{Name: "s", Columns: ok}, 1<<20)
+	require.NoError(t, err, "unique names above threshold should pass")
 }
 
 // TestValueGettersWrongType confirms typed getters reject mismatched values.
@@ -135,9 +126,7 @@ func TestDecodeTruncatedString(t *testing.T) {
 	}
 	// Chop bytes off the end; the decoder must report a column error.
 	_, err = decodeTestBody(t, testCodec, schema, body[:len(body)-2])
-	if err == nil {
-		t.Fatal("truncated string value should error")
-	}
+	require.Error(t, err, "truncated string value should error")
 	if !strings.Contains(err.Error(), "decode column") {
 		t.Fatalf("error should identify the failing column: %v", err)
 	}

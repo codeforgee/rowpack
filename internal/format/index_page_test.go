@@ -1,6 +1,10 @@
 package format
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestRowIndexPageHeaderRoundTrip(t *testing.T) {
 	h := RowIndexPageHeader{
@@ -18,9 +22,7 @@ func TestRowIndexPageHeaderRoundTrip(t *testing.T) {
 	if err := got.Unmarshal(b[:], 0); err != nil {
 		t.Fatal(err)
 	}
-	if got != h {
-		t.Fatalf("round trip = %+v, want %+v", got, h)
-	}
+	require.Equal(t, h, got, "round trip = %+v, want %+v", got, h)
 }
 
 func TestRowIndexPageHeaderGeometry(t *testing.T) {
@@ -34,25 +36,18 @@ func TestRowIndexPageHeaderGeometry(t *testing.T) {
 		t.Fatal(err)
 	}
 	total := IndexPageHeaderSize + int(h.StreamsBytes())
-	if err := (&RowIndexPageHeader{}).Unmarshal(b[:], total); err != nil {
-		t.Fatalf("geometry mismatch rejected: %v", err)
-	}
+	err := (&RowIndexPageHeader{}).Unmarshal(b[:], total)
+	require.NoError(t, err, "geometry mismatch rejected")
 	// A mismatched totalLen must be rejected.
-	if err := (&RowIndexPageHeader{}).Unmarshal(b[:], total+1); err == nil {
-		t.Fatal("wrong geometry accepted")
-	}
+	require.Error(t, (&RowIndexPageHeader{}).Unmarshal(b[:], total+1), "wrong geometry accepted")
 	// The change stream is indexed directly by entry ordinal, so its exact
 	// geometry is a safety invariant, not merely a compression detail.
 	b[0] = 'R'
 	putU32(b[32:], 0)
-	if err := (&RowIndexPageHeader{}).Unmarshal(b[:], 0); err == nil {
-		t.Fatal("undersized change-bit stream accepted")
-	}
+	require.Error(t, (&RowIndexPageHeader{}).Unmarshal(b[:], 0), "undersized change-bit stream accepted")
 	// Bad magic must be rejected.
 	b[0] = 'X'
-	if err := (&RowIndexPageHeader{}).Unmarshal(b[:], total); err == nil {
-		t.Fatal("bad magic accepted")
-	}
+	require.Error(t, (&RowIndexPageHeader{}).Unmarshal(b[:], total), "bad magic accepted")
 }
 
 func TestRowIndexFenceRoundTrip(t *testing.T) {
@@ -69,15 +64,11 @@ func TestRowIndexFenceRoundTrip(t *testing.T) {
 	if err := got.Unmarshal(b[:]); err != nil {
 		t.Fatal(err)
 	}
-	if got != e {
-		t.Fatalf("round trip = %+v, want %+v", got, e)
-	}
+	require.Equal(t, e, got, "round trip = %+v, want %+v", got, e)
 	// Zero EntryCount is rejected.
 	e2 := e
 	e2.EntryCount = 0
 	var b2 [IndexFenceEntrySize]byte
 	_ = e2.MarshalTo(b2[:])
-	if err := (&RowIndexFenceEntry{}).Unmarshal(b2[:]); err == nil {
-		t.Fatal("zero-entry fence accepted")
-	}
+	require.Error(t, (&RowIndexFenceEntry{}).Unmarshal(b2[:]), "zero-entry fence accepted")
 }

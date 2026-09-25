@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/format"
 )
@@ -116,14 +118,10 @@ func TestContainerGeometryGate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			err := parseForged(t, forgeRowsContainer(t, tc.mut))
 			if tc.wanted == "" {
-				if err != nil {
-					t.Fatalf("clean forged container rejected: %v", err)
-				}
+				require.NoError(t, err, "clean forged container rejected")
 				return
 			}
-			if err == nil {
-				t.Fatalf("%s: container accepted", tc.name)
-			}
+			require.NotNil(t, err, "%s: container accepted", tc.name)
 			if !strings.Contains(err.Error(), tc.wanted) {
 				t.Fatalf("%s: err = %v, want diagnosis %q", tc.name, err, tc.wanted)
 			}
@@ -172,9 +170,7 @@ func TestPageForHoleAndRange(t *testing.T) {
 		}
 	})
 	rc, err := ParseContainer(f.stored, f.hdr, DefaultLimits())
-	if err != nil {
-		t.Fatalf("a self-consistent-but-incomplete directory must pass the geometry gate: %v", err)
-	}
+	require.NoError(t, err, "a self-consistent-but-incomplete directory must pass the geometry gate")
 	total := rc.Header.TotalRecords
 	if _, err := rc.PageFor(total); err == nil || !strings.Contains(err.Error(), "out of range") {
 		t.Fatalf("PageFor(%d) = %v, want out-of-range", total, err)
@@ -187,7 +183,6 @@ func TestPageForHoleAndRange(t *testing.T) {
 		t.Fatalf("PageFor(0) = %d %v, want page 0", pi, err)
 	}
 	// 逐页迭代仍受页自身 EntryCount 约束，不得越界读。
-	if err := rc.ForEach(func(codec.PageRecord) error { return nil }); err != nil {
-		t.Fatalf("ForEach over the short directory: %v", err)
-	}
+	err = rc.ForEach(func(codec.PageRecord) error { return nil })
+	require.NoError(t, err, "ForEach over the short directory")
 }

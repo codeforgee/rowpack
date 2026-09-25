@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 )
 
@@ -41,14 +43,11 @@ func TestRecordEncodeDecodeRoundtrip(t *testing.T) {
 	schema := schemaFixture()
 	rec := sampleRecord()
 	enc, err := rec.Encode(schema)
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
+	require.NoError(t, err, "Encode")
 
 	var r Record
-	if err := r.Decode(enc, schema); err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
+	err = r.Decode(enc, schema)
+	require.NoError(t, err, "Decode")
 	if r.RecordType != uint32(format.RecordTable) || r.ObjectID != 42 ||
 		r.ParentID != 7 || r.Revision != 3 || !r.Critical ||
 		r.Namespace != "rowpack.meta.v1" || r.ExternalKey != "ext" {
@@ -79,13 +78,10 @@ func TestRecordEncodeSortsFields(t *testing.T) {
 		{ID: 1, WireType: format.WireString, Value: "users"},
 	}
 	enc, err := rec.Encode(schemaFixture())
-	if err != nil {
-		t.Fatalf("Encode with unsorted input: %v", err)
-	}
+	require.NoError(t, err, "Encode with unsorted input")
 	var r Record
-	if err := r.Decode(enc, schemaFixture()); err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
+	err = r.Decode(enc, schemaFixture())
+	require.NoError(t, err, "Decode")
 	if r.Fields[0].ID != 1 || r.Fields[1].ID != 2 {
 		t.Fatalf("fields not sorted: %+v", r.Fields)
 	}
@@ -96,13 +92,10 @@ func TestRecordEncodeWireTypeFromSchema(t *testing.T) {
 	// WireType left zero; Encode fills it from the schema.
 	rec.Fields = []Field{{ID: 1, Value: "users"}, {ID: 2, Value: int64(10)}}
 	enc, err := rec.Encode(schemaFixture())
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
+	require.NoError(t, err, "Encode")
 	var r Record
-	if err := r.Decode(enc, schemaFixture()); err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
+	err = r.Decode(enc, schemaFixture())
+	require.NoError(t, err, "Decode")
 	if r.Fields[0].WireType != format.WireString {
 		t.Fatalf("field wire type not filled from schema: %+v", r.Fields[0])
 	}
@@ -124,15 +117,12 @@ func TestRecordUnknownFieldsPassthrough(t *testing.T) {
 		{ID: 1, WireType: format.WireString, Value: "users"},
 	}
 	enc, err := rec.Encode(known)
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
+	require.NoError(t, err, "Encode")
 
 	// Decode with a schema: unknown non-critical field is kept raw, value nil.
 	var r Record
-	if err := r.Decode(enc, known); err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
+	err = r.Decode(enc, known)
+	require.NoError(t, err, "Decode")
 	f := r.FieldByID(9)
 	if f == nil {
 		t.Fatal("unknown non-critical field lost")
@@ -143,9 +133,8 @@ func TestRecordUnknownFieldsPassthrough(t *testing.T) {
 
 	// Decode with nil schema keeps the value.
 	var r2 Record
-	if err := r2.Decode(enc, nil); err != nil {
-		t.Fatalf("Decode nil schema: %v", err)
-	}
+	err = r2.Decode(enc, nil)
+	require.NoError(t, err, "Decode nil schema")
 	if got := r2.FieldByID(9); got == nil || got.Value != "unknown-noncritical" {
 		t.Fatalf("nil-schema decode field 9: %+v", got)
 	}
@@ -153,12 +142,8 @@ func TestRecordUnknownFieldsPassthrough(t *testing.T) {
 	// A critical unknown field must be rejected.
 	rec.Fields = []Field{{ID: 9, WireType: format.WireString, Value: "x", Critical: true}}
 	enc, err = rec.Encode(nil)
-	if err != nil {
-		t.Fatalf("Encode critical unknown: %v", err)
-	}
-	if err := r.Decode(enc, known); err == nil {
-		t.Fatal("unknown critical field should be rejected on decode")
-	}
+	require.NoError(t, err, "Encode critical unknown")
+	require.Error(t, r.Decode(enc, known), "unknown critical field should be rejected on decode")
 }
 
 func TestRecordEncodeValidationErrors(t *testing.T) {
@@ -188,88 +173,64 @@ func TestRecordEncodeTooLarge(t *testing.T) {
 
 func TestRecordDecodeErrors(t *testing.T) {
 	var r Record
-	if err := r.Decode(nil, nil); err == nil {
-		t.Fatal("nil input should error")
-	}
-	if err := r.Decode(make([]byte, 10), nil); err == nil {
-		t.Fatal("truncated record should error")
-	}
+	require.Error(t, r.Decode(nil, nil), "nil input should error")
+	require.Error(t, r.Decode(make([]byte, 10), nil), "truncated record should error")
 
 	rec := sampleRecord()
 	enc, err := rec.Encode(nil)
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
+	require.NoError(t, err, "Encode")
 
 	// Corrupt length: recordLen too small
 	bad := append([]byte(nil), enc...)
 	bad[0] = 4
-	if err := r.Decode(bad, nil); err == nil {
-		t.Fatal("recordLen too small should error")
-	}
+	require.Error(t, r.Decode(bad, nil), "recordLen too small should error")
 
 	// Corrupt length mismatch (larger than input)
 	bad = append([]byte(nil), enc...)
 	bad[0] = 0xFF
-	if err := r.Decode(bad, nil); err == nil {
-		t.Fatal("recordLen mismatch should error")
-	}
+	require.Error(t, r.Decode(bad, nil), "recordLen mismatch should error")
 
 	// Corrupt CRC
 	bad = append([]byte(nil), enc...)
 	bad[len(bad)-1] ^= 0xFF
-	if err := r.Decode(bad, nil); err == nil {
-		t.Fatal("CRC mismatch should error")
-	}
+	require.Error(t, r.Decode(bad, nil), "CRC mismatch should error")
 
 	// Drop the trailing CRC bytes: recordLen no longer matches the input.
 	short := enc[:len(enc)-4]
-	if err := r.Decode(short, nil); err == nil {
-		t.Fatal("short payload vs recordLen should error")
-	}
+	require.Error(t, r.Decode(short, nil), "short payload vs recordLen should error")
 }
 
 func TestRecordDecodeFieldRegionErrors(t *testing.T) {
 	rec := sampleRecord()
 	enc, err := rec.Encode(nil)
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
+	require.NoError(t, err, "Encode")
 
 	// Inflate field count beyond actual fields (CRC fixed so the check is
 	// actually reached instead of failing on CRC first).
 	bad := append([]byte(nil), enc...)
 	bad[40] = 99
 	fixCRC(bad)
-	if err := rec.Decode(bad, nil); err == nil {
-		t.Fatal("impossible field count should error")
-	}
+	require.Error(t, rec.Decode(bad, nil), "impossible field count should error")
 
 	// Corrupt fieldsLen so it no longer matches the derived value.
 	bad = append([]byte(nil), enc...)
 	binary.LittleEndian.PutUint32(bad[44:], 3)
 	fixCRC(bad)
-	if err := rec.Decode(bad, nil); err == nil {
-		t.Fatal("fieldsLen mismatch should error")
-	}
+	require.Error(t, rec.Decode(bad, nil), "fieldsLen mismatch should error")
 
 	// Truncate a field's value bytes while keeping the header counts and CRC
 	// consistent: the declared value length must exceed the remaining input.
 	rec2 := sampleRecord()
 	rec2.Fields = []Field{{ID: 1, WireType: format.WireString, Value: "abcd"}}
 	enc2, err := rec2.Encode(nil)
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
+	require.NoError(t, err, "Encode")
 	// Keep header(48) + field header(8) + 3 of the 4 value bytes, then append
 	// a fresh CRC so the record passes envelope validation.
 	bad = append([]byte(nil), enc2[:48+8+3]...)
 	binary.LittleEndian.PutUint32(bad[0:], uint32(len(bad))+4)
 	binary.LittleEndian.PutUint32(bad[44:], uint32(len(bad)-48))
 	bad = binary.LittleEndian.AppendUint32(bad, format.CRC32C(bad))
-	if err := rec2.Decode(bad, nil); err == nil {
-		t.Fatal("truncated field value should error")
-	}
+	require.Error(t, rec2.Decode(bad, nil), "truncated field value should error")
 }
 
 func TestRecordDecodeKnownFieldRepeated(t *testing.T) {
@@ -279,9 +240,7 @@ func TestRecordDecodeKnownFieldRepeated(t *testing.T) {
 	rec := sampleRecord()
 	rec.Fields = []Field{{ID: 1, WireType: format.WireString, Value: "a"}}
 	enc, err := rec.Encode(nil)
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
+	require.NoError(t, err, "Encode")
 	nsLen := int(binary.LittleEndian.Uint32(enc[32:]))
 	ekLen := int(binary.LittleEndian.Uint32(enc[36:]))
 	fieldsStart := RecordEnvelopeHeaderSize + nsLen + ekLen
@@ -297,9 +256,7 @@ func TestRecordDecodeKnownFieldRepeated(t *testing.T) {
 	binary.LittleEndian.PutUint32(out[40:], 2) // fieldCount
 	binary.LittleEndian.PutUint32(out[44:], uint32(fieldsLen*2))
 	fixCRC(out)
-	if err := rec.Decode(out, schemaFixture()); err == nil {
-		t.Fatal("duplicate non-Repeated known field should error")
-	}
+	require.Error(t, rec.Decode(out, schemaFixture()), "duplicate non-Repeated known field should error")
 }
 
 func TestRecordDecodeKnownFieldWireType(t *testing.T) {
@@ -307,12 +264,8 @@ func TestRecordDecodeKnownFieldWireType(t *testing.T) {
 	rec := sampleRecord()
 	rec.Fields = []Field{{ID: 1, WireType: format.WireSint, Value: int64(1)}}
 	enc, err := rec.Encode(nil)
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
-	if err := rec.Decode(enc, schemaFixture()); err == nil {
-		t.Fatal("wrong wire type for known field should error")
-	}
+	require.NoError(t, err, "Encode")
+	require.Error(t, rec.Decode(enc, schemaFixture()), "wrong wire type for known field should error")
 }
 
 func TestEnsureSingle(t *testing.T) {
@@ -320,10 +273,7 @@ func TestEnsureSingle(t *testing.T) {
 		{ID: 1, WireType: format.WireString, Value: "a"},
 		{ID: 1, WireType: format.WireString, Value: "b"},
 	}
-	if err := ensureSingle(fields, 1); err == nil {
-		t.Fatal("duplicate should error")
-	}
-	if err := ensureSingle(fields, 0); err != nil {
-		t.Fatalf("first occurrence should pass: %v", err)
-	}
+	require.Error(t, ensureSingle(fields, 1), "duplicate should error")
+	err := ensureSingle(fields, 0)
+	require.NoError(t, err, "first occurrence should pass")
 }

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 )
 
@@ -56,9 +58,7 @@ func TestRowIndexPageSequential(t *testing.T) {
 		t.Fatalf("entryCount = %d, want %d", n, len(rows))
 	}
 	got, err := decodePage(page)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	require.NoError(t, err, "decode")
 	if !rowsEq(got, rows) {
 		t.Fatalf("round-trip mismatch:\n got=%+v\nwant=%+v", got, rows)
 	}
@@ -77,9 +77,7 @@ func TestRowIndexPageMultiTable(t *testing.T) {
 	}
 	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	got, err := decodePage(page)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	require.NoError(t, err, "decode")
 	if !rowsEq(got, rows) {
 		t.Fatalf("round-trip mismatch: got=%+v want=%+v", got, rows)
 	}
@@ -94,9 +92,7 @@ func TestRowIndexPageRowIDBoundaries(t *testing.T) {
 	}
 	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	got, err := decodePage(page)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	require.NoError(t, err, "decode")
 	if !rowsEq(got, rows) {
 		t.Fatalf("round-trip mismatch: got=%+v want=%+v", got, rows)
 	}
@@ -112,9 +108,7 @@ func TestRowIndexPageOrdinalDelta(t *testing.T) {
 	}
 	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	got, err := decodePage(page)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	require.NoError(t, err, "decode")
 	if !rowsEq(got, rows) {
 		t.Fatalf("round-trip mismatch: got=%+v want=%+v", got, rows)
 	}
@@ -136,9 +130,7 @@ func TestRowIndexPageRandomPreSorted(t *testing.T) {
 	sortRowIndexEntries(rows)
 	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	got, err := decodePage(page)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	require.NoError(t, err, "decode")
 	if !rowsEq(got, rows) {
 		t.Fatalf("round-trip mismatch")
 	}
@@ -262,9 +254,7 @@ func TestFenceForRowIndexPage(t *testing.T) {
 	rows := riSeq(100, 25)
 	page, n, mn, mx := encodeRowIndexPage1(rows)
 	f, err := pageFence(page, 42, 9, 0x1234)
-	if err != nil {
-		t.Fatalf("pageFence: %v", err)
-	}
+	require.NoError(t, err, "pageFence")
 	if f.TableID != 1 || f.SnapshotID != 9 || f.StoredOffset != 0x1234 {
 		t.Fatalf("fence identity fields wrong: %+v", f)
 	}

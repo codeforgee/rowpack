@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 	"github.com/rowpack/rowpack/internal/seal"
 )
@@ -14,9 +16,7 @@ import (
 // TestEncryptionConfigValidate covers every rejection branch of validate.
 func TestEncryptionConfigValidate(t *testing.T) {
 	cfg := &EncryptionConfig{KeyProvider: &staticKeyProvider{keyID: "k1"}}
-	if err := cfg.validate(); err == nil {
-		t.Fatal("empty key id should error")
-	}
+	require.Error(t, cfg.validate(), "empty key id should error")
 
 	cfg = &EncryptionConfig{KeyProvider: &staticKeyProvider{keyID: "k1"}, KeyID: strings.Repeat("k", format.FileHeaderKeyIDMaxLen+1)}
 	if err := cfg.validate(); !errors.Is(err, ErrInvalidArgument) {
@@ -24,9 +24,8 @@ func TestEncryptionConfigValidate(t *testing.T) {
 	}
 
 	cfg = &EncryptionConfig{KeyProvider: &staticKeyProvider{keyID: "k1"}, KeyID: "k1"}
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("valid config: %v", err)
-	}
+	err := cfg.validate()
+	require.NoError(t, err, "valid config")
 }
 
 // TestBuildEncryptorErrors covers key-provider failure and bad key length.

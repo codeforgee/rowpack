@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Rows Block 容器头 / 页目录项 / 块头的输入边界。这两个结构是「先按定长解析、再按
@@ -16,16 +18,12 @@ import (
 func TestRowsBlockHeaderGuards(t *testing.T) {
 	h := RowsBlockHeader{PageCount: 3, DirectoryBytes: 3 * RowsPageDirEntrySize, TotalRecords: 17}
 	var buf [RowsBlockHeaderSize]byte
-	if err := h.MarshalTo(buf[:]); err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	err := h.MarshalTo(buf[:])
+	require.NoError(t, err, "marshal")
 	var got RowsBlockHeader
-	if err := got.Unmarshal(buf[:]); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got != h {
-		t.Fatalf("round trip = %+v, want %+v", got, h)
-	}
+	err = got.Unmarshal(buf[:])
+	require.NoError(t, err, "unmarshal")
+	require.Equal(t, h, got, "round trip = %+v, want %+v", got, h)
 	if got.Size() != RowsBlockHeaderSize {
 		t.Fatalf("Size() = %d, want %d", got.Size(), RowsBlockHeaderSize)
 	}
@@ -40,9 +38,8 @@ func TestRowsBlockHeaderGuards(t *testing.T) {
 	for i := range dirty {
 		dirty[i] = 0xFF
 	}
-	if err := h.MarshalTo(dirty); err != nil {
-		t.Fatalf("marshal into dirty buffer: %v", err)
-	}
+	err = h.MarshalTo(dirty)
+	require.NoError(t, err, "marshal into dirty buffer")
 	if dirty[9] != 0 || dirty[10] != 0 || dirty[11] != 0 {
 		t.Fatalf("padding bytes not zeroed: %v", dirty[:12])
 	}
@@ -67,16 +64,13 @@ func TestRowsBlockHeaderGuards(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var src [RowsBlockHeaderSize]byte
-			if err := h.MarshalTo(src[:]); err != nil {
-				t.Fatalf("marshal fixture: %v", err)
-			}
+			err := h.MarshalTo(src[:])
+			require.NoError(t, err, "marshal fixture")
 			var hh RowsBlockHeader
 			tc.mutate(&hh, &src)
 			var out RowsBlockHeader
-			err := out.Unmarshal(src[:])
-			if err == nil {
-				t.Fatalf("accepted forged header %v", src[:])
-			}
+			err = out.Unmarshal(src[:])
+			require.NotNil(t, err, "accepted forged header %v", src[:])
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want diagnosis %q", err, tc.want)
 			}
@@ -101,9 +95,7 @@ func TestRowsBlockHeaderGuards(t *testing.T) {
 		!strings.Contains(err.Error(), "directory bytes") {
 		t.Fatalf("inconsistent DirectoryBytes = %v", err)
 	}
-	if err := (&RowsBlockHeader{PageCount: 1 << 24, DirectoryBytes: 0}).MarshalTo(make([]byte, RowsBlockHeaderSize)); err == nil {
-		t.Fatal("PageCount whose directory bytes overflow must be rejected on the write side")
-	}
+	require.Error(t, (&RowsBlockHeader{PageCount: 1 << 24, DirectoryBytes: 0}).MarshalTo(make([]byte, RowsBlockHeaderSize)), "PageCount whose directory bytes overflow must be rejected on the write side")
 }
 
 func TestRowsPageDirEntryGuards(t *testing.T) {
@@ -113,16 +105,12 @@ func TestRowsPageDirEntryGuards(t *testing.T) {
 		MinRowID: 7, MaxRowID: ^uint64(0), PageCRC32C: 0xDEADBEEF, Flags: 1,
 	}
 	var buf [RowsPageDirEntrySize]byte
-	if err := e.MarshalTo(buf[:]); err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	err := e.MarshalTo(buf[:])
+	require.NoError(t, err, "marshal")
 	var got RowsPageDirEntry
-	if err := got.Unmarshal(buf[:]); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got != e {
-		t.Fatalf("round trip = %+v, want %+v", got, e)
-	}
+	err = got.Unmarshal(buf[:])
+	require.NoError(t, err, "unmarshal")
+	require.Equal(t, e, got, "round trip = %+v, want %+v", got, e)
 	if got.Size() != RowsPageDirEntrySize {
 		t.Fatalf("Size() = %d", got.Size())
 	}
@@ -138,9 +126,7 @@ func TestRowsPageDirEntryGuards(t *testing.T) {
 			t.Fatalf("Unmarshal of %d bytes must fail", n)
 		}
 	}
-	if err := e.MarshalTo(make([]byte, RowsPageDirEntrySize-1)); err == nil {
-		t.Fatal("short destination must fail")
-	}
+	require.Error(t, e.MarshalTo(make([]byte, RowsPageDirEntrySize-1)), "short destination must fail")
 }
 
 func TestBlockHeaderGuards(t *testing.T) {
@@ -149,21 +135,18 @@ func TestBlockHeaderGuards(t *testing.T) {
 		TableID: 2, ItemCount: 5, RawSize: 100, StoredSize: 80, RawCRC32C: 12345, KeyEpoch: 7,
 	}
 	var buf [BlockHeaderSize]byte
-	if err := h.MarshalTo(buf[:]); err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	err := h.MarshalTo(buf[:])
+	require.NoError(t, err, "marshal")
 	var got BlockHeader
-	if err := got.Unmarshal(buf[:]); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	err = got.Unmarshal(buf[:])
+	require.NoError(t, err, "unmarshal")
 	if got.Encrypted || got.KeyEpoch != 7 {
 		t.Fatalf("flags/keyepoch lost: %+v", got)
 	}
 	// Encrypted 位与 KeyEpoch 各自独立。
 	h.Encrypted = true
-	if err := h.MarshalTo(buf[:]); err != nil {
-		t.Fatalf("marshal encrypted: %v", err)
-	}
+	err = h.MarshalTo(buf[:])
+	require.NoError(t, err, "marshal encrypted")
 	if err := got.Unmarshal(buf[:]); err != nil || !got.Encrypted || got.KeyEpoch != 7 {
 		t.Fatalf("encrypted round trip = %+v %v", got, err)
 	}
@@ -176,9 +159,7 @@ func TestBlockHeaderGuards(t *testing.T) {
 			t.Fatalf("byte %d escaped the header CRC", off)
 		}
 	}
-	if err := new(BlockHeader).Unmarshal(buf[:BlockHeaderSize-1]); err == nil {
-		t.Fatal("short input must be rejected")
-	}
+	require.Error(t, new(BlockHeader).Unmarshal(buf[:BlockHeaderSize-1]), "short input must be rejected")
 	badMagic := buf
 	badMagic[0] = 'Q'
 	if err := new(BlockHeader).Unmarshal(badMagic[:]); err == nil ||
@@ -191,9 +172,7 @@ func TestBlockHeaderGuards(t *testing.T) {
 		!strings.Contains(err.Error(), "size") {
 		t.Fatalf("bad declared size = %v", err)
 	}
-	if err := new(BlockHeader).MarshalTo(nil); err == nil {
-		t.Fatal("MarshalTo(nil) must fail")
-	}
+	require.Error(t, new(BlockHeader).MarshalTo(nil), "MarshalTo(nil) must fail")
 }
 
 func TestIsVersionErrorClassification(t *testing.T) {

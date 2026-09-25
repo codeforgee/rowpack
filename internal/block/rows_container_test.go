@@ -3,6 +3,8 @@ package block
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/format"
 )
@@ -118,9 +120,7 @@ func TestRowsContainerRoundTripMultiPage(t *testing.T) {
 	// Random single-record access (the Get path) must match.
 	for _, ord := range []uint32{0, 1, 50, 149, 250, 299} {
 		rec, release, err := rc.RecordAt(ord)
-		if err != nil {
-			t.Fatalf("RecordAt(%d): %v", ord, err)
-		}
+		require.Nil(t, err, "RecordAt(%d): %v", ord, err)
 		w := want[ord]
 		if rec.RowID != w.rowID || rec.SchemaVersion != w.version || rec.ChangeType != w.ct {
 			t.Fatalf("RecordAt(%d) = {%d v%d ct%d}, want {%d v%d ct%d}", ord, rec.RowID, rec.SchemaVersion, rec.ChangeType, w.rowID, w.version, w.ct)

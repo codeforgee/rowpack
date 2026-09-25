@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 )
 
@@ -15,9 +17,7 @@ func TestNonceLayout(t *testing.T) {
 		0x04, 0x03, 0x02, 0x01, // epoch LE
 		0x11, 0x10, 0x0F, 0x0E, 0x0D, 0x0C, 0x0B, 0x0A, // blockID LE
 	}
-	if n != want {
-		t.Fatalf("Nonce = %x, want %x", n, want)
-	}
+	require.Equal(t, want, n, "Nonce = %x, want %x", n, want)
 	if Nonce(1, 2) == Nonce(2, 1) {
 		t.Fatal("distinct (epoch, blockID) pairs must not collide")
 	}
@@ -157,9 +157,7 @@ func TestSealOpenBlockRoundtrip(t *testing.T) {
 	plaintext := []byte("the quick brown fox jumps over the lazy dog")
 
 	ct, err := c.Seal(&uuid, &h, plaintext)
-	if err != nil {
-		t.Fatalf("Seal: %v", err)
-	}
+	require.NoError(t, err, "Seal")
 	if len(ct) != len(plaintext)+format.AESGCMTagLen {
 		t.Fatalf("ciphertext len %d, want plaintext + tag", len(ct))
 	}
@@ -168,9 +166,7 @@ func TestSealOpenBlockRoundtrip(t *testing.T) {
 	}
 
 	pt, err := c.Open(&uuid, &h, ct)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	require.NoError(t, err, "Open")
 	if !bytes.Equal(pt, plaintext) {
 		t.Fatalf("roundtrip mismatch: %q", pt)
 	}
@@ -182,9 +178,7 @@ func TestSealOpenBlockAuthFailures(t *testing.T) {
 	h := blockHdr(42, 7, 3)
 	h.KeyEpoch = 5
 	ct, err := c.Seal(&uuid, &h, []byte("payload"))
-	if err != nil {
-		t.Fatalf("Seal: %v", err)
-	}
+	require.NoError(t, err, "Seal")
 
 	// Tampered ciphertext.
 	bad := append([]byte(nil), ct...)
@@ -237,9 +231,7 @@ func TestSealWithOpenWith(t *testing.T) {
 		t.Fatalf("ciphertext len %d", len(ct))
 	}
 	got, err := c.OpenWith(nonce, aad[:], ct)
-	if err != nil {
-		t.Fatalf("OpenWith: %v", err)
-	}
+	require.NoError(t, err, "OpenWith")
 	if !bytes.Equal(got, pt) {
 		t.Fatalf("roundtrip mismatch: %q", got)
 	}
@@ -278,13 +270,9 @@ func TestSealOpenIndexChunk(t *testing.T) {
 	}
 
 	ct, err := c.SealIndexChunk(ctx, pt)
-	if err != nil {
-		t.Fatalf("SealIndexChunk: %v", err)
-	}
+	require.NoError(t, err, "SealIndexChunk")
 	got, err := c.OpenIndexChunk(ctx, ct)
-	if err != nil {
-		t.Fatalf("OpenIndexChunk: %v", err)
-	}
+	require.NoError(t, err, "OpenIndexChunk")
 	if !bytes.Equal(got, pt) {
 		t.Fatalf("roundtrip mismatch: %q", got)
 	}

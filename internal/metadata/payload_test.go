@@ -5,15 +5,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 )
 
 func TestPayloadHeaderRoundtrip(t *testing.T) {
 	h := PayloadHeader{ItemCount: 3, DirectoryBytes: 3 * DirectoryEntrySize, RecordsBytes: 128}
 	dst := make([]byte, PayloadHeaderSize)
-	if err := h.MarshalTo(dst); err != nil {
-		t.Fatalf("MarshalTo: %v", err)
-	}
+	err := h.MarshalTo(dst)
+	require.NoError(t, err, "MarshalTo")
 	if string(dst[0:8]) != format.MagicMetaPayload {
 		t.Fatalf("magic %q, want %q", dst[0:8], format.MagicMetaPayload)
 	}
@@ -25,12 +26,9 @@ func TestPayloadHeaderRoundtrip(t *testing.T) {
 	}
 
 	var got PayloadHeader
-	if err := got.Unmarshal(dst); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if got != h {
-		t.Fatalf("roundtrip mismatch: %+v vs %+v", got, h)
-	}
+	err = got.Unmarshal(dst)
+	require.NoError(t, err, "Unmarshal")
+	require.Equal(t, h, got, "roundtrip mismatch: %+v vs %+v", got, h)
 }
 
 func TestPayloadHeaderUnmarshalErrors(t *testing.T) {
@@ -44,29 +42,19 @@ func TestPayloadHeaderUnmarshalErrors(t *testing.T) {
 	}
 
 	var h PayloadHeader
-	if err := h.Unmarshal(make([]byte, PayloadHeaderSize-1)); err == nil {
-		t.Fatal("truncated header should error")
-	}
+	require.Error(t, h.Unmarshal(make([]byte, PayloadHeaderSize-1)), "truncated header should error")
 	bad := valid()
 	bad[0] = 'X'
-	if err := h.Unmarshal(bad); err == nil {
-		t.Fatal("bad magic should error")
-	}
+	require.Error(t, h.Unmarshal(bad), "bad magic should error")
 	bad = valid()
 	binary.LittleEndian.PutUint32(bad[8:], 2)
-	if err := h.Unmarshal(bad); err == nil {
-		t.Fatal("unsupported version should error")
-	}
+	require.Error(t, h.Unmarshal(bad), "unsupported version should error")
 	bad = valid()
 	binary.LittleEndian.PutUint32(bad[12:], 16)
-	if err := h.Unmarshal(bad); err == nil {
-		t.Fatal("bad directory entry size should error")
-	}
+	require.Error(t, h.Unmarshal(bad), "bad directory entry size should error")
 	bad = valid()
 	binary.LittleEndian.PutUint32(bad[20:], 2*DirectoryEntrySize) // != ItemCount * size
-	if err := h.Unmarshal(bad); err == nil {
-		t.Fatal("directory bytes mismatch should error")
-	}
+	require.Error(t, h.Unmarshal(bad), "directory bytes mismatch should error")
 }
 
 func TestDirectoryEntryRoundtrip(t *testing.T) {
@@ -82,17 +70,15 @@ func TestDirectoryEntryRoundtrip(t *testing.T) {
 	e.SetRecordCRC(0xCAFEBABE)
 
 	dst := make([]byte, DirectoryEntrySize)
-	if err := e.MarshalTo(dst); err != nil {
-		t.Fatalf("MarshalTo: %v", err)
-	}
+	err := e.MarshalTo(dst)
+	require.NoError(t, err, "MarshalTo")
 	if dst[25]&format.FlagCritical == 0 {
 		t.Fatal("critical flag not written")
 	}
 
 	var got DirectoryEntry
-	if err := got.Unmarshal(dst); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
+	err = got.Unmarshal(dst)
+	require.NoError(t, err, "Unmarshal")
 	if got.ObjectID != e.ObjectID || got.Revision != e.Revision ||
 		got.RecordType != e.RecordType || got.RecordOffset != e.RecordOffset ||
 		got.RecordLength != e.RecordLength || got.Operation != e.Operation ||
@@ -111,13 +97,9 @@ func TestDirectoryEntryRoundtrip(t *testing.T) {
 
 func TestDirectoryEntryMarshalErrors(t *testing.T) {
 	e := DirectoryEntry{ObjectID: 1}
-	if err := e.MarshalTo(make([]byte, DirectoryEntrySize-1)); err == nil {
-		t.Fatal("short destination should error")
-	}
+	require.Error(t, e.MarshalTo(make([]byte, DirectoryEntrySize-1)), "short destination should error")
 	var got DirectoryEntry
-	if err := got.Unmarshal(make([]byte, DirectoryEntrySize-1)); err == nil {
-		t.Fatal("truncated entry should error")
-	}
+	require.Error(t, got.Unmarshal(make([]byte, DirectoryEntrySize-1)), "truncated entry should error")
 }
 
 func TestPayloadBuildParseRoundtrip(t *testing.T) {
@@ -131,17 +113,13 @@ func TestPayloadBuildParseRoundtrip(t *testing.T) {
 	records := [][]byte{rec1, nil, rec2}
 
 	data, err := Build(entries, records)
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	require.NoError(t, err, "Build")
 	if len(data) != PayloadHeaderSize+3*DirectoryEntrySize+len(rec1)+len(rec2) {
 		t.Fatalf("payload length %d", len(data))
 	}
 
 	p, err := Parse(data)
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
+	require.NoError(t, err, "Parse")
 	if len(p.Entries) != 3 || len(p.Records) != 3 {
 		t.Fatalf("entry/record counts %d/%d", len(p.Entries), len(p.Records))
 	}
@@ -244,9 +222,7 @@ func TestObjectIDAllocatorStableIDs(t *testing.T) {
 	}
 	id1 := a.Alloc("rowpack.meta.v1", "col.users.name")
 	id2 := a.Alloc("rowpack.meta.v1", "col.users.name")
-	if id1 != id2 {
-		t.Fatalf("same natural key must map to one ID: %d vs %d", id1, id2)
-	}
+	require.Equal(t, id2, id1, "same natural key must map to one ID: %d vs %d", id1, id2)
 	id3 := a.Alloc("rowpack.meta.v1", "col.users.age")
 	if id3 == id1 || id3 != id1+1 {
 		t.Fatalf("sequential allocation broken: %d then %d", id1, id3)

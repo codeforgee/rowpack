@@ -4,6 +4,8 @@ import (
 	"math/big"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 	"time"
 )
 
@@ -92,12 +94,8 @@ func TestAppendValueInvalidValues(t *testing.T) {
 	}
 	for _, c := range cases {
 		buf, err := appendValue(nil, c.v, c.limits)
-		if err == nil {
-			t.Fatalf("%s: accepted", c.name)
-		}
-		if buf != nil {
-			t.Fatalf("%s: returned non-nil buffer on error", c.name)
-		}
+		require.NotNil(t, err, "%s: accepted", c.name)
+		require.Nil(t, buf, "%s: returned non-nil buffer on error", c.name)
 		if !strings.Contains(err.Error(), c.want) {
 			t.Fatalf("%s: error %q, want substring %q", c.name, err, c.want)
 		}
@@ -123,17 +121,11 @@ func TestEncodeIntoWideSchemaBitmapFallback(t *testing.T) {
 		row[i] = Uint8(uint8(i))
 	}
 	body, err := c.EncodeInto(schema, row, nil)
-	if err != nil {
-		t.Fatalf("encode wide row: %v", err)
-	}
+	require.NoError(t, err, "encode wide row")
 	dec, err := c.CompileDecoder(schema)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
+	require.NoError(t, err, "compile")
 	got, err := dec.DecodeInto(nil, body, nil)
-	if err != nil {
-		t.Fatalf("decode wide row: %v", err)
-	}
+	require.NoError(t, err, "decode wide row")
 	for i := 0; i < ncols; i++ {
 		if got[i].u != uint64(uint8(i)) {
 			t.Fatalf("col %d = %d", i, got[i].u)
@@ -166,13 +158,9 @@ func TestDecodeSinkMaterialization(t *testing.T) {
 	}}
 	c := Codec{Limits: DefaultLimits()}
 	dec, err := c.CompileDecoder(schema)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
+	require.NoError(t, err, "compile")
 	body, err := c.EncodeInto(schema, []Value{String("hello"), Bytes([]byte{1, 2, 3})}, nil)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
+	require.NoError(t, err, "encode")
 
 	var gotStrings, gotBytes []string
 	sink := &Sink{
@@ -186,9 +174,7 @@ func TestDecodeSinkMaterialization(t *testing.T) {
 
 	// Fast path: both sink funcs materialize the payloads.
 	row, err := dec.DecodeInto(nil, body, sink)
-	if err != nil {
-		t.Fatalf("fast decode: %v", err)
-	}
+	require.NoError(t, err, "fast decode")
 	if row[0].s != "hello" || string(row[1].by) != "\x01\x02\x03" {
 		t.Fatalf("fast decode values: %q %q", row[0].s, row[1].by)
 	}
@@ -218,13 +204,9 @@ func TestBatchDecodeFallsBackToValidator(t *testing.T) {
 	schema := &Schema{Name: "s", Columns: []Column{{Name: "a", Type: TypeString}}}
 	c := Codec{Limits: DefaultLimits()}
 	dec, err := c.CompileDecoder(schema)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
+	require.NoError(t, err, "compile")
 	good, err := c.EncodeInto(schema, []Value{String("ok")}, nil)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
+	require.NoError(t, err, "encode")
 	bad := append([]byte(nil), good...)
 	bad[0] |= 0x02 // single-column schema: bit 1 is an unused high bit
 
@@ -245,9 +227,7 @@ func TestBatchDecodeFixedFallback(t *testing.T) {
 	}}
 	c := Codec{Limits: DefaultLimits()}
 	dec, err := c.CompileDecoder(schema)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
+	require.NoError(t, err, "compile")
 	// Zero bitmap, then payload: bool = 2 (invalid), uint8 = 7.
 	body := []byte{0x00, 0x02, 0x07}
 	if _, err := dec.DecodeBatchInto(nil, [][]byte{body}, nil); err == nil {
@@ -266,9 +246,7 @@ func TestUnsupportedTypeChain(t *testing.T) {
 	c := Codec{Limits: DefaultLimits()}
 	schema := &Schema{Name: "bogus", Columns: []Column{{Name: "a", Type: Type(99)}}}
 	dec, err := c.CompileDecoder(schema)
-	if err != nil {
-		t.Fatalf("CompileDecoder must not validate types: %v", err)
-	}
+	require.NoError(t, err, "CompileDecoder must not validate types")
 	body := []byte{0x00, 0x01, 0x02, 0x03} // null bitmap byte + arbitrary payload
 	if _, err := dec.DecodeInto(nil, body, nil); err == nil || !strings.Contains(err.Error(), "unsupported type 99") {
 		t.Fatalf("decode: want unsupported-type error, got %v", err)

@@ -1,6 +1,10 @@
 package format
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // RowsPageDirEntry.Unmarshal / RowIndexPageHeader.Unmarshal 的错误分支覆盖
 // 偏低，补短输入、magic、版本、保留位、位流几何等校验测试。
@@ -26,9 +30,7 @@ func TestRowsPageDirEntryRoundtripAndShort(t *testing.T) {
 	if err := out.Unmarshal(buf[:]); err != nil {
 		t.Fatal(err)
 	}
-	if out != e {
-		t.Fatalf("roundtrip mismatch: %+v vs %+v", out, e)
-	}
+	require.Equal(t, e, out, "roundtrip mismatch: %+v vs %+v", out, e)
 	for _, n := range []int{0, 1, RowsPageDirEntrySize - 1} {
 		if err := out.Unmarshal(buf[:n]); err == nil {
 			t.Fatalf("short input %d accepted", n)
@@ -46,16 +48,11 @@ func TestRowIndexPageHeaderErrors(t *testing.T) {
 	full := append(append([]byte{}, page...), make([]byte, h.StreamsBytes())...)
 
 	var out RowIndexPageHeader
-	if err := out.Unmarshal(full, validLen); err != nil {
-		t.Fatalf("valid page rejected: %v", err)
-	}
-	if out != h {
-		t.Fatalf("roundtrip mismatch: %+v", out)
-	}
+	err := out.Unmarshal(full, validLen)
+	require.NoError(t, err, "valid page rejected")
+	require.Equal(t, h, out, "roundtrip mismatch: %+v", out)
 	// 几何不符。
-	if err := out.Unmarshal(full, validLen+1); err == nil {
-		t.Fatal("geometry mismatch accepted")
-	}
+	require.Error(t, out.Unmarshal(full, validLen+1), "geometry mismatch accepted")
 	cases := []struct {
 		name string
 		mut  func(b []byte)

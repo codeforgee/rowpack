@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 )
 
@@ -23,9 +25,8 @@ func TestPrepareSortsUnsortedEntries(t *testing.T) {
 		{RowID: 50, Loc: RowLoc{BlockID: 2, ItemOrdinal: 3, ChangeType: format.ChangeDelete}},
 	}
 	sh := &rowShard{}
-	if err := sh.prepare(entries); err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
+	err := sh.prepare(entries)
+	require.NoError(t, err, "prepare")
 	wantIDs := []uint64{10, 30, 50, 70, 90}
 	wantOrdinals := []uint32{0, 1, 3, 5, 7}
 	wantChanges := []uint8{uint8(format.ChangeInsert), uint8(format.ChangeInsert), uint8(format.ChangeDelete), uint8(format.ChangeInsert), uint8(format.ChangeUpdate)}
@@ -83,9 +84,7 @@ func TestPrepareRejectsDuplicates(t *testing.T) {
 		{RowID: 9, Loc: RowLoc{BlockID: 1}},
 		{RowID: 5, Loc: RowLoc{BlockID: 2}},
 	})
-	if err == nil {
-		t.Fatal("duplicate RowID must be rejected")
-	}
+	require.Error(t, err, "duplicate RowID must be rejected")
 	if want := "duplicate row 5"; !strings.Contains(err.Error(), want) {
 		t.Fatalf("err = %v, want mention of %q", err, want)
 	}
@@ -99,9 +98,8 @@ func TestPrepareRejectsDuplicates(t *testing.T) {
 
 func TestPrepareEmptyShard(t *testing.T) {
 	sh := &rowShard{}
-	if err := sh.prepare(nil); err != nil {
-		t.Fatalf("prepare(nil): %v", err)
-	}
+	err := sh.prepare(nil)
+	require.NoError(t, err, "prepare(nil)")
 	if sh.len() != 0 || len(sh.runStart) != 1 || sh.runStart[0] != 0 {
 		t.Fatalf("empty shard = %d rows, runStart %v, want 0 rows, [0]", sh.len(), sh.runStart)
 	}
@@ -139,12 +137,10 @@ func TestShardBuilderPageRowGuards(t *testing.T) {
 
 	// 跨页边界：上一页末 id 与下一页首 id 的关系。
 	b := newRowShardBuilder(5, 4)
-	if err := b.AddPageRows(newPage(5, 10, 20), 5); err != nil {
-		t.Fatalf("first page: %v", err)
-	}
-	if err := b.AddPageRows(newPage(21), 5); err != nil {
-		t.Fatalf("in-order continuation must pass: %v", err)
-	}
+	err := b.AddPageRows(newPage(5, 10, 20), 5)
+	require.NoError(t, err, "first page")
+	err = b.AddPageRows(newPage(21), 5)
+	require.NoError(t, err, "in-order continuation must pass")
 	if err := b.AddPageRows(newPage(5), 5); err == nil || !strings.Contains(err.Error(), "not ascending") {
 		t.Fatalf("page starting below the previous max must be rejected, got %v", err)
 	}
@@ -164,13 +160,10 @@ func TestShardBuilderPageRowGuards(t *testing.T) {
 		blockRunStart: []uint32{0, 4},
 		blockIDs:      []uint64{9},
 	}
-	if err := b2.AddPageRows(multi, 7); err != nil {
-		t.Fatalf("multi-table page: %v", err)
-	}
+	err = b2.AddPageRows(multi, 7)
+	require.NoError(t, err, "multi-table page")
 	shards, err := b2.finish()
-	if err != nil {
-		t.Fatalf("finish: %v", err)
-	}
+	require.NoError(t, err, "finish")
 	if len(shards) != 2 {
 		t.Fatalf("got %d shards, want 2", len(shards))
 	}
@@ -192,9 +185,8 @@ func TestShardBuilderRowEntryGuards(t *testing.T) {
 		!strings.Contains(err.Error(), "wrong snapshot") {
 		t.Fatalf("wrong snapshot must be rejected, got %v", err)
 	}
-	if err := b.AddRowEntry(format.RowIndexEntry{SnapshotID: 3, TableID: 1, RowID: 5}); err != nil {
-		t.Fatalf("first entry: %v", err)
-	}
+	err := b.AddRowEntry(format.RowIndexEntry{SnapshotID: 3, TableID: 1, RowID: 5})
+	require.NoError(t, err, "first entry")
 	if err := b.AddRowEntry(format.RowIndexEntry{SnapshotID: 3, TableID: 1, RowID: 4}); err == nil ||
 		!strings.Contains(err.Error(), "not ascending") {
 		t.Fatalf("descending RowID must be rejected, got %v", err)
@@ -204,13 +196,10 @@ func TestShardBuilderRowEntryGuards(t *testing.T) {
 		t.Fatalf("duplicate RowID must be rejected, got %v", err)
 	}
 	// 表切换：切换即结算当前 shard，新表从自己的第一个 id 开始判序。
-	if err := b.AddRowEntry(format.RowIndexEntry{SnapshotID: 3, TableID: 2, RowID: 1}); err != nil {
-		t.Fatalf("table switch: %v", err)
-	}
+	err = b.AddRowEntry(format.RowIndexEntry{SnapshotID: 3, TableID: 2, RowID: 1})
+	require.NoError(t, err, "table switch")
 	shards, err := b.finish()
-	if err != nil {
-		t.Fatalf("finish: %v", err)
-	}
+	require.NoError(t, err, "finish")
 	if len(shards) != 2 || shards[1].len() != 1 || shards[2].len() != 1 {
 		t.Fatalf("shards %v, want two single-row shards", shards)
 	}

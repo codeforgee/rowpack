@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestFrozenSizes locks every fixed structure size. These values are part of
@@ -304,9 +306,7 @@ func TestCRCFieldZeroing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != stored {
-		t.Fatalf("verifyCRC returned %08x, stored %08x", got, stored)
-	}
+	require.Equal(t, stored, got, "verifyCRC returned %08x, stored %08x", got, stored)
 	if !bytes.Equal(buf[:], before) {
 		t.Fatal("verifyCRC modified its input buffer")
 	}
@@ -326,13 +326,10 @@ func binaryUint32(b []byte) uint32 {
 func TestVersionGates(t *testing.T) {
 	var h DataFileHeader
 	h.FileHeader = FileHeader{RequiredFeatures: RequiredFeaturesV1, DefaultBlockSize: 1024}
-	if err := h.CheckVersion(); err != nil {
-		t.Fatalf("v1 features must be accepted: %v", err)
-	}
+	err := h.CheckVersion()
+	require.NoError(t, err, "v1 features must be accepted")
 	h.RequiredFeatures |= 1 << 20 // unknown required bit
-	if err := h.CheckVersion(); err == nil {
-		t.Fatal("unknown required feature bit must be rejected")
-	}
+	require.Error(t, h.CheckVersion(), "unknown required feature bit must be rejected")
 	// Marshal with the bad header still works (it is a writer-side construct);
 	// Unmarshal of a major-3 header must fail with IsVersionError.
 	var good DataFileHeader
@@ -343,9 +340,7 @@ func TestVersionGates(t *testing.T) {
 	}
 	buf[8], buf[9] = 0, 3 // major = 3
 	var got DataFileHeader
-	if err := got.Unmarshal(buf[:]); err == nil {
-		t.Fatal("major 3 must be rejected")
-	} else if !IsVersionError(err) {
-		t.Fatalf("major rejection must be a version error, got %T: %v", err, err)
-	}
+	err = got.Unmarshal(buf[:])
+	require.Error(t, err, "major 3 must be rejected")
+	require.True(t, IsVersionError(err), "major rejection must be a version error, got %T: %v", err, err)
 }

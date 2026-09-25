@@ -3,6 +3,8 @@ package format
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // mustMarshalInto marshals via fill into a fresh exact-size buffer, failing
@@ -86,9 +88,7 @@ func TestMarshalToRejectsShortDestination(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, n := range []int{0, tc.size - 1} {
 				err := tc.fill(make([]byte, n))
-				if err == nil {
-					t.Fatalf("%s: accepted %d-byte destination (want >= %d)", tc.name, n, tc.size)
-				}
+				require.NotNil(t, err, "%s: accepted %d-byte destination (want >= %d)", tc.name, n, tc.size)
 				if !strings.Contains(err.Error(), "too short") {
 					t.Fatalf("%s: unexpected error for %d-byte dst: %v", tc.name, n, err)
 				}
@@ -110,44 +110,31 @@ func TestFileHeaderRejectsCorruptFields(t *testing.T) {
 		h.DefaultBlockSize = 1 << 16
 		return mustMarshalInto(t, DataFileHeaderSize, h.MarshalTo)
 	}
-	if err := (&DataFileHeader{}).Unmarshal(valid()); err != nil {
-		t.Fatalf("valid header rejected: %v", err)
-	}
+	err := (&DataFileHeader{}).Unmarshal(valid())
+	require.NoError(t, err, "valid header rejected")
 
 	is := func(src []byte) error {
 		var h DataFileHeader
 		return h.Unmarshal(src)
 	}
 	// Bad magic.
-	if err := is(corrupt(valid(), func(b []byte) { copy(b[0:8], "XXXXXXXX") })); err == nil {
-		t.Fatal("bad magic accepted")
-	}
+	require.Error(t, is(corrupt(valid(), func(b []byte) { copy(b[0:8], "XXXXXXXX") })), "bad magic accepted")
 	// Wrong major version (this also drives the error-path version fetch).
-	if err := is(corrupt(valid(), func(b []byte) { b[8] = VersionMajor + 1 })); err == nil {
-		t.Fatal("wrong major version accepted")
-	}
+	require.Error(t, is(corrupt(valid(), func(b []byte) { b[8] = VersionMajor + 1 })), "wrong major version accepted")
 	// Wrong size word.
-	if err := is(corrupt(valid(), func(b []byte) { putU32(b[12:], DataFileHeaderSize+4) })); err == nil {
-		t.Fatal("wrong size word accepted")
-	}
+	require.Error(t, is(corrupt(valid(), func(b []byte) { putU32(b[12:], DataFileHeaderSize+4) })), "wrong size word accepted")
 	// Payload CRC mismatch.
-	if err := is(corrupt(valid(), func(b []byte) { b[40] ^= 0xFF })); err == nil {
-		t.Fatal("CRC mismatch accepted")
-	}
+	require.Error(t, is(corrupt(valid(), func(b []byte) { b[40] ^= 0xFF })), "CRC mismatch accepted")
 	// Over-long key id length byte with a matching CRC.
 	badKL := corrupt(valid(), func(b []byte) {
 		b[FileHeaderKeyIDLenOffset] = FileHeaderKeyIDMaxLen + 1
 		finalizeCRC(b[:DataFileHeaderSize], DataFileHeaderCRC32COffset)
 	})
-	if err := is(badKL); err == nil {
-		t.Fatal("over-long key id length accepted")
-	}
+	require.Error(t, is(badKL), "over-long key id length accepted")
 	// Marshal must refuse a key id above the maximum before writing anything.
 	var h DataFileHeader
 	h.KeyID = make([]byte, FileHeaderKeyIDMaxLen+1)
-	if err := h.MarshalTo(make([]byte, DataFileHeaderSize)); err == nil {
-		t.Fatal("over-long key id accepted on marshal")
-	}
+	require.Error(t, h.MarshalTo(make([]byte, DataFileHeaderSize)), "over-long key id accepted on marshal")
 }
 
 // TestCRCStructsRejectCorruptFields hits the bad-magic / bad-size / CRC
@@ -255,9 +242,8 @@ func TestCRCStructsRejectCorruptFields(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			full := tc.build()
-			if err := tc.is(full); err != nil {
-				t.Fatalf("valid encoding rejected: %v", err)
-			}
+			err := tc.is(full)
+			require.NoError(t, err, "valid encoding rejected")
 			for _, m := range tc.muts {
 				if err := tc.is(corrupt(full, m.fn)); err == nil {
 					t.Fatalf("%s: corrupt input accepted", m.name)
@@ -274,9 +260,7 @@ func TestRowsPageHeaderRejectsZeroEntries(t *testing.T) {
 	h := RowsPageHeader{EntryCount: 0, ChangeBitsBytes: 0}
 	buf := mustMarshalInto(t, RowsPageHeaderSize, h.MarshalTo)
 	var out RowsPageHeader
-	if err := out.Unmarshal(buf, 0); err == nil {
-		t.Fatal("zero-entry page header accepted")
-	}
+	require.Error(t, out.Unmarshal(buf, 0), "zero-entry page header accepted")
 }
 
 // TestRowDirectoryEntryResistsTruncation extends the truncation ladder to
@@ -286,9 +270,8 @@ func TestRowDirectoryEntryResistsTruncation(t *testing.T) {
 		RowID: 7, RecordOffset: 64, RecordLength: 32, ChangeType: ChangeInsert, SchemaVersion: 1,
 	}).MarshalTo)
 	var e RowDirectoryEntry
-	if err := e.Unmarshal(full); err != nil {
-		t.Fatalf("full encoding rejected: %v", err)
-	}
+	err := e.Unmarshal(full)
+	require.NoError(t, err, "full encoding rejected")
 	if e.RowID != 7 || e.RecordOffset != 64 || e.RecordLength != 32 || e.ChangeType != ChangeInsert || e.SchemaVersion != 1 {
 		t.Fatalf("roundtrip mismatch: %+v", e)
 	}
@@ -311,18 +294,14 @@ func TestHeaderHelpersShortInput(t *testing.T) {
 	if got := IndexTxnHeaderKeyEpoch(make([]byte, 8)); got != 0 {
 		t.Fatalf("IndexTxnHeaderKeyEpoch returned %d for short input", got)
 	}
-	if err := PatchIndexTxnHeaderForStorage(make([]byte, 8), 1, 1); err == nil {
-		t.Fatal("PatchIndexTxnHeaderForStorage accepted a short header")
-	}
+	require.Error(t, PatchIndexTxnHeaderForStorage(make([]byte, 8), 1, 1), "PatchIndexTxnHeaderForStorage accepted a short header")
 	// And on a full header the patch must round-trip.
 	hdr := mustMarshalInto(t, IndexTxnHeaderSize, (&IndexTxnHeader{SnapshotID: 1}).MarshalTo)
-	if err := PatchIndexTxnHeaderForStorage(hdr, 999, 7); err != nil {
-		t.Fatalf("patch: %v", err)
-	}
+	err := PatchIndexTxnHeaderForStorage(hdr, 999, 7)
+	require.NoError(t, err, "patch")
 	var h IndexTxnHeader
-	if err := h.Unmarshal(hdr); err != nil {
-		t.Fatalf("re-unmarshal: %v", err)
-	}
+	err = h.Unmarshal(hdr)
+	require.NoError(t, err, "re-unmarshal")
 	if h.BodyBytes != 999 {
 		t.Fatalf("BodyBytes = %d, want 999", h.BodyBytes)
 	}

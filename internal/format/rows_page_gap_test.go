@@ -2,6 +2,8 @@ package format
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // RowsPageHeader 三件套在 format 包内是 0% 覆盖（实际经 block/codec 包间接
@@ -40,13 +42,9 @@ func TestRowsPageHeaderRoundtrip(t *testing.T) {
 	if err := out.Unmarshal(page, len(page)); err != nil {
 		t.Fatal(err)
 	}
-	if out != h {
-		t.Fatalf("roundtrip mismatch: %+v vs %+v", out, h)
-	}
+	require.Equal(t, h, out, "roundtrip mismatch: %+v vs %+v", out, h)
 	// totalLen 与几何不符必须被拒绝。
-	if err := out.Unmarshal(page, len(page)+1); err == nil {
-		t.Fatal("geometry mismatch accepted")
-	}
+	require.Error(t, out.Unmarshal(page, len(page)+1), "geometry mismatch accepted")
 	if err := out.Unmarshal(page, 0); err != nil { // 跳过几何检查的调用形式
 		t.Fatalf("totalLen=0 should skip geometry: %v", err)
 	}
@@ -93,19 +91,11 @@ func TestPackUnpackChangeType(t *testing.T) {
 		ChangeDelete: 2,
 	} {
 		p, err := PackChangeType(ct)
-		if err != nil {
-			t.Fatalf("pack %d: %v", ct, err)
-		}
-		if p != packed {
-			t.Fatalf("pack %d = %d, want %d", ct, p, packed)
-		}
+		require.Nil(t, err, "pack %d: %v", ct, err)
+		require.Equal(t, packed, p, "pack %d = %d, want %d", ct, p, packed)
 		got, err := UnpackChangeType(p)
-		if err != nil {
-			t.Fatalf("unpack %d: %v", p, err)
-		}
-		if got != ct {
-			t.Fatalf("unpack %d = %d, want %d", p, got, ct)
-		}
+		require.Nil(t, err, "unpack %d: %v", p, err)
+		require.Equal(t, ct, got, "unpack %d = %d, want %d", p, got, ct)
 	}
 	if _, err := PackChangeType(0); err == nil {
 		t.Fatal("PackChangeType(0) accepted")

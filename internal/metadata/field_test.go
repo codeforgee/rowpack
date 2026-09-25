@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 )
 
@@ -28,13 +30,9 @@ func TestFieldEncodeDecodeSint(t *testing.T) {
 	for _, v := range []int64{0, 127, 128, -128, -32768, 32768, 2147483648, -2147483649, -882575889879} {
 		f := Field{ID: 7, WireType: format.WireSint, Value: v}
 		enc, err := encodeField(nil, &f)
-		if err != nil {
-			t.Fatalf("encodeField: %v", err)
-		}
+		require.NoError(t, err, "encodeField")
 		got, n, err := decodeField(enc)
-		if err != nil {
-			t.Fatalf("decodeField: %v", err)
-		}
+		require.NoError(t, err, "decodeField")
 		if n != len(enc) {
 			t.Fatalf("consumed %d, want %d", n, len(enc))
 		}
@@ -47,13 +45,9 @@ func TestFieldEncodeDecodeSint(t *testing.T) {
 func TestFieldEncodeDecodeString(t *testing.T) {
 	f := Field{ID: 3, WireType: format.WireString, Value: "hello"}
 	enc, err := encodeField(nil, &f)
-	if err != nil {
-		t.Fatalf("encodeField: %v", err)
-	}
+	require.NoError(t, err, "encodeField")
 	got, _, err := decodeField(enc)
-	if err != nil {
-		t.Fatalf("decodeField: %v", err)
-	}
+	require.NoError(t, err, "decodeField")
 	if got.Value != "hello" {
 		t.Fatalf("value %v, want hello", got.Value)
 	}
@@ -62,16 +56,12 @@ func TestFieldEncodeDecodeString(t *testing.T) {
 func TestFieldFlagsRoundtrip(t *testing.T) {
 	f := Field{ID: 9, WireType: format.WireString, Value: "x", Critical: true, Repeated: true}
 	enc, err := encodeField(nil, &f)
-	if err != nil {
-		t.Fatalf("encodeField: %v", err)
-	}
+	require.NoError(t, err, "encodeField")
 	if flags := enc[3]; flags&format.FieldFlagCritical == 0 || flags&format.FieldFlagRepeated == 0 {
 		t.Fatalf("flags byte %x did not carry critical+repeated", flags)
 	}
 	got, _, err := decodeField(enc)
-	if err != nil {
-		t.Fatalf("decodeField: %v", err)
-	}
+	require.NoError(t, err, "decodeField")
 	if !got.Critical || !got.Repeated {
 		t.Fatalf("flags lost on decode: %+v", got)
 	}
@@ -107,9 +97,7 @@ func TestFieldErrorPaths(t *testing.T) {
 	// value length exceeds input
 	f := Field{ID: 1, WireType: format.WireString, Value: "abc"}
 	enc, err := encodeField(nil, &f)
-	if err != nil {
-		t.Fatalf("encodeField: %v", err)
-	}
+	require.NoError(t, err, "encodeField")
 	binary.LittleEndian.PutUint32(enc[4:], 999)
 	if _, _, err := decodeField(enc); err == nil {
 		t.Fatal("oversized value length should error")
@@ -130,9 +118,7 @@ func TestFieldErrorPaths(t *testing.T) {
 	noncrit := Field{ID: 1, WireType: format.WireObjectRef, Critical: false, raw: []byte{1, 2, 3}}
 	nenc, _ := encodeField(nil, &noncrit)
 	got, _, err := decodeField(nenc)
-	if err != nil {
-		t.Fatalf("decodeField non-critical passthrough: %v", err)
-	}
+	require.NoError(t, err, "decodeField non-critical passthrough")
 	if got.Value != nil {
 		t.Fatalf("non-critical unsupported field value %v, want nil", got.Value)
 	}
@@ -163,25 +149,17 @@ func TestFieldsBytesAndCanonical(t *testing.T) {
 		{ID: 2, WireType: format.WireString, Value: "abc"},
 	}
 	n, err := fieldsBytes(fs)
-	if err != nil {
-		t.Fatalf("fieldsBytes: %v", err)
-	}
+	require.NoError(t, err, "fieldsBytes")
 	if n != 8+1+8+3 {
 		t.Fatalf("fieldsBytes = %d, want %d", n, 8+1+8+3)
 	}
 
-	if err := checkCanonical([]Field{{ID: 2}, {ID: 1}}); err == nil {
-		t.Fatal("unsorted fields should error")
-	}
-	if err := checkCanonical([]Field{{ID: 1}, {ID: 1}}); err == nil {
-		t.Fatal("repeated non-flagged field should error")
-	}
-	if err := checkCanonical([]Field{{ID: 1, Repeated: true}, {ID: 1, Repeated: true}}); err != nil {
-		t.Fatalf("flagged repeated field should pass: %v", err)
-	}
-	if err := checkCanonical(nil); err != nil {
-		t.Fatalf("empty fields should pass: %v", err)
-	}
+	require.Error(t, checkCanonical([]Field{{ID: 2}, {ID: 1}}), "unsorted fields should error")
+	require.Error(t, checkCanonical([]Field{{ID: 1}, {ID: 1}}), "repeated non-flagged field should error")
+	err = checkCanonical([]Field{{ID: 1, Repeated: true}, {ID: 1, Repeated: true}})
+	require.NoError(t, err, "flagged repeated field should pass")
+	err = checkCanonical(nil)
+	require.NoError(t, err, "empty fields should pass")
 }
 
 func TestAppendHelpers(t *testing.T) {

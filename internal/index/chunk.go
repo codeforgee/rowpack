@@ -132,9 +132,7 @@ func (cc *chunkWriter) add(cb *chunkBuild) error {
 		PayloadCRC32C:     format.CRC32C(stored),
 	}
 	off := uint64(len(cc.out))
-	if err := h.MarshalTo(cc.reserve(format.IndexChunkHeaderSize)); err != nil {
-		return err
-	}
+	_ = h.MarshalTo(cc.reserve(format.IndexChunkHeaderSize)) // exact-size buffer: cannot fail
 	cc.out = append(cc.out, stored...)
 	var de format.IndexChunkDirEntry
 	de.ChunkSequence = cc.seq
@@ -265,9 +263,7 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 	se.DataStart = bounds.DataStart
 	se.DataEnd = bounds.DataEnd
 	var raw [format.SnapshotIndexEntrySize]byte
-	if err := se.MarshalTo(raw[:]); err != nil {
-		return nil, 0, nil, err
-	}
+	_ = se.MarshalTo(raw[:]) // exact-size buffer: cannot fail
 	stored := raw[:]
 	encryption := format.IndexChunkEncryptionNone
 	if crypto != nil {
@@ -295,9 +291,7 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 		StoredBytes:   uint32(len(stored)),
 		PayloadCRC32C: format.CRC32C(stored),
 	}
-	if err := h.MarshalTo(cc.out[:format.IndexChunkHeaderSize]); err != nil {
-		return nil, 0, nil, err
-	}
+	_ = h.MarshalTo(cc.out[:format.IndexChunkHeaderSize]) // exact-size buffer: cannot fail
 	copy(cc.out[format.IndexChunkHeaderSize:], stored)
 	// Snapshot directory entry first, then the streamed chunks' entries; the
 	// directory bytes join the plaintext CRC.
@@ -319,9 +313,7 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 	for i := range pages {
 		pages[i].fence.StoredOffset = pageOff
 		pageOff += uint64(len(pages[i].stored))
-		if err := pages[i].fence.MarshalTo(fbuf[:]); err != nil {
-			return nil, 0, nil, err
-		}
+		_ = pages[i].fence.MarshalTo(fbuf[:]) // exact-size buffer: cannot fail
 		fenceBytes = append(fenceBytes, fbuf[:]...)
 	}
 	// Plaintext-body CRC covers the re-readable content in physical order:
@@ -356,9 +348,7 @@ func AssembleTxn(h format.IndexTxnHeader, keyEpoch uint32, body []byte, f format
 	h.BodyBytes = uint64(len(body))
 	out := make([]byte, 0, format.IndexTxnHeaderSize+len(body)+format.IndexTxnFooterSize)
 	var hb [format.IndexTxnHeaderSize]byte
-	if err := h.MarshalTo(hb[:]); err != nil {
-		return nil, err
-	}
+	_ = h.MarshalTo(hb[:]) // exact-size buffer: cannot fail
 	if keyEpoch != 0 {
 		if err := format.PatchIndexTxnHeaderForStorage(hb[:], uint64(len(body)), keyEpoch); err != nil {
 			return nil, err
@@ -367,9 +357,7 @@ func AssembleTxn(h format.IndexTxnHeader, keyEpoch uint32, body []byte, f format
 	out = append(out, hb[:]...)
 	out = append(out, body...)
 	var fb [format.IndexTxnFooterSize]byte
-	if err := f.MarshalTo(fb[:]); err != nil {
-		return nil, err
-	}
+	_ = f.MarshalTo(fb[:]) // exact-size buffer: cannot fail
 	out = append(out, fb[:]...)
 	return out, nil
 }

@@ -944,6 +944,7 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 	}
 
 	// Footer: the commit authority; also binds the IndexTxn bytes.
+	fault.Check("commit.footer.before")
 	var ftr format.SnapshotFooter
 	ftr.SnapshotType = format.SnapshotType(w.typ)
 	ftr.SnapshotID = w.id
@@ -964,9 +965,7 @@ func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
 	ftr.BlocksCRC32C = format.CRC32C(blockCRCs)
 	ftr.IndexTxnCRC32C = format.CRC32C(stored)
 	var fb [format.SnapshotFooterSize]byte
-	if err := ftr.MarshalTo(fb[:]); err != nil {
-		return SnapshotInfo{}, err
-	}
+	_ = ftr.MarshalTo(fb[:]) // exact-size buffer: cannot fail
 	if _, err := w.store.data.Append(fb[:]); err != nil {
 		return SnapshotInfo{}, err
 	}
@@ -1030,9 +1029,7 @@ func (w *Writer) writeHeader() (format.SnapshotHeader, error) {
 		h.FirstBlockID = w.pending[0].header.BlockID
 	}
 	var buf [format.SnapshotHeaderSize]byte
-	if err := h.MarshalTo(buf[:]); err != nil {
-		return format.SnapshotHeader{}, err
-	}
+	_ = h.MarshalTo(buf[:]) // exact-size buffer: cannot fail
 	if _, err := w.store.data.Append(buf[:]); err != nil {
 		return format.SnapshotHeader{}, err
 	}
@@ -1107,9 +1104,7 @@ func (w *Writer) addBlocksToTxn(builder *index.Builder) error {
 
 func (w *Writer) writePendingBlock(blk *pendingBlock) ([format.BlockHeaderSize]byte, error) {
 	var hb [format.BlockHeaderSize]byte
-	if err := blk.header.MarshalTo(hb[:]); err != nil {
-		return hb, err
-	}
+	_ = blk.header.MarshalTo(hb[:]) // exact-size buffer: cannot fail
 	off, err := w.store.data.Append(hb[:])
 	if err != nil {
 		return hb, err

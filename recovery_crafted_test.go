@@ -239,3 +239,34 @@ func mustUint64(t *testing.T, r Row, i int) uint64 {
 	require.True(t, ok)
 	return v
 }
+
+// TestRebuildChainInvalidAfterParentForge: a committed DELTA whose IndexTxn
+// is corrupt falls back to the block rebuild; if its snapshot header has been
+// forged to claim a parent that was never committed, the rebuilt txn fails
+// Apply and open must refuse with "chain invalid after rebuild" instead of
+// silently grafting the snapshot onto the wrong parent.
+func TestRebuildChainInvalidAfterParentForge(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "chainforge")
+	db, err := Create(base, Options{BlockSize: 1024})
+	require.NoError(t, err)
+	buildTwoSnapshots(t, db)
+	committed, _, err := db.scanDataFile()
+	require.NoError(t, err)
+	last := committed[len(committed)-1]
+	require.NoError(t, db.Close())
+
+	// Corrupt the txn body (footer span CRC no longer matches -> rebuild) and
+	// forge the snapshot header's parent to a snapshot that does not exist.
+	span := readSpan(t, base, last.txnStart, last.txnEnd)
+	span[format.IndexTxnHeaderSize+10] ^= 0xFF
+	writeFileSpan(t, base, last.txnStart, span)
+
+	hdr := readSpan(t, base, last.start, last.start+format.SnapshotHeaderSize)
+	binary.LittleEndian.PutUint64(hdr[24:], 999)
+	binary.LittleEndian.PutUint32(hdr[88:], 0)
+	binary.LittleEndian.PutUint32(hdr[88:], format.CRC32C(hdr))
+	writeFileSpan(t, base, last.start, hdr)
+
+	_, err = Open(base, Options{BlockSize: 1024})
+	require.ErrorContains(t, err, "chain invalid after rebuild")
+}

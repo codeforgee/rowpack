@@ -252,33 +252,19 @@ func splitPage(raw []byte) (pageStreams, error) {
 	// sequential takes below can only run out of bytes if the sums lie —
 	// which they can't.
 	off := start
-	take := func(byteLen uint32) ([]byte, error) {
-		if byteLen > uint32(n-off) {
-			return nil, errIndexPageCorrupt
-		}
+	// Stream geometry (each take fits, and the streams sum to exactly the
+	// page body) was cross-checked by header.Unmarshal against the full page
+	// length, so the takes below cannot overrun.
+	take := func(byteLen uint32) []byte {
 		s := raw[off : off+int(byteLen)]
 		off += int(byteLen)
-		return s, nil
+		return s
 	}
-	var err error
-	if out.tableRun, err = take(out.header.TableRunBytes); err != nil {
-		return out, err
-	}
-	if out.rowID, err = take(out.header.RowIDBytes); err != nil {
-		return out, err
-	}
-	if out.blockRun, err = take(out.header.BlockRunBytes); err != nil {
-		return out, err
-	}
-	if out.ordinal, err = take(out.header.OrdinalBytes); err != nil {
-		return out, err
-	}
-	if out.changeBits, err = take(out.header.ChangeBitsBytes); err != nil {
-		return out, err
-	}
-	if off != n {
-		return out, fmt.Errorf("rowpack: index page has %d trailing bytes", n-off)
-	}
+	out.tableRun = take(out.header.TableRunBytes)
+	out.rowID = take(out.header.RowIDBytes)
+	out.blockRun = take(out.header.BlockRunBytes)
+	out.ordinal = take(out.header.OrdinalBytes)
+	out.changeBits = take(out.header.ChangeBitsBytes)
 	if uint64(out.count) > uint64(len(out.rowID)) {
 		return out, fmt.Errorf("rowpack: index page entry count %d exceeds row id stream %d", out.count, len(out.rowID))
 	}

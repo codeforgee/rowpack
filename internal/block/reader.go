@@ -182,6 +182,9 @@ func (r *Reader) ReadRowsPage(offset int64, c *RowsContainer, pageIdx int) (*Row
 		return nil, fmt.Errorf("rowpack: page %d decompressed %d bytes, want %d", pageIdx, len(raw), dir.RawSize)
 	}
 	r.decompressedBytes.Add(uint64(len(raw)))
+	r.pageCtrs.loads.Add(1)
+	r.pageCtrs.raw.Add(uint64(dir.RawSize))
+	r.pageCtrs.stored.Add(uint64(dir.StoredSize))
 	return c.parsePage(pageIdx, raw)
 }
 

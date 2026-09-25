@@ -3,7 +3,6 @@ package block
 import (
 	"fmt"
 	"sync"
-	"sync/atomic"
 
 	"github.com/rowpack/rowpack/internal/codec"
 	"github.com/rowpack/rowpack/internal/format"
@@ -62,15 +61,6 @@ type RowsContainer struct {
 	// a page is installed, so page memoization cannot bypass CacheBytes.
 	retainedBytes    int64
 	onRetainedChange func(int64)
-
-	// decompCounter is the reader's cumulative decompression counter; page
-	// decompression (the work that used to be a whole-block decode) is
-	// attributed to the reader so the loader's Stats report both disk bytes
-	// pulled and page raw bytes produced.
-	decompCounter *atomic.Uint64
-	// pageCtrs is the reader's shared per-page read counters (page loads, raw
-	// and stored page bytes) for the page-container I/O stats.
-	pageCtrs *PageStatCtrs
 }
 
 // lazy reports whether this container reads pages on demand rather than from
@@ -109,9 +99,6 @@ func (c *RowsContainer) RetainedLen() int64 {
 func rowsPageRetainedBytes(p *RowsPage) int64 {
 	return int64(len(p.raw)) + int64(len(p.ids))*8 + int64(len(p.ends))*4 + int64(len(p.vers))*4
 }
-
-// setCounter attaches the reader's decompression counter.
-func (c *RowsContainer) setCounter(p *atomic.Uint64) { c.decompCounter = p }
 
 // RecordsRegionStart is the byte offset (within stored) where the first page's
 // stored bytes begin.
@@ -214,7 +201,6 @@ func ParseRowsDir(offset int64, r *Reader, h format.BlockHeader, limits Limits) 
 		return nil, err
 	}
 	c := &RowsContainer{Header: rh, Dir: dir, blockH: h, comp: h.Compression, limits: limits, reader: r, blockOffset: offset}
-	c.pageCtrs = r.pageCounts()
 	if err := c.checkBounds(format.RowsBlockHeaderSize + len(dir)*format.RowsPageDirEntrySize); err != nil {
 		return nil, err
 	}
@@ -343,14 +329,6 @@ func (c *RowsContainer) decompress(i int, buf *rawBuf) ([]byte, error) {
 	}
 	if uint32(len(raw)) != dir.RawSize {
 		return nil, fmt.Errorf("rowpack: page %d decompressed %d bytes, want %d", i, len(raw), dir.RawSize)
-	}
-	if c.decompCounter != nil {
-		c.decompCounter.Add(uint64(len(raw)))
-	}
-	if c.pageCtrs != nil {
-		c.pageCtrs.loads.Add(1)
-		c.pageCtrs.raw.Add(uint64(dir.RawSize))
-		c.pageCtrs.stored.Add(uint64(dir.StoredSize))
 	}
 	return raw, nil
 }

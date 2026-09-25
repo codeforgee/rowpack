@@ -3,7 +3,6 @@ package block
 import (
 	"bytes"
 	"io"
-	"sync/atomic"
 	"testing"
 
 	"github.com/rowpack/rowpack/internal/codec"
@@ -92,19 +91,12 @@ func TestRowsContainerAccountingHooks(t *testing.T) {
 	var reported int64
 	rc.SetCacheAccounting(func(delta int64) { reported += delta })
 
-	// Decompression counter counts page loads.
-	var counter atomic.Uint64
-	rc.setCounter(&counter)
-	before := counter.Load()
 	var n int
 	if err := rc.ForEach(func(codec.PageRecord) error { n++; return nil }); err != nil {
 		t.Fatalf("ForEach: %v", err)
 	}
 	if n != len(rows) {
 		t.Fatalf("ForEach visited %d records, want %d", n, len(rows))
-	}
-	if counter.Load() <= before {
-		t.Fatal("decompression counter did not advance")
 	}
 	if reported == 0 {
 		t.Fatal("cache accounting callback never fired")

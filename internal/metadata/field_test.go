@@ -119,9 +119,7 @@ func TestFieldErrorPaths(t *testing.T) {
 	nenc, _ := encodeField(nil, &noncrit)
 	got, _, err := decodeField(nenc)
 	require.NoError(t, err, "decodeField non-critical passthrough")
-	if got.Value != nil {
-		t.Fatalf("non-critical unsupported field value %v, want nil", got.Value)
-	}
+	require.Equal(t, nil, got.Value, "non-critical unsupported field value %v, want nil", got.Value)
 	if string(got.raw) != "\x01\x02\x03" {
 		t.Fatalf("raw not preserved: %q", got.raw)
 	}

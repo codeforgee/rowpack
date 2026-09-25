@@ -249,11 +249,11 @@ func marshalRoundTrip(t *testing.T, m interface {
 	t.Helper()
 	buf := make([]byte, size)
 	if err := m.MarshalTo(buf); err != nil {
-		t.Fatalf("%T marshal: %v", m, err)
+		t.Fatalf("marshal: %v", err)
 	}
 	again := make([]byte, size)
 	if err := m.MarshalTo(again); err != nil {
-		t.Fatalf("%T re-marshal: %v", m, err)
+		t.Fatalf("marshal: %v", err)
 	}
 	if !bytes.Equal(buf, again) {
 		t.Fatalf("%T marshal not deterministic", m)
@@ -265,11 +265,11 @@ func marshalRoundTrip(t *testing.T, m interface {
 		Unmarshal(src []byte) error
 	})
 	if err := cp.Unmarshal(buf); err != nil {
-		t.Fatalf("%T unmarshal: %v", m, err)
+		t.Fatalf("unmarshal: %v", err)
 	}
 	rebuf := make([]byte, size)
 	if err := cp.MarshalTo(rebuf); err != nil {
-		t.Fatalf("%T re-encode after unmarshal: %v", m, err)
+		t.Fatalf("re-marshal: %v", err)
 	}
 	if !bytes.Equal(buf, rebuf) {
 		t.Fatalf("%T round trip changed bytes: %x vs %x", m, buf, rebuf)
@@ -280,9 +280,7 @@ func marshalRoundTrip(t *testing.T, m interface {
 // value, so accidental table swaps or endianness bugs surface immediately.
 func TestCRCKnownAnswer(t *testing.T) {
 	// CRC-32C("123456789") = 0xE3069283 (Castagnoli, standard test vector).
-	if got := CRC32C([]byte("123456789")); got != 0xE3069283 {
-		t.Fatalf("CRC32C(\"123456789\") = %08x, want e3069283", got)
-	}
+	require.EqualValues(t, 0xE3069283, CRC32C([]byte("123456789")), "CRC-32C known answer")
 	// Concat == CRC over the concatenation.
 	a, b := []byte("1234"), []byte("56789")
 	if got := CRC32CConcat(CRC32C(a), b); got != CRC32C([]byte("123456789")) {

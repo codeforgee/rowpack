@@ -357,7 +357,7 @@ func TestReaderReadRowsDir(t *testing.T) {
 	container, err := r.ReadRowsDir(0)
 	require.NoError(t, err)
 	require.NotNil(t, container)
-	require.Equal(t, 1, len(container.Dir))
+	require.EqualValues(t, 1, len(container.Dir))
 }
 
 func TestReaderReadRowsPage(t *testing.T) {

@@ -95,7 +95,7 @@ func TestUnknownColumnTypeForwardCompat(t *testing.T) {
 	}
 	require.NoError(t, it.Err())
 	it.Close()
-	require.Equal(t, 5, n)
+	require.EqualValues(t, 5, n)
 
 	// The future table has no usable schema: writes are rejected.
 	tx3, err := db2.Begin(ctx, delta)

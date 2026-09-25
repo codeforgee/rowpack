@@ -3,6 +3,8 @@ package index
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 )
 
@@ -59,9 +61,7 @@ func TestRowKeyIterSeek(t *testing.T) {
 
 func TestMetadataObjectsNilAndSorted(t *testing.T) {
 	v := EmptyView()
-	if got := v.MetadataObjects(1); got != nil {
-		t.Fatalf("absent snapshot: %v", got)
-	}
+	require.Nil(t, v.MetadataObjects(1), "absent snapshot must return nil")
 	// 手工构造一个含两个 object 的 snapshot。
 	v.snapshots[1] = &SnapshotMeta{ID: 1}
 	v.metadata[1] = map[uint64]*MetadataLoc{

@@ -20,38 +20,24 @@ func TestIndexTxnHeaderRowIndexPageCount(t *testing.T) {
 	if err := h.MarshalTo(b[:]); err != nil {
 		t.Fatal(err)
 	}
-	if v := binaryUint32(b[12:]); v != 7 {
-		t.Fatalf("index page count word = %d, want 7", v)
-	}
+	require.EqualValues(t, 7, binaryUint32(b[12:]), "index page count word = %d, want 7", binaryUint32(b[12:]))
 	// The KeyEpoch word (76..80) must still be zero for a plain header.
-	if v := binaryUint32(b[IndexTxnKeyEpochOffset:]); v != 0 {
-		t.Fatalf("key epoch word = %d, want 0 for plain header", v)
-	}
+	require.EqualValues(t, 0, binaryUint32(b[IndexTxnKeyEpochOffset:]), "key epoch word = %d, want 0 for plain header", binaryUint32(b[IndexTxnKeyEpochOffset:]))
 	var got IndexTxnHeader
 	if err := got.Unmarshal(b[:]); err != nil {
 		t.Fatal(err)
 	}
-	if got.RowIndexPageCount != h.RowIndexPageCount {
-		t.Fatalf("round trip count = %d, want %d", got.RowIndexPageCount, h.RowIndexPageCount)
-	}
+	require.Equal(t, h.RowIndexPageCount, got.RowIndexPageCount, "round trip count = %d, want %d", got.RowIndexPageCount, h.RowIndexPageCount)
 
 	// PatchIndexTxnHeaderForStorage (encrypted store) must preserve the page
 	// count while stamping KeyEpoch.
 	if err := PatchIndexTxnHeaderForStorage(b[:], 1000, 5); err != nil {
 		t.Fatal(err)
 	}
-	if v := binaryUint32(b[12:]); v != 7 {
-		t.Fatalf("index page count word after patch = %d, want 7", v)
-	}
-	if got := IndexTxnHeaderKeyEpoch(b[:]); got != 5 {
-		t.Fatalf("key epoch after patch = %d, want 5", got)
-	}
+	require.EqualValues(t, 7, binaryUint32(b[12:]), "index page count word after patch = %d, want 7", binaryUint32(b[12:]))
+	require.Equal(t, uint32(5), IndexTxnHeaderKeyEpoch(b[:]), "key epoch after patch = %d, want 5", IndexTxnHeaderKeyEpoch(b[:]))
 	err := got.Unmarshal(b[:])
 	require.NoError(t, err, "header with patched key epoch/body does not unmarshal")
-	if got.RowIndexPageCount != 7 {
-		t.Fatalf("round trip count after patch = %d, want 7", got.RowIndexPageCount)
-	}
-	if got.BodyBytes != 1000 {
-		t.Fatalf("body bytes after patch = %d, want 1000", got.BodyBytes)
-	}
+	require.EqualValues(t, 7, got.RowIndexPageCount, "round trip count after patch = %d, want 7", got.RowIndexPageCount)
+	require.EqualValues(t, 1000, got.BodyBytes, "body bytes after patch = %d, want 1000", got.BodyBytes)
 }

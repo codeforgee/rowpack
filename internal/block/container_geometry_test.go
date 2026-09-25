@@ -122,9 +122,7 @@ func TestContainerGeometryGate(t *testing.T) {
 				return
 			}
 			require.NotNil(t, err, "%s: container accepted", tc.name)
-			if !strings.Contains(err.Error(), tc.wanted) {
-				t.Fatalf("%s: err = %v, want diagnosis %q", tc.name, err, tc.wanted)
-			}
+			require.Contains(t, err.Error(), tc.wanted, "%s: err = %v, want diagnosis %q", tc.name, err, tc.wanted)
 			if strings.Contains(err.Error(), "panic") {
 				t.Fatalf("geometry failures must be errors, not panics: %v", err)
 			}

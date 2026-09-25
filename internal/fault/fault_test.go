@@ -3,6 +3,8 @@ package fault
 import (
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestInjectAndCheck(t *testing.T) {
@@ -12,14 +14,10 @@ func TestInjectAndCheck(t *testing.T) {
 	Inject("commit.beforeflush", func() { count.Add(2) })
 
 	Check("commit.beforeflush")
-	if got := count.Load(); got != 3 {
-		t.Fatalf("actions not run in order: got %d, want 3", got)
-	}
+	require.Equal(t, int32(3), count.Load(), "actions not run in order: got %d, want 3", count.Load())
 
 	Check("commit.beforeflush")
-	if got := count.Load(); got != 6 {
-		t.Fatalf("actions should run every check: got %d, want 6", got)
-	}
+	require.Equal(t, int32(6), count.Load(), "actions should run every check: got %d, want 6", count.Load())
 }
 
 func TestCheckNoopWithoutInjection(t *testing.T) {
@@ -34,13 +32,9 @@ func TestClearRemovesInjections(t *testing.T) {
 	Clear()
 
 	Check("clear.point")
-	if got := count.Load(); got != 0 {
-		t.Fatalf("Clear did not remove actions: got %d, want 0", got)
-	}
+	require.Equal(t, int32(0), count.Load(), "Clear did not remove actions: got %d, want 0", count.Load())
 
 	Inject("clear.point", func() { count.Add(1) })
 	Check("clear.point")
-	if got := count.Load(); got != 1 {
-		t.Fatalf("reinjection after Clear failed: got %d, want 1", got)
-	}
+	require.Equal(t, int32(1), count.Load(), "reinjection after Clear failed: got %d, want 1", count.Load())
 }

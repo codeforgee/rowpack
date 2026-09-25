@@ -102,9 +102,7 @@ func TestRowsContainerRoundTripMultiPage(t *testing.T) {
 			t.Fatalf("ForEach(%d) = {%d v%d ct%d}, want {%d v%d ct%d}", idx, rec.RowID, rec.SchemaVersion, rec.ChangeType, w.rowID, w.version, w.ct)
 		}
 		if w.ct == format.ChangeDelete {
-			if len(rec.Body) != 0 {
-				t.Fatalf("ForEach(%d): delete carries body", idx)
-			}
+			require.EqualValues(t, 0, len(rec.Body), "ForEach(%d): delete carries body", idx)
 		} else if len(rec.Body) != w.bodyLen {
 			t.Fatalf("ForEach(%d) body %d bytes, want %d", idx, len(rec.Body), w.bodyLen)
 		}
@@ -126,9 +124,7 @@ func TestRowsContainerRoundTripMultiPage(t *testing.T) {
 			t.Fatalf("RecordAt(%d) = {%d v%d ct%d}, want {%d v%d ct%d}", ord, rec.RowID, rec.SchemaVersion, rec.ChangeType, w.rowID, w.version, w.ct)
 		}
 		if w.ct == format.ChangeDelete {
-			if len(rec.Body) != 0 {
-				t.Fatalf("RecordAt(%d): delete carries body", ord)
-			}
+			require.EqualValues(t, 0, len(rec.Body), "RecordAt(%d): delete carries body", ord)
 		} else if len(rec.Body) != w.bodyLen {
 			t.Fatalf("RecordAt(%d) body %d bytes, want %d", ord, len(rec.Body), w.bodyLen)
 		}

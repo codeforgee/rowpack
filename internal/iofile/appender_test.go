@@ -3,7 +3,6 @@ package iofile
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -148,16 +147,16 @@ func TestViewErrors(t *testing.T) {
 
 	if _, _, err := a.View(-1, 4); err == nil {
 		t.Fatal("negative offset view succeeded")
-	} else if !strings.Contains(err.Error(), "invalid view range") {
-		t.Fatalf("unexpected error: %v", err)
+	} else {
+		require.Contains(t, err.Error(), "invalid view range", "unexpected error: %v", err)
 	}
 	if _, _, err := a.View(0, -3); err == nil {
 		t.Fatal("negative length view succeeded")
 	}
 	if _, _, err := a.View(0, 10); err == nil {
 		t.Fatal("view beyond EOF succeeded")
-	} else if !strings.Contains(err.Error(), "beyond file size") {
-		t.Fatalf("unexpected error: %v", err)
+	} else {
+		require.Contains(t, err.Error(), "beyond file size", "unexpected error: %v", err)
 	}
 }
 
@@ -202,7 +201,7 @@ func TestTruncate(t *testing.T) {
 	if err != nil && err.Error() != "EOF" {
 		t.Fatalf("ReadAt truncated region: %v", err)
 	}
-	require.Equal(t, 4, n, "read %d, want 4", n)
+	require.EqualValues(t, 4, n, "read %d, want 4", n)
 }
 
 func TestTruncateGrowsOffsetBack(t *testing.T) {

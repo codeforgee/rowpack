@@ -265,7 +265,10 @@ func TestBlockHeaderMarshalsWithEnums(t *testing.T) {
 	is := func(src []byte, want BlockKind, wantComp Compression) BlockHeader {
 		var h BlockHeader
 		if err := h.Unmarshal(src); err != nil {
-			t.Fatalf("kind=%d comp=%d: %v", want, wantComp, err)
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if h.BlockKind != want || h.Compression != wantComp {
+			t.Fatalf("kind/comp = %d/%d, want %d/%d", h.BlockKind, h.Compression, want, wantComp)
 		}
 		return h
 	}

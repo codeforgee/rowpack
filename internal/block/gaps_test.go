@@ -138,9 +138,7 @@ func TestRowsPageBuilderResetAndDecodedIDs(t *testing.T) {
 
 	for i, w := range want {
 		got := page.ids[i]
-		if got != w.rowID {
-			t.Fatalf("decoded id %d = %d, want %d", i, got, w.rowID)
-		}
+		require.Equal(t, w.rowID, got, "decoded id %d = %d, want %d", i, got, w.rowID)
 	}
 
 	// Reset clears the builder for reuse.

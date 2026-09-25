@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 )
 
@@ -88,12 +90,8 @@ func TestEncryptedChunkRoundTrip(t *testing.T) {
 		t.Fatalf("want 3 chunks, got %d", len(chunks))
 	}
 	for i, c := range chunks {
-		if c.raw.Encryption != format.IndexChunkEncryptionAESGCM {
-			t.Fatalf("chunk %d encryption = %d, want AESGCM", i, c.raw.Encryption)
-		}
-		if c.raw.KeyEpoch != 7 {
-			t.Fatalf("chunk %d key epoch = %d, want 7", i, c.raw.KeyEpoch)
-		}
+		require.Equal(t, format.IndexChunkEncryptionAESGCM, c.raw.Encryption, "chunk %d encryption = %d, want AESGCM", i, c.raw.Encryption)
+		require.Equal(t, uint32(7), c.raw.KeyEpoch, "chunk %d key epoch = %d, want 7", i, c.raw.KeyEpoch)
 	}
 	// The snapshot chunk's payload must differ from its plaintext: 72B entry
 	// + 16B tag sealed via crypto.Seal.
@@ -179,9 +177,7 @@ func TestEncryptedPlaintextCRCStreams(t *testing.T) {
 	if err := h.Unmarshal(data); err != nil {
 		t.Fatal(err)
 	}
-	if got := format.IndexTxnHeaderKeyEpoch(data[:format.IndexTxnHeaderSize]); got != 3 {
-		t.Fatalf("header key epoch = %d, want 3", got)
-	}
+	require.Equal(t, uint32(3), format.IndexTxnHeaderKeyEpoch(data[:format.IndexTxnHeaderSize]), "header key epoch must be 3")
 	if _, err := parseStream(data, nil, nil); err == nil {
 		t.Fatal("plain parse accepted an encrypted txn")
 	}

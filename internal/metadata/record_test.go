@@ -66,7 +66,7 @@ func TestRecordEncodeDecodeRoundtrip(t *testing.T) {
 		t.Fatalf("FieldByID(1): %+v", got)
 	}
 	if got := r.FieldByID(99); got != nil {
-		t.Fatalf("FieldByID(99) should be nil, got %+v", got)
+		t.Fatalf("FieldByID(99): %+v", got)
 	}
 }
 
@@ -96,9 +96,7 @@ func TestRecordEncodeWireTypeFromSchema(t *testing.T) {
 	var r Record
 	err = r.Decode(enc, schemaFixture())
 	require.NoError(t, err, "Decode")
-	if r.Fields[0].WireType != format.WireString {
-		t.Fatalf("field wire type not filled from schema: %+v", r.Fields[0])
-	}
+	require.Equal(t, format.WireString, r.Fields[0].WireType, "field wire type not filled from schema: %+v", r.Fields[0])
 }
 
 func TestRecordEncodeSchemaMismatch(t *testing.T) {
@@ -127,9 +125,7 @@ func TestRecordUnknownFieldsPassthrough(t *testing.T) {
 	if f == nil {
 		t.Fatal("unknown non-critical field lost")
 	}
-	if f.Value != nil {
-		t.Fatalf("unknown field value %v, want nil", f.Value)
-	}
+	require.Equal(t, nil, f.Value, "unknown field value %v, want nil", f.Value)
 
 	// Decode with nil schema keeps the value.
 	var r2 Record

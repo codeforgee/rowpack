@@ -29,9 +29,7 @@ func TestRowsBlockHeaderGuards(t *testing.T) {
 	}
 	// Reserved 必须回写为零。
 	for i := 10; i < 12; i++ {
-		if buf[i] != 0 {
-			t.Fatalf("reserved byte %d = %d, want 0", i, buf[i])
-		}
+		require.EqualValues(t, 0, buf[i], "reserved byte %d = %d, want 0", i, buf[i])
 	}
 	// MarshalTo 先清零整个目标：脏缓冲区不得留下残字节。
 	dirty := make([]byte, RowsBlockHeaderSize)
@@ -71,9 +69,7 @@ func TestRowsBlockHeaderGuards(t *testing.T) {
 			var out RowsBlockHeader
 			err = out.Unmarshal(src[:])
 			require.NotNil(t, err, "accepted forged header %v", src[:])
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("err = %v, want diagnosis %q", err, tc.want)
-			}
+			require.Contains(t, err.Error(), tc.want, "err = %v, want diagnosis %q", err, tc.want)
 		})
 	}
 
@@ -116,9 +112,7 @@ func TestRowsPageDirEntryGuards(t *testing.T) {
 	}
 	// 尾部 reserved 必须为零（前向兼容的余量不能被脏字节占掉）。
 	for i := 52; i < RowsPageDirEntrySize; i++ {
-		if buf[i] != 0 {
-			t.Fatalf("reserved byte %d = %d, want 0", i, buf[i])
-		}
+		require.EqualValues(t, 0, buf[i], "reserved byte %d = %d, want 0", i, buf[i])
 	}
 	for n := 0; n < RowsPageDirEntrySize; n++ {
 		var out RowsPageDirEntry

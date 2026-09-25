@@ -3,6 +3,8 @@ package index
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rowpack/rowpack/internal/format"
 )
 
@@ -88,9 +90,7 @@ func compareRowShards(t *testing.T, a, b *View) {
 		t.Fatalf("table count %d != %d", len(tables), len(btables))
 	}
 	for i := range tables {
-		if tables[i] != btables[i] {
-			t.Fatalf("table %d != %d", tables[i], btables[i])
-		}
+		require.Equal(t, btables[i], tables[i], "table %d != %d", tables[i], btables[i])
 		sa := a.rows[1][tables[i]]
 		sb := b.rows[1][btables[i]]
 		if (sa == nil) != (sb == nil) {
@@ -103,26 +103,16 @@ func compareRowShards(t *testing.T, a, b *View) {
 			t.Fatalf("table %d row count %d != %d", tables[i], len(sa.rowIDs), len(sb.rowIDs))
 		}
 		for j := range sa.rowIDs {
-			if sa.rowIDs[j] != sb.rowIDs[j] {
-				t.Fatalf("table %d row %d id %d != %d", tables[i], j, sa.rowIDs[j], sb.rowIDs[j])
-			}
-			if sa.ordinals[j] != sb.ordinals[j] {
-				t.Fatalf("table %d row %d ordinal %d != %d", tables[i], j, sa.ordinals[j], sb.ordinals[j])
-			}
-			if sa.changes[j] != sb.changes[j] {
-				t.Fatalf("table %d row %d change %d != %d", tables[i], j, sa.changes[j], sb.changes[j])
-			}
+			require.Equal(t, sb.rowIDs[j], sa.rowIDs[j], "table %d row %d id %d != %d", tables[i], j, sa.rowIDs[j], sb.rowIDs[j])
+			require.Equal(t, sb.ordinals[j], sa.ordinals[j], "table %d row %d ordinal %d != %d", tables[i], j, sa.ordinals[j], sb.ordinals[j])
+			require.Equal(t, sb.changes[j], sa.changes[j], "table %d row %d change %d != %d", tables[i], j, sa.changes[j], sb.changes[j])
 		}
 		if len(sa.runStart) != len(sb.runStart) || len(sa.blockIDs) != len(sb.blockIDs) {
 			t.Fatalf("table %d run directory %d/%d != %d/%d", tables[i], len(sa.runStart), len(sa.blockIDs), len(sb.runStart), len(sb.blockIDs))
 		}
 		for j := range sa.blockIDs {
-			if sa.blockIDs[j] != sb.blockIDs[j] {
-				t.Fatalf("table %d run %d block %d != %d", tables[i], j, sa.blockIDs[j], sb.blockIDs[j])
-			}
-			if sa.runStart[j] != sb.runStart[j] {
-				t.Fatalf("table %d run %d start %d != %d", tables[i], j, sa.runStart[j], sb.runStart[j])
-			}
+			require.Equal(t, sb.blockIDs[j], sa.blockIDs[j], "table %d run %d block %d != %d", tables[i], j, sa.blockIDs[j], sb.blockIDs[j])
+			require.Equal(t, sb.runStart[j], sa.runStart[j], "table %d run %d start %d != %d", tables[i], j, sa.runStart[j], sb.runStart[j])
 		}
 		if sa.runStart[len(sa.runStart)-1] != uint32(len(sa.rowIDs)) {
 			t.Fatalf("table %d terminal run start %d != %d", tables[i], sa.runStart[len(sa.runStart)-1], len(sa.rowIDs))

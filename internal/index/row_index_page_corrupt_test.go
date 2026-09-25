@@ -94,7 +94,7 @@ func TestParseRowsValid(t *testing.T) {
 	region := buildPageRegion(t, riSeq(100, 25), 9)
 	rows, err := parseCorruptPages(region, uint32(len(riSeq(100, 25))/indexPageEntryCount+1), 9)
 	require.NoError(t, err, "valid parse rejected")
-	require.Equal(t, 100, rows, "rows = %d, want 100", rows)
+	require.EqualValues(t, 100, rows, "rows = %d, want 100", rows)
 }
 
 func TestParseRowsForgedPageCount(t *testing.T) {

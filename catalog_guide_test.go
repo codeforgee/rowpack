@@ -268,8 +268,8 @@ func TestCatalogGuide_TombstoneAcrossDeltas(t *testing.T) {
 		}
 	}
 	require.NoError(t, it.Err())
-	require.Equal(t, 2, live)
-	require.Equal(t, 1, dropped)
+	require.EqualValues(t, 2, live)
+	require.EqualValues(t, 1, dropped)
 }
 
 // TestCatalogGuide_NullableContract pins §2.2 note 1: the engine enforces

@@ -2,7 +2,6 @@ package lockfile
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -34,9 +33,7 @@ func TestAcquireBlocksSecondWriter(t *testing.T) {
 		l2.Release()
 		t.Fatal("second Acquire succeeded while first lock held")
 	}
-	if !strings.Contains(err.Error(), "locked by another writer") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.Contains(t, err.Error(), "locked by another writer", "unexpected error: %v", err)
 }
 
 func TestReleaseNilLockLarger(t *testing.T) {
@@ -52,9 +49,7 @@ func TestReleaseNilLockLarger(t *testing.T) {
 func TestAcquireOpenError(t *testing.T) {
 	_, err := Acquire(filepath.Join(t.TempDir(), "missing-dir", "store.lock"))
 	require.Error(t, err, "Acquire on unwritable path succeeded")
-	if !strings.Contains(err.Error(), "open lock file") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.Contains(t, err.Error(), "open lock file", "unexpected error: %v", err)
 }
 
 func TestReacquireAfterRelease(t *testing.T) {

@@ -368,9 +368,7 @@ func TestRowsPageBuilderReuse(t *testing.T) {
 		requireNoErr(t, err)
 		p, err := ParseRowsPage(page)
 		requireNoErr(t, err)
-		if p.h.EntryCount != 100 {
-			t.Fatalf("round %d: %d entries", round, p.h.EntryCount)
-		}
+		require.Equal(t, uint32(100), p.h.EntryCount, "round %d: %d entries", round, p.h.EntryCount)
 		if b.countRows() != 0 || b.rawBytes() != format.RowsPageHeaderSize {
 			t.Fatalf("round %d: builder not reset (count %d, raw %d)", round, b.countRows(), b.rawBytes())
 		}

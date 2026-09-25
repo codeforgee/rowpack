@@ -132,7 +132,7 @@ func TestConcurrentReadersDuringCommits(t *testing.T) {
 	}
 	require.NoError(t, it.Err())
 	it.Close()
-	require.Equal(t, 50, n)
+	require.EqualValues(t, 50, n)
 	require.NoError(t, db.Close())
 }
 
@@ -176,7 +176,7 @@ func TestCloseWaitsForOpenIterator(t *testing.T) {
 	require.NoError(t, it.Close())
 	wg.Wait()
 	require.NoError(t, <-closed)
-	require.Equal(t, 2000, consumed)
+	require.EqualValues(t, 2000, consumed)
 
 	// Reads after Close fail cleanly.
 	_, err = db.Get(ctx, 1, "t", 1, nil)

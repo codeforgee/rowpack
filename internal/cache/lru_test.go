@@ -50,7 +50,7 @@ func TestLRUNil(t *testing.T) {
 	require.Equal(t, uint64(0), lru.Remaining())
 	require.Equal(t, uint64(0), lru.UsedBytes())
 	require.Equal(t, uint64(0), lru.OverheadBytes())
-	require.Equal(t, 0, lru.Len())
+	require.EqualValues(t, 0, lru.Len())
 }
 
 func TestLRUGetPut(t *testing.T) {
@@ -70,7 +70,7 @@ func TestLRUGetPut(t *testing.T) {
 	// Stats
 	require.Equal(t, uint64(1), lru.Hits())
 	require.Equal(t, uint64(1), lru.Misses())
-	require.Equal(t, 1, lru.Len())
+	require.EqualValues(t, 1, lru.Len())
 	require.Equal(t, uint64(100), lru.UsedBytes())
 }
 
@@ -86,7 +86,7 @@ func TestLRUUpdateExisting(t *testing.T) {
 
 	// Used bytes should reflect the new size
 	require.Equal(t, uint64(200), lru.UsedBytes())
-	require.Equal(t, 1, lru.Len())
+	require.EqualValues(t, 1, lru.Len())
 }
 
 func TestLRUEviction(t *testing.T) {
@@ -96,11 +96,11 @@ func TestLRUEviction(t *testing.T) {
 	lru.Put(2, 100, "value2")
 	lru.Put(3, 100, "value3") // This should not evict yet (300 bytes total)
 
-	require.Equal(t, 3, lru.Len())
+	require.EqualValues(t, 3, lru.Len())
 
 	lru.Put(4, 100, "value4") // This should evict LRU (key 1)
 
-	require.Equal(t, 3, lru.Len())
+	require.EqualValues(t, 3, lru.Len())
 	require.Equal(t, uint64(1), lru.Evictions())
 
 	// Key 1 should be evicted
@@ -149,7 +149,7 @@ func TestLRUValueLargerThanCapacity(t *testing.T) {
 
 	_, ok := lru.Get(1)
 	require.False(t, ok)
-	require.Equal(t, 0, lru.Len())
+	require.EqualValues(t, 0, lru.Len())
 	require.Equal(t, uint64(0), lru.UsedBytes())
 }
 
@@ -173,11 +173,11 @@ func TestLRUDelete(t *testing.T) {
 	lru.Put(1, 100, "value1")
 	lru.Put(2, 100, "value2")
 
-	require.Equal(t, 2, lru.Len())
+	require.EqualValues(t, 2, lru.Len())
 
 	lru.Delete(1)
 
-	require.Equal(t, 1, lru.Len())
+	require.EqualValues(t, 1, lru.Len())
 	require.Equal(t, uint64(100), lru.UsedBytes())
 
 	_, ok := lru.Get(1)
@@ -194,7 +194,7 @@ func TestLRUDeleteNonExistent(t *testing.T) {
 
 	lru.Delete(999) // Non-existent key
 
-	require.Equal(t, 1, lru.Len())
+	require.EqualValues(t, 1, lru.Len())
 }
 
 func TestLRURemaining(t *testing.T) {
@@ -303,7 +303,7 @@ func TestLRUStats(t *testing.T) {
 	require.Equal(t, uint64(1), lru.Hits())
 	require.Equal(t, uint64(1), lru.Misses())
 	require.Equal(t, uint64(1), lru.Loads())
-	require.Equal(t, 1, lru.Len())
+	require.EqualValues(t, 1, lru.Len())
 	require.Equal(t, uint64(100), lru.UsedBytes())
 	require.Equal(t, uint64(128), lru.OverheadBytes())
 
@@ -321,13 +321,13 @@ func TestLRUEvictionWithSizeChange(t *testing.T) {
 	// but may trigger eviction on next put
 	lru.Put(1, 300, "value1_updated")
 
-	require.Equal(t, 2, lru.Len())
+	require.EqualValues(t, 2, lru.Len())
 	require.Equal(t, uint64(500), lru.UsedBytes()) // 300 + 200
 
 	// Now add key 3 - should evict key 2 (LRU)
 	lru.Put(3, 100, "value3")
 
-	require.Equal(t, 2, lru.Len()) // key 2 evicted, keys 1 and 3 remain
+	require.EqualValues(t, 2, lru.Len()) // key 2 evicted, keys 1 and 3 remain
 	require.Equal(t, uint64(1), lru.Evictions())
 }
 
@@ -338,7 +338,7 @@ func TestLRUNegativeRemaining(t *testing.T) {
 	lru.Put(1, 200, "value1")
 
 	// Should not be cached
-	require.Equal(t, 0, lru.Len())
+	require.EqualValues(t, 0, lru.Len())
 
 	// Nothing cached, so remaining is the full capacity
 	require.Equal(t, uint64(100), lru.Remaining())
@@ -402,7 +402,7 @@ func TestLRUZeroSizeValue(t *testing.T) {
 	lru.Put(1, 0, "value1")
 
 	require.Equal(t, uint64(0), lru.UsedBytes())
-	require.Equal(t, 1, lru.Len())
+	require.EqualValues(t, 1, lru.Len())
 
 	val, ok := lru.Get(1)
 	require.True(t, ok)
@@ -421,13 +421,13 @@ func TestSingleflightDo(t *testing.T) {
 	val, err := g.Do("key1", fn)
 	require.NoError(t, err)
 	require.Equal(t, "result", val)
-	require.Equal(t, 1, count)
+	require.EqualValues(t, 1, count)
 
 	// Sequential calls re-execute fn (singleflight only merges concurrent calls)
 	val, err = g.Do("key1", fn)
 	require.NoError(t, err)
 	require.Equal(t, "result", val)
-	require.Equal(t, 2, count)
+	require.EqualValues(t, 2, count)
 }
 
 func TestSingleflightDoConcurrent(t *testing.T) {
@@ -459,7 +459,7 @@ func TestSingleflightDoConcurrent(t *testing.T) {
 
 	// fn should only be called once
 	mu.Lock()
-	require.Equal(t, 1, count)
+	require.EqualValues(t, 1, count)
 	mu.Unlock()
 }
 
@@ -496,8 +496,8 @@ func TestSingleflightDifferentKeys(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "result2", val)
 
-	require.Equal(t, 1, count1)
-	require.Equal(t, 1, count2)
+	require.EqualValues(t, 1, count1)
+	require.EqualValues(t, 1, count2)
 }
 
 func TestSingleflightDifferentKeysConcurrent(t *testing.T) {
@@ -546,7 +546,7 @@ func TestSingleflightDifferentKeysConcurrent(t *testing.T) {
 	wg.Wait()
 
 	mu.Lock()
-	require.Equal(t, 1, count1)
-	require.Equal(t, 1, count2)
+	require.EqualValues(t, 1, count1)
+	require.EqualValues(t, 1, count2)
 	mu.Unlock()
 }

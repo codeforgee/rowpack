@@ -118,7 +118,7 @@ func TestScanMergeLayers(t *testing.T) {
 		require.Equal(t, ChangeInsert, it2.ChangeType())
 	}
 	require.NoError(t, it2.Err())
-	require.Equal(t, 10, n)
+	require.EqualValues(t, 10, n)
 }
 
 // TestCommitErrorMessage covers the CommitError message formats and unwrap.

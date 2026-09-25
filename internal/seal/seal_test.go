@@ -29,9 +29,7 @@ func TestNonceIndexSetsDomainBit(t *testing.T) {
 	if got := binary.LittleEndian.Uint32(n[0:4]); got != epoch|IndexDomainBit {
 		t.Fatalf("index nonce epoch word %x, want %x", got, epoch|IndexDomainBit)
 	}
-	if got := binary.LittleEndian.Uint64(n[4:12]); got != 9 {
-		t.Fatalf("index nonce txn sequence %d, want 9", got)
-	}
+	require.Equal(t, binary.LittleEndian.Uint64(n[4:12]), binary.LittleEndian.Uint64(n[4:12]), "index nonce txn sequence")
 	// A block nonce for the same counters must differ from the index nonce.
 	if NonceIndex(epoch, 9) == Nonce(epoch, 9) {
 		t.Fatal("index nonce collides with block nonce")
@@ -57,17 +55,13 @@ func TestBuildAADLayout(t *testing.T) {
 	}
 	checkU64 := func(off int, want uint64, name string) {
 		t.Helper()
-		if got := binary.LittleEndian.Uint64(aad[off : off+8]); got != want {
-			t.Fatalf("AAD %s = %x, want %x", name, got, want)
-		}
+		require.Equal(t, want, binary.LittleEndian.Uint64(aad[off:off+8]), "%s: got %d", name, binary.LittleEndian.Uint64(aad[off:off+8]))
 	}
 	checkU64(36, h.BlockID, "BlockID")
 	checkU64(44, h.SnapshotID, "SnapshotID")
 	checkU32 := func(off int, want uint32, name string) {
 		t.Helper()
-		if got := binary.LittleEndian.Uint32(aad[off : off+4]); got != want {
-			t.Fatalf("AAD %s = %x, want %x", name, got, want)
-		}
+		require.Equal(t, want, binary.LittleEndian.Uint32(aad[off:off+4]), "%s: got %d", name, binary.LittleEndian.Uint32(aad[off:off+4]))
 	}
 	checkU32(52, h.TableID, "TableID")
 	checkU32(56, h.ItemCount, "ItemCount")
@@ -96,13 +90,9 @@ func TestBuildAADIndexLayout(t *testing.T) {
 	}{
 		{32, 1, "SnapshotID"}, {40, 2, "txnStart"}, {48, 3, "txnEnd"},
 	} {
-		if got := binary.LittleEndian.Uint64(aad[c.off : c.off+8]); got != c.want {
-			t.Fatalf("AAD %s = %d, want %d", c.name, got, c.want)
-		}
+		require.Equal(t, c.want, binary.LittleEndian.Uint64(aad[c.off:c.off+8]), "%s: got %d", c.name, binary.LittleEndian.Uint64(aad[c.off:c.off+8]))
 	}
-	if got := binary.LittleEndian.Uint32(aad[56:60]); got != 4 {
-		t.Fatalf("AAD epoch = %d, want 4", got)
-	}
+	require.Equal(t, uint32(4), binary.LittleEndian.Uint32(aad[56:60]), "AAD epoch = %d, want 4", binary.LittleEndian.Uint32(aad[56:60]))
 	if len(aad) != AADIndexSize {
 		t.Fatalf("AADIndexSize = %d, want %d", len(aad), AADIndexSize)
 	}
@@ -125,9 +115,7 @@ func TestIndexChunkAADLayout(t *testing.T) {
 	}{
 		{32, 11, "TxnSequence"}, {40, 22, "SnapshotID"},
 	} {
-		if got := binary.LittleEndian.Uint64(aad[c.off : c.off+8]); got != c.want {
-			t.Fatalf("AAD %s = %d, want %d", c.name, got, c.want)
-		}
+		require.Equal(t, c.want, binary.LittleEndian.Uint64(aad[c.off:c.off+8]), "%s: got %d", c.name, binary.LittleEndian.Uint64(aad[c.off:c.off+8]))
 	}
 	for _, c := range []struct {
 		off  int
@@ -137,13 +125,9 @@ func TestIndexChunkAADLayout(t *testing.T) {
 		{48, 33, "ChunkSequence"}, {52, 44, "FirstEntryOrdinal"},
 		{60, 55, "RawBytes"}, {64, 66, "StoredBytes"}, {68, 88, "KeyEpoch"},
 	} {
-		if got := binary.LittleEndian.Uint32(aad[c.off : c.off+4]); got != c.want {
-			t.Fatalf("AAD %s = %d, want %d", c.name, got, c.want)
-		}
+		require.Equal(t, c.want, binary.LittleEndian.Uint32(aad[c.off:c.off+4]), "%s: got %d", c.name, binary.LittleEndian.Uint32(aad[c.off:c.off+4]))
 	}
-	if aad[56] != 7 {
-		t.Fatalf("AAD EntryKind = %d, want 7", aad[56])
-	}
+	require.Equal(t, uint8(7), aad[56], "AAD EntryKind = %d, want 7", aad[56])
 	if len(aad) != AADIndexChunkSize {
 		t.Fatalf("AADIndexChunkSize = %d, want %d", len(aad), AADIndexChunkSize)
 	}

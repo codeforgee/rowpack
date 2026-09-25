@@ -103,7 +103,7 @@ func TestAllTypesRoundTrip(t *testing.T) {
 	dt, _ := got[16].DateTimeValue()
 	require.True(t, dt.Equal(time.Date(2026, 7, 8, 1, 10, 11, 123456789, time.UTC)), "dt=%v (9:10:11 CST = 1:10:11 UTC)", dt)
 	dec, _ := got[17].Decimal()
-	require.Equal(t, 0, dec.Unscaled.Cmp(bigDec), "scaled big decimal")
+	require.EqualValues(t, 0, dec.Unscaled.Cmp(bigDec), "scaled big decimal")
 	require.Equal(t, int32(6), dec.Scale)
 	require.True(t, got[18].IsNull(), "nullable column written as NULL")
 
@@ -144,7 +144,7 @@ func TestDecimalRoundTrip(t *testing.T) {
 			got, err := db.Get(ctx, snap, "d", 1, nil)
 			require.NoError(t, err)
 			dec, _ := got[0].Decimal()
-			require.Equal(t, 0, dec.Unscaled.Cmp(u), "%s round trip", tc)
+			require.EqualValues(t, 0, dec.Unscaled.Cmp(u), "%s round trip", tc)
 		})
 	}
 }

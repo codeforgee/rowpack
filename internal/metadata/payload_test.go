@@ -126,9 +126,7 @@ func TestPayloadBuildParseRoundtrip(t *testing.T) {
 	if string(p.Records[0]) != "record-one" {
 		t.Fatalf("record 0: %q", p.Records[0])
 	}
-	if p.Records[1] != nil {
-		t.Fatalf("DELETE record should be nil, got %q", p.Records[1])
-	}
+	require.Nil(t, p.Records[1], "DELETE record should be nil")
 	if string(p.Records[2]) != "record-two" {
 		t.Fatalf("record 2: %q", p.Records[2])
 	}
@@ -217,9 +215,7 @@ func TestPayloadBuildErrors(t *testing.T) {
 
 func TestObjectIDAllocatorStableIDs(t *testing.T) {
 	a := NewIDAllocator()
-	if a.next != TableSpaceEnd {
-		t.Fatalf("allocator must start at TableSpaceEnd, got %d", a.next)
-	}
+	require.Equal(t, TableSpaceEnd, a.next, "allocator must start at TableSpaceEnd, got %d", a.next)
 	id1 := a.Alloc("rowpack.meta.v1", "col.users.name")
 	id2 := a.Alloc("rowpack.meta.v1", "col.users.name")
 	require.Equal(t, id2, id1, "same natural key must map to one ID: %d vs %d", id1, id2)
@@ -260,9 +256,8 @@ func TestObjectIDAllocatorForce(t *testing.T) {
 }
 
 func TestTableIDObjectID(t *testing.T) {
-	if got := ObjectID(42); got != 42 {
-		t.Fatalf("ObjectID(42) = %d", got)
-	}
+	got := ObjectID(42)
+	require.Equal(t, ObjectID(42), got, "ObjectID(42) = %d", got)
 	id, err := TableID(42)
 	if err != nil || id != 42 {
 		t.Fatalf("TableID(42) = %d, %v", id, err)

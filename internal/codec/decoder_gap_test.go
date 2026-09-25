@@ -1,6 +1,10 @@
 package codec
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // Decoder.Columns 本包覆盖为 0%（ReadBatch 在根包调用）。补一行语义测试。
 func TestDecoderColumnsGetter(t *testing.T) {
@@ -9,9 +13,7 @@ func TestDecoderColumnsGetter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := d.Columns(); got != 2 {
-		t.Fatalf("Columns = %d, want 2", got)
-	}
+	require.EqualValues(t, 2, d.Columns(), "Columns = %d, want 2", d.Columns())
 	// String 是长度前缀列 => 非 fully-fixed；fixedBytes 只累计定宽列。
 	if d.fixed || d.fixedBytes != 8 {
 		t.Fatalf("fixed=%v fixedBytes=%d", d.fixed, d.fixedBytes)

@@ -49,14 +49,10 @@ func TestPrepareSortsUnsortedEntries(t *testing.T) {
 		t.Fatalf("runs %v/%v, want %v/%v", sh.runStart, sh.blockIDs, wantRuns, wantBlocks)
 	}
 	for i := range wantRuns {
-		if sh.runStart[i] != wantRuns[i] {
-			t.Fatalf("runStart %v, want %v", sh.runStart, wantRuns)
-		}
+		require.Equal(t, wantRuns[i], sh.runStart[i], "runStart %v, want %v", sh.runStart, wantRuns)
 	}
 	for i := range wantBlocks {
-		if sh.blockIDs[i] != wantBlocks[i] {
-			t.Fatalf("blockIDs %v, want %v", sh.blockIDs, wantBlocks)
-		}
+		require.Equal(t, wantBlocks[i], sh.blockIDs[i], "blockIDs %v, want %v", sh.blockIDs, wantBlocks)
 	}
 	// rowLocAt 必须按 run 归属给出该行的 BlockID。
 	for i := range wantIDs {
@@ -130,8 +126,8 @@ func TestShardBuilderPageRowGuards(t *testing.T) {
 		b := newRowShardBuilder(5, 4)
 		if err := b.AddPageRows(tc.page, tc.snap); err == nil {
 			t.Fatalf("%s: want error", tc.name)
-		} else if !strings.Contains(err.Error(), tc.match) {
-			t.Fatalf("%s: err = %v, want mention of %q", tc.name, err, tc.match)
+		} else {
+			require.Contains(t, err.Error(), tc.match, "%s: err = %v, want mention of %q", tc.name, err, tc.match)
 		}
 	}
 

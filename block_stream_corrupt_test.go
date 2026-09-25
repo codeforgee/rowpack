@@ -248,7 +248,7 @@ func TestCorruptPageRewriteIsLossless(t *testing.T) {
 	require.NoError(t, blocksErr)
 	require.NoError(t, verifyErr)
 	require.NoError(t, scanErr)
-	require.Equal(t, 60, rows, "every row must still be readable")
+	require.EqualValues(t, 60, rows, "every row must still be readable")
 }
 
 // TestCorruptSchemaVersionInPage: page 0 的 schema RLE 首 run 版本改成未知版本

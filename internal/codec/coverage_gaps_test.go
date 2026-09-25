@@ -56,15 +56,9 @@ func TestBitmapHelperBranches(t *testing.T) {
 	if bitmapIsZero([]byte{0, 1}) {
 		t.Fatal("non-zero bitmap must report false")
 	}
-	if got := tailBitmapMask(1); got != 0xFE {
-		t.Fatalf("tailBitmapMask(1) = %#x, want 0xFE", got)
-	}
-	if got := tailBitmapMask(4); got != 0xF0 {
-		t.Fatalf("tailBitmapMask(4) = %#x, want 0xF0", got)
-	}
-	if got := tailBitmapMask(8); got != 0 {
-		t.Fatalf("tailBitmapMask(8) = %#x, want 0", got)
-	}
+	require.Equal(t, uint8(0xFE), tailBitmapMask(1), "tailBitmapMask(1) = %#x, want 0xFE", tailBitmapMask(1))
+	require.Equal(t, uint8(0xF0), tailBitmapMask(4), "tailBitmapMask(4) = %#x, want 0xF0", tailBitmapMask(4))
+	require.Equal(t, uint8(0), tailBitmapMask(8), "tailBitmapMask(8) = %#x, want 0", tailBitmapMask(8))
 }
 
 // TestAppendValueInvalidValues drives appendValue's validation arms directly:
@@ -96,9 +90,7 @@ func TestAppendValueInvalidValues(t *testing.T) {
 		buf, err := appendValue(nil, c.v, c.limits)
 		require.NotNil(t, err, "%s: accepted", c.name)
 		require.Nil(t, buf, "%s: returned non-nil buffer on error", c.name)
-		if !strings.Contains(err.Error(), c.want) {
-			t.Fatalf("%s: error %q, want substring %q", c.name, err, c.want)
-		}
+		require.Contains(t, err.Error(), c.want, "%s: error %q, want substring %q", c.name, err, c.want)
 	}
 }
 
@@ -127,9 +119,7 @@ func TestEncodeIntoWideSchemaBitmapFallback(t *testing.T) {
 	got, err := dec.DecodeInto(nil, body, nil)
 	require.NoError(t, err, "decode wide row")
 	for i := 0; i < ncols; i++ {
-		if got[i].u != uint64(uint8(i)) {
-			t.Fatalf("col %d = %d", i, got[i].u)
-		}
+		require.Equal(t, uint64(uint8(i)), got[i].u, "col %d = %d", i, got[i].u)
 	}
 }
 
@@ -212,8 +202,8 @@ func TestBatchDecodeFallsBackToValidator(t *testing.T) {
 
 	if _, err := dec.DecodeBatchInto(nil, [][]byte{good, bad}, nil); err == nil {
 		t.Fatal("batch with unused bitmap bits accepted")
-	} else if !strings.Contains(err.Error(), "row 1") {
-		t.Fatalf("error should name row 1: %v", err)
+	} else {
+		require.Contains(t, err.Error(), "row 1", "error should name row 1: %v", err)
 	}
 }
 

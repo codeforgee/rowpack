@@ -152,9 +152,7 @@ func TestRowsBlockHeaderStoredDataBytes(t *testing.T) {
 	if got := h.StoredDataBytes(dir); got != 100+200+24+AESGCMTagLen {
 		t.Fatalf("StoredDataBytes = %d", got)
 	}
-	if got := h.StoredDataBytes(nil); got != 0 {
-		t.Fatalf("StoredDataBytes(nil) = %d", got)
-	}
+	require.EqualValues(t, 0, h.StoredDataBytes(nil), "StoredDataBytes(nil) = %d", h.StoredDataBytes(nil))
 }
 
 func TestSnapshotFooterOffsetsAreConsistent(t *testing.T) {

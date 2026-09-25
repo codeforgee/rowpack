@@ -14,9 +14,9 @@ func TestNewDate(t *testing.T) {
 		dt := time.Date(2024, 1, 15, 12, 30, 45, 0, loc)
 		d := NewDate(dt)
 		y, m, day := civilFromDays(int(d))
-		require.Equal(t, 2024, y)
-		require.Equal(t, 1, m)
-		require.Equal(t, 15, day)
+		require.EqualValues(t, 2024, y)
+		require.EqualValues(t, 1, m)
+		require.EqualValues(t, 15, day)
 	})
 
 	t.Run("ignores time of day", func(t *testing.T) {
@@ -50,9 +50,9 @@ func TestDateMethods(t *testing.T) {
 
 	t.Run("Time conversion", func(t *testing.T) {
 		tm := d.Time(time.UTC)
-		require.Equal(t, 2024, tm.Year())
+		require.EqualValues(t, 2024, tm.Year())
 		require.Equal(t, time.January, tm.Month())
-		require.Equal(t, 15, tm.Day())
+		require.EqualValues(t, 15, tm.Day())
 		require.Equal(t, time.UTC, tm.Location())
 	})
 
@@ -64,9 +64,9 @@ func TestDateMethods(t *testing.T) {
 
 	t.Run("civilFromDays roundtrip", func(t *testing.T) {
 		y, m, day := civilFromDays(int(d))
-		require.Equal(t, 2024, y)
-		require.Equal(t, 1, m)
-		require.Equal(t, 15, day)
+		require.EqualValues(t, 2024, y)
+		require.EqualValues(t, 1, m)
+		require.EqualValues(t, 15, day)
 	})
 }
 
@@ -179,10 +179,10 @@ func TestNewTimeOfDay(t *testing.T) {
 func TestTimeOfDayMethods(t *testing.T) {
 	tod := TimeOfDay(int64(12)*3600e9 + int64(30)*60e9 + int64(45)*1e9 + 123456789)
 
-	require.Equal(t, 12, tod.Hour())
-	require.Equal(t, 30, tod.Minute())
-	require.Equal(t, 45, tod.Second())
-	require.Equal(t, 123456789, tod.Nanosecond())
+	require.EqualValues(t, 12, tod.Hour())
+	require.EqualValues(t, 30, tod.Minute())
+	require.EqualValues(t, 45, tod.Second())
+	require.EqualValues(t, 123456789, tod.Nanosecond())
 
 	tm := tod.Time()
 	require.Equal(t, int64(12)*3600e9+int64(30)*60e9+int64(45)*1e9+123456789, tm.UnixNano())

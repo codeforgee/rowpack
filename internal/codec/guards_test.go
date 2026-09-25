@@ -3,7 +3,6 @@ package codec
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -127,7 +126,5 @@ func TestDecodeTruncatedString(t *testing.T) {
 	// Chop bytes off the end; the decoder must report a column error.
 	_, err = decodeTestBody(t, testCodec, schema, body[:len(body)-2])
 	require.Error(t, err, "truncated string value should error")
-	if !strings.Contains(err.Error(), "decode column") {
-		t.Fatalf("error should identify the failing column: %v", err)
-	}
+	require.Contains(t, err.Error(), "decode column", "error should identify the failing column: %v", err)
 }

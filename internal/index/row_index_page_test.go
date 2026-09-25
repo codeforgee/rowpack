@@ -258,9 +258,7 @@ func TestFenceForRowIndexPage(t *testing.T) {
 	if f.TableID != 1 || f.SnapshotID != 9 || f.StoredOffset != 0x1234 {
 		t.Fatalf("fence identity fields wrong: %+v", f)
 	}
-	if f.EntryCount != uint32(n) {
-		t.Fatalf("fence EntryCount = %d, want %d", f.EntryCount, n)
-	}
+	require.Equal(t, uint32(n), f.EntryCount, "fence EntryCount = %d, want %d", f.EntryCount, n)
 	if f.MinRowID != mn || f.MaxRowID != mx {
 		t.Fatalf("fence min/max = %d/%d, want %d/%d", f.MinRowID, f.MaxRowID, mn, mx)
 	}

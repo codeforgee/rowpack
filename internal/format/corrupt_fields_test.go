@@ -1,7 +1,6 @@
 package format
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -89,13 +88,11 @@ func TestMarshalToRejectsShortDestination(t *testing.T) {
 			for _, n := range []int{0, tc.size - 1} {
 				err := tc.fill(make([]byte, n))
 				require.NotNil(t, err, "%s: accepted %d-byte destination (want >= %d)", tc.name, n, tc.size)
-				if !strings.Contains(err.Error(), "too short") {
-					t.Fatalf("%s: unexpected error for %d-byte dst: %v", tc.name, n, err)
-				}
+				require.Contains(t, err.Error(), "too short", "%s: unexpected error for %d-byte dst: %v", tc.name, n, err)
 			}
 			// Exact size must succeed.
 			if err := tc.fill(make([]byte, tc.size)); err != nil {
-				t.Fatalf("%s: rejected exact-size destination: %v", tc.name, err)
+				t.Fatalf("exact size %d rejected: %v", tc.size, err)
 			}
 		})
 	}
@@ -291,9 +288,7 @@ func TestHeaderHelpersShortInput(t *testing.T) {
 	if _, err := verifyCRC(make([]byte, 12), 12); err == nil {
 		t.Fatal("verifyCRC accepted a buffer shorter than the CRC field")
 	}
-	if got := IndexTxnHeaderKeyEpoch(make([]byte, 8)); got != 0 {
-		t.Fatalf("IndexTxnHeaderKeyEpoch returned %d for short input", got)
-	}
+	require.EqualValues(t, 0, IndexTxnHeaderKeyEpoch(make([]byte, 8)), "short input must not yield a key epoch")
 	require.Error(t, PatchIndexTxnHeaderForStorage(make([]byte, 8), 1, 1), "PatchIndexTxnHeaderForStorage accepted a short header")
 	// And on a full header the patch must round-trip.
 	hdr := mustMarshalInto(t, IndexTxnHeaderSize, (&IndexTxnHeader{SnapshotID: 1}).MarshalTo)
@@ -302,10 +297,6 @@ func TestHeaderHelpersShortInput(t *testing.T) {
 	var h IndexTxnHeader
 	err = h.Unmarshal(hdr)
 	require.NoError(t, err, "re-unmarshal")
-	if h.BodyBytes != 999 {
-		t.Fatalf("BodyBytes = %d, want 999", h.BodyBytes)
-	}
-	if got := IndexTxnHeaderKeyEpoch(hdr); got != 7 {
-		t.Fatalf("KeyEpoch = %d, want 7", got)
-	}
+	require.EqualValues(t, 999, h.BodyBytes, "BodyBytes = %d, want 999", h.BodyBytes)
+	require.Equal(t, uint32(7), IndexTxnHeaderKeyEpoch(hdr), "KeyEpoch = %d, want 7", IndexTxnHeaderKeyEpoch(hdr))
 }

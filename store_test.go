@@ -218,7 +218,7 @@ func TestReadByTableName(t *testing.T) {
 		n++
 	}
 	require.NoError(t, bit.Err())
-	require.Equal(t, 100, n, "raw block stream emits every record")
+	require.EqualValues(t, 100, n, "raw block stream emits every record")
 	_, err = db.ScanBlocks(ctx, full, "users", 1_000_000, 2_000_000)
 	require.ErrorIs(t, err, ErrInvalidArgument)
 
@@ -544,16 +544,16 @@ func TestTimeValues(t *testing.T) {
 	d := NewDate(now)
 	require.Equal(t, Date(20674), d) // days since epoch of 2026-08-09
 	back := d.Time(time.UTC)
-	require.Equal(t, 2026, back.Year())
-	require.Equal(t, 8, int(back.Month()))
-	require.Equal(t, 9, back.Day())
+	require.EqualValues(t, 2026, back.Year())
+	require.EqualValues(t, 8, int(back.Month()))
+	require.EqualValues(t, 9, back.Day())
 
 	tod, err := NewTimeOfDay(13, 45, 30, 123456789)
 	require.NoError(t, err)
-	require.Equal(t, 13, tod.Hour())
-	require.Equal(t, 45, tod.Minute())
-	require.Equal(t, 30, tod.Second())
-	require.Equal(t, 123456789, tod.Nanosecond())
+	require.EqualValues(t, 13, tod.Hour())
+	require.EqualValues(t, 45, tod.Minute())
+	require.EqualValues(t, 30, tod.Second())
+	require.EqualValues(t, 123456789, tod.Nanosecond())
 	_, err = NewTimeOfDay(24, 0, 0, 0)
 	require.Error(t, err)
 	_, err = NewTimeOfDay(0, 0, 0, -1)

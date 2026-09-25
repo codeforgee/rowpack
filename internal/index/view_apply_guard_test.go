@@ -134,9 +134,7 @@ func TestApplyRejectsInvalidTxns(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			v, err := tc.run()
 			require.Error(t, err, "accepted")
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error %q, want substring %q", err, tc.want)
-			}
+			require.Contains(t, err.Error(), tc.want, "error %q, want substring %q", err, tc.want)
 			// The receiver must stay unmodified on failure.
 			require.Nil(t, v, "failed apply returned a non-nil view")
 		})

@@ -254,7 +254,7 @@ func TestReadRowsDirCorruptionMatrix(t *testing.T) {
 	r := NewReader(bytes.NewReader(blk), limits)
 	rc, err := r.ReadRowsDir(at)
 	require.NoError(t, err)
-	require.Equal(t, 1, rc.PageCount())
+	require.EqualValues(t, 1, rc.PageCount())
 	// The lazy container forwards page counters to the reader's stats.
 	_, _, err = rc.PageScratch(0)
 	require.NoError(t, err)

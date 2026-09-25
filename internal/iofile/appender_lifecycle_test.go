@@ -32,8 +32,8 @@ func TestOperationsAfterCloseReportErrors(t *testing.T) {
 	require.Error(t, a.Sync(), "Sync after Close must fail")
 	if _, _, err := a.View(0, 4); err == nil {
 		t.Fatal("View after Close must fail")
-	} else if !strings.Contains(err.Error(), "stat file for view") {
-		t.Fatalf("View error = %v, want the stat-for-view diagnosis", err)
+	} else {
+		require.Contains(t, err.Error(), "stat file for view", "View error = %v, want the stat-for-view diagnosis", err)
 	}
 	if _, err := a.ReadAt(make([]byte, 4), 0); err == nil {
 		t.Fatal("ReadAt after Close must fail")

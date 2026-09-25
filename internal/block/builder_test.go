@@ -35,7 +35,7 @@ func TestRowsBlockBuilder(t *testing.T) {
 	err := builder.Flush()
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(mock.blocks))
+	require.EqualValues(t, 1, len(mock.blocks))
 	block := mock.blocks[0]
 	require.Equal(t, format.BlockKindRows, block.Header.BlockKind)
 	require.Equal(t, uint64(1), block.Header.SnapshotID)
@@ -43,7 +43,7 @@ func TestRowsBlockBuilder(t *testing.T) {
 	require.Equal(t, uint32(10), block.Header.ItemCount)
 	require.Greater(t, block.Header.RawSize, uint32(0))
 	require.Greater(t, block.Header.StoredSize, uint32(0))
-	require.Equal(t, 10, len(block.Rows))
+	require.EqualValues(t, 10, len(block.Rows))
 }
 
 func TestRowsBlockBuilderFlushEmpty(t *testing.T) {
@@ -56,7 +56,7 @@ func TestRowsBlockBuilderFlushEmpty(t *testing.T) {
 	err := builder.Flush()
 	require.NoError(t, err)
 
-	require.Equal(t, 0, len(mock.blocks))
+	require.EqualValues(t, 0, len(mock.blocks))
 }
 
 func TestRowsBlockBuilderPending(t *testing.T) {
@@ -65,7 +65,7 @@ func TestRowsBlockBuilderPending(t *testing.T) {
 
 	builder := NewRowsBuilder(1, 1, Config{BlockSize: 1024, Compression: format.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
-	require.Equal(t, 0, len(builder.entries))
+	require.EqualValues(t, 0, len(builder.entries))
 
 	for i := uint64(1); i <= 5; i++ {
 		tuple := []byte{0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, byte(i), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
@@ -136,7 +136,7 @@ func TestRowsBlockBuilderMultiplePages(t *testing.T) {
 	err := builder.Flush()
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(mock.blocks))
+	require.EqualValues(t, 1, len(mock.blocks))
 	block := mock.blocks[0]
 	// PageCount is in the container header, parse it from Raw
 	var containerHeader format.RowsBlockHeader
@@ -164,7 +164,7 @@ func TestRowsBlockBuilderSetZstdEncoder(t *testing.T) {
 	err := builder.Flush()
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(mock.blocks))
+	require.EqualValues(t, 1, len(mock.blocks))
 }
 
 func TestRowsBlockBuilderAddErrors(t *testing.T) {
@@ -205,12 +205,12 @@ func TestMetadataBlockBuilder(t *testing.T) {
 	err := builder.Flush()
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(mock.blocks))
+	require.EqualValues(t, 1, len(mock.blocks))
 	block := mock.blocks[0]
 	require.Equal(t, format.BlockKindMetadata, block.Header.BlockKind)
 	require.Equal(t, uint64(1), block.Header.SnapshotID)
 	require.Equal(t, uint32(5), block.Header.ItemCount)
-	require.Equal(t, 5, len(block.Meta))
+	require.EqualValues(t, 5, len(block.Meta))
 }
 
 func TestMetadataBlockBuilderFlushEmpty(t *testing.T) {
@@ -222,7 +222,7 @@ func TestMetadataBlockBuilderFlushEmpty(t *testing.T) {
 	err := builder.Flush()
 	require.NoError(t, err)
 
-	require.Equal(t, 0, len(mock.blocks))
+	require.EqualValues(t, 0, len(mock.blocks))
 }
 
 func TestMetadataBlockBuilderPending(t *testing.T) {
@@ -231,7 +231,7 @@ func TestMetadataBlockBuilderPending(t *testing.T) {
 
 	builder := NewMetadataBuilder(1, 0, Config{BlockSize: 1024, Compression: format.CompressionZstd, Level: 3, Limits: limits, OnFlush: mock.onFlush})
 
-	require.Equal(t, 0, int(builder.count))
+	require.EqualValues(t, 0, int(builder.count))
 
 	for i := uint32(1); i <= 3; i++ {
 		entry := metadata.DirectoryEntry{ObjectID: 1, Revision: 1, RecordType: 2, Operation: 1}
@@ -281,7 +281,7 @@ func TestMetadataBlockBuilderSetZstdEncoder(t *testing.T) {
 	err = builder.Flush()
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(mock.blocks))
+	require.EqualValues(t, 1, len(mock.blocks))
 }
 
 func TestMetadataBlockBuilderAddErrors(t *testing.T) {
@@ -320,8 +320,8 @@ func TestRowsBlockBuilderChangeTypes(t *testing.T) {
 	err := builder.Flush()
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(mock.blocks))
-	require.Equal(t, 3, len(mock.blocks[0].Rows))
+	require.EqualValues(t, 1, len(mock.blocks))
+	require.EqualValues(t, 3, len(mock.blocks[0].Rows))
 	require.Equal(t, format.ChangeInsert, mock.blocks[0].Rows[0].ChangeType)
 	require.Equal(t, format.ChangeUpdate, mock.blocks[0].Rows[1].ChangeType)
 	require.Equal(t, format.ChangeDelete, mock.blocks[0].Rows[2].ChangeType)

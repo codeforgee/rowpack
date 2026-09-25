@@ -300,9 +300,7 @@ func TestBuildStoredPlainMatchesBuild(t *testing.T) {
 	if parsed.Header.DataSnapshotStart != 10 || parsed.Header.DataSnapshotEnd != 20 {
 		t.Fatalf("header bounds: %+v", parsed.Header)
 	}
-	if parsed.Footer.DataFooterCRC32C != 55 {
-		t.Fatalf("data footer CRC: %+v", parsed.Footer)
-	}
+	require.Equal(t, uint32(55), parsed.Footer.DataFooterCRC32C, "data footer CRC: %+v", parsed.Footer)
 }
 
 // --- View accessors ----------------------------------------------------------
@@ -436,15 +434,9 @@ func TestViewAccessorsAndChain(t *testing.T) {
 	}
 
 	// LogicalRowCount: snapshot 2 = rows {1,2,4} from parent + {5} - tombstone(3).
-	if n := v2.LogicalRowCount(2, 1); n != 4 {
-		t.Fatalf("LogicalRowCount = %d, want 4", n)
-	}
-	if n := v1.LogicalRowCount(1, 1); n != 4 {
-		t.Fatalf("LogicalRowCount snap1 = %d, want 4", n)
-	}
-	if n := v2.LogicalRowCount(2, 999); n != 0 {
-		t.Fatalf("LogicalRowCount unknown table = %d", n)
-	}
+	require.Equal(t, uint64(4), v2.LogicalRowCount(2, 1), "LogicalRowCount = %d, want 4", v2.LogicalRowCount(2, 1))
+	require.Equal(t, uint64(4), v1.LogicalRowCount(1, 1), "LogicalRowCount snap1 = %d, want 4", v1.LogicalRowCount(1, 1))
+	require.Equal(t, uint64(0), v2.LogicalRowCount(2, 999), "LogicalRowCount unknown table = %d", v2.LogicalRowCount(2, 999))
 
 	// Original views stay immutable: snapshot 1's layer is untouched by the
 	// second apply (row 3 remains a plain INSERT there).
@@ -488,9 +480,7 @@ func TestApplyStreamingWithBlocksAndMeta(t *testing.T) {
 			streamed.Block(21) != nil, streamed.Metadata(4, 700) != nil)
 	}
 	compareRowShards(t, buffered, streamed)
-	if n := streamed.LogicalRowCount(4, 1); n != 10 {
-		t.Fatalf("streaming logical rows = %d, want 10", n)
-	}
+	require.Equal(t, uint64(10), streamed.LogicalRowCount(4, 1), "streaming logical rows = %d, want 10", streamed.LogicalRowCount(4, 1))
 }
 
 // --- misc helpers ------------------------------------------------------------

@@ -524,9 +524,7 @@ func TestTxnParseRejectsCorruptions(t *testing.T) {
 			mutated := tc.mut(t, append([]byte(nil), data...))
 			_, err := parseStream(mutated, nil, nil)
 			require.Error(t, err, "corruption accepted")
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error %q, want substring %q", err, tc.want)
-			}
+			require.Contains(t, err.Error(), tc.want, "error %q, want substring %q", err, tc.want)
 		})
 	}
 }

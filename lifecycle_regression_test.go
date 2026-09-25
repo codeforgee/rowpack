@@ -46,7 +46,7 @@ func TestOpenUsesFileWriterDefaults(t *testing.T) {
 	db, err = Open(base, Options{BlockSize: 4096, Compression: CompressionZstd})
 	require.NoError(t, err)
 	defer db.Close()
-	require.Equal(t, 1024, db.opts.BlockSize)
+	require.EqualValues(t, 1024, db.opts.BlockSize)
 	require.Equal(t, CompressionNone, db.opts.Compression)
 }
 

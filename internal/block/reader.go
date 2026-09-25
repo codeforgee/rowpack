@@ -62,10 +62,6 @@ type PageStatCtrs struct {
 	stored atomic.Uint64
 }
 
-// pageCounts returns the per-page counters for a RowsContainer to attribute
-// its lazy page reads to the reader.
-func (r *Reader) pageCounts() *PageStatCtrs { return &r.pageCtrs }
-
 // IOStats is a snapshot of the reader's cumulative I/O counters.
 type IOStats struct {
 	ReadBytes         uint64 // header + stored bytes pulled from the handle

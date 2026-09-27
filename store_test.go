@@ -277,34 +277,34 @@ func TestReadBatchInto(t *testing.T) {
 			require.Equal(t, fmt.Sprintf("v-%d", i+1), name)
 		}
 	}
-	rows, err := db.readBatchInto(ctx, snap, "u", ids, &buf)
+	rows, err := db.readBatchInto(snap, "u", ids, &buf)
 	require.NoError(t, err)
 	check(rows)
-	rows2, err := db.readBatchInto(ctx, snap, "u", ids, &buf)
+	rows2, err := db.readBatchInto(snap, "u", ids, &buf)
 	require.NoError(t, err)
 	check(rows2)
 	require.True(t, &rows[0] == &rows2[0], "the output buffer must be reused, not reallocated")
 
 	// Warm buffer: a call allocates nothing.
-	if _, err := db.readBatchInto(ctx, snap, "u", ids, &buf); err != nil {
+	if _, err := db.readBatchInto(snap, "u", ids, &buf); err != nil {
 		t.Fatal(err)
 	}
 	allocs := testing.AllocsPerRun(10, func() {
-		if _, err := db.readBatchInto(ctx, snap, "u", ids, &buf); err != nil {
+		if _, err := db.readBatchInto(snap, "u", ids, &buf); err != nil {
 			t.Fatal(err)
 		}
 	})
 	require.Zero(t, allocs, "readBatchInto must not allocate once the buffer is warm")
 
 	// Empty batch is legal and does not touch the buffer; a nil buffer is not.
-	out, err := db.readBatchInto(ctx, snap, "u", nil, &buf)
+	out, err := db.readBatchInto(snap, "u", nil, &buf)
 	require.NoError(t, err)
 	require.Nil(t, out)
-	_, err = db.readBatchInto(ctx, snap, "u", ids, nil)
+	_, err = db.readBatchInto(snap, "u", ids, nil)
 	require.ErrorIs(t, err, ErrInvalidArgument)
 
 	// Errors keep the same sentinel as ReadBatch.
-	_, err = db.readBatchInto(ctx, snap, "u", []RowID{1, 999}, &buf)
+	_, err = db.readBatchInto(snap, "u", []RowID{1, 999}, &buf)
 	require.ErrorIs(t, err, ErrNotFound)
 
 	// ReadBatch and readBatchInto agree.

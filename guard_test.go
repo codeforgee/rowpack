@@ -69,9 +69,9 @@ func TestReadBatchNilBufferAndEmptyIDs(t *testing.T) {
 
 	// nil batchBuffer is rejected explicitly; empty ids short-circuit to nil.
 	var buf *batchBuffer
-	_, err = db.readBatchInto(ctx, snap, "t", []RowID{1}, buf)
+	_, err = db.readBatchInto(snap, "t", []RowID{1}, buf)
 	require.ErrorContains(t, err, "nil batchBuffer")
-	rows, err := db.readBatchInto(ctx, snap, "t", nil, &batchBuffer{})
+	rows, err := db.readBatchInto(snap, "t", nil, &batchBuffer{})
 	require.NoError(t, err)
 	require.Nil(t, rows)
 }

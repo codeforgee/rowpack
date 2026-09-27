@@ -187,7 +187,7 @@ func fenceAt(t *testing.T, data []byte, fenceOff, i int, mut func(*format.RowInd
 // footer body CRC over the new plaintext stream, and re-frames header and
 // footer. This is the price of touching chunk payloads at all: stored bytes
 // are zstd streams, so in-place edits cannot preserve geometry.
-func reframeTxn(t *testing.T, data []byte, chunks []chunkInfo, dirOff, fenceOff int, payloads [][]byte, muts []func(*format.IndexChunkHeader)) []byte {
+func reframeTxn(t *testing.T, data []byte, chunks []chunkInfo, dirOff, _ int, payloads [][]byte, muts []func(*format.IndexChunkHeader)) []byte {
 	t.Helper()
 	var out []byte
 	var dir []byte

@@ -88,7 +88,11 @@ func requireNilErr(tb testing.TB, err error) {
 func BenchmarkWriteFull(b *testing.B) {
 	ctx := context.Background()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
+		// 建库是每轮的准备工作，不计入耗时。b.Loop 要求回到循环条件时计时器处于
+		// 开启状态（否则 Fatal: B.Loop called with timer stopped），所以收尾的
+		// Close 之后必须重新 StartTimer。
+		b.StopTimer()
 		base := filepath.Join(tmpdb(b), fmt.Sprintf("wf-%d", i))
 		db, err := Create(base, Options{})
 		requireNilErr(b, err)
@@ -104,6 +108,7 @@ func BenchmarkWriteFull(b *testing.B) {
 		}
 		b.StopTimer()
 		requireNilErr(b, db.Close())
+		b.StartTimer()
 	}
 	b.SetBytes(int64(benchRows) * 64) // approximate row footprint for bytes/s reporting
 }
@@ -116,8 +121,7 @@ func BenchmarkGetHot(b *testing.B) {
 	b.Cleanup(func() { db.Close() })
 	var dst Row
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		id := RowID(i%20_000) + 1
 		row, err := db.Get(ctx, snap, "t", id, dst)
 		if err != nil {
@@ -145,8 +149,7 @@ func BenchmarkGetCold(b *testing.B) {
 	before := db.Stats().Read
 	var dst Row
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		id := RowID(i%20_000) + 1
 		row, err := db.Get(ctx, snap, "t", id, dst)
 		if err != nil {
@@ -176,8 +179,7 @@ func BenchmarkGetColdUnpooled(b *testing.B) {
 	before := db.Stats().Read
 	var dst Row
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		id := RowID(i%20_000) + 1
 		row, err := db.Get(ctx, snap, "t", id, dst)
 		if err != nil {
@@ -199,8 +201,7 @@ func BenchmarkScan(b *testing.B) {
 	db, snap := benchStore(b, Options{}, benchRows)
 	b.Cleanup(func() { db.Close() })
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		it, err := db.Scan(ctx, snap, "t", ScanOptions{})
 		if err != nil {
 			b.Fatal(err)
@@ -238,8 +239,7 @@ func BenchmarkReadBatch1000(b *testing.B) {
 		ids[i] = RowID(i) + 1
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rows, err := db.ReadBatch(ctx, snap, "t", ids)
 		if err != nil {
 			b.Fatal(err)
@@ -253,7 +253,6 @@ func BenchmarkReadBatch1000(b *testing.B) {
 // BenchmarkReadBatchInto1000 is BenchmarkReadBatch1000 writing through a
 // reused batchBuffer: same ids, no per-call working allocation.
 func BenchmarkReadBatchInto1000(b *testing.B) {
-	ctx := context.Background()
 	db, snap := benchStore(b, Options{}, benchRows)
 	b.Cleanup(func() { db.Close() })
 	ids := make([]RowID, 1000)
@@ -262,9 +261,8 @@ func BenchmarkReadBatchInto1000(b *testing.B) {
 	}
 	var buf batchBuffer
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		rows, err := db.readBatchInto(ctx, snap, "t", ids, &buf)
+	for b.Loop() {
+		rows, err := db.readBatchInto(snap, "t", ids, &buf)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -285,8 +283,7 @@ func BenchmarkGetLoop1000(b *testing.B) {
 	}
 	var dst Row
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for _, id := range ids {
 			row, err := db.Get(ctx, snap, "t", id, dst)
 			if err != nil {
@@ -304,8 +301,7 @@ func BenchmarkOpenReplay(b *testing.B) {
 	db, _ := benchStoreAt(b, base, Options{}, benchRows)
 	requireNilErr(b, db.Close())
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		db2, err := Open(base, Options{})
 		if err != nil {
 			b.Fatal(err)
@@ -362,8 +358,7 @@ func BenchmarkDeepChainGet(b *testing.B) {
 	}
 	var dst Row
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		row, err := db.Get(ctx, snap, "t", RowID(i%100)+1, dst)
 		if err != nil {
 			b.Fatal(err)
@@ -377,7 +372,9 @@ func BenchmarkDeepChainGet(b *testing.B) {
 func BenchmarkEncryptedWrite(b *testing.B) {
 	ctx := context.Background()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
+		// 同 BenchmarkWriteFull：建库准备不计入耗时，且回到循环条件前必须恢复计时。
+		b.StopTimer()
 		base := filepath.Join(tmpdb(b), fmt.Sprintf("ew-%d", i))
 		db, err := Create(base, encOptions("bk"))
 		requireNilErr(b, err)
@@ -393,6 +390,7 @@ func BenchmarkEncryptedWrite(b *testing.B) {
 		}
 		b.StopTimer()
 		requireNilErr(b, db.Close())
+		b.StartTimer()
 	}
 	b.SetBytes(int64(benchRows) * 64)
 }
@@ -406,8 +404,7 @@ func BenchmarkEncryptedGetHot(b *testing.B) {
 	b.Cleanup(func() { db.Close() })
 	var dst Row
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		row, err := db.Get(ctx, snap, "t", RowID(i%20_000)+1, dst)
 		if err != nil {
 			b.Fatal(err)

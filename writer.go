@@ -128,7 +128,7 @@ type pendingBlock struct {
 
 // newWriter constructs the single active writer. A Store allows at most one
 // active writer; a concurrent begin returns ErrWriterBusy.
-func (s *Store) newWriter(ctx context.Context, typ SnapshotType, parent SnapshotID) (*Writer, error) {
+func (s *Store) newWriter(typ SnapshotType, parent SnapshotID) (*Writer, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if err := s.checkOpen(); err != nil {
@@ -263,7 +263,7 @@ func (w *Writer) metaFlush(fb *block.FlushedBlock) error {
 // ownership of its directory slice (it allocates a fresh one for its next
 // block), so the pending block references it without a per-row copy;
 // ItemOrdinal is the directory position.
-func (w *Writer) rowsFlush(table TableID) func(*block.FlushedBlock) error {
+func (w *Writer) rowsFlush() func(*block.FlushedBlock) error {
 	return func(fb *block.FlushedBlock) error {
 		blk := &pendingBlock{header: fb.Header, payload: fb.Stored, rowsDir: fb.Rows}
 		if fb.OversizedPages > 0 {
@@ -287,7 +287,7 @@ func (w *Writer) rowBuilder(table TableID) *block.RowsBuilder {
 			MaxRawBytes:    w.store.opts.Limits.MaxRawBlockBytes,
 			MaxStoredBytes: w.store.opts.Limits.MaxStoredBlockBytes,
 		},
-		OnFlush: w.rowsFlush(table),
+		OnFlush: w.rowsFlush(),
 	})
 	b.SetPageSize(w.store.opts.PageSize)
 	w.setEncoder(b)
@@ -782,7 +782,7 @@ func (w *Writer) Commit(ctx context.Context) (SnapshotID, error) {
 		w.state = writerFailed
 		return 0, err
 	}
-	info, commitErr := w.commitLocked(ctx)
+	info, commitErr := w.commitLocked()
 	if commitErr != nil {
 		w.state = writerFailed
 		w.store.writer.CompareAndSwap(w, nil)
@@ -798,7 +798,7 @@ func (w *Writer) Commit(ctx context.Context) (SnapshotID, error) {
 	return info.ID, commitErr
 }
 
-func (w *Writer) commitLocked(ctx context.Context) (SnapshotInfo, error) {
+func (w *Writer) commitLocked() (SnapshotInfo, error) {
 	if err := w.flushAll(); err != nil {
 		return SnapshotInfo{}, err
 	}

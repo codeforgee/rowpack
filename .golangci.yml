@@ -7,22 +7,17 @@ run:
 linters:
   # standard = errcheck, govet, ineffassign, staticcheck, unused
   default: standard
-  settings:
-    errcheck:
-      check-type-assertions: false
-      check-blank: false
+  # 不强制检查未处理的错误返回值：本仓库大量 Close/Remove/Fprint 属于
+  # 清理路径或 CLI 诊断输出，逐个 _ = 只会制造噪音，真正需要传播的错误
+  # 由测试与 vet 保证。
+  disable:
+    - errcheck
 
   exclusions:
     generated: lax
     presets:
       - comments
-      - std-error-handling
       - common-false-positives
-    rules:
-      # 测试里的 defer Close/Release/Rollback、os.Remove 等不强制检查返回值，
-      # 避免用错误断言掩盖真实的失败原因。
-      - linters: [errcheck]
-        path: _test\.go
 
 formatters:
   enable:

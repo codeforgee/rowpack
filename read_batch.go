@@ -76,7 +76,7 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 	// A fresh buffer per call keeps the returned rows independent of any later
 	// call; see readBatchInto for the reuse entry point used internally.
 	var buf batchBuffer
-	return s.readBatchInto(ctx, snapshot, table, ids, &buf)
+	return s.readBatchInto(snapshot, table, ids, &buf)
 }
 
 // readBatchInto is ReadBatch writing through a caller-owned batchBuffer, so a
@@ -86,7 +86,7 @@ func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string
 // package may take on.
 //
 // buf must not be nil, and must not be reused concurrently.
-func (s *Store) readBatchInto(ctx context.Context, snapshot SnapshotID, table string, ids []RowID, buf *batchBuffer) ([]Row, error) {
+func (s *Store) readBatchInto(snapshot SnapshotID, table string, ids []RowID, buf *batchBuffer) ([]Row, error) {
 	if buf == nil {
 		return nil, fmt.Errorf("%w: nil batchBuffer", ErrInvalidArgument)
 	}

@@ -63,7 +63,7 @@ func (s *Store) Begin(ctx context.Context, parent SnapshotID) (*Tx, error) {
 	} else if st := s.state.Load(); st == nil || st.view.Snapshot(uint64(parent)) == nil {
 		return nil, fmt.Errorf("%w: DELTA parent %d not committed", ErrInvalidParent, parent)
 	}
-	w, err := s.newWriter(ctx, typ, parent)
+	w, err := s.newWriter(typ, parent)
 	if err != nil {
 		return nil, err
 	}

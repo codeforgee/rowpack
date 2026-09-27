@@ -66,30 +66,8 @@ func TestReadPathsRejectUnknownSnapshot(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound, "TablesIn is a filter over Tables, so it reports Tables' error")
 }
 
-// publishCraftedView adds one delta snapshot carrying only the entries add
-// emits. The index and the blocks are always committed together by the writer,
-// so an index that disagrees with the blocks can only be assembled here — that
-// is exactly what these two arms are about.
-func publishCraftedView(t *testing.T, db *Store, snapID, parent uint64, add func(b *index.Builder)) {
-	t.Helper()
-	st, err := db.captureState()
-	require.NoError(t, err)
-	b := index.NewBuilder(1)
-	require.NoError(t, b.SetSnapshot(format.SnapshotIndexEntry{
-		SnapshotID:       snapID,
-		ParentSnapshotID: parent,
-		SnapshotType:     format.SnapshotDelta,
-		CreatedUnixNano:  time.Now().UnixNano(),
-	}))
-	add(b)
-	_, txn, err := b.Build(index.BodyBounds{}, 0)
-	require.NoError(t, err)
-	view, err := st.view.Apply(txn, format.DefaultMaxSnapshotDepth)
-	require.NoError(t, err)
-	schemas, err := db.buildIndex(view)
-	require.NoError(t, err)
-	db.state.Store(&publishedState{view: view, schemas: schemas})
-}
+// publishCraftedView（testutil_test.go，DELTA 简写）构造并发布一个只含 add 产出
+// 条目的快照：写入器总是把索引与块一起提交，索引与块不一致的情形只能在这里装配。
 
 // TestGetRejectsMissingBlock: the row index names a block the view has never
 // seen. The row cannot be read and there is nothing to decode, so this is a

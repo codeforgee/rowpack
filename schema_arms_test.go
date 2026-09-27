@@ -3,7 +3,6 @@ package rowpack
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -20,29 +19,7 @@ import (
 // 提交的快照,链上不会有洞),以及版本排序(一张表只有一个版本——重定义时列不同是
 // ErrSchemaConflict,列相同则沿用原修订号,见 TestDeriveTablesKeepsOneVersion)。
 
-// craftView applies one delta snapshot carrying only the metadata entries add
-// emits. Unlike publishCraftedView it does not publish the result: these tests
-// ask the schema derivation directly.
-func craftView(t *testing.T, db *Store, snapID, parent uint64, add func(b *index.Builder)) *index.View {
-	t.Helper()
-	st, err := db.captureState()
-	require.NoError(t, err)
-	b := index.NewBuilder(1)
-	require.NoError(t, b.SetSnapshot(format.SnapshotIndexEntry{
-		SnapshotID:       snapID,
-		ParentSnapshotID: parent,
-		SnapshotType:     format.SnapshotDelta,
-		CreatedUnixNano:  time.Now().UnixNano(),
-	}))
-	if add != nil {
-		add(b)
-	}
-	_, txn, err := b.Build(index.BodyBounds{}, 0)
-	require.NoError(t, err)
-	view, err := st.view.Apply(txn, format.DefaultMaxSnapshotDepth)
-	require.NoError(t, err)
-	return view
-}
+// craftView（testutil_test.go）只构造视图、不发布：这些用例直接问 schema 派生。
 
 // realTableLoc returns the object id and physical location of a table record
 // the fixture store really committed.

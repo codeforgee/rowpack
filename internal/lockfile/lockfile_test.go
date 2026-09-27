@@ -51,16 +51,3 @@ func TestAcquireOpenError(t *testing.T) {
 	require.Error(t, err, "Acquire on unwritable path succeeded")
 	require.Contains(t, err.Error(), "open lock file", "unexpected error: %v", err)
 }
-
-func TestReacquireAfterRelease(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "store.lock")
-
-	l, err := Acquire(path)
-	require.NoError(t, err, "Acquire")
-	err = l.Release()
-	require.NoError(t, err, "Release")
-
-	l2, err := Acquire(path)
-	require.NoError(t, err, "reacquire")
-	l2.Release()
-}

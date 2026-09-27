@@ -195,34 +195,7 @@ func TestWalkTruncatedPayload(t *testing.T) {
 	require.Contains(t, err.Error(), "mid-file corruption")
 }
 
-// TestWalkFooterIDMismatchRejected：篡改已提交 footer 的 SnapshotID 并重算
-// footer CRC 后，Open 必须报 mid-file corruption——提交权威不能被当作
-// 可丢弃尾部而静默截断。
-func TestWalkFooterIDMismatchRejected(t *testing.T) {
-	base := filepath.Join(tmpdb(t), "ftrmismatch")
-	db, err := Create(base, Options{BlockSize: 1024})
-	require.NoError(t, err)
-	buildTwoSnapshots(t, db)
-	committed, _, err := db.scanDataFile()
-	require.NoError(t, err)
-	last := committed[len(committed)-1]
-	ftrOff := last.footerOff
-	require.NoError(t, db.Close())
-
-	f, err := os.OpenFile(base+".rpk", os.O_RDWR, 0)
-	require.NoError(t, err)
-	var fb [format.SnapshotFooterSize]byte
-	_, err = f.ReadAt(fb[:], ftrOff)
-	require.NoError(t, err)
-	binary.LittleEndian.PutUint64(fb[16:], last.snapshotID+100) // SnapshotID
-	binary.LittleEndian.PutUint32(fb[136:], 0)                  // FooterCRC32C 占位
-	c := format.CRC32C(fb[:])
-	binary.LittleEndian.PutUint32(fb[136:], c)
-	_, err = f.WriteAt(fb[:], ftrOff)
-	require.NoError(t, err)
-	require.NoError(t, f.Close())
-
-	_, err = Open(base, Options{BlockSize: 1024})
-	require.Error(t, err, "mismatched footer ID must fail, not truncate")
-	require.Contains(t, err.Error(), "mid-file corruption")
-}
+// 「已提交 footer 的 SnapshotID 被篡改」与「尾部 footer 与头部不匹配」落在同一条
+// 判定上（recovery.go:337 walkSnapshot 的 footer/header 快照号比较），由
+// recovery_walk_test.go TestWalkSnapshotRejectsFooterIDMismatch 覆盖，后者还断言了
+// 具体诊断文本 "footer snapshot %d != header snapshot %d"。

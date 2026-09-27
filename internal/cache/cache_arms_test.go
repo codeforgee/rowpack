@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// cache_arms_test.go 覆盖缓存的三条兜底臂:一个条目在缓存里长大到超过整个容量(不能再
-// 按预算记账,只能剔除)、nil 缓存上的操作必须安静地什么也不做、以及合并并发加载时
-// 领跑者 panic 必须同样抛给等待者(否则等待者会拿到一个永远不返回的结果)。
+// cache_arms_test.go 覆盖缓存的两条兜底臂:一个条目在缓存里长大到超过整个容量(不能再
+// 按预算记账,只能剔除)、以及合并并发加载时领跑者 panic 必须同样抛给等待者(否则等待者
+// 会拿到一个永远不返回的结果)。nil 缓存的惰性语义见 lru_test.go TestLRUNil。
 //
 // Remaining 的 free < 0 分支(145)到不了:Put 之后总有 evictLocked 把 used 收回容量之内,
 // 而超过整个容量的条目根本不入缓存,所以 used 永远不大于 capacity。
@@ -34,18 +34,6 @@ func TestPutDropsEntryThatGrewPastCapacity(t *testing.T) {
 	require.False(t, ok, "the oversized entry is gone, not served")
 }
 
-// TestNilCacheOperationsAreInert: every store carries caches, but a disabled
-// cache is a nil *LRU. Operations on it must do nothing and report empty
-// numbers instead of panicking.
-func TestNilCacheOperationsAreInert(t *testing.T) {
-	var c *LRU
-
-	c.Delete(7)
-	require.Equal(t, uint64(0), c.Remaining(), "a disabled cache has no free budget")
-	require.Equal(t, uint64(0), c.CapacityBytes())
-	require.Equal(t, 0, c.Len())
-}
-
 // TestDoPropagatesPanicToWaiters: callers merged into one in-flight load must
 // see the leader's panic, not wait forever or receive a zero result. The call
 // is dropped, so the next caller may retry.
@@ -58,7 +46,11 @@ func TestDoPropagatesPanicToWaiters(t *testing.T) {
 	wg.Add(2)
 	go func() { // leader
 		defer wg.Done()
-		defer func() { _ = recover() }()
+		defer func() {
+			if recover() == nil {
+				t.Error("Do did not propagate the leader's panic")
+			}
+		}()
 		_, _ = g.Do("block", func() (any, error) {
 			close(inFlight)
 			<-release

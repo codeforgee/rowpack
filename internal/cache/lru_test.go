@@ -41,6 +41,10 @@ func TestLRUNil(t *testing.T) {
 	// Put should be no-op
 	lru.Put(1, 100, "value")
 
+	// Delete on a nil cache is the one operation not covered above: it must be
+	// inert instead of panicking (lru.go:113).
+	lru.Delete(7)
+
 	// Stats should be zero
 	require.Equal(t, uint64(0), lru.CapacityBytes())
 	require.Equal(t, uint64(0), lru.Hits())

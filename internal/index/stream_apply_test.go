@@ -8,60 +8,15 @@ import (
 	"github.com/rowpack/rowpack/internal/format"
 )
 
-// TestStreamApplyMatchesBuffered verifies that the Open-path streaming apply
-// (ApplyStreaming → rowShardBuilder) produces byte-identical row shards to the
-// buffered Apply (buildShards). It covers empty snapshots, single-table,
-// multi-table, and multi-page (crossing the indexPageEntryCount boundary)
-// shapes. Every test builds the txn once, applies it both ways, and compares
-// the resulting (RowID, ItemOrdinal, ChangeType, BlockID) per table.
-func TestStreamApplyMatchesBuffered(t *testing.T) {
-	full := format.SnapshotIndexEntry{SnapshotID: 1, SnapshotType: format.SnapshotFull, BlockCount: 1}
-	cases := []struct {
-		name string
-		rows []format.RowIndexEntry
-	}{
-		{"empty", nil},
-		{"single-table-seq", riSeq(1000, 40)},
-		{"multi-table", []format.RowIndexEntry{
-			riEntry(1, 1, 1, 0, format.ChangeInsert),
-			riEntry(1, 2, 1, 1, format.ChangeInsert),
-			riEntry(1, 3, 2, 0, format.ChangeDelete),
-			riEntry(2, 1, 3, 0, format.ChangeInsert),
-			riEntry(2, 2, 3, 1, format.ChangeUpdate),
-			riEntry(3, 1, 3, 0, format.ChangeInsert),
-		}},
-		{"multi-table-multi-page", mixedRows(5200)},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			b := NewBuilder(1)
-			b.SetRowDedup(false)
-			if err := b.SetSnapshot(full); err != nil {
-				t.Fatal(err)
-			}
-			for i := range tc.rows {
-				e := tc.rows[i]
-				e.SnapshotID = 1
-				if err := b.AddRow(e); err != nil {
-					t.Fatal(err)
-				}
-			}
-			data, txn, err := b.Build(BodyBounds{}, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			v1, err := EmptyView().Apply(txn, 32)
-			if err != nil {
-				t.Fatal(err)
-			}
-			v2, err := EmptyView().ApplyStreaming(data, nil, 32)
-			if err != nil {
-				t.Fatal(err)
-			}
-			compareRowShards(t, v1, v2)
-		})
-	}
-}
+// stream_apply_test.go holds the fixtures shared by the streaming-apply
+// equivalence checks:
+//   - mixedRows: a deterministic multi-table set spanning several index pages.
+//   - compareRowShards: the assertion that two views expose identical shards.
+//
+// The shapes themselves (empty / single-table / multi-table / multi-page /
+// block-run-restart) are exercised by parse_dispatch_test.go
+// TestParseSinkDispatchPathsEquivalence, which additionally drives the entry
+// and rows fallback sinks — a strict superset of the old per-shape test here.
 
 // mixedRows builds a deterministic multi-table set that spans several index
 // pages (indexPageEntryCount entries), forcing table boundaries to fall in the

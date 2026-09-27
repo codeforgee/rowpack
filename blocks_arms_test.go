@@ -36,13 +36,9 @@ func TestBlocksRejectUnknownAddress(t *testing.T) {
 	ctx := context.Background()
 	db := armCommittedStore(t)
 
-	_, err := db.Blocks(ctx, 4242, "t")
-	require.ErrorIs(t, err, ErrNotFound)
-
-	_, err = db.Blocks(ctx, 1, "nope")
-	require.ErrorIs(t, err, ErrNotFound)
-
-	_, err = db.ScanBlocks(ctx, 4242, "t", 0, 1)
+	// Blocks 的「未知快照 / 未知表」两臂由 read_gaps_test.go
+	// TestReadLookupNotFoundArms 覆盖（同一 ErrNotFound 判定），此处只补 ScanBlocks。
+	_, err := db.ScanBlocks(ctx, 4242, "t", 0, 1)
 	require.ErrorIs(t, err, ErrNotFound)
 
 	_, err = db.ScanBlocks(ctx, 1, "nope", 0, 1)

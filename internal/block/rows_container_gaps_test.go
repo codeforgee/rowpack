@@ -77,16 +77,8 @@ func TestParseContainerDirectoryOverrun(t *testing.T) {
 	require.ErrorContains(t, err, "overruns")
 }
 
-// TestParseContainerBadHeaderMagic: a container header that fails to
-// unmarshal (broken magic) is rejected.
-func TestParseContainerBadHeaderMagic(t *testing.T) {
-	want, bodies := smallWant(t, 10)
-	fb, _ := buildContainer(t, 4<<10, 1<<20, format.CompressionNone, want, bodies)
-	payload := append([]byte(nil), fb.Stored...)
-	payload[0] ^= 0xFF
-	_, err := ParseContainer(payload, fb.Header, DefaultLimits())
-	require.Error(t, err)
-}
+// 容器头 magic 损坏由 container_geometry_test.go TestContainerHeaderCRCIsEnforced
+// 末尾覆盖（同一 ParseContainer magic 臂，且断言诊断文本为 "magic"）。
 
 // TestPageScratchOutOfRange: page indices outside the directory are rejected.
 func TestPageScratchOutOfRange(t *testing.T) {

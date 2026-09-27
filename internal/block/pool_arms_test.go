@@ -76,11 +76,72 @@ func TestEncodeZstdWithDropsOutgrownScratch(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestRawBufSkipsPoolWhenOversized: a decompression scratch larger than the
-// biggest pooled class is allocated fresh (90) and never retained.
-func TestRawBufSkipsPoolWhenOversized(t *testing.T) {
-	const huge = uint32(32<<20) + 1
-	b := getRawBuf(huge)
-	require.GreaterOrEqual(t, cap(b.data), int(huge), "the request is served even past the pool")
-	putRawBuf(b)
+// TestRawBufServesEveryClass: getRawBuf must hand back at least the requested
+// capacity whether the size lands in a pooled class or past the biggest one
+// (rawbuf.go:90), and returning it must never park an oversized buffer.
+func TestRawBufServesEveryClass(t *testing.T) {
+	for _, size := range []uint32{1, 100, 4095, 4096, 4097, 64 << 10, 1 << 20, 300 << 10, (32 << 20) + 1} {
+		b := getRawBuf(size)
+		require.GreaterOrEqual(t, cap(b.data), int(size), "getRawBuf(%d) served %d", size, cap(b.data))
+		putRawBuf(b)
+	}
+
+	// A buffer handed back directly (not obtained from the pool) is dropped
+	// when it is oversized: pooledBytes must not move (rawbuf.go:109-110).
+	DisablePool(false)
+	defer DisablePool(false)
+	prev := pooledBytes.Load()
+	putRawBuf(&rawBuf{data: make([]byte, poolBudget+1)})
+	require.Equal(t, prev, pooledBytes.Load(), "an oversized buffer is not retained")
+}
+
+// TestPoolClassBoundaries: the size→class ladder clamps below the smallest
+// class, rounds up to the next power of two, and reports -1 past the largest.
+func TestPoolClassBoundaries(t *testing.T) {
+	cases := []struct {
+		size int
+		want int
+	}{
+		{0, poolClassMinBits},             // clamp to smallest
+		{1, poolClassMinBits},             // smallest class
+		{4096, 12},                        // exact smallest class
+		{4097, 13},                        // ceil to next class
+		{1 << 20, 20},                     // exact
+		{(1 << 20) + 1, 21},               // ceil
+		{1 << poolClassMaxBits, 25},       // largest class exact
+		{(1 << poolClassMaxBits) + 1, -1}, // oversized: not pooled
+	}
+	for _, c := range cases {
+		require.Equal(t, c.want, poolClass(c.size), "poolClass(%d)", c.size)
+	}
+}
+
+// TestRawBufBudgetCapsRetention: past the process-wide budget the pool stops
+// retaining and hands the buffers back to the GC (rawbuf.go:109).
+func TestRawBufBudgetCapsRetention(t *testing.T) {
+	DisablePool(false)
+	defer DisablePool(false)
+	prev := pooledBytes.Load()
+	t.Cleanup(func() { pooledBytes.Store(prev) })
+
+	bufs := make([]*rawBuf, 0, 200)
+	for i := 0; i < 200; i++ { // 200 x 256 KiB = 50 MiB > poolBudget
+		bufs = append(bufs, getRawBuf(256<<10))
+	}
+	for _, b := range bufs {
+		putRawBuf(b)
+	}
+	require.LessOrEqual(t, pooledBytes.Load(), int64(poolBudget), "retention never exceeds the budget")
+}
+
+// TestRawBufBypassRetainsNothing: with the pool disabled every buffer goes
+// straight back to the GC.
+func TestRawBufBypassRetainsNothing(t *testing.T) {
+	prev := DisablePool(true)
+	defer DisablePool(prev)
+	pooledBytes.Store(0)
+	defer pooledBytes.Store(0)
+
+	putRawBuf(getRawBuf(1 << 20))
+	require.Zero(t, pooledBytes.Load(), "a bypassed pool retains nothing")
 }

@@ -224,10 +224,6 @@ func TestRowsContainerCorruption(t *testing.T) {
 		}
 	}
 
-	// A forged ItemCount must be rejected (TotalRecords vs header).
-	badHdr := fb.Header
-	badHdr.ItemCount = fb.Header.ItemCount + 1
-	if _, err := ParseContainer(payload, badHdr, DefaultLimits()); err == nil {
-		t.Fatal("forged item count accepted")
-	}
+	// 伪造 ItemCount（TotalRecords 与块头不符）由 container_geometry_test.go
+	// 的 "item-count-disagrees" 用例覆盖，并额外断言诊断文本 "total records"。
 }

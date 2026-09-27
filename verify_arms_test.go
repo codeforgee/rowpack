@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -21,30 +20,8 @@ import (
 // 深度超过上限(同样由 Apply 挡住);以及 Duration<=0 的兜底(只有时钟粒度极粗的平台
 // 才会走到)。
 
-// publishCraftedSnapshot adds one snapshot of the given type and parent, with
-// whatever entries add emits, and publishes it.
-func publishCraftedSnapshot(t *testing.T, db *Store, snapID, parent uint64, typ format.SnapshotType, add func(b *index.Builder)) {
-	t.Helper()
-	st, err := db.captureState()
-	require.NoError(t, err)
-	b := index.NewBuilder(1)
-	require.NoError(t, b.SetSnapshot(format.SnapshotIndexEntry{
-		SnapshotID:       snapID,
-		ParentSnapshotID: parent,
-		SnapshotType:     typ,
-		CreatedUnixNano:  time.Now().UnixNano(),
-	}))
-	if add != nil {
-		add(b)
-	}
-	_, txn, err := b.Build(index.BodyBounds{}, 0)
-	require.NoError(t, err)
-	view, err := st.view.Apply(txn, format.DefaultMaxSnapshotDepth)
-	require.NoError(t, err)
-	schemas, err := db.buildIndex(view)
-	require.NoError(t, err)
-	db.state.Store(&publishedState{view: view, schemas: schemas})
-}
+// publishCraftedSnapshot 已移到 testutil_test.go（与 craftView / publishCraftedView
+// 共用一份构造逻辑）。
 
 // TestVerifyReportsClosed: Verify is a read path like any other.
 func TestVerifyReportsClosed(t *testing.T) {

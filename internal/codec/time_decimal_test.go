@@ -62,19 +62,19 @@ func TestDateMethods(t *testing.T) {
 		require.Equal(t, int64(1705276800), unix)
 	})
 
-	t.Run("civilFromDays roundtrip", func(t *testing.T) {
-		y, m, day := civilFromDays(int(d))
-		require.EqualValues(t, 2024, y)
-		require.EqualValues(t, 1, m)
-		require.EqualValues(t, 15, day)
-	})
+	// civilFromDays(19737) == 2024-01-15 由 TestCivilDaysBijective 的
+	// "regular" 行双向断言，此处不再重复。
 }
 
-func TestDaysFromCivil(t *testing.T) {
+// TestCivilDaysBijective pins the civil↔epoch-days conversion in both
+// directions: daysFromCivil (time_decimal.go:34) and civilFromDays (:53) must
+// agree on the same six landmarks, including the pre-epoch and leap-year
+// edges where an off-by-one only shows up in one direction.
+func TestCivilDaysBijective(t *testing.T) {
 	testCases := []struct {
 		name    string
 		y, m, d int
-		want    int
+		days    int
 	}{
 		{"epoch", 1970, 1, 1, 0},
 		{"leap year", 2000, 1, 1, 10957},
@@ -86,32 +86,9 @@ func TestDaysFromCivil(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := daysFromCivil(tc.y, tc.m, tc.d)
-			require.Equal(t, tc.want, got)
-		})
-	}
-}
-
-func TestCivilFromDays(t *testing.T) {
-	testCases := []struct {
-		name                string
-		z                   int
-		wantY, wantM, wantD int
-	}{
-		{"epoch", 0, 1970, 1, 1},
-		{"leap year", 10957, 2000, 1, 1},
-		{"pre-epoch", -1, 1969, 12, 31},
-		{"regular", 19737, 2024, 1, 15},
-		{"end of year", 20088, 2024, 12, 31},
-		{"far future", 47482, 2100, 1, 1},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			y, m, d := civilFromDays(tc.z)
-			require.Equal(t, tc.wantY, y)
-			require.Equal(t, tc.wantM, m)
-			require.Equal(t, tc.wantD, d)
+			require.Equal(t, tc.days, daysFromCivil(tc.y, tc.m, tc.d), "daysFromCivil(%d-%d-%d)", tc.y, tc.m, tc.d)
+			y, m, d := civilFromDays(tc.days)
+			require.Equal(t, []int{tc.y, tc.m, tc.d}, []int{y, m, d}, "civilFromDays(%d)", tc.days)
 		})
 	}
 }

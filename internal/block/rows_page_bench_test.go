@@ -83,13 +83,12 @@ func BenchmarkRowsPageEncode(b *testing.B) {
 	for _, target := range []int{16 << 10, 32 << 10, 64 << 10, 128 << 10} {
 		b.Run(fmtTarget(target), func(b *testing.B) {
 			b.ReportAllocs()
-			b.ResetTimer()
 			var (
 				pageCount int
 				rawBytes  int
 				stored    int
 			)
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				pageCount, rawBytes, stored = 0, 0, 0
 				bld := NewPageBuilder(target)
 				buildComp := func() error {

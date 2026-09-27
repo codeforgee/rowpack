@@ -36,7 +36,7 @@ func benchPageSize(b *testing.B, pageSize int) {
 		b.ReportMetric(float64(st.StoredBytes)/float64(benchRows), "storedB/row")
 		b.ReportMetric(float64(st.DataFileBytes)/(1<<20), "fileMB")
 		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
+		for i := 0; b.Loop(); i++ {
 			row, err := db.Get(ctx, snap, "t", RowID(i%benchRows)+1, dst)
 			if err != nil {
 				b.Fatal(err)
@@ -47,7 +47,7 @@ func benchPageSize(b *testing.B, pageSize int) {
 
 	b.Run("scan", func(b *testing.B) {
 		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			it, err := db.Scan(ctx, snap, "t", ScanOptions{})
 			if err != nil {
 				b.Fatal(err)
@@ -78,8 +78,7 @@ func benchPageSize(b *testing.B, pageSize int) {
 	b.Run("get_cold", func(b *testing.B) {
 		before := cdb.Stats().Read
 		b.ReportAllocs()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for i := 0; b.Loop(); i++ {
 			row, err := cdb.Get(ctx, csnap, "t", RowID((i*7919)%benchRows)+1, dst)
 			if err != nil {
 				b.Fatal(err)
@@ -94,7 +93,7 @@ func benchPageSize(b *testing.B, pageSize int) {
 
 	b.Run("write", func(b *testing.B) {
 		const n = 25_000
-		for i := 0; i < b.N; i++ {
+		for i := 0; b.Loop(); i++ {
 			d, _ := benchStoreAt(b, filepath.Join(tmpdb(b), fmt.Sprintf("w%d", i)), Options{PageSize: pageSize}, n)
 			d.Close()
 		}

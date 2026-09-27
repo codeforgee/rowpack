@@ -178,8 +178,10 @@ func benchWriteFull(b *testing.B, c benchCtx) {
 	rssBefore := peakRSSBytes()
 	var lastStats Stats
 	ctx := context.Background()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	// b.Loop 要求回到循环条件时计时器是开的（否则 Fatal: B.Loop called with
+	// timer stopped），所以收尾的 Close 之后必须再 StartTimer，下一轮开头再
+	// StopTimer 把建库排除在计时之外。
+	for b.Loop() {
 		b.StopTimer()
 		base := filepath.Join(tmpdb(b), "w")
 		db, err := Create(base, c.opts())
@@ -196,6 +198,7 @@ func benchWriteFull(b *testing.B, c benchCtx) {
 		b.StopTimer()
 		lastStats = db.Stats()
 		require.NoError(b, db.Close())
+		b.StartTimer()
 	}
 	b.ReportMetric(float64(rows)*float64(b.N)/b.Elapsed().Seconds()/1000, "krows/s")
 	reportStatsMetrics(b, lastStats, rssBefore, uint64(rows))
@@ -207,8 +210,8 @@ func benchWriteIsolated(b *testing.B, c benchCtx) {
 	rssBefore := peakRSSBytes()
 	var lastStats Stats
 	ctx := context.Background()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	// 同 benchWriteFull：每轮建库不计入耗时，且回到循环条件前必须恢复计时。
+	for b.Loop() {
 		b.StopTimer()
 		base := filepath.Join(tmpdb(b), "wi")
 		db, err := Create(base, c.opts())
@@ -225,6 +228,7 @@ func benchWriteIsolated(b *testing.B, c benchCtx) {
 		b.StopTimer()
 		lastStats = db.Stats()
 		require.NoError(b, db.Close())
+		b.StartTimer()
 	}
 	b.ReportMetric(float64(rows)*float64(b.N)/b.Elapsed().Seconds()/1000, "krows/s")
 	reportStatsMetrics(b, lastStats, rssBefore, uint64(rows))
@@ -251,8 +255,7 @@ func benchGet(b *testing.B, c benchCtx, fullRange bool) {
 		require.NoError(b, err)
 		dst = row[:0]
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		rowID := uint64(i%100) + 1
 		if fullRange {
 			rowID = uint64(i%rows) + 1
@@ -339,8 +342,7 @@ func benchScan(b *testing.B, c benchCtx) {
 		require.NoError(b, it.Err())
 		it.Close()
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		it, err := db.Scan(ctx, snap, "t", ScanOptions{})
 		require.NoError(b, err)
 		n := 0
@@ -369,8 +371,7 @@ func benchScan1M(b *testing.B, c benchCtx) {
 	base := filepath.Join(tmpdb(b), "s1m")
 	db, snap := benchStoreAt(b, base, c.opts(), rows)
 	defer db.Close()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		it, err := db.Scan(ctx, snap, "t", ScanOptions{})
 		require.NoError(b, err)
 		n := 0
@@ -400,8 +401,7 @@ func benchGetRandom1M(b *testing.B, c benchCtx) {
 	db, snap := benchStoreAt(b, base, c.opts(), rows)
 	defer db.Close()
 	var rng uint64 = 88172645463325252
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rng = rng*6364136223846793005 + 1442695040888963407
 		_, err := db.Get(ctx, snap, "t", rng%uint64(rows)+1, nil)
 		require.NoError(b, err)
@@ -451,10 +451,9 @@ func benchDeepChain(b *testing.B, c benchCtx, scan bool) {
 			require.NoError(b, err)
 		}
 	}
-	b.ResetTimer()
 	if scan {
 		want := rows + depth*deltaRows
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			it, err := db.Scan(ctx, head, "t", ScanOptions{})
 			require.NoError(b, err)
 			n := 0
@@ -472,7 +471,7 @@ func benchDeepChain(b *testing.B, c benchCtx, scan bool) {
 		b.ReportMetric(float64(want)*float64(b.N)/b.Elapsed().Seconds()/1000, "krows/s")
 	} else {
 		var rng uint64 = 1442695040888963407
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			rng = rng*6364136223846793005 + 1
 			_, err := db.Get(ctx, head, "t", rng%uint64(rows)+1, nil)
 			require.NoError(b, err)
@@ -490,8 +489,7 @@ func benchOpenReplay(b *testing.B, c benchCtx) {
 	base := filepath.Join(tmpdb(b), "op")
 	db, _ := benchStoreAt(b, base, c.opts(), benchRows)
 	require.NoError(b, db.Close())
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		db2, err := Open(base, c.opts())
 		require.NoError(b, err)
 		require.NoError(b, db2.Close())
@@ -527,8 +525,7 @@ func benchIndexRebuildOnOpen(b *testing.B, c benchCtx) {
 	require.NoError(b, err)
 	require.True(b, db2.Stats().Recovery.Performed, "tampered IndexTxn must trigger rebuild")
 	require.NoError(b, db2.Close())
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		d, err := Open(base, c.opts())
 		require.NoError(b, err)
 		require.NoError(b, d.Close())

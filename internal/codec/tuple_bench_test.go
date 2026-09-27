@@ -31,8 +31,7 @@ func BenchmarkPreparedDecodeBody(b *testing.B) {
 	}
 	dst := make([]Value, len(schema.Columns))
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := decoder.DecodeInto(dst, body, nil); err != nil {
 			b.Fatal(err)
 		}
@@ -52,8 +51,7 @@ func BenchmarkPreparedDecodeBatch128(b *testing.B) {
 	slab := make([]Value, 0, len(bodies)*len(schema.Columns))
 	b.ReportAllocs()
 	b.SetBytes(int64(len(body) * len(bodies)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := decoder.DecodeBatchInto(slab[:0], bodies, nil); err != nil {
 			b.Fatal(err)
 		}
@@ -97,8 +95,7 @@ func BenchmarkPreparedDecodeMixed(b *testing.B) {
 		dst := make([]Value, len(schema.Columns))
 		b.Run(name, func(b *testing.B) {
 			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				if _, err := decoder.DecodeInto(dst, body, nil); err != nil {
 					b.Fatal(err)
 				}

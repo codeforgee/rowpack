@@ -159,8 +159,8 @@ func BenchmarkRowsPageRecordAt32K(b *testing.B) {
 	}
 	n := p.h.EntryCount
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for i := 0; b.Loop(); i++ {
 		if _, err := p.RecordAt(uint32(i % int(n))); err != nil {
 			b.Fatal(err)
 		}
@@ -190,8 +190,8 @@ func BenchmarkRowsPageRecords32K(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		if err := p.Records(func(rec codec.PageRecord) error { return nil }); err != nil {
 			b.Fatal(err)
 		}
@@ -219,8 +219,8 @@ func BenchmarkRowsPageParse32K(b *testing.B) {
 	}
 	b.SetBytes(int64(len(page)))
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		if _, err := ParseRowsPage(page); err != nil {
 			b.Fatal(err)
 		}
@@ -232,7 +232,7 @@ func BenchmarkValidateChangeBits(b *testing.B) {
 	stream := make([]byte, entries/4)
 	b.SetBytes(entries / 4)
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if err := validateChangeBits(stream, entries); err != nil {
 			b.Fatal(err)
 		}
@@ -247,7 +247,7 @@ func BenchmarkValidateChangeBitsScalar(b *testing.B) {
 	stream := make([]byte, entries/4)
 	b.SetBytes(entries / 4)
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for ordinal := uint32(0); ordinal < entries; ordinal++ {
 			if (stream[ordinal/4]>>((ordinal%4)*2))&3 == 3 {
 				b.Fatal("unexpected reserved marker")

@@ -118,14 +118,6 @@ func restampChunk(t *testing.T, data []byte, off int, mut func(*format.IndexChun
 	}
 }
 
-func flipPayloadCRC(t *testing.T, data []byte, c chunkInfo) {
-	t.Helper()
-	restampChunk(t, data, c.off, func(h *format.IndexChunkHeader) {
-		data[c.paylo+3] ^= 0xFF
-		h.PayloadCRC32C = format.CRC32C(data[c.paylo : c.paylo+int(h.StoredBytes)])
-	})
-}
-
 // dirEntryAt returns the mutable slice of directory entry i.
 func dirEntryAt(data []byte, dirOff, i int) []byte {
 	off := dirOff + i*format.IndexChunkDirEntrySize

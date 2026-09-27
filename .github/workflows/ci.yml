@@ -6,6 +6,20 @@ on:
   pull_request:
 
 jobs:
+  # 静态检查与操作系统无关，只在 Linux 跑一次，避免三倍 CI 时间。
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          # .golangci.yml 是 v2 格式，必须锁 v2.x 二进制。
+          version: v2.13.2
+          args: --timeout=5m
+
   test:
     strategy:
       fail-fast: false

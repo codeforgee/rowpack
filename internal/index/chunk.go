@@ -142,7 +142,7 @@ func (cc *chunkWriter) add(cb *chunkBuild) error {
 	de.StoredBytes = h.StoredBytes
 	de.EntryKind = cb.kind
 	de.RegionOffset = off
-	de.MarshalTo(cc.reserveDir(format.IndexChunkDirEntrySize))
+	_ = de.MarshalTo(cc.reserveDir(format.IndexChunkDirEntrySize)) // exact-size buffer: cannot fail
 	cc.rawParts = append(cc.rawParts, cb.raw)
 	cc.seq++
 	return nil
@@ -303,7 +303,7 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 	sde.EntryKind = format.IndexChunkKindSnapshot
 	sde.RegionOffset = 0
 	var sdeBuf [format.IndexChunkDirEntrySize]byte
-	sde.MarshalTo(sdeBuf[:])
+	_ = sde.MarshalTo(sdeBuf[:]) // exact-size buffer: cannot fail
 	cc.dir = append(sdeBuf[:], cc.dir...)
 	// Patch each fence's StoredOffset now that the chunk region + directory
 	// length is final, and serialize the fence directory.

@@ -45,11 +45,12 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 	// Header + parent chain + index/footer cross checks.
 	for _, sm := range view.Snapshots() {
 		rep.SnapshotsChecked++
-		if sm.Type == format.SnapshotFull {
+		switch sm.Type {
+		case format.SnapshotFull:
 			if sm.Parent != 0 {
 				return rep, &CorruptionError{File: s.dataPath, SnapshotID: sm.ID, Kind: ErrCorruptData, Reason: "FULL snapshot has a parent"}
 			}
-		} else if sm.Type == format.SnapshotDelta {
+		case format.SnapshotDelta:
 			if view.Snapshot(sm.Parent) == nil {
 				return rep, &CorruptionError{File: s.dataPath, SnapshotID: sm.ID, Kind: ErrCorruptIndex, Reason: fmt.Sprintf("DELTA parent %d missing", sm.Parent)}
 			}

@@ -233,13 +233,6 @@ func TestRebuildBoundsHugeFooterCounts(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func mustUint64(t *testing.T, r Row, i int) uint64 {
-	t.Helper()
-	v, ok := r[i].Uint64()
-	require.True(t, ok)
-	return v
-}
-
 // TestRebuildChainInvalidAfterParentForge: a committed DELTA whose IndexTxn
 // is corrupt falls back to the block rebuild; if its snapshot header has been
 // forged to claim a parent that was never committed, the rebuilt txn fails

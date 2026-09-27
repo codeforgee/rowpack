@@ -112,12 +112,12 @@ type DataFileHeader struct {
 
 // MarshalTo writes the serialized form of h into dst.
 func (h *DataFileHeader) MarshalTo(dst []byte) error {
-	return h.FileHeader.marshalTo(dst, MagicDataFile)
+	return h.marshalTo(dst, MagicDataFile)
 }
 
 // Unmarshal validates src and fills h.
 func (h *DataFileHeader) Unmarshal(src []byte) error {
-	_, err := h.FileHeader.unmarshal(src, MagicDataFile)
+	_, err := h.unmarshal(src, MagicDataFile)
 	return err
 }
 

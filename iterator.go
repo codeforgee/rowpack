@@ -394,18 +394,18 @@ func (it *Iterator) loadBlock(bl *index.BlockLoc) error {
 func (it *Iterator) nextLoc() (RowID, index.RowLoc, bool) {
 	if len(it.layers) == 1 {
 		l := it.layers[0]
-		for !l.keys.Done() {
-			rowID := l.keys.RowID()
-			loc := l.keys.Loc()
-			l.keys.Next()
-			if it.opts.End > 0 && rowID >= it.opts.End {
-				return 0, index.RowLoc{}, false
-			}
-			// No tombstone check: a single layer is a FULL snapshot, and FULL
-			// snapshots are insert-only (writer.put rejects UPDATE/DELETE).
-			return rowID, loc, true
+		if l.keys.Done() {
+			return 0, index.RowLoc{}, false
 		}
-		return 0, index.RowLoc{}, false
+		rowID := l.keys.RowID()
+		loc := l.keys.Loc()
+		l.keys.Next()
+		if it.opts.End > 0 && rowID >= it.opts.End {
+			return 0, index.RowLoc{}, false
+		}
+		// No tombstone check: a single layer is a FULL snapshot, and FULL
+		// snapshots are insert-only (writer.put rejects UPDATE/DELETE).
+		return rowID, loc, true
 	}
 	for it.heap.Len() > 0 {
 		winner := heap.Pop(&it.heap).(*layerIter)

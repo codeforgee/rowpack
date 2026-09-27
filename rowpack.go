@@ -248,7 +248,7 @@ func openStore(basePath, dataPath string, opts Options, uuid [16]byte, header fo
 	if err := s.initOpen(); err != nil {
 		df.Close()
 		if s.lock != nil {
-			s.lock.Release()
+			_ = s.lock.Release()
 		}
 		return nil, err
 	}

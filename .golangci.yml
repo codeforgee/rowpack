@@ -1,0 +1,38 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
+    rules:
+      # 测试里的 defer Close/Release/Rollback、os.Remove 等不强制检查返回值，
+      # 避免用错误断言掩盖真实的失败原因。
+      - linters: [errcheck]
+        path: _test\.go
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      # 与 Makefile 的 `gofmt -w .` 保持一致：不启用 -s 简化，
+      # 否则 make fmt 与 make lint 会互相反复改写同一处代码。
+      simplify: false
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

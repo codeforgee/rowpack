@@ -332,21 +332,11 @@ func TestValidateChangeBitsReportsFirstRecordAndIgnoresPadding(t *testing.T) {
 	require.NoError(t, err, "padding bits rejected")
 }
 
-// fixPageCRC recomputes the header CRC field after mutation.
+// fixPageCRC recomputes the header CRC over the body streams, which start at
+// the fixed header size and run to the end of the page.
 func fixPageCRC(page []byte) {
-	h := format.RowsPageHeader{}
-	// Re-parse without geometry/CRC validation by hand: fields at fixed offsets.
-	h.RowIDsBytes = leU32(page[16:])
-	h.OffsetsBytes = leU32(page[20:])
-	h.SchemaRLEBytes = leU32(page[24:])
-	h.ChangeBitsBytes = leU32(page[28:])
-	h.TuplesBytes = leU32(page[32:])
 	streams := page[format.RowsPageHeaderSize:]
 	lePutU32(page[60:], format.CRC32C(streams))
-}
-
-func leU32(b []byte) uint32 {
-	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 }
 
 func lePutU32(b []byte, v uint32) {

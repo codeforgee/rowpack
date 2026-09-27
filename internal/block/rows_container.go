@@ -208,7 +208,7 @@ func ParseRowsDir(offset int64, r *Reader, h format.BlockHeader, limits Limits) 
 }
 
 // validateRowCounts cross-checks the container header against the block header.
-func validateRowCounts(rh *format.RowsBlockHeader, h format.BlockHeader, limits Limits) error {
+func validateRowCounts(rh *format.RowsBlockHeader, h format.BlockHeader, _ Limits) error {
 	if rh.TotalRecords != h.ItemCount {
 		return fmt.Errorf("rowpack: container total records %d != block item count %d", rh.TotalRecords, h.ItemCount)
 	}

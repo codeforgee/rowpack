@@ -24,12 +24,6 @@ func smallWant(t *testing.T, n int) ([]expectedPageRow, [][]byte) {
 	return want, bodies
 }
 
-// restampContainerCRC recomputes the block header's header/dir CRC after a
-// caller patched the container header or page directory in place.
-func restampContainerCRC(container []byte, h *format.BlockHeader) {
-	h.RawCRC32C = format.CRC32C(container[:format.RowsBlockHeaderSize+int(containerDirBytes(container))])
-}
-
 func containerDirBytes(container []byte) uint32 {
 	var rh format.RowsBlockHeader
 	if err := rh.Unmarshal(container[:format.RowsBlockHeaderSize]); err != nil {

@@ -182,8 +182,10 @@ func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table string, v
 func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error)
 func (s *Store) TablesIn(ctx context.Context, snapshot SnapshotID, ns string) ([]Table, error)
 func (s *Store) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error)
+func (s *Store) Meta(ctx context.Context, snap SnapshotID) ([]byte, error)
 func (tx *Tx) DefineTable(name string, columns []Column) error
 func (tx *Tx) DefineTableIn(ns, name string, columns []Column) error
+func (tx *Tx) SetMeta(value []byte) error
 ```
 
 - 表按**地址**寻址（默认 ns 用裸名）；`Tables` 返回表身份与最新 SchemaVersion；`Schema` 解析指定
@@ -202,7 +204,20 @@ func (tx *Tx) DefineTableIn(ns, name string, columns []Column) error
   `SplitAddress` 不是 `Qualify` 的逆，以 `Table.NS`/`Table.Name` 为准）；两个不同 `(ns, name)`
   算出同一地址是真实冲突，第二个 `DefineTable*` 报 `ErrSchemaConflict`；
 - 元数据 TLV 与 `DefineTable` 写入的 Table/Column 记录见
-  [METADATA_FORMAT_V1.md](METADATA_FORMAT_V1.md)。
+  [METADATA_FORMAT_V1.md](METADATA_FORMAT_V1.md)；
+- **快照元信息块（Meta）**是每快照至多一个的**不透明字节块**：`Tx.SetMeta` 随本次 `Commit` 原子
+  发布，`Store.Meta` 原样读回。它承载「整块、每快照一份」的调用方信息（应用版本、采集参数、外部
+  清单、人类可读日志），引擎**不解析内容**，只做长度校验（上限
+  `Options.Limits.MaxRawBlockBytes`）：字节原样往返，NUL 与非法 UTF-8 都不是问题。语义要点：
+  - commit 前可多次调用，**最后一次生效**；`nil` 或空切片清除，因此快照从不带空块，「清除」与
+    「从未设置」是同一个可观测状态；
+  - `Meta` **沿父链取最近祖先**：DELTA 不设置就继承父快照的值，一条链上任意时刻只看到一个值；
+    整条链都没有时返回 `(nil, nil)`（「无」是合法状态，不是错误），未知快照才是 `ErrNotFound`；
+  - 返回切片归调用方所有（副本，改动它不影响缓存中的块），内容先过 CRC/长度/AEAD 校验，损坏以
+    `ErrCorruptData` 暴露而非读出垃圾；
+  - 它与 TLV 元数据无关：不要把「应用想要的原样字节」和「引擎解析的行解码契约」混为一谈，后者
+    仍然只有 `DefineTable`。磁盘表示见
+    [BINARY_FORMAT_V1.md](BINARY_FORMAT_V1.md) §5.0。
 
 ## 6. 行复用与缓冲所有权
 

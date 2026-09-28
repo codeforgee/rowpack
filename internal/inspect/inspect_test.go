@@ -66,7 +66,8 @@ func TestHeaderListVerifyOnGoldenStore(t *testing.T) {
 	body := out.String()
 	require.Contains(t, body, "path: "+goldenBase(t, "full-delta-store")+".rpk")
 	require.Contains(t, body, "readonly: true")
-	require.Contains(t, body, "snapshots=3 blocks=5 tables=3")
+	// 5 个 Rows/Metadata 块 + 2 个快照 Meta 块（FULL 与 DELTA 各一个）。
+	require.Contains(t, body, "snapshots=3 blocks=7 tables=3")
 	// 最新快照是空 DELTA：31 = 继承下来的全部可见行（Stats 口径回归）。
 	require.Contains(t, body, "logicalRows=31")
 	require.Contains(t, body, "recovery: performed=false dataTail=0 indexTail=0 rebuilt=0")
@@ -85,7 +86,7 @@ func TestHeaderListVerifyOnGoldenStore(t *testing.T) {
 
 	out.Reset()
 	require.NoError(t, Run(ctx, []string{"verify", goldenBase(t, "full-delta-store")}, &out, &errb))
-	require.Contains(t, out.String(), "OK snapshots=3 blocks=5 rows=34 bytes=")
+	require.Contains(t, out.String(), "OK snapshots=3 blocks=7 rows=34 bytes=")
 	require.Empty(t, errb.String())
 }
 

@@ -181,6 +181,10 @@ func TestGoldenEncryptedStore(t *testing.T) {
 		name, _ := row[1].String()
 		require.Equal(t, fmt.Sprintf("row-%d", i), name)
 	}
+	// The sealed meta block decrypts to the exact bytes.
+	meta, err := db.Meta(ctx, snaps[0].ID)
+	require.NoError(t, err)
+	require.Equal(t, []byte("rowpack encrypted golden v1\nsnapshot=FULL\n"), meta)
 }
 
 // TestGoldenEncryptedStoreGenerate regenerates testdata/golden/encrypted-store.rpk
@@ -218,6 +222,9 @@ func TestGoldenEncryptedStoreGenerate(t *testing.T) {
 	for i := uint64(1); i <= 3; i++ {
 		require.NoError(t, w.Insert("t1", i, Row{Uint64(i), String(fmt.Sprintf("row-%d", i))}))
 	}
+	// The sample also locks a snapshot meta block under whole-block sealing:
+	// same nonce/KeyEpoch policy, no key, no bytes.
+	require.NoError(t, w.SetMeta([]byte("rowpack encrypted golden v1\nsnapshot=FULL\n")))
 	_, err = w.Commit(ctx)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())

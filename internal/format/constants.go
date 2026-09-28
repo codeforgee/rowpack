@@ -85,12 +85,21 @@ const (
 	SnapshotDelta SnapshotType = 2
 )
 
-// BlockKind distinguishes Rows and Metadata blocks.
+// BlockKind distinguishes Rows, Metadata and Snapshot Meta blocks.
 type BlockKind uint8
 
 const (
-	BlockKindRows     BlockKind = 1
+	BlockKindRows BlockKind = 1
+	// BlockKindMetadata carries TLV schema records; its payload is a
+	// Metadata Payload (METADATA_FORMAT_V1.md §3). It must not be confused
+	// with BlockKindSnapshotMeta: "metadata" here is the record catalog the
+	// engine parses, "meta" is the opaque per-snapshot blob it does not.
 	BlockKindMetadata BlockKind = 2
+	// BlockKindSnapshotMeta carries one snapshot's opaque meta value. Its
+	// whole payload IS the value set by Tx.SetMeta — no envelope, no
+	// directory, no records — so the engine validates its length and CRC
+	// and never interprets its contents.
+	BlockKindSnapshotMeta BlockKind = 3
 )
 
 // Compression is the on-disk block compression identifier.

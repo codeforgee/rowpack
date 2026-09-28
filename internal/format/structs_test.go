@@ -106,6 +106,7 @@ func TestFrozenEnums(t *testing.T) {
 		{"ChangeDelete", uint8(ChangeDelete), 3},
 		{"OperationUpsert", uint8(OperationUpsert), 1}, {"OperationDelete", uint8(OperationDelete), 2},
 		{"BlockKindRows", uint8(BlockKindRows), 1}, {"BlockKindMetadata", uint8(BlockKindMetadata), 2},
+		{"BlockKindSnapshotMeta", uint8(BlockKindSnapshotMeta), 3},
 		{"CompressionNone", uint8(CompressionNone), 0}, {"CompressionZstd", uint8(CompressionZstd), 1},
 		{"SnapshotFull", uint8(SnapshotFull), 1}, {"SnapshotDelta", uint8(SnapshotDelta), 2},
 		{"EncNone", uint8(EncNone), 0}, {"EncAES256GCM", uint8(EncAES256GCM), 1},

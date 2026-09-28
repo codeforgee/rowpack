@@ -76,6 +76,17 @@ func (tx *Tx) ID() SnapshotID { return tx.w.ID() }
 // Parent returns NoParent for a FULL transaction or its DELTA parent.
 func (tx *Tx) Parent() SnapshotID { return tx.w.Parent() }
 
+// SetMeta attaches this snapshot's meta block: one opaque byte block per
+// snapshot for "whole-block, once-per-snapshot" information the caller owns —
+// application version, capture parameters, an external manifest, a
+// human-readable log. The engine stores and returns the bytes verbatim and
+// interprets nothing; the only content rule is length (bounded by
+// Limits.MaxRawBlockBytes). SetMeta may be called at any point before Commit
+// and as often as needed: the last call wins, the value is published
+// atomically with the rest of the snapshot, and nil clears it. A snapshot that
+// sets nothing carries no meta block and leaves its ancestors' value visible.
+func (tx *Tx) SetMeta(value []byte) error { return tx.w.SetMeta(value) }
+
 // DefineTable defines a table in the default ns (NSUser).
 func (tx *Tx) DefineTable(name string, columns []Column) error {
 	return tx.w.createTable(NSUser, name, columns)

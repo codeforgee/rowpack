@@ -79,6 +79,12 @@ type Writer struct {
 	// table ID in the committed view, raised by every CreateTable.
 	nextTableID uint32
 
+	// meta is this snapshot's pending meta value: one opaque blob published
+	// as its own BlockKindSnapshotMeta block by Commit. Empty means "no
+	// meta", which is also how a snapshot that never called SetMeta is
+	// represented on disk, so clearing and never setting are the same state.
+	meta []byte
+
 	// per-table rows block builders
 	rowBuilders map[TableID]*block.RowsBuilder
 	// metadata block builder
@@ -200,6 +206,30 @@ func (w *Writer) parentOf() uint64 {
 	return 0
 }
 
+// SetMeta sets this snapshot's meta value: exactly one opaque blob per
+// snapshot, materialized as a BlockKindSnapshotMeta block and published by
+// Commit together with the rows and schema changes. The engine never
+// interprets the content — it validates the length (bounded by
+// Limits.MaxRawBlockBytes, because the value becomes one block payload),
+// CRC-protects it and reproduces the bytes verbatim at read time. The value
+// therefore carries whatever the caller wants it to: application version,
+// capture parameters, an external manifest, a human-readable log.
+//
+// Repeated calls replace the pending value (last write wins); nil or an empty
+// slice clears it, so a snapshot never carries an empty block. SetMeta copies
+// its argument, so the caller may reuse the slice afterwards.
+func (w *Writer) SetMeta(value []byte) error {
+	if err := w.checkState(); err != nil {
+		return err
+	}
+	if len(value) > int(w.store.opts.Limits.MaxRawBlockBytes) {
+		return fmt.Errorf("%w: meta of %d bytes exceeds limit %d",
+			ErrInvalidArgument, len(value), w.store.opts.Limits.MaxRawBlockBytes)
+	}
+	w.meta = append(w.meta[:0], value...)
+	return nil
+}
+
 // writeMetadata encodes and buffers a metadata record into the metadata block
 // builder.
 func (w *Writer) writeMetadata(rec *metadata.Record) error {
@@ -256,6 +286,49 @@ func (w *Writer) metaFlush(fb *block.FlushedBlock) error {
 		})
 	}
 	w.pending = append(w.pending, blk)
+	return nil
+}
+
+// flushMetaBlock materializes the pending meta value as one snapshot-meta
+// block. It is appended last so setting a meta never reorders the rows and
+// metadata blocks of an existing snapshot.
+//
+// The value is the whole payload: no envelope, no directory, no records.
+// ItemCount is 1 (one blob) and RawCRC32C covers the value itself, which is
+// all the length validation the read path needs.
+func (w *Writer) flushMetaBlock() error {
+	if len(w.meta) == 0 {
+		return nil
+	}
+	comp := w.store.opts.diskCompression()
+	stored, err := block.Compress(comp, w.store.opts.CompressionLevel, w.meta)
+	if err != nil {
+		return err
+	}
+	if len(stored) > len(w.meta) {
+		// Compression expanded an already-incompressible value. Storing it
+		// plain keeps every value SetMeta accepted committable: the promise
+		// is about the value's size, and the stored bound
+		// (Limits.MaxStoredBlockBytes) is met by construction.
+		comp = format.CompressionNone
+		stored = w.meta
+	}
+	if uint64(len(stored)) > uint64(w.store.opts.Limits.MaxStoredBlockBytes) {
+		return fmt.Errorf("%w: meta block of %d stored bytes exceeds limit %d",
+			ErrInvalidArgument, len(stored), w.store.opts.Limits.MaxStoredBlockBytes)
+	}
+	w.pending = append(w.pending, &pendingBlock{
+		header: format.BlockHeader{
+			BlockKind:   format.BlockKindSnapshotMeta,
+			Compression: comp,
+			SnapshotID:  w.id,
+			ItemCount:   1,
+			RawSize:     uint32(len(w.meta)),
+			StoredSize:  uint32(len(stored)),
+			RawCRC32C:   format.CRC32C(w.meta),
+		},
+		payload: stored,
+	})
 	return nil
 }
 
@@ -1201,7 +1274,8 @@ func (w *Writer) flushAll() error {
 			return err
 		}
 	}
-	return nil
+	// Last, so the rows/metadata block order above is unaffected by SetMeta.
+	return w.flushMetaBlock()
 }
 
 func randUint64() uint64 {

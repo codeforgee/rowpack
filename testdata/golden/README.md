@@ -9,8 +9,8 @@
 | --- | --- | --- |
 | `empty-store.rpk` | 仅 128 字节 FileHeader 的空 Store（确定性 UUID/时间） | v1 |
 | `rows-payload-all-types.bin` | 覆盖全类型值 + NULL 的确定性未压缩 Rows Payload | v1 |
-| `full-delta-store.rpk` | FULL + DELTA + 空 DELTA + 超大行（单文件，含内嵌 IndexTxn；Row Index Page + Fence Directory） | v1 |
-| `encrypted-store.rpk` | 加密 FULL Store（None 压缩 + 固定 key，锁定 Header 加密字段/块 Flags/KeyEpoch/密文布局；IndexTxn 页按 Index 域 chunk-nonce/AAD 密封） | v1 |
+| `full-delta-store.rpk` | FULL + DELTA + 空 DELTA + 超大行（单文件，含内嵌 IndexTxn；Row Index Page + Fence Directory）；含**快照 Meta 块**：FULL 设置、DELTA 覆盖、空 DELTA 沿父链继承 | v1 |
+| `encrypted-store.rpk` | 加密 FULL Store（None 压缩 + 固定 key，锁定 Header 加密字段/块 Flags/KeyEpoch/密文布局；IndexTxn 页按 Index 域 chunk-nonce/AAD 密封）；含**整容器密封的快照 Meta 块** | v1 |
 
 ## 锁定摘要（SHA-256）
 
@@ -18,11 +18,16 @@
 | --- | --- |
 | `empty-store.rpk` | `359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401` |
 | `rows-payload-all-types.bin` | `ae6f94f72c1b08f8c0a6727c97cb57cfad18b6f0ffc732a625db23be907b8769` |
-| `full-delta-store.rpk` | `f1e2e8bcce675ab0dce4a84a6f97a6d4d26c3ccfcdbb508f75692e7189494e95` |
-| `encrypted-store.rpk` | `870e2c0d7744cb49fd7ee206902cafb23fc22c223dbdef51f436e64e26c6b64f` |
+| `full-delta-store.rpk` | `1ab8989b42de83cbf0a25e18cd45302980c84e2db50473e3ec2328a2cad65b39` |
+| `encrypted-store.rpk` | `e7b0f8a715b6af17b0bb7bbe4d7de75981243cd6b755fb6d4638403e4816bf14` |
 
 摘要对应冻结的 v1 IndexTxn 格式（排序 Row Index Page + Fence Directory）。修改任一摘要即视为
 有意的磁盘格式变更，必须经过格式审查并按版本策略建立新的 golden 样本族。
+
+最近一次变更：新增快照 Meta 块（`BlockKind=3`）后，两个 Store 样本各写入该块（FULL 一份、DELTA
+覆盖一份），摘要随之更新；`empty-store.rpk` 与 `rows-payload-all-types.bin` 无快照、无 Meta 块，
+字节与摘要保持不变。生成器见 `golden_store_test.go` 的 `goldenMetaFull`/`goldenMetaDelta` 与
+`encryption_test.go` 的 `TestGoldenEncryptedStoreGenerate`。
 
 损坏样本不静态保存，由测试从健康 Store 动态构造：坏 Magic / 短头 / 未知主版本 →
 `TestReadDataHeaderCorruptFiles`（未知主版本要求 `ErrVersionUnsupported`）；Block 头与负载损坏 →

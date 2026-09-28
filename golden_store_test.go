@@ -21,11 +21,14 @@ import (
 func TestGoldenManifest(t *testing.T) {
 	want := map[string]string{
 		// Rows blocks are page containers; empty, full-delta, encrypted and
-		// rows-payload samples are locked against this frozen layout.
+		// rows-payload samples are locked against this frozen layout. The two
+		// store samples carry snapshot meta blocks (FULL sets one, DELTA
+		// overrides it, the empty DELTA inherits), so they lock that block
+		// kind's bytes and its parent-chain resolution too.
 		"empty-store.rpk":            "359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401",
 		"rows-payload-all-types.bin": "ae6f94f72c1b08f8c0a6727c97cb57cfad18b6f0ffc732a625db23be907b8769",
-		"full-delta-store.rpk":       "f1e2e8bcce675ab0dce4a84a6f97a6d4d26c3ccfcdbb508f75692e7189494e95",
-		"encrypted-store.rpk":        "870e2c0d7744cb49fd7ee206902cafb23fc22c223dbdef51f436e64e26c6b64f",
+		"full-delta-store.rpk":       "1ab8989b42de83cbf0a25e18cd45302980c84e2db50473e3ec2328a2cad65b39",
+		"encrypted-store.rpk":        "e7b0f8a715b6af17b0bb7bbe4d7de75981243cd6b755fb6d4638403e4816bf14",
 	}
 	for name, digest := range want {
 		data, err := os.ReadFile(goldenPath(name))
@@ -43,9 +46,19 @@ func goldenPath(name string) string {
 	return filepath.Join("testdata", "golden", name)
 }
 
+// goldenMetaFull / goldenMetaDelta are the snapshot meta blocks baked into the
+// golden sample. They are opaque to the engine: the golden locks the bytes,
+// not their meaning. The FULL value deliberately embeds a NUL and an invalid
+// UTF-8 byte so the sample also locks "no normalization happens".
+var (
+	goldenMetaFull  = []byte("rowpack golden sample v1\nsnapshot=FULL\ntables=users,empty,oversize\n\x00\xff opaque: bytes survive verbatim\n")
+	goldenMetaDelta = []byte("rowpack golden sample v1\nsnapshot=DELTA\nchange=update,delete,insert\n")
+)
+
 // buildFullDeltaStore writes a deterministic FULL + DELTA + empty DELTA store
-// with an oversize row, used both to generate and to verify the golden
-// samples.
+// with an oversize row and the snapshot meta blocks (FULL sets one, DELTA
+// overrides it, the empty DELTA inherits), used both to generate and to verify
+// the golden samples.
 func buildFullDeltaStore(t *testing.T, base string) {
 	t.Helper()
 	uuid := [16]byte{0xAA, 0xBB, 0xCC, 0xDD, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C}
@@ -84,16 +97,24 @@ func buildFullDeltaStore(t *testing.T, base string) {
 		big[i] = byte(i)
 	}
 	require.NoError(t, w.Insert("oversize", 1, Row{Bytes(big)}))
+	// Snapshot meta block: one opaque blob per snapshot. The payload carries a
+	// NUL and an invalid UTF-8 byte on purpose — the golden must reproduce
+	// them byte for byte, which is exactly what "the engine does not parse
+	// the content" locks.
+	require.NoError(t, w.SetMeta(goldenMetaFull))
 	full, err := w.Commit(context.Background())
 	require.NoError(t, err)
-	// DELTA: update + delete + insert.
+	// DELTA: update + delete + insert. Its own meta replaces the FULL's for
+	// this snapshot and everything below it.
 	d, _ := db.Begin(context.Background(), full)
 	require.NoError(t, d.Update("users", 2, Row{Uint64(2), String("updated-2"), Bool(true), DecimalValue(Decimal{Unscaled: bigI(777), Scale: 2})}))
 	require.NoError(t, d.Delete("users", 3))
 	require.NoError(t, d.Insert("users", 31, Row{Uint64(31), String("new-31"), Bool(false), DecimalValue(Decimal{Unscaled: bigI(1), Scale: 2})}))
+	require.NoError(t, d.SetMeta(goldenMetaDelta))
 	delta, err := d.Commit(context.Background())
 	require.NoError(t, err)
-	// Empty DELTA.
+	// Empty DELTA. It sets no meta of its own, so the sample also locks the
+	// parent-chain rule: it must still see its parent's value.
 	e, _ := db.Begin(context.Background(), delta)
 	empty, err := e.Commit(context.Background())
 	require.NoError(t, err)
@@ -161,6 +182,18 @@ func TestGoldenStoreSamples(t *testing.T) {
 	require.Equal(t, byte(255), b[255])
 	// CreatedAt from the golden (deterministic override).
 	require.True(t, snaps[0].CreatedAt.Equal(time.Unix(0, 1757400000000000000)), "createdAt = %v", snaps[0].CreatedAt)
+	// Snapshot meta blocks survive the locked bytes: own value, own override,
+	// and inheritance for the snapshot that set none.
+	ctx := context.Background()
+	got, err := db.Meta(ctx, snaps[0].ID)
+	require.NoError(t, err)
+	require.Equal(t, goldenMetaFull, got, "FULL meta")
+	got, err = db.Meta(ctx, snaps[1].ID)
+	require.NoError(t, err)
+	require.Equal(t, goldenMetaDelta, got, "DELTA meta overrides the FULL's")
+	got, err = db.Meta(ctx, snaps[2].ID)
+	require.NoError(t, err)
+	require.Equal(t, goldenMetaDelta, got, "empty DELTA inherits its parent's meta")
 }
 
 // ---- 从 internal/block、internal/fileformat 合并过来的 golden 生成器 ----

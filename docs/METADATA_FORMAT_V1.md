@@ -18,9 +18,15 @@
 方言属性」写进不可变契约。引擎不内建 CoreMetadata 或任何数据库对象模型，也不按源库方言建表或
 解释约束、索引、视图等语义。
 
-当前版本**没有**通用元数据读写 API，也没有计划新增：本文档描述的是持久化格式能力，不代表
-`PutMetadata`、`Metadata` 或 `ListMetadata` 已存在；上层元数据用 `DefineTable` +
+当前版本**没有**通用元数据读写 API（每个对象的 `PutMetadata`/`Metadata`/`ListMetadata`），也没有计
+划新增：本文档描述的是持久化格式能力，不代表它们已存在；上层元数据用 `DefineTable` +
 `Insert/Update/Delete` 表达即可。
+
+**快照元信息块（Meta）是另一回事，不属于本 TLV 格式。** `Tx.SetMeta` / `Store.Meta` 提供的是每快
+照至多一个的**不透明字节块**（引擎不解析、只校验长度），落地为独立的 `BlockKind=3` Block
+（[BINARY_FORMAT_V1.md](BINARY_FORMAT_V1.md) §5.0），不进信封、不占 RecordType、不引入任何会被
+解析的字段。给它一个 RecordType 等于把「本就该保持自由格式的内容」写进一经发布即冻结的编号契约，故二者严格
+分离：本 TLV 依然只承载引擎自身需要的行解码契约。
 
 TLV 机制位于 `../internal/metadata`：记录信封（Envelope）、字段 TLV、元数据块载荷（头部 + 目录）
 都按本文档布局。未知非 Critical 记录/字段无损保留，未知 Critical 内容拒绝打开，扩展新记录类型不需要改

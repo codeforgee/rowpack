@@ -72,9 +72,33 @@ Header 创建后不更新，保持 append-only。加密字段预留区位于 off
 ## 5. SnapshotHeader 与 Block
 
 SnapshotHeader、BlockHeader、Metadata Payload 和 TypedTuple 使用固定字段和编码。Rows Block 为
-**页容器**布局（见下），Metadata Block 为整块压缩的 Metadata Payload。Block 约束：一个 Block 只
-属于一个 Snapshot；Rows Block 只属于一个 Table；先压缩后 AES-256-GCM 加密（**Metadata Block 整
-容器密封**，**Rows Block 逐页密封**）；独立 StoredSize、RawSize、CRC 和认证。
+**页容器**布局（见下），Metadata Block 为整块压缩的 Metadata Payload，Snapshot Meta Block 为整
+块压缩的不透明值。Block 约束：一个 Block 只属于一个 Snapshot；Rows Block 只属于一个 Table；先
+压缩后 AES-256-GCM 加密（**Metadata / Snapshot Meta Block 整容器密封**，**Rows Block 逐页密
+封**）；独立 StoredSize、RawSize、CRC 和认证。
+
+BlockKind 分配：`1 = Rows`、`2 = Metadata`（引擎解析的 TLV 记录目录）、`3 = Snapshot Meta`
+（引擎**不**解析的每快照值）。
+
+### 5.0 Snapshot Meta Block
+
+一个快照至多一个 `BlockKind = 3` 的 Block，承载该快照的整块元信息（应用版本、采集参数、外部清
+单、人类可读日志等「每快照一份」的内容）。它与 Metadata Block 完全不同，两者不可混用：
+
+|  | Metadata Block（kind 2） | Snapshot Meta Block（kind 3） |
+| --- | --- | --- |
+| 内容 | Metadata Payload：目录 + TLV 记录 | 调用方给定的原始字节，无信封、无目录 |
+| 每快照数量 | 可多个（按大小滚动） | 至多一个 |
+| 是否解析 | 是（行解码契约） | 否（只读回字节） |
+
+- payload 即值本身：`RawSize = len(value)`、`RawCRC32C = CRC32C(value)`、`ItemCount = 1`、
+  `TableID = 0`；写路径在压缩膨胀时回退为 `CompressionNone`，使「长度合规」等价于「可提交」；
+- 长度上限为 `Limits.MaxRawBlockBytes`（值成为一块原始 payload），写入时在发布前校验，越界返回
+  `ErrInvalidArgument`，不产生任何字节；
+- 定位与 Rows/Metadata Block 完全相同：`BlockIndexEntry` 记 `BlockKind`，索引重放和
+  `IndexTxn` 内存重建（`ScanBlocks` 级别的块扫描）都不需要为它分支；
+- 读取沿父链解析，取**最近祖先**的值：自己未设置则其父的值继续可见，任意时刻一条链上只有一个
+  值；整条链都没有时为「无」（`nil`），不是错误。
 
 ### 5.1 Rows Block 页容器
 

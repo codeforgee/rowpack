@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // inspect_damaged_arms_test.go 覆盖「库能打开、但读下去就坏」这组臂:块体被改了一个

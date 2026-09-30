@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rowpack/rowpack"
+	"github.com/codeforgee/rowpack"
 	"github.com/stretchr/testify/require"
 )
 

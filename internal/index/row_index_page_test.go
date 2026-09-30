@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // uint32LE reads a little-endian uint32 for corruption tests.

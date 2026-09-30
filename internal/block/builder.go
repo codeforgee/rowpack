@@ -3,8 +3,8 @@ package block
 import (
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/metadata"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/metadata"
 )
 
 // FlushedBlock is the result of one block flush, handed to the onFlush

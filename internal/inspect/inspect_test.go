@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rowpack/rowpack"
+	"github.com/codeforgee/rowpack"
 	"github.com/stretchr/testify/require"
 )
 

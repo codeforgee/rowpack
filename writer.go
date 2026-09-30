@@ -8,14 +8,14 @@ import (
 	"sort"
 	"time"
 
-	"github.com/rowpack/rowpack/internal/fault"
+	"github.com/codeforgee/rowpack/internal/fault"
 
-	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/index"
-	"github.com/rowpack/rowpack/internal/metadata"
-	"github.com/rowpack/rowpack/internal/seal"
+	"github.com/codeforgee/rowpack/internal/block"
+	"github.com/codeforgee/rowpack/internal/codec"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/index"
+	"github.com/codeforgee/rowpack/internal/metadata"
+	"github.com/codeforgee/rowpack/internal/seal"
 )
 
 // SnapshotType identifies FULL and DELTA snapshots.

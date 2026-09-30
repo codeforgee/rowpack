@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // PayloadHeaderSize is the fixed 32-byte metadata block payload header.

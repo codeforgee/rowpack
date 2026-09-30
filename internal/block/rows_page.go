@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"math/bits"
 
-	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/codec"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // Rows Page in-memory builder/reader.

@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/rowpack/rowpack"
-	"github.com/rowpack/rowpack/internal/inspect"
+	"github.com/codeforgee/rowpack"
+	"github.com/codeforgee/rowpack/internal/inspect"
 	"github.com/stretchr/testify/require"
 )
 

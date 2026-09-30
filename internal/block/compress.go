@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // Limits bound compressed and decompressed sizes during reads.

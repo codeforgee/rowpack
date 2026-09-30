@@ -10,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // Field is one TLV field of a metadata record. Value holds the decoded Go

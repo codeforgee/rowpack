@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // view_arms_test.go 覆盖 View 的「查不到」与「拒绝」两臂:空 shard、空 map、

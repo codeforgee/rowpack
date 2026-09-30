@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fault"
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/fault"
+	"github.com/codeforgee/rowpack/internal/format"
 	"github.com/stretchr/testify/require"
 )
 

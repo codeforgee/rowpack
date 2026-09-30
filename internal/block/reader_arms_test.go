@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // reader_arms_test.go 覆盖 Reader 的错误传播臂:ReadAt / viewer 的 I/O 失败、头部

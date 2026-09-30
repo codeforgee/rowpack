@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/codec"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // rows_page_arms_test.go 覆盖 Rows Page 的二次校验阶梯:页面的 CRC 只能保证字节没

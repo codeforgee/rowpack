@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/index"
+	"github.com/codeforgee/rowpack/internal/block"
+	"github.com/codeforgee/rowpack/internal/codec"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/index"
 )
 
 // batchReq is one requested row: its slot in the caller's ids slice plus the

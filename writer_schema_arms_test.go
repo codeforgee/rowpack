@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/metadata"
+	"github.com/codeforgee/rowpack/internal/block"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/metadata"
 )
 
 // writer_schema_arms_test.go 覆盖表定义与 schema 解析的拒绝臂:metadata 记录编码

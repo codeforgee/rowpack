@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/index"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/index"
 )
 
 // iterator_arms_test.go 覆盖迭代器的四条臂:扫描结束后再 Next、字节值大于 arena 的

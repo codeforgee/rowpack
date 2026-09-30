@@ -5,8 +5,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/codec"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // Page-size sweep baseline (S2 阶段 2 decision data, design §6.1 / §15 #1).

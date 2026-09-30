@@ -12,7 +12,7 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // Type is the logical value type (alias of the disk ValueType).

@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // options_arms_test.go 覆盖 diskCompression 的兜底臂:这个映射必须是全函数,任何本

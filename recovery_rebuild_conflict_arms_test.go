@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // recovery_rebuild_conflict_arms_test.go 覆盖重建的「拼装出来的索引说不通」这组臂:一个

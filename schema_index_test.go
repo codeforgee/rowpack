@@ -3,7 +3,7 @@ package rowpack
 import (
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/codec"
+	"github.com/codeforgee/rowpack/internal/codec"
 	"github.com/stretchr/testify/require"
 )
 

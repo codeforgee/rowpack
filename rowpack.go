@@ -25,12 +25,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/index"
-	"github.com/rowpack/rowpack/internal/iofile"
-	"github.com/rowpack/rowpack/internal/lockfile"
-	"github.com/rowpack/rowpack/internal/seal"
+	"github.com/codeforgee/rowpack/internal/block"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/index"
+	"github.com/codeforgee/rowpack/internal/iofile"
+	"github.com/codeforgee/rowpack/internal/lockfile"
+	"github.com/codeforgee/rowpack/internal/seal"
 )
 
 // Test-only hooks, set only by tests in this package so golden files are

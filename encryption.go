@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/seal"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/seal"
 )
 
 // KeyProvider supplies encryption keys by logical key ID and epoch. RowPack

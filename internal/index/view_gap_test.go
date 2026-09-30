@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // RowKeyIter.Seek / MetadataObjects 本包覆盖为 0%（Scan 与 schema 推导在

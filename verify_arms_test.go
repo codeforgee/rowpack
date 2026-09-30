@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/index"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/index"
 )
 
 // verify_arms_test.go 覆盖校验器的「块/索引对不上」臂:已关闭、块自身的载荷解析不

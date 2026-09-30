@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // chunk_arms_test.go 覆盖 chunked body 的构建与解析两端:被拒绝的 Seal、叛逆的快照

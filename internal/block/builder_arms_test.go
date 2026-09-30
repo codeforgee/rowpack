@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // builder_arms_test.go 覆盖 RowsBuilder 的构建错误传播臂:页面/块的每一次搬运都

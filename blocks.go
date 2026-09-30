@@ -6,8 +6,8 @@ import (
 	"runtime"
 	"sort"
 
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/index"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/index"
 )
 
 // Blocks lists the rows blocks written by the snapshot transaction itself,

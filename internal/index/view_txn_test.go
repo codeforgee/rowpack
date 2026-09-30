@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 func snapEntry(id, parent uint64, typ format.SnapshotType) format.SnapshotIndexEntry {

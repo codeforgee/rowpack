@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/codec"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // RowsContainer is a validated Rows Block page container:

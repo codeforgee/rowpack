@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/fault"
+	"github.com/codeforgee/rowpack/internal/fault"
 	"github.com/stretchr/testify/require"
 )
 

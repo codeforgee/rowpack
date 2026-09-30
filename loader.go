@@ -1,8 +1,8 @@
 package rowpack
 
 import (
-	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/cache"
+	"github.com/codeforgee/rowpack/internal/block"
+	"github.com/codeforgee/rowpack/internal/cache"
 )
 
 // blockLoader loads validated blocks through the LRU with concurrent miss

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rowpack/rowpack/internal/block"
+	"github.com/codeforgee/rowpack/internal/block"
 )
 
 // Benchmarks are deliberately single-configuration: one dataset shape and

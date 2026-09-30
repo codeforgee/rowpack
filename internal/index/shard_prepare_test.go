@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // rowShard.prepare 的「乱序条目」分支与 AddPageRows 的排序/重复守卫此前从未被

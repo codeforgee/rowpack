@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"unicode/utf8"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // TypedTuple v1 row encoding:

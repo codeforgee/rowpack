@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/block"
+	"github.com/codeforgee/rowpack/internal/codec"
+	"github.com/codeforgee/rowpack/internal/format"
 	"github.com/stretchr/testify/require"
 )
 

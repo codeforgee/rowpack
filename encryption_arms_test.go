@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/seal"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/seal"
 )
 
 // encryption_arms_test.go 覆盖解密器「拿不到密钥」的三条臂:块、页、索引分片三条解密

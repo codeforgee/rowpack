@@ -7,8 +7,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/iofile"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/iofile"
 	"github.com/stretchr/testify/require"
 )
 

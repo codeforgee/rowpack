@@ -3,7 +3,7 @@ package rowpack
 import (
 	"time"
 
-	"github.com/rowpack/rowpack/internal/codec"
+	"github.com/codeforgee/rowpack/internal/codec"
 )
 
 // Value is an immutable, strong-typed cell value. Constructors copy inputs and

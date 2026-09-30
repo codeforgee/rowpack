@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rowpack/rowpack/internal/lockfile"
+	"github.com/codeforgee/rowpack/internal/lockfile"
 	"github.com/stretchr/testify/require"
 )
 

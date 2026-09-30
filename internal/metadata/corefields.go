@@ -1,6 +1,6 @@
 package metadata
 
-import "github.com/rowpack/rowpack/internal/format"
+import "github.com/codeforgee/rowpack/internal/format"
 
 // Table field IDs (RecordType 1 = format.RecordTable). FieldIDs are allocated densely from 1 per
 // record type: a number is only frozen once some file has been written with it,

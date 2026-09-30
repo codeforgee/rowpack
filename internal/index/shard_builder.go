@@ -3,7 +3,7 @@ package index
 import (
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // rowShardBuilder incrementally builds per-table rowShards from a stream of

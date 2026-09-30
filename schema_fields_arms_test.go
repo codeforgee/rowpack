@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/index"
-	"github.com/rowpack/rowpack/internal/metadata"
+	"github.com/codeforgee/rowpack/internal/codec"
+	"github.com/codeforgee/rowpack/internal/index"
+	"github.com/codeforgee/rowpack/internal/metadata"
 )
 
 // schema_fields_arms_test.go 补 schema.go 剩下的字段解析与派生兜底臂。它们的共同点

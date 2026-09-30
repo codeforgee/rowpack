@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // recovery_shrink_test.go 覆盖恢复遍历里所有「被守卫保护着的读」:文件长度只在

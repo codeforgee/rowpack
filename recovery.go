@@ -3,11 +3,11 @@ package rowpack
 import (
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/index"
-	"github.com/rowpack/rowpack/internal/metadata"
-	"github.com/rowpack/rowpack/internal/seal"
+	"github.com/codeforgee/rowpack/internal/codec"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/index"
+	"github.com/codeforgee/rowpack/internal/metadata"
+	"github.com/codeforgee/rowpack/internal/seal"
 )
 
 // committedSnapshot is one validated, committed snapshot in the single data

@@ -1,8 +1,8 @@
 package rowpack
 
 import (
-	"github.com/rowpack/rowpack/internal/codec"
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/codec"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // Identifier types. Zero values are invalid for ordinary objects except where

@@ -18,7 +18,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/rowpack/rowpack/internal/inspect"
+	"github.com/codeforgee/rowpack/internal/inspect"
 )
 
 func main() {

@@ -7,8 +7,8 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/block"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // maxUint32 is used for width checks (a TableID/ItemOrdinal exceeding uint32

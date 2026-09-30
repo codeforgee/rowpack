@@ -1,4 +1,4 @@
-module github.com/rowpack/rowpack
+module github.com/codeforgee/rowpack
 
 go 1.25.0
 

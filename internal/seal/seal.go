@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // ErrAuth is returned when AEAD authentication fails (tampered AAD,

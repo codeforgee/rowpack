@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/block"
+	"github.com/codeforgee/rowpack/internal/format"
 	"github.com/stretchr/testify/require"
 )
 

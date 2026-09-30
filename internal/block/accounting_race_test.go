@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // TestConcurrentPageMemoizeAccountingConverges: concurrent first access of

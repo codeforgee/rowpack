@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/index"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/index"
 )
 
 // Meta returns the meta block published with the snapshot: the opaque value

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // SnapshotMeta is the resolved per-snapshot summary in the view.

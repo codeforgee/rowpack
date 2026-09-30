@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/metadata"
+	"github.com/codeforgee/rowpack/internal/metadata"
 )
 
 // schema_corrupt_arms_test.go 覆盖 metadata 块载荷自身说不通时的两条路:目录项数

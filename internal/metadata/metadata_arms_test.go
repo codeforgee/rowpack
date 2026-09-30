@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rowpack/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/format"
 )
 
 // metadata_arms_test.go 覆盖 metadata TLV 的几条拒绝臂:值编码不了的字段、重复而未标

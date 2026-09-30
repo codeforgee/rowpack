@@ -1,9 +1,9 @@
 package rowpack
 
 import (
-	"github.com/rowpack/rowpack/internal/block"
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/seal"
+	"github.com/codeforgee/rowpack/internal/block"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/seal"
 )
 
 // pageSealer carries the store's encryption context across the pages of a Rows

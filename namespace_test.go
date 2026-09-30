@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rowpack/rowpack/internal/format"
-	"github.com/rowpack/rowpack/internal/index"
-	"github.com/rowpack/rowpack/internal/metadata"
+	"github.com/codeforgee/rowpack/internal/format"
+	"github.com/codeforgee/rowpack/internal/index"
+	"github.com/codeforgee/rowpack/internal/metadata"
 	"github.com/stretchr/testify/require"
 )
 

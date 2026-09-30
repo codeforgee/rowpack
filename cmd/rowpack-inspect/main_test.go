@@ -71,7 +71,11 @@ func TestBinarySmoke(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 	pkgDir := filepath.Dir(thisFile)
-	bin := filepath.Join(t.TempDir(), "rowpack-inspect")
+	binName := "rowpack-inspect"
+	if runtime.GOOS == "windows" {
+		binName += ".exe"
+	}
+	bin := filepath.Join(t.TempDir(), binName)
 	build := exec.Command("go", "build", "-o", bin, ".")
 	build.Dir = pkgDir
 	if out, err := build.CombinedOutput(); err != nil {

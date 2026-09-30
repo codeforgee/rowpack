@@ -1,27 +1,36 @@
 # RowPack
 
-RowPack 是一个使用 Go 实现的轻量级嵌入式二维表存储引擎，面向备份、快照、差异归档和本地分析等
-「顺序写入、随机读取」场景。
+[![CI](https://github.com/codeforgee/rowpack/actions/workflows/ci.yml/badge.svg)](https://github.com/codeforgee/rowpack/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 
-- **单文件格式**：`<base>.rpk` 承载全部数据与索引。数据块与每快照 IndexTxn 交错追加，由扩展
-  SnapshotFooter 一次性原子提交（一次 fsync）；备份/迁移/复制即拷贝单个文件。
-- **按表地址寻址**：`Begin(ctx, NoParent)` 创建首个 FULL，`Begin(ctx, parent)` 创建 DELTA；
-  `DefineTable` 后用 `Insert/Update/Delete/ApplyBatch` 流式写入；`Blocks`/`ScanBlocks` 暴露
-  块级主键范围与原始变更流，支撑「块扫描批量比对」。
-- 支持 FULL / DELTA 快照与 INSERT / UPDATE / DELETE 变更；任意时刻可提交新 FULL checkpoint
-  （快照 ID 全局递增，深度重置）。
-- **表 ns 与地址**：`DefineTable` 用默认 ns（`user`）且不写额外元数据，`DefineTableIn` 可指定
-  其他 ns。表身份是 `(NS, Name)`，同名表可在不同 ns 共存；收表的 API 收**地址字符串**——默认
-  ns 用裸名（`"users"`），其他 ns 加前缀（`"public.users"`），`Qualify`/`SplitAddress`/
-  `Table.Address()` 是配套工具。
-- Zstandard 块压缩（默认 256 KiB 目标块）；按快照、表和行随机访问，历史快照不可变。
-- 多读单写：读并发、写串行，提交原子可见；Close 等待在途读取。
-- 校验与崩溃恢复不依赖独立 WAL：未提交尾部打开时截断；单个 IndexTxn 损坏时从该快照自身的数据块
-  在内存重建索引，后续快照照常重放。
-- Schema 与源数据库设计元信息分层：`DefineTable` 把 RowPack 自身的 Canonical Schema 写成引擎
-  自产自销的 Table/Column 记录（内部 TLV），只服务行编码/解码，不按源库方言建模。源库原始元
-  信息属于上层 Source Metadata，**载体是普通行数据**——用 `DefineTableIn` 在自选 ns 建目录表
-  存放，TLV 不承载它，也不新增通用元数据 API（见 docs/SOURCE_CATALOG_GUIDE_V1.md）。
+RowPack 是一个用 Go 实现的**单文件嵌入式二维表存储引擎**，面向备份、快照和本地分析等
+「顺序写入、随机读取」的工作负载。整库——数据、索引、Schema、快照历史——就是**一个
+`.rpk` 文件**：备份、迁移、复制即拷贝单个文件。
+
+- **零部署**：无进程、无端口，运行时仅依赖 zstd，`go get` 即用。
+- **快照即版本**：FULL / DELTA 快照组成父子链，历史快照不可变，可按快照随机读任意行。
+- **崩溃安全无需 WAL**：提交由 SnapshotFooter 一次性原子落盘；打开时截断未提交尾部，
+  单个索引损坏可在内存中从数据块重建。
+
+## 特性
+
+| 特性 | 说明 |
+| --- | --- |
+| **单文件格式** | `<base>.rpk` 承载全部数据与索引，Footer 原子提交（一次 fsync） |
+| **快照模型** | FULL 基线 + DELTA 增量；INSERT / UPDATE / DELETE；任意时刻可提交新 checkpoint |
+| **表寻址** | 表身份是 `(NS, Name)`，同名表可跨 ns 共存 |
+| **随机读** | `Get` / `ReadBatch` / `Scan` 按快照、表、RowID 访问，历史快照照常可读 |
+| **块压缩** | Zstandard，默认 256 KiB 目标块 |
+| **静态加密** | AES-256-GCM 分域封装，密钥由 KeyProvider 注入，支持轮换 |
+| **并发模型** | 多读单写，提交原子可见；`Close` 等待在途读取 |
+| **完整性与恢复** | 全链路 CRC + AEAD；无 WAL，索引损坏可从数据块内存重建 |
+| **行复用** | 借用/复用语义：整表 Scan 100k×7 列仅约 135 次分配 |
+
+## 安装
+
+```sh
+go get github.com/codeforgee/rowpack   # Go 1.25+；Linux / macOS / Windows，amd64 / arm64
+```
 
 ## 快速开始
 
@@ -34,17 +43,20 @@ import (
 	"log"
 	"time"
 
-	"github.com/rowpack/rowpack"
+	"github.com/codeforgee/rowpack"
 )
 
 func main() {
 	ctx := context.Background()
+
+	// basePath 不带扩展名，实际文件是 /data/users-backup.rpk
 	db, err := rowpack.Create("/data/users-backup", rowpack.Options{})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
+	// FULL 基线快照
 	tx, err := db.Begin(ctx, rowpack.NoParent)
 	if err != nil {
 		log.Fatal(err)
@@ -58,14 +70,19 @@ func main() {
 	}); err != nil {
 		log.Fatal(err)
 	}
-	if err := tx.Insert("users", 1001, rowpack.Row{
-		rowpack.Uint64(1001),
-		rowpack.String("张三"),
-		rowpack.DateTime(time.Now()),
-	}); err != nil {
-		log.Fatal(err)
+	for _, u := range []struct {
+		id   rowpack.RowID
+		name string
+	}{{1001, "张三"}, {1002, "李四"}} {
+		if err := tx.Insert("users", u.id, rowpack.Row{
+			rowpack.Uint64(u.id),
+			rowpack.String(u.name),
+			rowpack.DateTime(time.Now()),
+		}); err != nil {
+			log.Fatal(err)
+		}
 	}
-	full, err := tx.Commit(ctx)
+	full, err := tx.Commit(ctx) // 返回快照 ID，是读路径的唯一凭证
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -75,23 +92,24 @@ func main() {
 		log.Fatal(err)
 	}
 	name, _ := row[1].String()
-	fmt.Println("row:", name)
+	fmt.Println("name:", name) // 张三
 
-	// DELTA 增量快照
+	// DELTA 增量快照（也可传 rowpack.Latest 自动取最新）
 	d, err := db.Begin(ctx, full)
 	if err != nil {
 		log.Fatal(err)
 	}
 	_ = d.Update("users", 1001, rowpack.Row{
 		rowpack.Uint64(1001),
-		rowpack.String("张三 (更新)"),
+		rowpack.String("张三 (已改名)"),
 		rowpack.DateTime(time.Now()),
 	})
 	_ = d.Delete("users", 1002)
-	_, err = d.Commit(ctx)
+	delta, err := d.Commit(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
+	_ = delta // full 与 delta 都可随时读：历史快照不可变
 }
 ```
 
@@ -99,137 +117,165 @@ func main() {
 
 ```go
 changes := []rowpack.Change{
-	{Type: rowpack.Update, Table: "users", RowID: 1001, Row: updated},
+	{Type: rowpack.Insert, Table: "users", RowID: 1003, Row: row3},
 	{Type: rowpack.Delete, Table: "users", RowID: 1002},
 }
-if err := d.ApplyBatch(changes); err != nil {
+if err := tx.ApplyBatch(changes); err != nil {
 	log.Fatal(err)
 }
 changes = changes[:0]
 ```
 
-## 关键概念
+## 核心概念
 
-Store（单个 `.rpk` 及其运行时状态）、Snapshot（不可变、原子提交的行变更集，FULL/DELTA 成父子
-链）、RowID（表内稳定逻辑行标识，独立于业务主键）、Block（属于一个快照和一个表的压缩/校验
-单位）、TypedTuple（按 Schema 顺序编码的行负载，NULL 用位图）。**NS** 是表的归属命名空间（默认
-`user`，记在 Table 记录的 `NS` 字段、默认省略不占字节）：表身份是 `(NS, Name)`，故收表 API 用
-**地址**寻址（默认 ns 裸名 `"users"`，其他 ns 加前缀 `"public.users"`）。完整定义见
-[docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) §4。
+| 概念 | 说明 |
+| --- | --- |
+| **Store** | 一个 `.rpk` 文件及其运行时状态；`Create`/`Open` 打开，写路径持跨进程锁 |
+| **Snapshot** | 不可变、原子提交的变更集；FULL 为基线，DELTA 基于父快照，构成父子链 |
+| **RowID** | 表内稳定逻辑行标识（`uint64`，非 0），独立于业务主键 |
+| **Block** | 属于一个快照、一张表的压缩/校验单位 |
+| **TypedTuple** | 按 Schema 顺序编码的行负载，NULL 用位图表示 |
+| **NS / 地址** | 表归属命名空间（默认 `user`）：默认 ns 用裸名 `"users"`，其他 ns 加前缀 `"public.users"` |
 
-## 行复用
+支持 17 种列类型：`bool`、`int8`–`int64`、`uint8`–`uint64`、`float32/64`、`string`、`bytes`、
+`date`、`time`、`datetime`、`decimal`。
 
-读入口统一为借用/复用模式，消除每行的 Row 切片、payload 复制与 Decimal `big.Int` 分配：
-`Iterator.Next()` 无参数，解码进内部缓冲并跨调用复用，返回的 Row 仅在下一次 Next 前有效（100k
-行 × 7 列整表 Scan 仅 ~135 次分配，String/Bytes 为零复制 arena 视图）；`Get(ctx, snap, table,
-id, dst)` 解码进调用者提供的 Row（nil dst 每次分配新行；缓存热读 1 alloc/16 B）。需要跨调用
-保留的值须拷贝；`String()`/`Bytes()`/`Decimal()` 访问器始终返回副本；dst 槽自身缓冲会被复用，
-保留的 Value 可能在下一次解码进同一 dst 后失效（`String` 因不可变始终复制）。完整所有权规则见
-[docs/GO_API_DESIGN_V1.md](docs/GO_API_DESIGN_V1.md) §6。
+## API 导览
 
 ```go
-it, _ := db.Scan(ctx, full, "users", rowpack.ScanOptions{})
-defer it.Close()
-for {
-	row, ok := it.Next()
-	if !ok {
-		break
-	}
-	name, _ := row[1].String()
-	_ = name
-}
+// —— 写入（同一时刻仅一个活跃 Writer）——
+db.Begin(ctx, parent)              // NoParent → FULL；快照 ID 或 Latest → DELTA
+tx.DefineTable(name, cols)         // 默认 ns；DefineTableIn 可指定 ns
+tx.Insert / tx.Update / tx.Delete  // 流式逐行
+tx.ApplyBatch([]Change)            // 批量，按顺序消费
+tx.SetMeta([]byte)                 // 每快照一个 opaque 元信息块（可选）
+tx.Commit(ctx) → SnapshotID        // 原子发布，读者立即可见
+tx.Rollback()                      // Begin 后即可 defer；已提交则返回 ErrSnapshotCommitted
+
+// —— 读取（以快照 ID 为凭证，沿父链解析）——
+db.Get(ctx, snap, table, id, dst)  // 单行；dst 可复用（nil 每次分配）
+db.Exists(ctx, snap, table, id)    // 只查索引/墓碑，不读块
+db.ReadBatch(ctx, snap, table, ids)
+db.Scan(ctx, snap, table, ScanOptions{Start, End})
+db.Tables / TablesIn / Schema / ListSnapshots / Meta
+
+// —— 运维与诊断 ——
+db.Blocks(ctx, snap, table)             // 块清单：主键范围 + 字节数，零块 I/O
+db.ScanBlocks(ctx, snap, table, lo, hi) // 快照自身的原始变更流
+db.Verify(ctx, VerifyQuick | VerifyFull)
+db.Stats()                              // 缓存 / 读放大 / 批量聚合 / 恢复统计
 ```
 
-## 批量读取
+## 进阶
 
-`ReadBatch` 按块聚合：每个块至多加载、解密、解压和校验一次，不管请求中有多少行落在该块里。语义
-与逐行 `Get` 一致：所有 id 必须在该快照可见（缺失或已删除整批返回 `ErrNotFound`）；返回顺序与
-输入 ids 一一对应（重复输入重复返回）；返回的行归调用方所有、互不别名。
+### 批量读取
+
+`ReadBatch` 按块聚合：每个块至多加载、解密、解压、校验一次，不管请求中有多少行落在该块里。
+语义与逐行 `Get` 一致，返回顺序与输入 ids 一一对应；聚合效果用 `db.Stats().Batch`
+（`Blocks << len(ids)`）量化，热读千行的分配数约为逐行 `Get` 的 1/250。
 
 ```go
-rows, err := db.ReadBatch(ctx, full, "users", []RowID{1001, 1002, 1005})
-if err != nil {
-	log.Fatal(err)
-}
-for i, r := range rows {
-	name, _ := r[1].String()
-	_ = name
-	_ = i
-}
-
-st := db.Stats().Batch // Calls/Rows/Blocks/RawBytes：聚合效果可量化（Blocks << len(ids)）
+rows, err := db.ReadBatch(ctx, full, "users", []rowpack.RowID{1001, 1002})
 ```
 
-热读千行批量 `ReadBatch` 与逐行 Get 延迟相当、分配少 ~250×（254.6 µs · 4 allocs vs 235.9 µs ·
-1,000 allocs）；收益来自物理层：同一块只加载/解密/解压/校验一次，用 `Stats().Batch`
-（Blocks << len(ids)）与 `Read` 放大指标量化。`make bench-batch` 复现该对比（冷档数值未归档）。
+### 行复用
+
+读入口统一为借用/复用模式，消除每行的 Row 切片与 payload 复制：
+
+- `Iterator.Next()` 解码进内部缓冲并跨调用复用，返回的 Row 仅在下一次 `Next` 前有效。
+- `Get(..., dst)` 解码进调用者提供的 dst；把返回值作为下一次的 dst 可持续复用缓冲。
+- `String()` / `Bytes()` / `Decimal()` 访问器始终返回副本，读取永远安全；跨调用保留裸
+  Value 须自行拷贝。
+
+完整所有权规则见 [docs/GO_API_DESIGN_V1.md](docs/GO_API_DESIGN_V1.md) §6。
+
+### 静态加密
+
+加密在 `Create` 时一次性固定：AES-256-GCM，Rows Page / Metadata Block / IndexTxn 三域分域
+封装，Footer 绑定落盘字节 CRC，无需密钥即可检出撕裂。密钥从不落盘：引擎只持久化 KeyID，
+原始密钥由调用方通过 `KeyProvider` 按 ID 与 epoch 注入，支持轮换。
+
+```go
+db, err := rowpack.Create(base, rowpack.Options{
+	Encryption: &rowpack.EncryptionConfig{
+		KeyProvider: myProvider, // Key(ctx, keyID, epoch) ([]byte, error)
+		KeyID:       "key-1",
+	},
+})
+```
+
+加密 store 打开时必须提供 Provider，否则返回 `ErrKeyRequired`。详见
+[docs/ENCRYPTION_V1.md](docs/ENCRYPTION_V1.md)。
+
+### 崩溃恢复与校验
+
+- 提交的原子性由 SnapshotFooter 保证；打开时自动截断未提交尾部。
+- 单个 IndexTxn 损坏时，从该快照自身的数据块在内存重建索引，后续快照照常重放。
+- 提交失败且结局未知时（`CommitError.Unknown`），store 以 `ErrMustReopen` 拒绝新写入，
+  重新打开后由恢复流程对齐视图；读不受影响。
+- `Verify` Quick 档校验头、索引、Footer 与父链；Full 档额外解压每个块并逐行验证。
+
+## 命令行工具
+
+```sh
+go run ./cmd/rowpack-inspect header <base>                  # 文件头 + 统计（含 recovery 报告）
+go run ./cmd/rowpack-inspect list <base>                    # 快照与表
+go run ./cmd/rowpack-inspect verify <base>                  # VerifyFull，失败退出码 1
+go run ./cmd/rowpack-inspect dump <base> <snap> <tableID>   # 按表 ID dump 可见行
+```
+
+退出码：0 成功、1 store 错误、2 用法错误。
+
+## 开发
+
+```sh
+make test         # go test ./...
+make race         # go test -race ./...
+make lint         # golangci-lint（CI 同时跑 gofmt / go vet / staticcheck）
+make bench        # 统一基线套件 → bench/results.txt
+make bench-quick  # 快速档：20k 行冒烟（~15s）
+make baseline     # 归档性能基线 → testdata/baseline/<date>.txt
+make golden       # 重新生成 golden files
+```
+
+golden files 纳入 CI，任何字节级漂移视为格式变更；CI 在 Linux / macOS / Windows 三平台运行
+单元测试、竞态检测与 fuzz 冒烟。
+
+## 性能参考
+
+基线环境与完整口径见
+[docs/PERFORMANCE_BASELINE_V1.md](docs/PERFORMANCE_BASELINE_V1.md)；数值随磁盘与 CPU 变化，
+仅作相对参考，可由 `make bench` 复现（100k 行 × 7 列，256 KiB 块 / Zstd / SyncCommit）。
+
+| 基准 | 结果 |
+| --- | --- |
+| FULL 顺序写 | 1109 krows/s |
+| 同构行写（压缩比 0.00639） | 2149 krows/s |
+| Get 热读（复用 dst） | 363.8 ns · 1 alloc · 16 B |
+| Get 冷读 | 49.75 µs · 14 allocs |
+| Scan 100k×7（热） | 6970 krows/s · 63 allocs |
+| ReadBatch(1000) vs Get×1000 | 4 vs 1000 allocs，延迟相当 |
+| Open 重放 | 2.36 ms |
 
 ## 文档
 
-- [需求规格](docs/REQUIREMENTS.md)
-- [二进制格式（v1 单文件）](docs/BINARY_FORMAT_V1.md)
-- [Go API 设计](docs/GO_API_DESIGN_V1.md)
-- [元数据格式（TLV）](docs/METADATA_FORMAT_V1.md)
-- [IndexTxn 格式](docs/INDEX_TXN_FORMAT_V1.md)
-- [数据块加密](docs/ENCRYPTION_V1.md)
-- [源库 Key Range 映射](docs/SOURCE_KEY_RANGE_MAPPING.md)
-- [性能基线（v1）](docs/PERFORMANCE_BASELINE_V1.md)
-- [文件结构查看器（HTML）](docs/file-explorer.html)
-
-## 命令
-
-```sh
-make test # go test ./...
-make race # go test -race ./...
-make vet # go vet ./...
-make staticcheck # staticcheck ./...
-make bench # 统一基线套件（Env/矩阵/延迟 + 直读档），输出 bench/results.txt
-make bench-quick # 快速档：20k 行 + 3 次迭代全矩阵冒烟（~15s），输出 bench/results-quick.txt
-make bench-1m # 1M 行档：scan1m / getrand1m
-make bench-batch # 批量读对比：逐行 Get 基线 vs ReadBatch（10s 每场景）
-make baseline # 归档性能基线 → testdata/baseline/<date>.txt（带统一环境标注）
-make baseline-diff OLD=2026-09-10 NEW=2026-09-11 # 对比两个基线，>10% 回退退出码 1
-make golden # 重新生成 golden files（格式变更时人工审查）
-```
-
-### 只读检查工具
-
-```sh
-go run ./cmd/rowpack-inspect header <base>            # 文件头 + 统计（含 recovery 报告）
-go run ./cmd/rowpack-inspect list <base>             # 快照与表（含表地址 address=…）
-go run ./cmd/rowpack-inspect verify <base>           # VerifyFull，失败退出码 1
-go run ./cmd/rowpack-inspect dump <base> <snap> <tableID>  # 按表 ID dump 可见行（跨 ns 表同样可读）
-```
-
-命令实现放在 `internal/inspect`（`Run(ctx, argv, stdout, stderr)`），`cmd/` 只做退出码映射，
-因此四条命令与全部参数错误分支都有测试。退出码：0 成功、1 store 错误、2 用法错误。
-
-## 参考基准
-
-统一套件由 `make bench` 复现（`BenchmarkEnv` + 64 格 `BenchmarkMainMatrix` + `BenchmarkLatency`
-延迟分位 + 直读档），完整结果落 `bench/results.txt`（机器相关，gitignore）；`make baseline` 把带
-环境标注的输出归档到 `testdata/baseline/<日期>.txt`。基线环境 Go 1.27 / darwin/arm64 /
-klauspost zstd v1.20 / BlockSize 256 KiB / Zstd / SyncCommit，数据集 100k 行 × 7 列；下表取自
-2026-09-10 归档基线（[PERFORMANCE_BASELINE_V1.md](docs/PERFORMANCE_BASELINE_V1.md) §2），单位保留
-原始的 krows/s · kget/s · ns/µs；数值随磁盘与 CPU 变化，仅作相对参考。
-
-| 基准（256K/mmap/sync 档） | 结果 |
+| 文档 | 内容 |
 | --- | --- |
-| FULL 顺序写（sync / async） | 90.2 / 86.2 ms · 1109 / 1160 krows/s |
-| 同构行写（sync） | 46.5 ms · 2149 krows/s（压缩比 0.00639）|
-| Get 热读（矩阵，复用 dst） | 363.8 ns · 2748 kget/s · 1 alloc · 16 B |
-| Get 冷读（矩阵） | 49.75 µs · 20.10 kget/s · 14 allocs |
-| Scan 100k 热 / 冷 | 14.35 / 25.16 ms · 6970 / 3974 krows/s（63 / 1606 allocs）|
-| ReadBatch(1000) / Get ×1000 | 254.6 µs · 4 allocs / 235.9 µs · 1000 allocs |
-| Open 重放 / IndexTxn 重建 | 2.36 ms / 17.59 ms |
-
-完整表格（冷读、并发、深链、1M 档、延迟分位数、加密档）及解读见
-[docs/PERFORMANCE_BASELINE_V1.md](docs/PERFORMANCE_BASELINE_V1.md)。
+| [REQUIREMENTS.md](docs/REQUIREMENTS.md) | 需求规格与核心概念定义 |
+| [BINARY_FORMAT_V1.md](docs/BINARY_FORMAT_V1.md) | v1 单文件二进制格式 |
+| [GO_API_DESIGN_V1.md](docs/GO_API_DESIGN_V1.md) | Go API 设计与所有权规则 |
+| [METADATA_FORMAT_V1.md](docs/METADATA_FORMAT_V1.md) | 元数据 TLV 格式 |
+| [INDEX_TXN_FORMAT_V1.md](docs/INDEX_TXN_FORMAT_V1.md) | IndexTxn（快照索引）格式 |
+| [ENCRYPTION_V1.md](docs/ENCRYPTION_V1.md) | 数据块加密 |
+| [PERFORMANCE_BASELINE_V1.md](docs/PERFORMANCE_BASELINE_V1.md) | 性能基线与解读 |
+| [file-explorer.html](docs/file-explorer.html) | 文件结构查看器（HTML） |
 
 ## 兼容性
 
-- v1（单文件，Magic `ROWPACK1`）是当前且唯一的格式线；早期双文件草案从未发布。
-- golden files 纳入 CI：任何字节级变化视为格式变更。
-- 加密 store 使用 AES-256-GCM；Rows Page / Metadata Block / IndexTxn 分域加密封装（nonce 位域
-  互斥），Footer 绑定落盘字节 CRC，无需密钥即可检出撕裂。
-- 支持 Linux / macOS / Windows amd64/arm64（跨进程写锁在无 flock 平台明确报错）。
+- **v1（单文件，Magic `ROWPACK1`）是当前且唯一的格式线**；未知 major 版本拒绝打开，更高
+  minor 版本仅在所有必需 feature bits 均可识别时打开。
+- Schema 由引擎自产自销（内部 TLV Table/Column 记录），只服务行编码/解码；上层自有元信息
+  可用 `DefineTableIn` 建目录表存放，引擎不解释其语义。
+- 跨进程写锁依赖 `flock`，无 flock 平台明确报错而非静默降级。
+- 错误不做字符串匹配：公开 API 均返回支持 `errors.Is` 的 sentinel / 结构化错误
+  （`CorruptionError` 携带文件、偏移与快照/表/块 ID）。

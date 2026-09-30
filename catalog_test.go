@@ -1,7 +1,6 @@
-// Package rowpack_test exercises the source-catalog pattern documented in
-// docs/SOURCE_CATALOG_GUIDE_V1.md through the *public* API only, exactly as an
-// upper-layer adapter would. It exists to keep the guide honest: if a claim in
-// the guide stops holding, one of these tests fails.
+// Package rowpack_test exercises the upper-layer catalog-table pattern
+// (bookkeeping tables in a dedicated ns, stable RowID layout, tombstones)
+// through the *public* API only, exactly as an adapter would.
 package rowpack_test
 
 import (
@@ -26,7 +25,8 @@ var (
 	catalogColumns = rowpack.Qualify(catalogNamespace, "__rowpack_src_columns")
 )
 
-// defineCatalog mirrors the guide's §2.2 column lists.
+// defineCatalog creates the two bookkeeping tables: object-level and
+// column-level, both in the catalog's own ns.
 func defineCatalog(t *testing.T, tx *rowpack.Tx) {
 	t.Helper()
 	require.NoError(t, tx.DefineTableIn(catalogNamespace, "__rowpack_src_objects", []rowpack.Column{
@@ -93,14 +93,15 @@ func columnRow(owner, name string, ordinal uint32, declared, dataType string, nu
 	}
 }
 
-// columnRowID is the guide's §3.2 layout.
+// columnRowID is the stable per-column layout tableSeq<<16|colSeq: a
+// table's columns are RowID-contiguous and never reused.
 func columnRowID(tableSeq rowpack.RowID, colSeq uint32) rowpack.RowID {
 	return tableSeq<<16 | rowpack.RowID(colSeq)
 }
 
-// TestCatalogGuide_SystemNamespaceIsolated pins rule R1: catalog tables live in
+// TestCatalog_SystemNamespaceIsolated pins rule R1: catalog tables live in
 // sys, source tables in user, and one call separates them.
-func TestCatalogGuide_SystemNamespaceIsolated(t *testing.T) {
+func TestCatalog_SystemNamespaceIsolated(t *testing.T) {
 	ctx := context.Background()
 	db, err := rowpack.Create(filepath.Join(t.TempDir(), "s"), rowpack.Options{})
 	require.NoError(t, err)
@@ -153,10 +154,10 @@ func splitByNamespace(tables []rowpack.Table, ns string) (mine, other []rowpack.
 	return mine, other
 }
 
-// TestCatalogGuide_RangeScanByTableSeq pins the §3.2 claim: with
+// TestCatalog_RangeScanByTableSeq pins the RowID-layout claim: with
 // tableSeq<<16|colSeq, one table's columns are contiguous and reachable with a
 // bounded range scan instead of a full scan.
-func TestCatalogGuide_RangeScanByTableSeq(t *testing.T) {
+func TestCatalog_RangeScanByTableSeq(t *testing.T) {
 	ctx := context.Background()
 	db, err := rowpack.Create(filepath.Join(t.TempDir(), "s"), rowpack.Options{})
 	require.NoError(t, err)
@@ -204,9 +205,10 @@ func TestCatalogGuide_RangeScanByTableSeq(t *testing.T) {
 	require.Equal(t, []string{"id", "total"}, colNames(2))
 }
 
-// TestCatalogGuide_TombstoneAcrossDeltas pins §5/§6.3: a DROP is an UPDATE to
-// dropped=true, keeps the RowID, and never needs ErrNotFound handling.
-func TestCatalogGuide_TombstoneAcrossDeltas(t *testing.T) {
+// TestCatalog_TombstoneAcrossDeltas pins the tombstone rule: a DROP is an
+// UPDATE to dropped=true, keeps the RowID, and never needs ErrNotFound
+// handling.
+func TestCatalog_TombstoneAcrossDeltas(t *testing.T) {
 	ctx := context.Background()
 	db, err := rowpack.Create(filepath.Join(t.TempDir(), "s"), rowpack.Options{})
 	require.NoError(t, err)
@@ -242,7 +244,8 @@ func TestCatalogGuide_TombstoneAcrossDeltas(t *testing.T) {
 		objectRow("table", "public", "ghost", "", 1, false, nil, nil)), rowpack.ErrNotFound)
 	require.NoError(t, tx.Rollback())
 
-	// The same-snapshot RowID uniqueness rule the guide warns about in §6.4.
+	// Same-snapshot RowID uniqueness: a duplicate (table, RowID) pair is
+	// rejected with ErrAlreadyExists.
 	tx, err = db.Begin(ctx, delta)
 	require.NoError(t, err)
 	require.NoError(t, tx.Insert(catalogObjects, 7, objectRow("table", "public", "a", "", 1, false, nil, nil)))
@@ -272,10 +275,10 @@ func TestCatalogGuide_TombstoneAcrossDeltas(t *testing.T) {
 	require.EqualValues(t, 1, dropped)
 }
 
-// TestCatalogGuide_NullableContract pins §2.2 note 1: the engine enforces
-// Nullable at write time, so attributes that may be absent must be declared
-// Nullable.
-func TestCatalogGuide_NullableContract(t *testing.T) {
+// TestCatalog_NullableContract pins the write-time contract: the engine
+// enforces Nullable at write time, so attributes that may be absent must be
+// declared Nullable.
+func TestCatalog_NullableContract(t *testing.T) {
 	ctx := context.Background()
 	db, err := rowpack.Create(filepath.Join(t.TempDir(), "s"), rowpack.Options{})
 	require.NoError(t, err)
@@ -294,9 +297,10 @@ func TestCatalogGuide_NullableContract(t *testing.T) {
 	require.NoError(t, tx.Rollback())
 }
 
-// TestCatalogGuide_DeltaChangeStream pins §7: catalog changes are ordinary row
-// changes, so the block-level change stream already answers "what changed".
-func TestCatalogGuide_DeltaChangeStream(t *testing.T) {
+// TestCatalog_DeltaChangeStream pins the change-stream property: catalog
+// changes are ordinary row changes, so the block-level change stream already
+// answers "what changed".
+func TestCatalog_DeltaChangeStream(t *testing.T) {
 	ctx := context.Background()
 	db, err := rowpack.Create(filepath.Join(t.TempDir(), "s"), rowpack.Options{})
 	require.NoError(t, err)
@@ -341,10 +345,9 @@ func TestCatalogGuide_DeltaChangeStream(t *testing.T) {
 	require.Equal(t, []rowpack.RowID{columnRowID(1, 2)}, got[rowpack.ChangeInsert])
 }
 
-// TestCatalogGuide_ParentMustExistBeforeCatalog pins the guide's "first run"
-// branch: scanning a catalog table that a snapshot does not define yet reports
+// TestCatalog_ParentMustExistBeforeCatalog pins the "first run" branch: scanning a catalog table that a snapshot does not define yet reports
 // ErrNotFound rather than failing the store, and a later DELTA can introduce it.
-func TestCatalogGuide_ParentMustExistBeforeCatalog(t *testing.T) {
+func TestCatalog_ParentMustExistBeforeCatalog(t *testing.T) {
 	ctx := context.Background()
 	db, err := rowpack.Create(filepath.Join(t.TempDir(), "s"), rowpack.Options{})
 	require.NoError(t, err)
@@ -358,7 +361,7 @@ func TestCatalogGuide_ParentMustExistBeforeCatalog(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = db.Scan(ctx, full, catalogObjects, rowpack.ScanOptions{})
-	require.ErrorIs(t, err, rowpack.ErrNotFound, "guide §4.2 must treat this as an empty parent catalog")
+	require.ErrorIs(t, err, rowpack.ErrNotFound, "a snapshot without catalog tables must scan as an empty parent catalog")
 
 	tx, err = db.Begin(ctx, full)
 	require.NoError(t, err)
@@ -373,11 +376,10 @@ func TestCatalogGuide_ParentMustExistBeforeCatalog(t *testing.T) {
 	require.NoError(t, it.Close())
 }
 
-// TestCatalogGuide_DefineBeforeWrite pins the guide's checklist item "every
-// written table is defined in the same snapshot": a DELTA may write a chain
+// TestCatalog_DefineBeforeWrite pins the define-before-write rule: a DELTA may write a chain
 // table as is, while a FULL snapshot must define it, or Commit reports
 // ErrInvalidArgument instead of publishing rows no reader can decode.
-func TestCatalogGuide_DefineBeforeWrite(t *testing.T) {
+func TestCatalog_DefineBeforeWrite(t *testing.T) {
 	ctx := context.Background()
 	db, err := rowpack.Create(filepath.Join(t.TempDir(), "s"), rowpack.Options{})
 	require.NoError(t, err)

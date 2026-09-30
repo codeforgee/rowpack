@@ -256,8 +256,7 @@ ns 的目录表里，不做成 TLV 记录类型。** 理由：
    （§5）。
 
 目录表放调用方自己的 ns（`TablesIn(ctx, snap, rowpack.NSUser)` 一次拿到源库表）、必须预留变长
-`TypeBytes` 逃生舱、属性存原文不派生建列等配套约定属上层纪律，引擎不做约束；完整用户端指南见
-[SOURCE_CATALOG_GUIDE_V1.md](SOURCE_CATALOG_GUIDE_V1.md)（§1 R1/R2、§2、§6）。
+`TypeBytes` 逃生舱、属性存原文不派生建列等配套约定属上层纪律，引擎不做约束。
 
 ## 10. 写入示例
 

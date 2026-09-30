@@ -195,8 +195,7 @@ func (tx *Tx) SetMeta(value []byte) error
 - 每张表属于一个 **ns**（`Table.NS`），默认 `NSUser`（`user`）；此时 Table 记录省略 `NS` 字段，
   既有 store 字节不变；`DefineTableIn` 指定别的 ns，ns 随 Table 记录一起持久化（见
   [METADATA_FORMAT_V1.md](METADATA_FORMAT_V1.md) §6.1），`TablesIn` 按它过滤。ns 是**调用方自
-  选的标签**，引擎不赋予语义（没有「系统表」之类概念），典型用法见
-  [SOURCE_CATALOG_GUIDE_V1.md](SOURCE_CATALOG_GUIDE_V1.md)；
+  选的标签**，引擎不赋予语义（没有「系统表」之类概念）；
 - 表身份是 `(NS, Name)`，**同名表可在不同 ns 共存**：收表 API 收**地址字符串**（默认 ns 裸名
   `"users"`，其他 ns 加 `"ns."` 前缀，如 `"public.users"`）；按 ns 过滤用
   `TablesIn(ctx, snap, rowpack.NSUser)`。`Qualify`/`SplitAddress`/`Table.Address()` 是公开工具。

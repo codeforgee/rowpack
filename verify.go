@@ -27,11 +27,54 @@ type VerifyReport struct {
 	Duration         time.Duration
 }
 
+// VerifyScope bounds a Verify run. The zero value checks everything: every
+// snapshot and every table. Snapshot limits the run to one snapshot (its own
+// blocks and header; parent-chain checks still cover the chain it sits on).
+// Tables limits the run to rows blocks of the given table addresses (same
+// strings as Get/Scan); other blocks of matching snapshots still get their
+// structural checks but not row decoding.
+type VerifyScope struct {
+	Snapshot SnapshotID
+	Tables   []string
+}
+
+// coversSnapshot reports whether the scope includes snap.
+func (sc VerifyScope) coversSnapshot(snap SnapshotID) bool {
+	return sc.Snapshot == 0 || sc.Snapshot == snap
+}
+
+// coversTable reports whether the scope includes the table address; an empty
+// table set means no table filtering.
+func (sc VerifyScope) coversTable(addr string) bool {
+	if len(sc.Tables) == 0 {
+		return true
+	}
+	for _, t := range sc.Tables {
+		if t == addr {
+			return true
+		}
+	}
+	return false
+}
+
+// addressOfTable resolves a table's address at the newest snapshot that knows
+// it, for scope filtering; ok is false when unknown.
+func addressOfTable(schemas *schemaIndex, snapshots []SnapshotInfo, tid TableID) (string, bool) {
+	for i := len(snapshots) - 1; i >= 0; i-- {
+		snap := snapshots[i].ID
+		if schemas.nameOf(snap, tid) == "" {
+			continue
+		}
+		return Qualify(schemas.nsOf(snap, tid), schemas.nameOf(snap, tid)), true
+	}
+	return "", false
+}
+
 // Verify checks store integrity. Quick mode validates headers, index
 // transactions, footers, boundaries and the parent chain. Full mode
 // additionally decompresses every block and verifies every row's CRC and
-// decodability. Any failure returns a structured CorruptionError.
-func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, error) {
+// decodability. The zero-value scope checks the whole store; see VerifyScope.
+func (s *Store) Verify(ctx context.Context, mode VerifyMode, scope VerifyScope) (VerifyReport, error) {
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
 	start := time.Now()
@@ -42,8 +85,13 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 	}
 	view := st.view
 
+	snapshots := view.Snapshots()
+
 	// Header + parent chain + index/footer cross checks.
-	for _, sm := range view.Snapshots() {
+	for _, sm := range snapshots {
+		if !scope.coversSnapshot(sm.ID) {
+			continue
+		}
 		rep.SnapshotsChecked++
 		switch sm.Type {
 		case format.SnapshotFull:
@@ -74,6 +122,19 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode) (VerifyReport, erro
 	}
 
 	for _, bl := range view.Blocks() {
+		if !scope.coversSnapshot(bl.SnapshotID) {
+			continue
+		}
+		if bl.Kind == format.BlockKindRows {
+			infos := make([]SnapshotInfo, len(snapshots))
+			for i, sm := range snapshots {
+				infos[i] = snapshotInfo(sm)
+			}
+			addr, _ := addressOfTable(st.schemas, infos, TableID(bl.TableID))
+			if !scope.coversTable(addr) {
+				continue
+			}
+		}
 		rep.BlocksChecked++
 		rep.DataBytesRead += uint64(bl.StoredSize)
 		if bl.Kind == format.BlockKindRows {

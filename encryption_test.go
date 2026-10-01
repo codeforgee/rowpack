@@ -63,7 +63,7 @@ func TestEncryptedRoundTrip(t *testing.T) {
 	full, err := w.Commit(ctx)
 	require.NoError(t, err)
 	d, _ := db.Begin(ctx, full)
-	require.NoError(t, d.Delete("users", 3))
+	require.NoError(t, d.Delete(ctx, "users", 3))
 	delta, err := d.Commit(ctx)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
@@ -83,7 +83,7 @@ func TestEncryptedRoundTrip(t *testing.T) {
 	name, _ = row[1].String()
 	require.Equal(t, "user-5", name)
 	// Full verify must pass on an intact encrypted store.
-	rep, err := db2.Verify(ctx, VerifyFull)
+	rep, err := db2.Verify(ctx, VerifyFull, VerifyScope{})
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), rep.SnapshotsChecked)
 	require.Greater(t, rep.RowsChecked, uint64(0))
@@ -220,7 +220,7 @@ func TestGoldenEncryptedStoreGenerate(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, w.DefineTable("t1", []Column{{Name: "id", Type: TypeUint64}, {Name: "name", Type: TypeString}}))
 	for i := uint64(1); i <= 3; i++ {
-		require.NoError(t, w.Insert("t1", i, Row{Uint64(i), String(fmt.Sprintf("row-%d", i))}))
+		require.NoError(t, w.Insert(ctx, "t1", i, Row{Uint64(i), String(fmt.Sprintf("row-%d", i))}))
 	}
 	// The sample also locks a snapshot meta block under whole-block sealing:
 	// same nonce/KeyEpoch policy, no key, no bytes.
@@ -285,6 +285,6 @@ func TestEncryptionTamperDetect(t *testing.T) {
 	t.Cleanup(func() { db2.Close() })
 	_, err = db2.Get(ctx, full, "users", 1, nil)
 	require.ErrorIs(t, err, ErrAuthFailed, "tampered ciphertext must fail authentication")
-	_, err = db2.Verify(ctx, VerifyFull)
+	_, err = db2.Verify(ctx, VerifyFull, VerifyScope{})
 	require.ErrorIs(t, err, ErrAuthFailed, "Verify must report the tampered block")
 }

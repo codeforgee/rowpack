@@ -54,7 +54,7 @@ func TestPutRejectsOversizedRow(t *testing.T) {
 	rb.SetPageSize(64) // every row is "oversized" and gets its own page
 	tx.w.rowBuilders[tid] = rb
 
-	require.Error(t, tx.Insert("t", 1, Row{String(strings.Repeat("x", 200))}))
+	require.Error(t, tx.Insert(context.Background(), "t", 1, Row{String(strings.Repeat("x", 200))}))
 	require.Zero(t, tx.w.rowRecordCount, "a refused row must not be counted")
 }
 
@@ -91,7 +91,7 @@ func TestCommitRejectsUnflushableRows(t *testing.T) {
 	})
 	rb.SetPageSize(4096)
 	tx.w.rowBuilders[tid] = rb
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(context.Background(), "t", 1, Row{Uint64(1)}))
 
 	_, err := tx.Commit(context.Background())
 	require.Error(t, err)
@@ -103,7 +103,7 @@ func TestCommitRejectsUnflushableRows(t *testing.T) {
 func TestCommitRejectsInvalidSnapshotType(t *testing.T) {
 	tx := armTx(t, armStore(t), NoParent)
 	require.NoError(t, tx.DefineTable("t", armCols))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(context.Background(), "t", 1, Row{Uint64(1)}))
 	tx.w.typ = SnapshotType(9)
 
 	_, err := tx.Commit(context.Background())
@@ -118,7 +118,7 @@ func TestCommitRejectsForgedPendingBlocks(t *testing.T) {
 	t.Run("block owned by another snapshot", func(t *testing.T) {
 		tx := armTx(t, armStore(t), NoParent)
 		require.NoError(t, tx.DefineTable("t", armCols))
-		require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+		require.NoError(t, tx.Insert(context.Background(), "t", 1, Row{Uint64(1)}))
 		forgePending(tx, format.BlockHeader{
 			SnapshotID: 0, // never this writer's snapshot
 			BlockKind:  format.BlockKindRows,
@@ -131,7 +131,7 @@ func TestCommitRejectsForgedPendingBlocks(t *testing.T) {
 	t.Run("metadata owned by another snapshot", func(t *testing.T) {
 		tx := armTx(t, armStore(t), NoParent)
 		require.NoError(t, tx.DefineTable("t", armCols))
-		require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+		require.NoError(t, tx.Insert(context.Background(), "t", 1, Row{Uint64(1)}))
 		forgePending(tx, format.BlockHeader{
 			SnapshotID: uint64(tx.w.id),
 			BlockKind:  format.BlockKindMetadata,
@@ -143,7 +143,7 @@ func TestCommitRejectsForgedPendingBlocks(t *testing.T) {
 	t.Run("row carrying an unpackable change type", func(t *testing.T) {
 		tx := armTx(t, armStore(t), NoParent)
 		require.NoError(t, tx.DefineTable("t", armCols))
-		require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+		require.NoError(t, tx.Insert(context.Background(), "t", 1, Row{Uint64(1)}))
 		forgePending(tx, format.BlockHeader{
 			SnapshotID: uint64(tx.w.id),
 			BlockKind:  format.BlockKindRows,
@@ -170,7 +170,7 @@ func TestCommitRejectsUnsealableBlock(t *testing.T) {
 
 	tx := armTx(t, db, NoParent)
 	require.NoError(t, tx.DefineTable("t", armCols))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(context.Background(), "t", 1, Row{Uint64(1)}))
 	// "forged" is not a container: the page sealer must refuse it.
 	forgePending(tx, format.BlockHeader{
 		SnapshotID: uint64(tx.w.id),
@@ -192,7 +192,7 @@ func TestCommitUnknownWhenSchemaDerivationFails(t *testing.T) {
 	db := armStore(t)
 	tx := armTx(t, db, NoParent)
 	require.NoError(t, tx.DefineTable("t", armCols))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 
 	fault.Inject("commit.sync.after", func() { _ = db.data.Close() })
 	defer fault.Clear()

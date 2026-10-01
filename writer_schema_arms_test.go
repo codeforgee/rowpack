@@ -42,7 +42,7 @@ func armCommittedStore(t *testing.T) *Store {
 	db := armStore(t)
 	tx := armTx(t, db, NoParent)
 	require.NoError(t, tx.DefineTable("t", armCols))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(context.Background(), "t", 1, Row{Uint64(1)}))
 	_, err := tx.Commit(context.Background())
 	require.NoError(t, err)
 	return db
@@ -108,7 +108,7 @@ func TestCreateTableFullRedefinitionRejectsOversizedRecord(t *testing.T) {
 func TestSchemaResolutionWithoutCommittedState(t *testing.T) {
 	db := armCommittedStore(t)
 	tx := armTx(t, db, Latest)
-	require.NoError(t, tx.Insert("t", 2, Row{Uint64(2)}))
+	require.NoError(t, tx.Insert(context.Background(), "t", 2, Row{Uint64(2)}))
 	tid := tx.w.tableIDs["t"]
 	require.NotZero(t, tid, "the insert must have cached the table id")
 
@@ -128,7 +128,7 @@ func TestSchemaResolutionWithoutCommittedState(t *testing.T) {
 func TestTxnSchemaLookupsOnChainTable(t *testing.T) {
 	db := armCommittedStore(t)
 	tx := armTx(t, db, Latest)
-	require.NoError(t, tx.Insert("t", 2, Row{Uint64(2)}))
+	require.NoError(t, tx.Insert(context.Background(), "t", 2, Row{Uint64(2)}))
 	tid := tx.w.tableIDs["t"]
 	require.NotZero(t, tid)
 
@@ -146,7 +146,7 @@ func TestAbortAfterCommitIsRefused(t *testing.T) {
 	db := armStore(t)
 	tx := armTx(t, db, NoParent)
 	require.NoError(t, tx.DefineTable("t", armCols))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 	_, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
@@ -160,7 +160,7 @@ func TestCommitOnClosedStoreFailsTheWriter(t *testing.T) {
 	db := armStore(t)
 	tx := armTx(t, db, NoParent)
 	require.NoError(t, tx.DefineTable("t", armCols))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 
 	require.NoError(t, db.Close())
 	// Put the writer back into its pre-close state: the store is closed, but

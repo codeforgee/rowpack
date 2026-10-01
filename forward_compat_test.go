@@ -29,7 +29,7 @@ func TestUnknownColumnTypeForwardCompat(t *testing.T) {
 		{Name: "name", Type: TypeString},
 	}))
 	for i := 1; i <= 5; i++ {
-		require.NoError(t, tx.Insert("users", RowID(i), Row{Uint64(uint64(i)), String(fmt.Sprintf("user-%d", i))}))
+		require.NoError(t, tx.Insert(ctx, "users", RowID(i), Row{Uint64(uint64(i)), String(fmt.Sprintf("user-%d", i))}))
 	}
 	full, err := tx.Commit(ctx)
 	require.NoError(t, err)
@@ -100,12 +100,12 @@ func TestUnknownColumnTypeForwardCompat(t *testing.T) {
 	// The future table has no usable schema: writes are rejected.
 	tx3, err := db2.Begin(ctx, delta)
 	require.NoError(t, err)
-	err = tx3.Insert("future", 1, Row{String("x")})
+	err = tx3.Insert(ctx, "future", 1, Row{String("x")})
 	require.Error(t, err)
 	require.NoError(t, tx3.Rollback())
 	_ = tx3
 
 	// Integrity holds.
-	_, err = db2.Verify(ctx, VerifyFull)
+	_, err = db2.Verify(ctx, VerifyFull, VerifyScope{})
 	require.NoError(t, err)
 }

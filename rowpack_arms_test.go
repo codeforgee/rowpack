@@ -88,7 +88,7 @@ func TestCloseIgnoresAbortOfCommittedWriter(t *testing.T) {
 	db := armCommittedStore(t)
 
 	tx := armTx(t, db, 1)
-	require.NoError(t, tx.Insert("t", 2, Row{Uint64(2)}))
+	require.NoError(t, tx.Insert(ctx, "t", 2, Row{Uint64(2)}))
 	_, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
@@ -102,7 +102,7 @@ func TestCloseAbortsOpenWriter(t *testing.T) {
 	db := armCommittedStore(t)
 
 	tx := armTx(t, db, 1)
-	require.NoError(t, tx.Insert("t", 3, Row{Uint64(3)}))
+	require.NoError(t, tx.Insert(ctx, "t", 3, Row{Uint64(3)}))
 	require.NoError(t, db.Close(), "aborting an open writer is not an error")
 
 	_, commitErr := tx.Commit(ctx)

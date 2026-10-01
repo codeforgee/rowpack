@@ -10,12 +10,14 @@ import (
 	"github.com/codeforgee/rowpack/internal/index"
 )
 
-// Blocks lists the rows blocks written by the snapshot transaction itself,
-// in physical write order (ascending BlockID): a FULL snapshot holds the
-// whole table, a DELTA holds exactly this transaction's changes. Metadata
-// blocks are not included. All fields are derived from the in-memory index;
+// Blocks lists the physical rows segments (sealed blocks) of one table at a
+// snapshot, in physical write order (ascending BlockID): a FULL snapshot
+// holds the whole table, a DELTA holds exactly this transaction's changes.
+// MinRowID is inclusive and MaxRowID exclusive, so consecutive sealed blocks
+// tile the table's RowID space; readers enumerate spans here and read each
+// one with a ranged Scan. All fields are derived from the in-memory index;
 // no block is read from disk.
-func (s *Store) Blocks(ctx context.Context, snap SnapshotID, table string) ([]Block, error) {
+func (s *Store) Blocks(snap SnapshotID, table string) ([]Block, error) {
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
 	st, err := s.captureState()
@@ -56,6 +58,7 @@ func (s *Store) blocksByTable(view *index.View, snap uint64, tid TableID) ([]Blo
 			MinRowID:    ^RowID(0),
 			RawBytes:    bl.RawSize,
 			StoredBytes: bl.StoredSize,
+			RawCRC32C:   bl.RawCRC32C,
 		}
 		out = append(out, b)
 		byID[bl.BlockID] = &out[len(out)-1]

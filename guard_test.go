@@ -25,16 +25,16 @@ func TestWriterStateGuards(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 	_, err = tx.Commit(ctx)
 	require.NoError(t, err)
 
 	// Every mutation and a second commit fail after Commit.
-	require.ErrorIs(t, tx.Insert("t", 2, Row{Uint64(2)}), ErrSnapshotCommitted)
-	require.ErrorIs(t, tx.Update("t", 1, Row{Uint64(9)}), ErrSnapshotCommitted)
-	require.ErrorIs(t, tx.Delete("t", 1), ErrSnapshotCommitted)
+	require.ErrorIs(t, tx.Insert(ctx, "t", 2, Row{Uint64(2)}), ErrSnapshotCommitted)
+	require.ErrorIs(t, tx.Update(ctx, "t", 1, Row{Uint64(9)}), ErrSnapshotCommitted)
+	require.ErrorIs(t, tx.Delete(ctx, "t", 1), ErrSnapshotCommitted)
 	require.ErrorIs(t, tx.DefineTable("u", []Column{{Name: "id", Type: TypeUint64}}), ErrSnapshotCommitted)
-	require.ErrorIs(t, tx.ApplyBatch([]Change{{Type: ChangeInsert, Table: "t", RowID: 2, Row: Row{Uint64(2)}}}), ErrSnapshotCommitted)
+	require.ErrorIs(t, tx.ApplyBatch(context.Background(), []Change{{Type: ChangeInsert, Table: "t", RowID: 2, Row: Row{Uint64(2)}}}), ErrSnapshotCommitted)
 	_, err = tx.Commit(ctx)
 	require.ErrorIs(t, err, ErrSnapshotCommitted)
 
@@ -43,15 +43,15 @@ func TestWriterStateGuards(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, tx2.Rollback())
 	require.NoError(t, tx2.Rollback())
-	require.ErrorIs(t, tx2.Insert("t", 3, Row{Uint64(3)}), ErrSnapshotAborted)
+	require.ErrorIs(t, tx2.Insert(ctx, "t", 3, Row{Uint64(3)}), ErrSnapshotAborted)
 
 	// Zero row ids are rejected before any table resolution.
 	tx3, err := db.Begin(ctx, Latest)
 	require.NoError(t, err)
-	require.ErrorIs(t, tx3.Insert("t", 0, Row{Uint64(0)}), ErrInvalidArgument)
-	require.ErrorIs(t, tx3.Update("t", 0, Row{Uint64(0)}), ErrInvalidArgument)
-	require.ErrorIs(t, tx3.Delete("t", 0), ErrInvalidArgument)
-	require.ErrorIs(t, tx3.Insert("ghost-table", 1, Row{Uint64(1)}), ErrNotFound)
+	require.ErrorIs(t, tx3.Insert(ctx, "t", 0, Row{Uint64(0)}), ErrInvalidArgument)
+	require.ErrorIs(t, tx3.Update(ctx, "t", 0, Row{Uint64(0)}), ErrInvalidArgument)
+	require.ErrorIs(t, tx3.Delete(ctx, "t", 0), ErrInvalidArgument)
+	require.ErrorIs(t, tx3.Insert(ctx, "ghost-table", 1, Row{Uint64(1)}), ErrNotFound)
 	require.NoError(t, tx3.Rollback())
 }
 
@@ -63,7 +63,7 @@ func TestReadBatchNilBufferAndEmptyIDs(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 	snap, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
@@ -104,7 +104,7 @@ func TestOpenShortAndGarbageHeader(t *testing.T) {
 	tx, err := db3.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 	_, err = tx.Commit(ctx)
 	require.NoError(t, err)
 	require.NoError(t, db3.Close())
@@ -119,7 +119,7 @@ func TestOpenShortAndGarbageHeader(t *testing.T) {
 func TestCreateSingleFailureSemantics(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.rpk")
-	require.NoError(t, iofile.CreateSingle(path, make([]byte, format.DataFileHeaderSize)))
+	require.NoError(t, iofile.CreateSingle(path, make([]byte, format.DataFileHeaderSize), false))
 	size := func() int64 {
 		fi, err := os.Stat(path)
 		require.NoError(t, err)
@@ -128,7 +128,7 @@ func TestCreateSingleFailureSemantics(t *testing.T) {
 	require.Equal(t, int64(format.DataFileHeaderSize), size())
 
 	// Exclusive create refuses to clobber; the original file is untouched.
-	err := iofile.CreateSingle(path, make([]byte, 16))
+	err := iofile.CreateSingle(path, make([]byte, 16), false)
 	require.Error(t, err)
 	require.Equal(t, int64(format.DataFileHeaderSize), size())
 
@@ -140,7 +140,7 @@ func TestCreateSingleFailureSemantics(t *testing.T) {
 	require.NoError(t, os.Mkdir(nested, 0o755))
 	require.NoError(t, os.Chmod(nested, 0o555))
 	defer os.Chmod(nested, 0o755)
-	err = iofile.CreateSingle(filepath.Join(nested, "x.rpk"), make([]byte, 64))
+	err = iofile.CreateSingle(filepath.Join(nested, "x.rpk"), make([]byte, 64), false)
 	require.Error(t, err)
 	_, statErr := os.Stat(filepath.Join(nested, "x.rpk"))
 	require.True(t, os.IsNotExist(statErr))

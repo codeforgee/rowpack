@@ -24,10 +24,10 @@ func TestStatsLogicalRowsCoversAllVisibleTables(t *testing.T) {
 	require.NoError(t, tx.DefineTable("a", []Column{{Name: "id", Type: TypeUint64}}))
 	require.NoError(t, tx.DefineTableIn("meta", "b", []Column{{Name: "id", Type: TypeUint64}}))
 	for i := RowID(1); i <= 10; i++ {
-		require.NoError(t, tx.Insert("a", i, Row{Uint64(uint64(i))}))
+		require.NoError(t, tx.Insert(ctx, "a", i, Row{Uint64(uint64(i))}))
 	}
 	for i := RowID(1); i <= 5; i++ {
-		require.NoError(t, tx.Insert("meta.b", i, Row{Uint64(uint64(i))}))
+		require.NoError(t, tx.Insert(ctx, "meta.b", i, Row{Uint64(uint64(i))}))
 	}
 	s1, err := tx.Commit(ctx)
 	require.NoError(t, err)
@@ -39,7 +39,7 @@ func TestStatsLogicalRowsCoversAllVisibleTables(t *testing.T) {
 	tx2, err := db.Begin(ctx, s1)
 	require.NoError(t, err)
 	for i := RowID(1); i <= 3; i++ {
-		require.NoError(t, tx2.Update("a", i, Row{Uint64(uint64(i) * 100)}))
+		require.NoError(t, tx2.Update(ctx, "a", i, Row{Uint64(uint64(i) * 100)}))
 	}
 	s2, err := tx2.Commit(ctx)
 	require.NoError(t, err)
@@ -50,8 +50,8 @@ func TestStatsLogicalRowsCoversAllVisibleTables(t *testing.T) {
 	// DELTA 只删 b 表两行。
 	tx3, err := db.Begin(ctx, s2)
 	require.NoError(t, err)
-	require.NoError(t, tx3.Delete("meta.b", 4))
-	require.NoError(t, tx3.Delete("meta.b", 5))
+	require.NoError(t, tx3.Delete(ctx, "meta.b", 4))
+	require.NoError(t, tx3.Delete(ctx, "meta.b", 5))
 	s3, err := tx3.Commit(ctx)
 	require.NoError(t, err)
 	require.Equal(t, uint64(13), db.Stats().LogicalRows)

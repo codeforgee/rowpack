@@ -146,7 +146,7 @@ func setupPlainMultiPageStore(t *testing.T, rows int) (string, SnapshotID) {
 		{Name: "n", Type: TypeUint64},
 	}))
 	for i := 0; i < rows; i++ {
-		require.NoError(t, tx.Insert("t", RowID(i+1), Row{
+		require.NoError(t, tx.Insert(ctx, "t", RowID(i+1), Row{
 			String("name-" + filepath.Base(t.Name()) + "-padded-to-fill-a-page"),
 			Uint64(uint64(i + 1)),
 		}))
@@ -217,13 +217,13 @@ func readAllEntries(t *testing.T, base string) (rows int, getErr, scanErr, batch
 	sit, err := db.Scan(ctx, 1, "t", ScanOptions{})
 	rows, scanErr = collect(sit, err)
 
-	blks, err := db.Blocks(ctx, 1, "t")
+	blks, err := db.Blocks(1, "t")
 	require.NoError(t, err)
 	require.NotEmpty(t, blks)
 	bit, err := db.ScanBlocks(ctx, 1, "t", blks[0].BlockID, blks[len(blks)-1].BlockID+1)
 	_, blocksErr = collect(bit, err)
 
-	_, verifyErr = db.Verify(ctx, VerifyFull)
+	_, verifyErr = db.Verify(ctx, VerifyFull, VerifyScope{})
 	return
 }
 

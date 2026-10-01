@@ -311,13 +311,15 @@ func deriveColumn(rec *metadata.Record) (derivedColumn, error) {
 		return derivedColumn{}, err
 	}
 	scale := int32(fieldSint(rec, metadata.ColDataScale))
+	pk := fieldSint(rec, metadata.ColPrimaryKey) == 1
 	return derivedColumn{
 		columnID: fieldSint(rec, metadata.ColColumnID),
 		codecColumn: codec.Column{
-			Name:     fieldString(rec, metadata.ColColumnName),
-			Type:     t,
-			Nullable: isNullableString(nullableStr),
-			Scale:    scale,
+			Name:       fieldString(rec, metadata.ColColumnName),
+			Type:       t,
+			Nullable:   isNullableString(nullableStr),
+			Scale:      scale,
+			PrimaryKey: pk,
 		},
 	}, nil
 }
@@ -398,6 +400,8 @@ func columnType(t string) (codec.Type, error) {
 		return codec.TypeTime, nil
 	case "datetime":
 		return codec.TypeDateTime, nil
+	case "datetime_tz":
+		return codec.TypeDateTimeTZ, nil
 	case "decimal":
 		return codec.TypeDecimal, nil
 	}
@@ -440,6 +444,8 @@ func typeName(t codec.Type) string {
 		return "time"
 	case codec.TypeDateTime:
 		return "datetime"
+	case codec.TypeDateTimeTZ:
+		return "datetime_tz"
 	case codec.TypeDecimal:
 		return "decimal"
 	}

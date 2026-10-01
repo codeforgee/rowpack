@@ -45,7 +45,7 @@ func newHeaderFixture(t *testing.T) string {
 	w, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, w.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, w.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, w.Insert(ctx, "t", 1, Row{Uint64(1)}))
 	_, err = w.Commit(ctx)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())

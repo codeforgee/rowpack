@@ -26,7 +26,7 @@ func TestConcurrentReadersDuringCommits(t *testing.T) {
 		{Name: "v", Type: TypeUint64},
 	}))
 	for i := 1; i <= 50; i++ {
-		require.NoError(t, tx.Insert("t", RowID(i), Row{Uint64(uint64(i)), Uint64(uint64(i))}))
+		require.NoError(t, tx.Insert(ctx, "t", RowID(i), Row{Uint64(uint64(i)), Uint64(uint64(i))}))
 	}
 	_, err = tx.Commit(ctx)
 	require.NoError(t, err)
@@ -108,7 +108,7 @@ func TestConcurrentReadersDuringCommits(t *testing.T) {
 		tx, err := db.Begin(ctx, Latest)
 		require.NoError(t, err)
 		id := RowID(40 + c%11)
-		require.NoError(t, tx.Update("t", id, Row{Uint64(uint64(id)), Uint64(uint64(id))}))
+		require.NoError(t, tx.Update(ctx, "t", id, Row{Uint64(uint64(id)), Uint64(uint64(id))}))
 		_, err = tx.Commit(ctx)
 		require.NoError(t, err)
 	}
@@ -147,7 +147,7 @@ func TestCloseWaitsForOpenIterator(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
 	for i := 1; i <= 2000; i++ {
-		require.NoError(t, tx.Insert("t", RowID(i), Row{Uint64(uint64(i))}))
+		require.NoError(t, tx.Insert(ctx, "t", RowID(i), Row{Uint64(uint64(i))}))
 	}
 	_, err = tx.Commit(ctx)
 	require.NoError(t, err)

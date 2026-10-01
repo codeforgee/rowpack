@@ -37,6 +37,8 @@ const (
 	TypeTime     Type = format.TypeTime
 	TypeDateTime Type = format.TypeDateTime
 	TypeDecimal  Type = format.TypeDecimal
+
+	TypeDateTimeTZ Type = format.TypeDateTimeTZ
 )
 
 // Date is a calendar date expressed as days since the Unix epoch.
@@ -128,4 +130,8 @@ type Block struct {
 	MaxRowID    RowID // exclusive
 	RawBytes    uint32
 	StoredBytes uint32
+	// RawCRC32C is the CRC of the uncompressed block payload, recorded at
+	// write time. Two blocks of identical content written with identical
+	// settings carry identical CRCs, which lets callers skip unread content.
+	RawCRC32C uint32
 }

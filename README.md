@@ -49,7 +49,7 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// basePath 不带扩展名，实际文件是 /data/users-backup.rpk
+	// basePath 带不带 .rpk 均可，实际文件是 /data/users-backup.rpk
 	db, err := rowpack.Create("/data/users-backup", rowpack.Options{})
 	if err != nil {
 		log.Fatal(err)
@@ -137,8 +137,8 @@ changes = changes[:0]
 | **TypedTuple** | 按 Schema 顺序编码的行负载，NULL 用位图表示 |
 | **NS / 地址** | 表归属命名空间（默认 `user`）：默认 ns 用裸名 `"users"`，其他 ns 加前缀 `"public.users"` |
 
-支持 17 种列类型：`bool`、`int8`–`int64`、`uint8`–`uint64`、`float32/64`、`string`、`bytes`、
-`date`、`time`、`datetime`、`decimal`。
+支持 18 种列类型：`bool`、`int8`–`int64`、`uint8`–`uint64`、`float32/64`、`string`、`bytes`、
+`date`、`time`、`datetime`、`datetime_tz`（UTC 瞬时 + 原始时区偏移，12 B）、`decimal`。
 
 ## API 导览
 
@@ -148,7 +148,12 @@ db.Begin(ctx, parent)              // NoParent → FULL；快照 ID 或 Latest �
 tx.DefineTable(name, cols)         // 默认 ns；DefineTableIn 可指定 ns
 tx.Insert / tx.Update / tx.Delete  // 流式逐行
 tx.ApplyBatch([]Change)            // 批量，按顺序消费
-tx.SetMeta([]byte)                 // 每快照一个 opaque 元信息块（可选）
+tx.SetMeta([]byte)                 // 每快照一个 opaque 元信息块（可选；沿父链最近者生效）
+
+// —— 物理段目录 ——
+// SealTable 把当前批次封成独立块；Blocks 零块 I/O 给出每段的 RowID 区间
+// （MinRowID 含、MaxRowID 不含，相邻段首尾相接），配合 ranged Scan 逐段读取：
+spans, _ := db.Blocks(ctx, snap, "users")           // []Block{BlockID, MinRowID, MaxRowID, ItemCount, …}
 tx.Commit(ctx) → SnapshotID        // 原子发布，读者立即可见
 tx.Rollback()                      // Begin 后即可 defer；已提交则返回 ErrSnapshotCommitted
 
@@ -160,9 +165,11 @@ db.Scan(ctx, snap, table, ScanOptions{Start, End})
 db.Tables / TablesIn / Schema / ListSnapshots / Meta
 
 // —— 运维与诊断 ——
-db.Blocks(ctx, snap, table)             // 块清单：主键范围 + 字节数，零块 I/O
+db.Blocks(ctx, snap, table)             // 段目录：RowID 区间 + 字节数，零块 I/O
 db.ScanBlocks(ctx, snap, table, lo, hi) // 快照自身的原始变更流
-db.Verify(ctx, VerifyQuick | VerifyFull)
+db.Verify(ctx, VerifyQuick|VerifyFull, VerifyScope{})  // 零值=全库；Scope 可限定单快照/表集
+h, _ := rowpack.PeekHeader("/data/users-backup")       // 免密读头：UUID/创建时间/加密标志/KeyID
+_ = h.KeyID                                            // 加密 store 的 KeyID 永远明文可读
 db.Stats()                              // 缓存 / 读放大 / 批量聚合 / 恢复统计
 ```
 
@@ -207,12 +214,23 @@ db, err := rowpack.Create(base, rowpack.Options{
 加密 store 打开时必须提供 Provider，否则返回 `ErrKeyRequired`。详见
 [docs/ENCRYPTION_V1.md](docs/ENCRYPTION_V1.md)。
 
+### 常用值访问器
+
+读入口统一 `(Value, bool)` 之外，提供带默认值的 `Or` 形态，宽表解码减半：
+
+```go
+name := row[1].StringOr("")
+n := row[0].Int64Or(0)
+ts := row[2].DateTimeOr(time.Time{})   // 另有 DateTimeTZOr / BoolOr / Float64Or / BytesOr…
+```
+
 ### 崩溃恢复与校验
 
 - 提交的原子性由 SnapshotFooter 保证；打开时自动截断未提交尾部。
 - 单个 IndexTxn 损坏时，从该快照自身的数据块在内存重建索引，后续快照照常重放。
 - 提交失败且结局未知时（`CommitError.Unknown`），store 以 `ErrMustReopen` 拒绝新写入，
-  重新打开后由恢复流程对齐视图；读不受影响。
+  重新打开后由恢复流程对齐视图；读不受影响。运维动作固定为：`Close()` → `Open()` →
+  `ListSnapshots()` 确认最后一次提交是否可见，再决定重放或丢弃。
 - `Verify` Quick 档校验头、索引、Footer 与父链；Full 档额外解压每个块并逐行验证。
 
 ## 命令行工具

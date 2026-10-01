@@ -248,7 +248,7 @@ func TestCreateSingle(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "store.rpk")
 
-	err := CreateSingle(path, []byte("HEADER"))
+	err := CreateSingle(path, []byte("HEADER"), false)
 	require.NoError(t, err, "CreateSingle")
 	b, err := os.ReadFile(path)
 	require.NoError(t, err, "ReadFile")
@@ -256,12 +256,12 @@ func TestCreateSingle(t *testing.T) {
 		t.Fatalf("header persisted %q, want %q", b, "HEADER")
 	}
 
-	require.Error(t, CreateSingle(path, []byte("X")), "second CreateSingle on existing file succeeded")
+	require.Error(t, CreateSingle(path, []byte("X"), false), "second CreateSingle on existing file succeeded")
 }
 
 func TestCreateSingleUnwritableDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing", "store.rpk")
-	require.Error(t, CreateSingle(path, []byte("HEADER")), "CreateSingle in missing dir succeeded")
+	require.Error(t, CreateSingle(path, []byte("HEADER"), false), "CreateSingle in missing dir succeeded")
 	if Exists(path) {
 		t.Fatal("partial file left behind after failed create")
 	}

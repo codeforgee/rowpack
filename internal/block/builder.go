@@ -118,6 +118,10 @@ func NewRowsBuilder(snapshotID uint64, tableID uint32, cfg Config) *RowsBuilder 
 // SetPageSize overrides the default page target. It must be called before the
 // first Add while the current page is still empty; a page never exceeds the
 // enclosing block target.
+// Len returns the number of records accumulated into the current (not yet
+// flushed) block.
+func (b *RowsBuilder) Len() int { return len(b.entries) }
+
 func (b *RowsBuilder) SetPageSize(n int) {
 	if n <= 0 {
 		return

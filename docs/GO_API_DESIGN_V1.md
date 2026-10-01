@@ -22,7 +22,7 @@ func Create(basePath string, opts Options) (*Store, error)
 func Open(basePath string, opts Options) (*Store, error)
 ```
 
-不公开格式选择选项；`Create` 固定写出 v1 Magic/Major（`ROWPACK1`/1）。`basePath` 不带扩展名，
+不公开格式选择选项；`Create` 固定写出 v1 Magic/Major（`ROWPACK1`/1）。`basePath` 带不带 `.rpk` 扩展名均可（多余扩展名自动剥离），
 实际文件为 `<basePath>.rpk`。加密只在 `Create` 时确定，`Open` 必须能提供同一 `KeyProvider`。
 
 ### Options

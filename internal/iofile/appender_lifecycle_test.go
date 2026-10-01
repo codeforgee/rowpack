@@ -127,9 +127,9 @@ func TestViewRemapsAfterGrowth(t *testing.T) {
 func TestCreateSingleNeverDestroysExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "store.rpk")
-	err := CreateSingle(path, []byte("HEADER"))
+	err := CreateSingle(path, []byte("HEADER"), false)
 	require.NoError(t, err, "CreateSingle")
-	err = CreateSingle(path, []byte("X"))
+	err = CreateSingle(path, []byte("X"), false)
 	require.Error(t, err, "CreateSingle over an existing file must fail")
 	require.Contains(t, err.Error(), "create store file")
 	b, err := os.ReadFile(path)
@@ -141,7 +141,7 @@ func TestCreateSingleNeverDestroysExistingFile(t *testing.T) {
 	dpath := filepath.Join(dir, "adir")
 	err = os.Mkdir(dpath, 0o755)
 	require.NoError(t, err, "mkdir")
-	require.Error(t, CreateSingle(dpath, []byte("X")), "CreateSingle onto a directory must fail")
+	require.Error(t, CreateSingle(dpath, []byte("X"), false), "CreateSingle onto a directory must fail")
 	if fi, err := os.Stat(dpath); err != nil || !fi.IsDir() {
 		t.Fatalf("directory damaged by a failed create: %v %v", fi, err)
 	}

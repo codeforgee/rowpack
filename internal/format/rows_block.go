@@ -19,7 +19,7 @@ import (
 // read only pulls the one page it needs. Each page's stored bytes are
 // compressed (and optionally AES-GCM sealed) as their own unit; PageCRC32C
 // covers the uncompressed page and the AEAD tag authenticates the stored
-// bytes, so the block has no whole-payload raw CRC anymore.
+// bytes.
 //
 // The outer BlockHeader keeps aggregate totals: RawSize = sum of page raw
 // sizes, StoredSize = Bytes of this container, RawCRC32C is repurposed as the
@@ -36,12 +36,12 @@ const (
 )
 
 // RowsBlockHeader is the fixed 24-byte descriptor of a Rows block page
-// container. The directory immediately follows it.
+// container. The directory immediately follows it; the stored pages close
+// the container.
 type RowsBlockHeader struct {
 	PageCount      uint32
 	DirectoryBytes uint32
 	TotalRecords   uint32 // == block ItemCount
-	Reserved       uint32
 }
 
 // Size returns the serialized size.

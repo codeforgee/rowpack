@@ -162,7 +162,7 @@ func verify(ctx context.Context, base string, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer db.Close()
-	rep, err := db.Verify(ctx, rowpack.VerifyFull)
+	rep, err := db.Verify(ctx, rowpack.VerifyFull, rowpack.VerifyScope{})
 	if err != nil {
 		fmt.Fprintln(stderr, "verify:", err)
 		return &ExitError{Code: ExitFailure, Err: err}

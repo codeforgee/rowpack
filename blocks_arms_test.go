@@ -23,7 +23,7 @@ func TestBlocksReportClosed(t *testing.T) {
 	db := armCommittedStore(t)
 	require.NoError(t, db.Close())
 
-	_, err := db.Blocks(ctx, 1, "t")
+	_, err := db.Blocks(1, "t")
 	require.ErrorIs(t, err, ErrClosed)
 
 	_, err = db.ScanBlocks(ctx, 1, "t", 0, 1)
@@ -64,7 +64,6 @@ func TestScanBlocksRejectsEmptyRange(t *testing.T) {
 //
 // Reached white-box: the writer never commits a rows block without its rows.
 func TestBlocksEmptyRangeForUnindexedBlock(t *testing.T) {
-	ctx := context.Background()
 	db := armCommittedStore(t)
 	publishCraftedView(t, db, 2, 1, func(b *index.Builder) {
 		require.NoError(t, b.AddBlock(format.BlockIndexEntry{
@@ -80,7 +79,7 @@ func TestBlocksEmptyRangeForUnindexedBlock(t *testing.T) {
 		}))
 	})
 
-	blocks, err := db.Blocks(ctx, 2, "t")
+	blocks, err := db.Blocks(2, "t")
 	require.NoError(t, err)
 	require.Len(t, blocks, 1)
 	require.Equal(t, uint64(123456), blocks[0].BlockID)

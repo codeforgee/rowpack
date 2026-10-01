@@ -185,8 +185,8 @@ func writeNsStore(t *testing.T, base string) {
 	require.NoError(t, tx.DefineTable("plain", cols))
 	require.NoError(t, tx.DefineTableIn("secret", "hidden", cols))
 	for i := rowpack.RowID(1); i <= 3; i++ {
-		require.NoError(t, tx.Insert("plain", i, rowpack.Row{rowpack.Uint64(uint64(i)), rowpack.String("pl-" + itoa(i))}))
-		require.NoError(t, tx.Insert("secret.hidden", i, rowpack.Row{rowpack.Uint64(uint64(i)), rowpack.String("shh-" + itoa(i))}))
+		require.NoError(t, tx.Insert(ctx, "plain", i, rowpack.Row{rowpack.Uint64(uint64(i)), rowpack.String("pl-" + itoa(i))}))
+		require.NoError(t, tx.Insert(ctx, "secret.hidden", i, rowpack.Row{rowpack.Uint64(uint64(i)), rowpack.String("shh-" + itoa(i))}))
 	}
 	_, err = tx.Commit(ctx)
 	require.NoError(t, err)

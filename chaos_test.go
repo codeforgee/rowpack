@@ -303,7 +303,7 @@ func chaosOnce(t *testing.T, seed int64, opts Options) {
 		id := nextID
 		nextID++
 		row := chaosRow(r, cols)
-		require.NoError(t, tx.Insert("t", id, row))
+		require.NoError(t, tx.Insert(ctx, "t", id, row))
 		live[id] = row
 	}
 	commit(tx, 120)
@@ -327,7 +327,7 @@ func chaosOnce(t *testing.T, seed int64, opts Options) {
 					continue
 				}
 				id := ids[r.Intn(len(ids))]
-				require.NoError(t, tx.Delete("t", id))
+				require.NoError(t, tx.Delete(ctx, "t", id))
 				delete(live, id)
 				touched[id] = true
 				records++
@@ -335,7 +335,7 @@ func chaosOnce(t *testing.T, seed int64, opts Options) {
 				id := nextID
 				nextID++
 				row := chaosRow(r, cols)
-				require.NoError(t, tx.Insert("t", id, row))
+				require.NoError(t, tx.Insert(ctx, "t", id, row))
 				live[id] = row
 				touched[id] = true
 				records++
@@ -345,7 +345,7 @@ func chaosOnce(t *testing.T, seed int64, opts Options) {
 				}
 				id := ids[r.Intn(len(ids))]
 				row := chaosRow(r, cols)
-				require.NoError(t, tx.Update("t", id, row))
+				require.NoError(t, tx.Update(ctx, "t", id, row))
 				live[id] = row
 				touched[id] = true
 				records++
@@ -359,7 +359,7 @@ func chaosOnce(t *testing.T, seed int64, opts Options) {
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", cols))
 	for id, row := range live {
-		require.NoError(t, tx.Insert("t", id, row))
+		require.NoError(t, tx.Insert(ctx, "t", id, row))
 	}
 	commit(tx, len(live))
 
@@ -380,7 +380,7 @@ func chaosOnce(t *testing.T, seed int64, opts Options) {
 		}
 		id := ids[r.Intn(len(ids))]
 		row := chaosRow(r, cols)
-		require.NoError(t, tx.Update("t", id, row))
+		require.NoError(t, tx.Update(ctx, "t", id, row))
 		live[id] = row
 		touched[id] = true
 		records++
@@ -453,7 +453,7 @@ func chaosOnce(t *testing.T, seed int64, opts Options) {
 			}
 		}
 		// ScanBlocks: record counts per snapshot's own txn.
-		blks, err := db.Blocks(ctx, m.id, "t")
+		blks, err := db.Blocks(m.id, "t")
 		require.NoError(t, err)
 		total := 0
 		for _, b := range blks {
@@ -480,7 +480,7 @@ func chaosOnce(t *testing.T, seed int64, opts Options) {
 			bit.Close()
 		}
 		// Full structural verification.
-		_, err = db.Verify(ctx, VerifyFull)
+		_, err = db.Verify(ctx, VerifyFull, VerifyScope{})
 		require.NoError(t, err)
 	}
 

@@ -19,6 +19,7 @@ const (
 	ColColumnType uint16 = 3 // 规范类型字符串（uint64/string/decimal…）
 	ColNullable   uint16 = 4 // 规范 YES/NO
 	ColDataScale  uint16 = 5 // Sint，仅 Decimal 非零
+	ColPrimaryKey uint16 = 6 // Sint，1 = 该列属于主键（声明序即 PK 序）；缺省 0
 )
 
 // str is the String wire type; sint marks Sint.
@@ -35,6 +36,6 @@ var CoreFieldSchemas = map[uint32]KnownFieldSchema{
 	},
 	uint32(format.RecordColumn): {
 		ColColumnName: str(), ColColumnType: str(), ColNullable: str(),
-		ColColumnID: sint(), ColDataScale: sint(),
+		ColColumnID: sint(), ColDataScale: sint(), ColPrimaryKey: sint(),
 	},
 }

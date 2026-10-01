@@ -26,7 +26,7 @@ func TestGoldenManifest(t *testing.T) {
 		// overrides it, the empty DELTA inherits), so they lock that block
 		// kind's bytes and its parent-chain resolution too.
 		"empty-store.rpk":            "359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401",
-		"rows-payload-all-types.bin": "ae6f94f72c1b08f8c0a6727c97cb57cfad18b6f0ffc732a625db23be907b8769",
+		"rows-payload-all-types.bin": "e95a2724cb1d8b486ee7934b5113cb328589243fdd814869ea5401692ec032a0",
 		"full-delta-store.rpk":       "1ab8989b42de83cbf0a25e18cd45302980c84e2db50473e3ec2328a2cad65b39",
 		"encrypted-store.rpk":        "e7b0f8a715b6af17b0bb7bbe4d7de75981243cd6b755fb6d4638403e4816bf14",
 	}
@@ -84,7 +84,7 @@ func buildFullDeltaStore(t *testing.T, base string) {
 	w.DefineTable("empty", []Column{{Name: "x", Type: TypeInt64}})
 	w.DefineTable("oversize", []Column{{Name: "blob", Type: TypeBytes}})
 	for i := uint64(1); i <= 30; i++ {
-		if err := w.Insert("users", i, Row{
+		if err := w.Insert(context.Background(), "users", i, Row{
 			Uint64(i), String(fmt.Sprintf("user-%d", i)), Bool(i%2 == 0),
 			DecimalValue(Decimal{Unscaled: bigI(int64(i * 100)), Scale: 2}),
 		}); err != nil {
@@ -96,7 +96,7 @@ func buildFullDeltaStore(t *testing.T, base string) {
 	for i := range big {
 		big[i] = byte(i)
 	}
-	require.NoError(t, w.Insert("oversize", 1, Row{Bytes(big)}))
+	require.NoError(t, w.Insert(context.Background(), "oversize", 1, Row{Bytes(big)}))
 	// Snapshot meta block: one opaque blob per snapshot. The payload carries a
 	// NUL and an invalid UTF-8 byte on purpose — the golden must reproduce
 	// them byte for byte, which is exactly what "the engine does not parse
@@ -107,9 +107,9 @@ func buildFullDeltaStore(t *testing.T, base string) {
 	// DELTA: update + delete + insert. Its own meta replaces the FULL's for
 	// this snapshot and everything below it.
 	d, _ := db.Begin(context.Background(), full)
-	require.NoError(t, d.Update("users", 2, Row{Uint64(2), String("updated-2"), Bool(true), DecimalValue(Decimal{Unscaled: bigI(777), Scale: 2})}))
-	require.NoError(t, d.Delete("users", 3))
-	require.NoError(t, d.Insert("users", 31, Row{Uint64(31), String("new-31"), Bool(false), DecimalValue(Decimal{Unscaled: bigI(1), Scale: 2})}))
+	require.NoError(t, d.Update(context.Background(), "users", 2, Row{Uint64(2), String("updated-2"), Bool(true), DecimalValue(Decimal{Unscaled: bigI(777), Scale: 2})}))
+	require.NoError(t, d.Delete(context.Background(), "users", 3))
+	require.NoError(t, d.Insert(context.Background(), "users", 31, Row{Uint64(31), String("new-31"), Bool(false), DecimalValue(Decimal{Unscaled: bigI(1), Scale: 2})}))
 	require.NoError(t, d.SetMeta(goldenMetaDelta))
 	delta, err := d.Commit(context.Background())
 	require.NoError(t, err)

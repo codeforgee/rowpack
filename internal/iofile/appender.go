@@ -130,8 +130,15 @@ func Exists(path string) bool {
 // CreateSingle creates the single store file with exclusive create, writes
 // its header, and syncs it. On any failure it removes the file so a partially
 // created store never survives.
-func CreateSingle(dataPath string, dataHeader []byte) error {
-	df, err := os.OpenFile(dataPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+// CreateSingle creates the store file holding dataHeader. With truncate the
+// call replaces an existing file atomically through O_TRUNC instead of
+// failing on it; without it an existing file is an error (O_EXCL).
+func CreateSingle(dataPath string, dataHeader []byte, truncate bool) error {
+	flags := os.O_RDWR | os.O_CREATE | os.O_EXCL
+	if truncate {
+		flags = os.O_RDWR | os.O_CREATE | os.O_TRUNC
+	}
+	df, err := os.OpenFile(dataPath, flags, 0o644)
 	if err != nil {
 		return fmt.Errorf("rowpack: create store file: %w", err)
 	}

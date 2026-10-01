@@ -153,10 +153,13 @@ func Create(basePath string, opts Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	dataPath, err := dataPathOf(basePath)
+	truncate := opts.Truncate
+	base, err := baseOf(basePath)
 	if err != nil {
 		return nil, err
 	}
+	basePath = base
+	dataPath := basePath + ".rpk"
 	uuid, err := effectiveUUID()
 	if err != nil {
 		return nil, fmt.Errorf("rowpack: generate uuid: %w", err)
@@ -187,7 +190,7 @@ func Create(basePath string, opts Options) (*Store, error) {
 	if err := dataHdr.MarshalTo(dh[:]); err != nil {
 		return nil, err
 	}
-	if err := iofile.CreateSingle(dataPath, dh[:]); err != nil {
+	if err := iofile.CreateSingle(dataPath, dh[:], truncate); err != nil {
 		return nil, err
 	}
 	s, err := openStore(basePath, dataPath, resolved, uuid, dataHdr, false)
@@ -207,10 +210,12 @@ func Open(basePath string, opts Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	dataPath, err := dataPathOf(basePath)
+	base, err := baseOf(basePath)
 	if err != nil {
 		return nil, err
 	}
+	basePath = base
+	dataPath := basePath + ".rpk"
 	if !iofile.Exists(dataPath) {
 		return nil, fmt.Errorf("%w: missing store file %s", ErrNotFound, dataPath)
 	}
@@ -417,12 +422,24 @@ func le32(b []byte) uint32 {
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 }
 
-// dataPathOf resolves the single store file path. Base paths carrying a
-// .rpk/.rpi extension are rejected so a store never ends up at
-// double-extension paths.
+// dataPathOf resolves the single store file path. Base paths may be passed
+// with or without the .rpk extension (a trailing .rpk or .rpi is stripped),
+// so callers can hand over either the logical store name or the physical
+// file; the extension is appended exactly once.
 func dataPathOf(basePath string) (string, error) {
-	if strings.HasSuffix(basePath, ".rpk") || strings.HasSuffix(basePath, ".rpi") {
-		return "", fmt.Errorf("%w: base path %q must not carry an extension", ErrInvalidPath, basePath)
+	base, err := baseOf(basePath)
+	if err != nil {
+		return "", err
 	}
-	return filepath.Clean(basePath) + ".rpk", nil
+	return base + ".rpk", nil
+}
+
+// baseOf resolves the logical base path: filepath.Clean with a trailing
+// .rpk/.rpi extension stripped.
+func baseOf(basePath string) (string, error) {
+	base := strings.TrimSuffix(strings.TrimSuffix(filepath.Clean(basePath), ".rpi"), ".rpk")
+	if base == "" {
+		return "", fmt.Errorf("%w: base path %q is empty", ErrInvalidPath, basePath)
+	}
+	return base, nil
 }

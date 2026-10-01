@@ -417,7 +417,7 @@ v1 直接替代早期双文件草案：`Create` 只创建单个 `.rpk`；`Open` 
 | RowDirectoryEntry | 24 |
 | MetaPayloadHeader | 32 |
 | MetaDirectoryEntry | 32 |
-| RowsBlockHeader | 24 |
+| RowsBlockHeader | 32 |
 | RowsPageDirEntry | 56 |
 | IndexTxnHeader | 80 |
 | IndexTxnFooter | 80 |

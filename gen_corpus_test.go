@@ -40,7 +40,7 @@ func TestGenerateFuzzCorpus(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 1; i <= 12; i++ {
-		if err := tx.Insert("users", RowID(i), Row{
+		if err := tx.Insert(ctx, "users", RowID(i), Row{
 			Uint64(uint64(i)),
 			String(fmt.Sprintf("user-%d", i)),
 			Float64(float64(i) * 1.5),
@@ -55,10 +55,10 @@ func TestGenerateFuzzCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tx2.Delete("users", 3); err != nil {
+	if err := tx2.Delete(ctx, "users", 3); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx2.Update("users", 5, Row{Uint64(5), String("updated"), Float64(9.75)}); err != nil {
+	if err := tx2.Update(ctx, "users", 5, Row{Uint64(5), String("updated"), Float64(9.75)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx2.Commit(ctx); err != nil {

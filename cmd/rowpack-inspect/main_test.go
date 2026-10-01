@@ -28,7 +28,7 @@ func newStore(t *testing.T) string {
 		{Name: "name", Type: rowpack.TypeString},
 	}))
 	for i := 1; i <= 3; i++ {
-		require.NoError(t, w.Insert("users", rowpack.RowID(i),
+		require.NoError(t, w.Insert(ctx, "users", rowpack.RowID(i),
 			rowpack.Row{rowpack.Uint64(uint64(i)), rowpack.String("user-" + string(rune('0'+i)))}))
 	}
 	_, err = w.Commit(ctx)

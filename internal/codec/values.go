@@ -37,6 +37,8 @@ const (
 	TypeTime     Type = format.TypeTime
 	TypeDateTime Type = format.TypeDateTime
 	TypeDecimal  Type = format.TypeDecimal
+
+	TypeDateTimeTZ Type = format.TypeDateTimeTZ
 )
 
 // Date is a calendar date as days since the Unix epoch.
@@ -67,8 +69,9 @@ type Value struct {
 	null bool
 
 	b   bool
-	i   int64  // Int*, Date, Time, DateTime
-	u   uint64 // Uint*
+	i   int64  // Int*, Date, Time; DateTime/DateTimeTZ Unix seconds
+	u   uint64 // Uint*; DateTime/DateTimeTZ sub-second nanoseconds
+	tz  int32  // DateTimeTZ: zone offset in seconds east of UTC
 	f64 float64
 	f32 float32
 	s   string
@@ -135,10 +138,29 @@ func DateValue(v Date) Value { return Value{typ: TypeDate, i: int64(v)} }
 func TimeValue(v TimeOfDay) Value { return Value{typ: TypeTime, i: int64(v)} }
 
 // DateTime converts t to UTC, strips the monotonic clock and location, and
-// returns a DateTime value preserving nanosecond precision.
+// returns a DateTime value preserving nanosecond precision. Unlike UnixNano,
+// the seconds/nanoseconds split keeps the full MySQL DATETIME range
+// (year 1000..9999) and far beyond, with no int64-nanosecond overflow.
 func DateTime(t time.Time) Value {
 	t = t.UTC().Round(0)
-	return Value{typ: TypeDateTime, i: t.UnixNano()}
+	return Value{typ: TypeDateTime, i: t.Unix(), u: uint64(t.Nanosecond())}
+}
+
+// DateTimeTZ returns a timezone-aware DateTime value preserving the instant
+// and the original zone offset of t (seconds/nanoseconds split, no overflow).
+func DateTimeTZ(t time.Time) Value {
+	t = t.Round(0)
+	_, off := t.Zone()
+	return Value{typ: TypeDateTimeTZ, i: t.Unix(), u: uint64(t.Nanosecond()), tz: int32(off)}
+}
+
+// DateTimeTZValue returns the time value with its original zone offset and
+// whether the accessor is valid.
+func (v Value) DateTimeTZValue() (time.Time, bool) {
+	if v.null || v.typ != TypeDateTimeTZ {
+		return time.Time{}, false
+	}
+	return time.Unix(v.i, int64(v.u)).In(time.FixedZone("", int(v.tz))), true
 }
 
 // DecimalValue returns a decimal value; v.Unscaled is copied.
@@ -259,6 +281,86 @@ func (v Value) Bytes() ([]byte, bool) {
 	return cp, true
 }
 
+// ---- fallback accessors ----
+//
+// The Or forms pair an accessor with a default, collapsing the two-value
+// decode idiom into one call for wide-table decoding. NULL and type mismatch
+// both yield def.
+
+// BoolOr returns the boolean value, or def for NULL or a type mismatch.
+func (v Value) BoolOr(def bool) bool {
+	if b, ok := v.Bool(); ok {
+		return b
+	}
+	return def
+}
+
+// Int64Or returns the int64 value, or def for NULL or a type mismatch.
+func (v Value) Int64Or(def int64) int64 {
+	if n, ok := v.Int64(); ok {
+		return n
+	}
+	return def
+}
+
+// Uint64Or returns the uint64 value, or def for NULL or a type mismatch.
+func (v Value) Uint64Or(def uint64) uint64 {
+	if n, ok := v.Uint64(); ok {
+		return n
+	}
+	return def
+}
+
+// Float32Or returns the float32 value, or def for NULL or a type mismatch.
+func (v Value) Float32Or(def float32) float32 {
+	if f, ok := v.Float32(); ok {
+		return f
+	}
+	return def
+}
+
+// Float64Or returns the float64 value, or def for NULL or a type mismatch.
+func (v Value) Float64Or(def float64) float64 {
+	if f, ok := v.Float64(); ok {
+		return f
+	}
+	return def
+}
+
+// StringOr returns the string value, or def for NULL or a type mismatch.
+func (v Value) StringOr(def string) string {
+	if s, ok := v.String(); ok {
+		return s
+	}
+	return def
+}
+
+// BytesOr returns a copy of the bytes value, or def for NULL or a type
+// mismatch.
+func (v Value) BytesOr(def []byte) []byte {
+	if b, ok := v.Bytes(); ok {
+		return b
+	}
+	return def
+}
+
+// DateTimeOr returns the time value, or def for NULL or a type mismatch.
+func (v Value) DateTimeOr(def time.Time) time.Time {
+	if t, ok := v.DateTimeValue(); ok {
+		return t
+	}
+	return def
+}
+
+// DateTimeTZOr returns the timezone-aware time value, or def for NULL or a
+// type mismatch.
+func (v Value) DateTimeTZOr(def time.Time) time.Time {
+	if t, ok := v.DateTimeTZValue(); ok {
+		return t
+	}
+	return def
+}
+
 // Date returns the date value and whether the accessor is valid.
 func (v Value) Date() (Date, bool) {
 	if v.null || v.typ != TypeDate {
@@ -280,7 +382,7 @@ func (v Value) DateTimeValue() (time.Time, bool) {
 	if v.null || v.typ != TypeDateTime {
 		return time.Time{}, false
 	}
-	return time.Unix(0, v.i).UTC(), true
+	return time.Unix(v.i, int64(v.u)).UTC(), true
 }
 
 // Decimal returns the decimal value (unscaled copied) and whether the

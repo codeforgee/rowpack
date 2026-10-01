@@ -52,7 +52,7 @@ func armCommittedPlainStore(t *testing.T) *Store {
 	t.Cleanup(func() { _ = db.Close() })
 	tx := armTx(t, db, NoParent)
 	require.NoError(t, tx.DefineTable("t", armCols))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(context.Background(), "t", 1, Row{Uint64(1)}))
 	_, err = tx.Commit(context.Background())
 	require.NoError(t, err)
 	return db

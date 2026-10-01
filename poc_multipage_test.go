@@ -26,7 +26,7 @@ func setupMultiPage(t *testing.T) (*Store, SnapshotID, int) {
 	}))
 	const n = 200
 	for i := 0; i < n; i++ {
-		require.NoError(t, tx.Insert("t", RowID(i+1), Row{
+		require.NoError(t, tx.Insert(ctx, "t", RowID(i+1), Row{
 			Uint64(uint64(i + 1)),
 			String(fmt.Sprintf("payload-%04d-%s", i, "0123456789abcdef0123456789abcdef")),
 		}))
@@ -59,7 +59,7 @@ func TestScanBlocksMultiPageBlock(t *testing.T) {
 	require.Equal(t, n, merged)
 
 	// Count total records across all blocks; FULL has no tombstones.
-	blks, err := db.Blocks(ctx, snap, "t")
+	blks, err := db.Blocks(snap, "t")
 	require.NoError(t, err)
 	require.NotEmpty(t, blks)
 	total := 0
@@ -133,7 +133,7 @@ func TestScanStartSeekMultiLayer(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
 	for i := 1; i <= 100; i++ {
-		require.NoError(t, tx.Insert("t", RowID(i), Row{Uint64(uint64(i))}))
+		require.NoError(t, tx.Insert(ctx, "t", RowID(i), Row{Uint64(uint64(i))}))
 	}
 	full, err := tx.Commit(ctx)
 	require.NoError(t, err)
@@ -143,13 +143,13 @@ func TestScanStartSeekMultiLayer(t *testing.T) {
 	tx2, err := db.Begin(ctx, full)
 	require.NoError(t, err)
 	for i := 1; i <= 20; i++ {
-		require.NoError(t, tx2.Delete("t", RowID(i)))
+		require.NoError(t, tx2.Delete(ctx, "t", RowID(i)))
 	}
 	for i := 21; i <= 30; i++ {
-		require.NoError(t, tx2.Update("t", RowID(i), Row{Uint64(uint64(i) * 10)}))
+		require.NoError(t, tx2.Update(ctx, "t", RowID(i), Row{Uint64(uint64(i) * 10)}))
 	}
 	for i := 201; i <= 210; i++ {
-		require.NoError(t, tx2.Insert("t", RowID(i), Row{Uint64(uint64(i))}))
+		require.NoError(t, tx2.Insert(ctx, "t", RowID(i), Row{Uint64(uint64(i))}))
 	}
 	delta, err := tx2.Commit(ctx)
 	require.NoError(t, err)
@@ -238,7 +238,7 @@ func TestOversizedRowMultiPage(t *testing.T) {
 		{Name: "payload", Type: TypeString},
 	}))
 	for id, p := range rows {
-		require.NoError(t, tx.Insert("t", id, Row{Uint64(uint64(id)), String(p)}))
+		require.NoError(t, tx.Insert(ctx, "t", id, Row{Uint64(uint64(id)), String(p)}))
 	}
 	snap, err := tx.Commit(ctx)
 	require.NoError(t, err)
@@ -303,7 +303,7 @@ func TestCompressionNoneRoundTrip(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 	snap, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
@@ -312,7 +312,7 @@ func TestCompressionNoneRoundTrip(t *testing.T) {
 	v, _ := row[0].Uint64()
 	require.Equal(t, uint64(1), v)
 
-	rep, err := db.Verify(ctx, VerifyFull)
+	rep, err := db.Verify(ctx, VerifyFull, VerifyScope{})
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), rep.RowsChecked)
 }

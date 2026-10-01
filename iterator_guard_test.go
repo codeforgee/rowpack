@@ -18,7 +18,7 @@ func TestScanCtxCancel(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "a", Type: TypeInt64}}))
 	for i := 1; i <= 100; i++ {
-		require.NoError(t, tx.Insert("t", RowID(i), Row{Int64(int64(i))}))
+		require.NoError(t, tx.Insert(ctx, "t", RowID(i), Row{Int64(int64(i))}))
 	}
 	_, err = tx.Commit(ctx)
 	require.NoError(t, err)

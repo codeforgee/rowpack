@@ -46,7 +46,10 @@ type Limits struct {
 // Options configure a Store at Create or Open. Zero values are replaced by
 // defaults in Create/Open; new fields must remain zero-value safe.
 type Options struct {
-	ReadOnly         bool
+	ReadOnly bool
+	// Truncate replaces an existing store file at Create instead of failing
+	// with "file exists" (backup-style overwrite). Open ignores it.
+	Truncate         bool
 	BlockSize        int
 	PageSize         int
 	Compression      Compression

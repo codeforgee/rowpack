@@ -54,13 +54,13 @@ func TestAllTypesRoundTrip(t *testing.T) {
 		DecimalValue(Decimal{Unscaled: bigDec, Scale: 6}),
 		Null(),
 	}
-	require.NoError(t, w.Insert("t", 1, row))
+	require.NoError(t, w.Insert(ctx, "t", 1, row))
 
 	// NaN and ±Inf bit patterns must be preserved exactly.
 	row[0] = Uint64(2)
 	row[10] = Float32(float32(math.NaN()))
 	row[11] = Float64(math.Inf(-1))
-	require.NoError(t, w.Insert("t", 2, row))
+	require.NoError(t, w.Insert(ctx, "t", 2, row))
 	snap, err := w.Commit(ctx)
 	require.NoError(t, err)
 
@@ -138,7 +138,7 @@ func TestDecimalRoundTrip(t *testing.T) {
 			ctx := context.Background()
 			w, _ := db.Begin(ctx, NoParent)
 			require.NoError(t, w.DefineTable("d", []Column{{Name: "v", Type: TypeDecimal, Scale: 0}}))
-			require.NoError(t, w.Insert("d", 1, Row{DecimalValue(Decimal{Unscaled: new(big.Int).Set(u), Scale: 0})}))
+			require.NoError(t, w.Insert(ctx, "d", 1, Row{DecimalValue(Decimal{Unscaled: new(big.Int).Set(u), Scale: 0})}))
 			snap, err := w.Commit(ctx)
 			require.NoError(t, err)
 			got, err := db.Get(ctx, snap, "d", 1, nil)
@@ -206,7 +206,7 @@ func TestReadOnlyOpen(t *testing.T) {
 	ctx := context.Background()
 	w, _ := db.Begin(ctx, NoParent)
 	require.NoError(t, w.DefineTable("t", []Column{{Name: "v", Type: TypeUint64}}))
-	require.NoError(t, w.Insert("t", 1, Row{Uint64(100)}))
+	require.NoError(t, w.Insert(ctx, "t", 1, Row{Uint64(100)}))
 	snap, _ := w.Commit(ctx)
 	require.NoError(t, db.Close())
 

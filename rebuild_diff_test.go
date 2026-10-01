@@ -132,14 +132,14 @@ func buildRichStore(t *testing.T, base string) []SnapshotID {
 	require.NoError(t, tx.DefineTable("main", cols))
 	require.NoError(t, tx.DefineTableIn("public", "audit", cols))
 	for i := 1; i <= 120; i++ {
-		require.NoError(t, tx.Insert("main", RowID(i), richRow(i, "m")))
+		require.NoError(t, tx.Insert(ctx, "main", RowID(i), richRow(i, "m")))
 	}
 	for i := 1; i <= 40; i++ {
 		row := richRow(i, "a")
 		if i%5 == 0 {
 			row[4] = Null() // 可空列打洞
 		}
-		require.NoError(t, tx.Insert("public.audit", RowID(i), row))
+		require.NoError(t, tx.Insert(ctx, "public.audit", RowID(i), row))
 	}
 	s1, err := tx.Commit(ctx)
 	require.NoError(t, err)
@@ -148,17 +148,17 @@ func buildRichStore(t *testing.T, base string) []SnapshotID {
 	tx2, err := db.Begin(ctx, s1)
 	require.NoError(t, err)
 	for i := 110; i >= 1; i -= 3 {
-		require.NoError(t, tx2.Update("main", RowID(i), richRow(i, "u1")))
+		require.NoError(t, tx2.Update(ctx, "main", RowID(i), richRow(i, "u1")))
 	}
 	// v1 禁止同一快照内重复 RowKey：更新集是 ≡2 (mod 3) 的 id，删除集取 ≡0 (mod 3)。
 	for i := 105; i >= 1; i -= 9 {
-		require.NoError(t, tx2.Delete("main", RowID(i)))
+		require.NoError(t, tx2.Delete(ctx, "main", RowID(i)))
 	}
 	for i := 121; i <= 140; i++ {
-		require.NoError(t, tx2.Insert("main", RowID(i), richRow(i, "n1")))
+		require.NoError(t, tx2.Insert(ctx, "main", RowID(i), richRow(i, "n1")))
 	}
 	for i := 39; i >= 20; i -= 2 {
-		require.NoError(t, tx2.Update("public.audit", RowID(i), richRow(i, "a1")))
+		require.NoError(t, tx2.Update(ctx, "public.audit", RowID(i), richRow(i, "a1")))
 	}
 	s2, err := tx2.Commit(ctx)
 	require.NoError(t, err)
@@ -168,10 +168,10 @@ func buildRichStore(t *testing.T, base string) []SnapshotID {
 	require.NoError(t, err)
 	require.NoError(t, tx3.DefineTableIn("ops", "misc", cols))
 	for i := 200; i <= 215; i++ {
-		require.NoError(t, tx3.Insert("ops.misc", RowID(i), richRow(i, "o")))
+		require.NoError(t, tx3.Insert(ctx, "ops.misc", RowID(i), richRow(i, "o")))
 	}
 	for i := 140; i >= 130; i-- {
-		require.NoError(t, tx3.Delete("main", RowID(i)))
+		require.NoError(t, tx3.Delete(ctx, "main", RowID(i)))
 	}
 	s3, err := tx3.Commit(ctx)
 	require.NoError(t, err)
@@ -186,13 +186,13 @@ func buildRichStore(t *testing.T, base string) []SnapshotID {
 	require.NoError(t, tx4.DefineTableIn("public", "audit", cols))
 	require.NoError(t, tx4.DefineTableIn("ops", "misc", cols))
 	for i := 1; i <= 129; i++ {
-		require.NoError(t, tx4.Insert("main", RowID(i), richRow(i, "ck")))
+		require.NoError(t, tx4.Insert(ctx, "main", RowID(i), richRow(i, "ck")))
 	}
 	for i := 1; i <= 40; i++ {
-		require.NoError(t, tx4.Insert("public.audit", RowID(i), richRow(i, "ca")))
+		require.NoError(t, tx4.Insert(ctx, "public.audit", RowID(i), richRow(i, "ca")))
 	}
 	for i := 200; i <= 215; i++ {
-		require.NoError(t, tx4.Insert("ops.misc", RowID(i), richRow(i, "co")))
+		require.NoError(t, tx4.Insert(ctx, "ops.misc", RowID(i), richRow(i, "co")))
 	}
 	s4, err := tx4.Commit(ctx)
 	require.NoError(t, err)
@@ -225,7 +225,7 @@ func fingerprintStore(t *testing.T, db *Store) string {
 		for _, tb := range tables {
 			addr := Qualify(tb.NS, tb.Name)
 			// Blocks 只列本快照自己事务写出的块：DELTA 未触碰的表没有自己的块。
-			blks, err := db.Blocks(ctx, sn.ID, addr)
+			blks, err := db.Blocks(sn.ID, addr)
 			require.NoError(t, err)
 			for _, b := range blks {
 				fmt.Fprintf(&sb, "  blocks %s #%d items=%d min=%d max=%d raw=%d stored=%d\n",
@@ -312,7 +312,7 @@ func fingerprintStore(t *testing.T, db *Store) string {
 			}
 			fmt.Fprintf(&sb, "  schema %s v%d %s\n", addr, sch.Version, strings.Join(coltxt, ","))
 		}
-		_, err = db.Verify(ctx, VerifyFull)
+		_, err = db.Verify(ctx, VerifyFull, VerifyScope{})
 		require.NoErrorf(t, err, "verify store at snapshot %d", sn.ID)
 	}
 	return sb.String()
@@ -390,7 +390,7 @@ func TestRebuiltIndexMatchesOriginalIndex(t *testing.T) {
 		require.NoError(t, err)
 		owning := 0
 		for _, tb := range tbls {
-			blks, err := db.Blocks(ctx, sn, Qualify(tb.NS, tb.Name))
+			blks, err := db.Blocks(sn, Qualify(tb.NS, tb.Name))
 			require.NoError(t, err)
 			if len(blks) > 0 {
 				owning++

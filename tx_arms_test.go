@@ -34,7 +34,7 @@ func TestApplyRejectsUnknownChangeType(t *testing.T) {
 	tx := armTx(t, db, NoParent)
 	require.NoError(t, tx.DefineTable("t", armCols))
 
-	err := tx.Apply(Change{Type: ChangeType(99), Table: "t", RowID: 1, Row: Row{Uint64(1)}})
+	err := tx.Apply(context.Background(), Change{Type: ChangeType(99), Table: "t", RowID: 1, Row: Row{Uint64(1)}})
 	require.ErrorIs(t, err, ErrInvalidArgument)
 	require.ErrorContains(t, err, "change type")
 }

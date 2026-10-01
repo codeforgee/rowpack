@@ -31,7 +31,7 @@ func TestArenaRotateLargeStrings(t *testing.T) {
 		id := RowID(100 + i) // 与大串独占区间，避免与下面的小串冲突
 		ids = append(ids, id)
 		want[id] = string(big)
-		if err := tx.Insert("t", id, Row{String(want[id])}); err != nil {
+		if err := tx.Insert(ctx, "t", id, Row{String(want[id])}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -40,7 +40,7 @@ func TestArenaRotateLargeStrings(t *testing.T) {
 		id := RowID(i)
 		ids = append(ids, id)
 		want[id] = small
-		if err := tx.Insert("t", id, Row{String(small)}); err != nil {
+		if err := tx.Insert(ctx, "t", id, Row{String(small)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -92,7 +92,7 @@ func TestArenaRotateLargeStrings(t *testing.T) {
 		}
 		rids = append(rids, id)
 		strs = append(strs, string(b))
-		require.NoError(t, tx2.Insert("t", id, Row{String(strs[i])}))
+		require.NoError(t, tx2.Insert(ctx, "t", id, Row{String(strs[i])}))
 	}
 	if _, err := tx2.Commit(ctx); err != nil {
 		t.Fatal(err)

@@ -98,7 +98,7 @@ func TestGetRejectsTombstoneRecord(t *testing.T) {
 	// Commit a real delete: snapshot 2 holds the tombstone record.
 	tx, err := db.Begin(ctx, 1)
 	require.NoError(t, err)
-	require.NoError(t, tx.Delete("t", 1))
+	require.NoError(t, tx.Delete(ctx, "t", 1))
 	_, err = tx.Commit(ctx)
 	require.NoError(t, err)
 

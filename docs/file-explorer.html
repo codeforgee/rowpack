@@ -546,7 +546,7 @@ const hexn = (v,w=8) => '0x' + v.toString(16).toUpperCase().padStart(w,'0');
 /* ---------------- 枚举字典 ---------------- */
 const DICT = {
   comp: {0:'None',1:'Zstd'},
-  kind: {1:'Rows',2:'Metadata'},
+  kind: {1:'Rows',2:'Metadata',3:'SnapshotMeta'},
   styp: {1:'FULL',2:'DELTA'},
   ct:   {1:'Insert',2:'Update',3:'Delete'},
   enc:  {0:'None',1:'TypedTuple'},
@@ -1356,8 +1356,9 @@ function buildRegistry() {
     reg(p('sh'), { label:`SnapshotHeader`, sub:typ, start:t.header.start, end:t.header.end, color:MAPCOL.sh, node:t.header, txn:ti });
     t.blocks.forEach((b, bi) => {
       const kind = b.header.info.kindB;
+      const kindName = kind===1?'Rows':kind===2?'Metadata':kind===3?'SnapshotMeta':String(kind);
       reg(p(`b${bi}`), { label:`块 #${b.header.info.blockID}`,
-        sub:(kind===1?'Rows':'Metadata')+` · 表${b.header.info.tableID} · ${b.header.info.itemCount} 行`,
+        sub:kindName+` · 表${b.header.info.tableID} · ${b.header.info.itemCount} 项`,
         start:b.header.start, end:b.payload.end, color:kind===1?MAPCOL.rows:MAPCOL.meta, node:b.header, block:b, txn:ti });
       const c = b.container;
       if (c) {
@@ -1479,7 +1480,7 @@ function fileSegments() {
     t.blocks.forEach((b, bi) => {
       const be = S.reg[p(`b${bi}`)];
       segs.push({ start:be.start, end:be.end, color:be.color, label:`#${b.header.info.blockID}`, sel:p(`b${bi}`),
-        tip:`块 #${b.header.info.blockID} · ${b.header.info.kindB===1?'Rows':'Metadata'} · 载荷 ${fmtBytes(b.header.info.storedSize)}` });
+        tip:`块 #${b.header.info.blockID} · ${b.header.info.kindB===1?'Rows':b.header.info.kindB===2?'Metadata':'SnapshotMeta'} · 载荷 ${fmtBytes(b.header.info.storedSize)}` });
     });
     if (t.indexTxn) { const ie = S.reg[p('idx')];
       segs.push({ start:ie.start, end:ie.end, color:ie.color, label:'IndexTxn', sel:p('idx'), tip:`IndexTxn · ${t.indexTxn.chunks.length} 分块 + ${t.indexTxn.header.info.pageCount} 索引页` }); }

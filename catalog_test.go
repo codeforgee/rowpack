@@ -114,13 +114,13 @@ func TestCatalog_SystemNamespaceIsolated(t *testing.T) {
 		{Name: "id", Type: rowpack.TypeUint64},
 		{Name: "name", Type: rowpack.TypeString, Nullable: true},
 	}))
-	require.NoError(t, tx.Insert("users", 1, rowpack.Row{rowpack.Uint64(1), rowpack.String("a")}))
+	require.NoError(t, tx.Insert(ctx, "users", 1, rowpack.Row{rowpack.Uint64(1), rowpack.String("a")}))
 	// tableSeq = 1 for users in the catalog, colSeq 1 and 2.
-	require.NoError(t, tx.Insert(catalogObjects, 1,
+	require.NoError(t, tx.Insert(ctx, catalogObjects, 1,
 		objectRow("table", "public", "users", "", 1, false, []byte("CREATE TABLE users(...)"), nil)))
-	require.NoError(t, tx.Insert(catalogColumns, columnRowID(1, 1),
+	require.NoError(t, tx.Insert(ctx, catalogColumns, columnRowID(1, 1),
 		columnRow("users", "id", 1, "bigint", "int64", false, nil, 8, 1, false, nil)))
-	require.NoError(t, tx.Insert(catalogColumns, columnRowID(1, 2),
+	require.NoError(t, tx.Insert(ctx, catalogColumns, columnRowID(1, 2),
 		columnRow("users", "name", 2, "varchar(64)", "string", true, []byte("'anonymous'"), 64, 1, false, nil)))
 	snap, err := tx.Commit(ctx)
 	require.NoError(t, err)
@@ -167,14 +167,14 @@ func TestCatalog_RangeScanByTableSeq(t *testing.T) {
 	require.NoError(t, err)
 	defineCatalog(t, tx)
 	// users => tableSeq 1 (3 columns), orders => tableSeq 2 (2 columns).
-	require.NoError(t, tx.Insert(catalogObjects, 1, objectRow("table", "public", "users", "", 1, false, nil, nil)))
-	require.NoError(t, tx.Insert(catalogObjects, 2, objectRow("table", "public", "orders", "", 1, false, nil, nil)))
+	require.NoError(t, tx.Insert(ctx, catalogObjects, 1, objectRow("table", "public", "users", "", 1, false, nil, nil)))
+	require.NoError(t, tx.Insert(ctx, catalogObjects, 2, objectRow("table", "public", "orders", "", 1, false, nil, nil)))
 	for i, name := range []string{"id", "email", "created_at"} {
-		require.NoError(t, tx.Insert(catalogColumns, columnRowID(1, uint32(i+1)),
+		require.NoError(t, tx.Insert(ctx, catalogColumns, columnRowID(1, uint32(i+1)),
 			columnRow("users", name, uint32(i+1), "bigint", "int64", false, nil, 8, 1, false, nil)))
 	}
 	for i, name := range []string{"id", "total"} {
-		require.NoError(t, tx.Insert(catalogColumns, columnRowID(2, uint32(i+1)),
+		require.NoError(t, tx.Insert(ctx, catalogColumns, columnRowID(2, uint32(i+1)),
 			columnRow("orders", name, uint32(i+1), "bigint", "int64", false, nil, 8, 1, false, nil)))
 	}
 	snap, err := tx.Commit(ctx)
@@ -217,10 +217,10 @@ func TestCatalog_TombstoneAcrossDeltas(t *testing.T) {
 	tx, err := db.Begin(ctx, rowpack.NoParent)
 	require.NoError(t, err)
 	defineCatalog(t, tx)
-	require.NoError(t, tx.Insert(catalogObjects, 1, objectRow("table", "public", "users", "", 1, false, nil, nil)))
-	require.NoError(t, tx.Insert(catalogColumns, columnRowID(1, 1),
+	require.NoError(t, tx.Insert(ctx, catalogObjects, 1, objectRow("table", "public", "users", "", 1, false, nil, nil)))
+	require.NoError(t, tx.Insert(ctx, catalogColumns, columnRowID(1, 1),
 		columnRow("users", "id", 1, "bigint", "int64", false, nil, 8, 1, false, nil)))
-	require.NoError(t, tx.Insert(catalogColumns, columnRowID(1, 2),
+	require.NoError(t, tx.Insert(ctx, catalogColumns, columnRowID(1, 2),
 		columnRow("users", "legacy", 2, "text", "string", true, nil, 0, 1, false, nil)))
 	full, err := tx.Commit(ctx)
 	require.NoError(t, err)
@@ -229,9 +229,9 @@ func TestCatalog_TombstoneAcrossDeltas(t *testing.T) {
 	// dropped one, never reuse it.
 	tx, err = db.Begin(ctx, full)
 	require.NoError(t, err)
-	require.NoError(t, tx.Update(catalogColumns, columnRowID(1, 2),
+	require.NoError(t, tx.Update(ctx, catalogColumns, columnRowID(1, 2),
 		columnRow("users", "legacy", 2, "text", "string", true, nil, 0, 2, true, nil)))
-	require.NoError(t, tx.Insert(catalogColumns, columnRowID(1, 3),
+	require.NoError(t, tx.Insert(ctx, catalogColumns, columnRowID(1, 3),
 		columnRow("users", "email", 3, "varchar(255)", "string", false, nil, 255, 1, false, nil)))
 	delta, err := tx.Commit(ctx)
 	require.NoError(t, err)
@@ -240,16 +240,17 @@ func TestCatalog_TombstoneAcrossDeltas(t *testing.T) {
 	// the catalog has no upsert, which is why the parent must be loaded first.
 	tx, err = db.Begin(ctx, delta)
 	require.NoError(t, err)
-	require.ErrorIs(t, tx.Update(catalogObjects, 999,
-		objectRow("table", "public", "ghost", "", 1, false, nil, nil)), rowpack.ErrNotFound)
+	require.ErrorIs(t, tx.Update(ctx, catalogObjects, 999,
+		objectRow("table", "public", "ghost", "", 1, false, nil, nil)),
+		rowpack.ErrNotFound)
 	require.NoError(t, tx.Rollback())
 
 	// Same-snapshot RowID uniqueness: a duplicate (table, RowID) pair is
 	// rejected with ErrAlreadyExists.
 	tx, err = db.Begin(ctx, delta)
 	require.NoError(t, err)
-	require.NoError(t, tx.Insert(catalogObjects, 7, objectRow("table", "public", "a", "", 1, false, nil, nil)))
-	require.ErrorIs(t, tx.Insert(catalogObjects, 7, objectRow("table", "public", "b", "", 1, false, nil, nil)),
+	require.NoError(t, tx.Insert(ctx, catalogObjects, 7, objectRow("table", "public", "a", "", 1, false, nil, nil)))
+	require.ErrorIs(t, tx.Insert(ctx, catalogObjects, 7, objectRow("table", "public", "b", "", 1, false, nil, nil)),
 		rowpack.ErrAlreadyExists)
 	require.NoError(t, tx.Rollback())
 
@@ -291,9 +292,9 @@ func TestCatalog_NullableContract(t *testing.T) {
 		{Name: "b", Type: rowpack.TypeString, Nullable: true}, // NULL allowed
 	}))
 	strict := rowpack.Qualify(catalogNamespace, "strict")
-	require.ErrorIs(t, tx.Insert(strict, 1, rowpack.Row{rowpack.Null(), rowpack.String("x")}),
+	require.ErrorIs(t, tx.Insert(ctx, strict, 1, rowpack.Row{rowpack.Null(), rowpack.String("x")}),
 		rowpack.ErrSchemaMismatch, "writing NULL into a NOT NULL column must fail")
-	require.NoError(t, tx.Insert(strict, 1, rowpack.Row{rowpack.String("x"), rowpack.Null()}))
+	require.NoError(t, tx.Insert(ctx, strict, 1, rowpack.Row{rowpack.String("x"), rowpack.Null()}))
 	require.NoError(t, tx.Rollback())
 }
 
@@ -309,21 +310,21 @@ func TestCatalog_DeltaChangeStream(t *testing.T) {
 	tx, err := db.Begin(ctx, rowpack.NoParent)
 	require.NoError(t, err)
 	defineCatalog(t, tx)
-	require.NoError(t, tx.Insert(catalogColumns, columnRowID(1, 1),
+	require.NoError(t, tx.Insert(ctx, catalogColumns, columnRowID(1, 1),
 		columnRow("users", "id", 1, "bigint", "int64", false, nil, 8, 1, false, nil)))
 	full, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
 	tx, err = db.Begin(ctx, full)
 	require.NoError(t, err)
-	require.NoError(t, tx.Insert(catalogColumns, columnRowID(1, 2),
+	require.NoError(t, tx.Insert(ctx, catalogColumns, columnRowID(1, 2),
 		columnRow("users", "email", 2, "varchar(255)", "string", false, nil, 255, 1, false, nil)))
-	require.NoError(t, tx.Update(catalogColumns, columnRowID(1, 1),
+	require.NoError(t, tx.Update(ctx, catalogColumns, columnRowID(1, 1),
 		columnRow("users", "id", 1, "bigint unsigned", "uint64", false, nil, 8, 2, false, nil)))
 	delta, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
-	blocks, err := db.Blocks(ctx, delta, catalogColumns)
+	blocks, err := db.Blocks(delta, catalogColumns)
 	require.NoError(t, err)
 	require.NotEmpty(t, blocks)
 
@@ -389,7 +390,7 @@ func TestCatalog_DefineBeforeWrite(t *testing.T) {
 	tx, err := db.Begin(ctx, rowpack.NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("users", userCols))
-	require.NoError(t, tx.Insert("users", 1, rowpack.Row{rowpack.Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "users", 1, rowpack.Row{rowpack.Uint64(1)}))
 	full, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
@@ -397,7 +398,7 @@ func TestCatalog_DefineBeforeWrite(t *testing.T) {
 	// re-definition is fine.
 	d, err := db.Begin(ctx, full)
 	require.NoError(t, err)
-	require.NoError(t, d.Insert("users", 2, rowpack.Row{rowpack.Uint64(2)}))
+	require.NoError(t, d.Insert(ctx, "users", 2, rowpack.Row{rowpack.Uint64(2)}))
 	require.NoError(t, d.DefineTable("users", userCols))
 	delta, err := d.Commit(ctx)
 	require.NoError(t, err)
@@ -409,7 +410,7 @@ func TestCatalog_DefineBeforeWrite(t *testing.T) {
 	// define every table it writes.
 	ck, err := db.Begin(ctx, rowpack.NoParent)
 	require.NoError(t, err)
-	require.NoError(t, ck.Insert("users", 3, rowpack.Row{rowpack.Uint64(3)}))
+	require.NoError(t, ck.Insert(ctx, "users", 3, rowpack.Row{rowpack.Uint64(3)}))
 	_, err = ck.Commit(ctx)
 	require.ErrorIs(t, err, rowpack.ErrInvalidArgument)
 	require.NoError(t, ck.Rollback())

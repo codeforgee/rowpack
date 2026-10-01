@@ -71,7 +71,7 @@ func FuzzOpenMutated(f *testing.F) {
 			it.Close()
 			// Batch read and full verify must terminate too.
 			_, _ = db.ReadBatch(ctx, sm.ID, "users", []RowID{1, 2, 3})
-			_, _ = db.Verify(ctx, VerifyFull)
+			_, _ = db.Verify(ctx, VerifyFull, VerifyScope{})
 		}
 	})
 }

@@ -101,7 +101,7 @@ func BenchmarkWriteFull(b *testing.B) {
 		requireNilErr(b, w.DefineTable("t", benchCols()))
 		b.StartTimer()
 		for r := 1; r <= benchRows; r++ {
-			requireNilErr(b, w.Insert("t", uint64(r), benchRow(uint64(r))))
+			requireNilErr(b, w.Insert(ctx, "t", uint64(r), benchRow(uint64(r))))
 		}
 		if _, err := w.Commit(ctx); err != nil {
 			b.Fatal(err)
@@ -324,7 +324,7 @@ func benchStoreAt(tb testing.TB, base string, opts Options, n int) (*Store, Snap
 	requireNilErr(tb, err)
 	requireNilErr(tb, w.DefineTable("t", benchCols()))
 	for i := 1; i <= n; i++ {
-		requireNilErr(tb, w.Insert("t", uint64(i), benchRow(uint64(i))))
+		requireNilErr(tb, w.Insert(context.Background(), "t", uint64(i), benchRow(uint64(i))))
 	}
 	snap, err := w.Commit(context.Background())
 	requireNilErr(tb, err)
@@ -342,7 +342,7 @@ func BenchmarkDeepChainGet(b *testing.B) {
 	w, _ := db.Begin(ctx, NoParent)
 	requireNilErr(b, w.DefineTable("t", benchCols()))
 	for r := 1; r <= 100; r++ {
-		requireNilErr(b, w.Insert("t", uint64(r), benchRow(uint64(r))))
+		requireNilErr(b, w.Insert(ctx, "t", uint64(r), benchRow(uint64(r))))
 	}
 	snap, err := w.Commit(ctx)
 	requireNilErr(b, err)
@@ -352,7 +352,7 @@ func BenchmarkDeepChainGet(b *testing.B) {
 		requireNilErr(b, err)
 		// One change per layer: rewrite row 1 (a delete of a parent-invisible
 		// row would be rejected by the strict parent check).
-		requireNilErr(b, d.Update("t", 1, benchRow(uint64(i+1))))
+		requireNilErr(b, d.Update(ctx, "t", 1, benchRow(uint64(i+1))))
 		snap, err = d.Commit(ctx)
 		requireNilErr(b, err)
 	}
@@ -383,7 +383,7 @@ func BenchmarkEncryptedWrite(b *testing.B) {
 		requireNilErr(b, w.DefineTable("t", benchCols()))
 		b.StartTimer()
 		for r := 1; r <= benchRows; r++ {
-			requireNilErr(b, w.Insert("t", uint64(r), benchRow(uint64(r))))
+			requireNilErr(b, w.Insert(ctx, "t", uint64(r), benchRow(uint64(r))))
 		}
 		if _, err := w.Commit(ctx); err != nil {
 			b.Fatal(err)

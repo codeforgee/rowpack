@@ -19,10 +19,10 @@ func TestWriterZeroRowIDRejected(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
 
-	require.ErrorIs(t, tx.Insert("t", 0, Row{Uint64(1)}), ErrInvalidArgument)
-	require.ErrorContains(t, tx.Insert("t", 0, Row{Uint64(1)}), "row id is zero")
-	require.ErrorIs(t, tx.Update("t", 0, Row{Uint64(1)}), ErrInvalidArgument)
-	require.ErrorIs(t, tx.Delete("t", 0), ErrInvalidArgument)
+	require.ErrorIs(t, tx.Insert(ctx, "t", 0, Row{Uint64(1)}), ErrInvalidArgument)
+	require.ErrorContains(t, tx.Insert(ctx, "t", 0, Row{Uint64(1)}), "row id is zero")
+	require.ErrorIs(t, tx.Update(ctx, "t", 0, Row{Uint64(1)}), ErrInvalidArgument)
+	require.ErrorIs(t, tx.Delete(ctx, "t", 0), ErrInvalidArgument)
 
 	// The internal put path re-checks: belt and braces against future callers.
 	err = tx.w.put(ctx, rowChange{typ: ChangeInsert, table: tx.w.tableIDs["t"], rowID: 0})
@@ -42,7 +42,7 @@ func TestWriterTerminalStates(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 	_, err = tx.Commit(ctx)
 	require.NoError(t, err)
 
@@ -64,7 +64,7 @@ func TestCommitAfterClose(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 
 	// Close aborts every pending writer, so the pending commit reports the
 	// aborted state, not the closed store; the state sticks afterwards.

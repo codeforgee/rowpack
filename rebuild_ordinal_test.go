@@ -63,12 +63,12 @@ func buildWriteOrderStore(t *testing.T, order []RowID) (string, SnapshotID) {
 		{Name: "name", Type: TypeString},
 	}))
 	for _, id := range order {
-		require.NoError(t, tx.Insert("t", id, Row{Uint64(uint64(id)), String("row-" + itoa(int(id)))}))
+		require.NoError(t, tx.Insert(ctx, "t", id, Row{Uint64(uint64(id)), String("row-" + itoa(int(id)))}))
 	}
 	snap, err := tx.Commit(ctx)
 	require.NoError(t, err)
 	// 必须真的跨多个 rows 块，否则本用例无意义。
-	blks, err := db.Blocks(ctx, snap, "t")
+	blks, err := db.Blocks(snap, "t")
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(blks), 3, "need a multi-block snapshot")
 	total := 0
@@ -129,7 +129,7 @@ func checkEveryRow(t *testing.T, db *Store, snap SnapshotID, want []RowID) {
 		v, _ := rows[k][0].Uint64()
 		require.Equal(t, uint64(id), v, "ReadBatch slot %d", k)
 	}
-	_, err = db.Verify(ctx, VerifyFull)
+	_, err = db.Verify(ctx, VerifyFull, VerifyScope{})
 	require.NoError(t, err, "a rebuilt store must verify clean")
 }
 
@@ -171,7 +171,7 @@ func TestRebuildMultiBlockInterleaved(t *testing.T) {
 		{Name: "name", Type: TypeString},
 	}))
 	for i := 1; i <= 120; i++ {
-		require.NoError(t, tx.Insert("t", RowID(i), Row{Uint64(uint64(i)), String("row-" + itoa(i))}))
+		require.NoError(t, tx.Insert(ctx, "t", RowID(i), Row{Uint64(uint64(i)), String("row-" + itoa(i))}))
 	}
 	full, err := tx.Commit(ctx)
 	require.NoError(t, err)
@@ -183,12 +183,12 @@ func TestRebuildMultiBlockInterleaved(t *testing.T) {
 		shuffled = append(shuffled, RowID(i))
 	}
 	for _, id := range shuffled {
-		require.NoError(t, tx2.Update("t", id, Row{Uint64(uint64(id)), String("upd-" + itoa(int(id)))}))
+		require.NoError(t, tx2.Update(ctx, "t", id, Row{Uint64(uint64(id)), String("upd-" + itoa(int(id)))}))
 	}
 	// v1 禁止同一快照内重复 RowKey，因此删除集与更新集必须不相交：更新的是
 	// ≡1 (mod 3) 的 id，这里删 ≡2 (mod 3) 的 id。
 	for id := 110; id >= 2; id -= 6 {
-		require.NoError(t, tx2.Delete("t", RowID(id)))
+		require.NoError(t, tx2.Delete(ctx, "t", RowID(id)))
 	}
 	delta, err := tx2.Commit(ctx)
 	require.NoError(t, err)
@@ -217,6 +217,6 @@ func TestRebuildMultiBlockInterleaved(t *testing.T) {
 			require.Equal(t, "row-"+itoa(int(id)), s, "row %d must read the parent's value", id)
 		}
 	}
-	_, err = db2.Verify(ctx, VerifyFull)
+	_, err = db2.Verify(ctx, VerifyFull, VerifyScope{})
 	require.NoError(t, err)
 }

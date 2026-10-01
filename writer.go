@@ -556,6 +556,9 @@ func (w *Writer) writeRecords(def tableDef) error {
 				{ID: metadata.ColDataScale, WireType: format.WireSint, Value: int64(col.Scale)},
 			},
 		}
+		if col.PrimaryKey {
+			colRec.Fields = append(colRec.Fields, metadata.Field{ID: metadata.ColPrimaryKey, WireType: format.WireSint, Value: int64(1)})
+		}
 		if err := w.writeMetadata(colRec); err != nil {
 			return err
 		}
@@ -744,7 +747,8 @@ func (w *Writer) put(ctx context.Context, c rowChange) error {
 		}
 		encoded = w.encBuf
 	}
-	if err := w.rowBuilder(c.table).Add(c.rowID, c.schemaVersion, format.ChangeType(c.typ), encoded); err != nil {
+	rb := w.rowBuilder(c.table)
+	if err := rb.Add(c.rowID, c.schemaVersion, format.ChangeType(c.typ), encoded); err != nil {
 		return err
 	}
 	w.rememberRow(c.table, c.rowID)

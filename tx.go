@@ -100,33 +100,38 @@ func (tx *Tx) DefineTableIn(ns, name string, columns []Column) error {
 	return tx.w.createTable(ns, name, columns)
 }
 
-// Insert records a newly-created row.
-func (tx *Tx) Insert(table string, id RowID, row Row) error {
-	return tx.w.Insert(tx.ctx, table, id, row)
+// Insert records a newly-created row. ctx is accepted for signature
+// consistency with the rest of the API; like the writer it is not observed
+// mid-write (abort via Rollback or Close).
+func (tx *Tx) Insert(ctx context.Context, table string, id RowID, row Row) error {
+	return tx.w.Insert(ctx, table, id, row)
 }
 
-// Update records the complete replacement value of an existing row.
-func (tx *Tx) Update(table string, id RowID, row Row) error {
-	return tx.w.Update(tx.ctx, table, id, row)
+// Update records the complete replacement value of an existing row. ctx is
+// accepted for signature consistency; it is not observed mid-write.
+func (tx *Tx) Update(ctx context.Context, table string, id RowID, row Row) error {
+	return tx.w.Update(ctx, table, id, row)
 }
 
-// Delete records removal of an existing row.
-func (tx *Tx) Delete(table string, id RowID) error {
-	return tx.w.Delete(tx.ctx, table, id)
+// Delete records removal of an existing row. ctx is accepted for signature
+// consistency; it is not observed mid-write.
+func (tx *Tx) Delete(ctx context.Context, table string, id RowID) error {
+	return tx.w.Delete(ctx, table, id)
 }
 
-// Apply dispatches one typed row mutation.
-func (tx *Tx) Apply(change Change) error {
+// Apply dispatches one typed row mutation. ctx is accepted for signature
+// consistency; it is not observed mid-write.
+func (tx *Tx) Apply(ctx context.Context, change Change) error {
 	switch change.Type {
 	case ChangeInsert:
-		return tx.Insert(change.Table, change.RowID, change.Row)
+		return tx.Insert(ctx, change.Table, change.RowID, change.Row)
 	case ChangeUpdate:
-		return tx.Update(change.Table, change.RowID, change.Row)
+		return tx.Update(ctx, change.Table, change.RowID, change.Row)
 	case ChangeDelete:
 		if change.Row != nil {
 			return fmt.Errorf("%w: DELETE row payload must be nil", ErrInvalidArgument)
 		}
-		return tx.Delete(change.Table, change.RowID)
+		return tx.Delete(ctx, change.Table, change.RowID)
 	default:
 		return fmt.Errorf("%w: change type %d", ErrInvalidArgument, change.Type)
 	}
@@ -134,14 +139,32 @@ func (tx *Tx) Apply(change Change) error {
 
 // ApplyBatch consumes changes in order without retaining or copying the input
 // slice. If one change fails, earlier changes in the batch remain part of the
-// transaction; Rollback discards the entire transaction.
-func (tx *Tx) ApplyBatch(changes []Change) error {
+// transaction; Rollback discards the entire transaction. ctx is accepted for
+// signature consistency; it is not observed mid-write.
+func (tx *Tx) ApplyBatch(ctx context.Context, changes []Change) error {
 	for i := range changes {
-		if err := tx.Apply(changes[i]); err != nil {
+		if err := tx.Apply(ctx, changes[i]); err != nil {
 			return fmt.Errorf("rowpack: apply change %d: %w", i, err)
 		}
 	}
 	return nil
+}
+
+// SealTable flushes the rows accumulated for one table into a sealed rows
+// block immediately, instead of waiting for the block target or Commit. Back
+// callers that stream a table in self-contained batches use it to make block
+// boundaries coincide with batch boundaries. A table with no pending rows (or
+// never written) is a no-op.
+func (tx *Tx) SealTable(table string) error {
+	tid, _, err := tx.w.tableForWrite(table)
+	if err != nil {
+		return nil
+	}
+	rb := tx.w.rowBuilder(tid)
+	if rb.Len() == 0 {
+		return nil
+	}
+	return rb.Flush()
 }
 
 // Commit publishes the transaction as a new snapshot.

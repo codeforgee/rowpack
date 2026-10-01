@@ -22,11 +22,11 @@ func insertMergeRow(t testing.TB, tx *Tx, id uint64, name string, blob []byte, c
 	t.Helper()
 	switch ct {
 	case "insert":
-		require.NoError(t, tx.Insert("t", id, Row{Uint64(id), String(name), Bytes(blob)}))
+		require.NoError(t, tx.Insert(context.Background(), "t", id, Row{Uint64(id), String(name), Bytes(blob)}))
 	case "update":
-		require.NoError(t, tx.Update("t", id, Row{Uint64(id), String(name), Bytes(blob)}))
+		require.NoError(t, tx.Update(context.Background(), "t", id, Row{Uint64(id), String(name), Bytes(blob)}))
 	case "delete":
-		require.NoError(t, tx.Delete("t", id))
+		require.NoError(t, tx.Delete(context.Background(), "t", id))
 	}
 }
 

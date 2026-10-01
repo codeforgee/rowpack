@@ -56,7 +56,7 @@ func TestSnapshotWithoutIndexTxn(t *testing.T) {
 	_, err = db2.Get(ctx, 2, "users", 5, nil)
 	require.ErrorIs(t, err, ErrNotFound, "rebuilt DELTA tombstone must hide row 5")
 	// 重建后整体结构仍通过完整性校验。
-	_, err = db2.Verify(ctx, VerifyFull)
+	_, err = db2.Verify(ctx, VerifyFull, VerifyScope{})
 	require.NoError(t, err)
 	snaps, err := db2.ListSnapshots(ctx)
 	require.NoError(t, err)

@@ -22,9 +22,9 @@ func TestUpdateDeleteUnknownTableRejected(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
 
-	err = tx.Update("nope", 1, Row{Uint64(1)})
+	err = tx.Update(ctx, "nope", 1, Row{Uint64(1)})
 	require.ErrorIs(t, err, ErrNotFound)
-	err = tx.Delete("nope", 1)
+	err = tx.Delete(ctx, "nope", 1)
 	require.ErrorIs(t, err, ErrNotFound)
 	require.NoError(t, tx.Rollback())
 }
@@ -39,7 +39,7 @@ func TestCommitTornWhenTxnAppendFails(t *testing.T) {
 	w, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, w.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, w.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, w.Insert(ctx, "t", 1, Row{Uint64(1)}))
 
 	fault.Inject("commit.txn.before", func() { _ = db.data.Close() })
 	defer fault.Clear()
@@ -69,7 +69,7 @@ func TestCommitFailsAtFooterAppend(t *testing.T) {
 	w, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, w.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, w.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, w.Insert(ctx, "t", 1, Row{Uint64(1)}))
 
 	fault.Inject("commit.footer.before", func() { _ = db.data.Close() })
 	defer fault.Clear()

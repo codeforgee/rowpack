@@ -67,6 +67,10 @@ func TimeValue(v TimeOfDay) Value { return codec.TimeValue(v) }
 // a DateTime value preserving nanosecond precision.
 func DateTime(t time.Time) Value { return codec.DateTime(t) }
 
+// DateTimeTZ returns a timezone-aware DateTime value preserving the instant
+// and the original zone offset of t.
+func DateTimeTZ(t time.Time) Value { return codec.DateTimeTZ(t) }
+
 // DecimalValue returns a decimal value; v.Unscaled is copied.
 func DecimalValue(v Decimal) Value { return codec.DecimalValue(v) }
 

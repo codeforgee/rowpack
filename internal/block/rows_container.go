@@ -276,8 +276,12 @@ func (c *RowsContainer) checkBounds(recordsStart int) error {
 		expectedOff += int(e.StoredSize)
 		firstOrd += e.RecordCount
 	}
-	if c.stored != nil && expectedOff != len(c.stored) {
-		return fmt.Errorf("rowpack: pages end at %d, container is %d", expectedOff, len(c.stored))
+	if c.stored != nil {
+		// Pages must tile the container exactly: nothing may sit between the
+		// last page and the container end.
+		if expectedOff != len(c.stored) {
+			return fmt.Errorf("rowpack: pages end at %d, container is %d", expectedOff, len(c.stored))
+		}
 	}
 	return nil
 }

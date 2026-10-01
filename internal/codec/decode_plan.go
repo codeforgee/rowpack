@@ -27,6 +27,7 @@ const (
 	decodeDate
 	decodeTime
 	decodeDateTime
+	decodeDateTimeTZ
 	decodeString
 	decodeBytes
 	decodeDecimal
@@ -90,6 +91,8 @@ func compileDecodeSteps(schema *Schema) (steps []decodeStep, fixed bool) {
 			s.kind = decodeTime
 		case TypeDateTime:
 			s.kind = decodeDateTime
+		case TypeDateTimeTZ:
+			s.kind, s.width = decodeDateTimeTZ, 16
 		case TypeString:
 			s.kind, s.width = decodeString, 0
 		case TypeBytes:
@@ -180,7 +183,18 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 				}
 				row[i] = Value{typ: s.typ, i: ns}
 			case decodeDateTime:
-				row[i] = Value{typ: s.typ, i: int64(binary.LittleEndian.Uint64(payload[pos:]))}
+				row[i] = Value{
+					typ: s.typ,
+					i:   int64(binary.LittleEndian.Uint64(payload[pos:])),
+					u:   uint64(binary.LittleEndian.Uint32(payload[pos+8:])),
+				}
+			case decodeDateTimeTZ:
+				row[i] = Value{
+					typ: s.typ,
+					i:   int64(binary.LittleEndian.Uint64(payload[pos:])),
+					u:   uint64(binary.LittleEndian.Uint32(payload[pos+8:])),
+					tz:  int32(binary.LittleEndian.Uint32(payload[pos+12:])),
+				}
 			}
 			pos += w
 			continue

@@ -26,6 +26,8 @@ func (s *Store) captureState() (*publishedState, error) {
 }
 
 // ListSnapshots returns committed snapshots sorted by ID.
+// ListSnapshots returns every committed snapshot in ascending ID order
+// (commit order): the last element is always the newest snapshot.
 func (s *Store) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
@@ -38,6 +40,7 @@ func (s *Store) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 	for _, sm := range metas {
 		out = append(out, snapshotInfo(sm))
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
@@ -162,6 +165,9 @@ func (s *Store) rowCodec() codec.Codec {
 
 // Schema returns the schema of a table version at a snapshot. The table is
 // addressed by table address, like the other read paths.
+// The version selects the table schema to decode; version 0 resolves to the
+// table's latest schema version, so callers tracking no explicit versioning
+// skip the Tables lookup entirely.
 func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table string, version SchemaVersion) (Schema, error) {
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
@@ -175,6 +181,9 @@ func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table string, v
 	tid, ok := st.schemas.tableID(snapshot, table)
 	if !ok {
 		return Schema{}, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
+	}
+	if version == 0 {
+		version = st.schemas.latest(snapshot, uint32(tid))
 	}
 	schema := st.schemas.schema(snapshot, uint32(tid), version)
 	if schema == nil {

@@ -23,8 +23,8 @@ func TestWriterRejectsResurrectedRow(t *testing.T) {
 	db := armCommittedStore(t) // snapshot 1 holds row 1
 
 	tx := armTx(t, db, 1)
-	require.NoError(t, tx.Delete("t", 1))
-	err := tx.Insert("t", 1, Row{Uint64(9)})
+	require.NoError(t, tx.Delete(ctx, "t", 1))
+	err := tx.Insert(ctx, "t", 1, Row{Uint64(9)})
 	require.ErrorContains(t, err, "duplicate")
 
 	snap, err := tx.Commit(ctx)

@@ -17,17 +17,18 @@
 | 文件 | SHA-256 |
 | --- | --- |
 | `empty-store.rpk` | `359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401` |
-| `rows-payload-all-types.bin` | `ae6f94f72c1b08f8c0a6727c97cb57cfad18b6f0ffc732a625db23be907b8769` |
-| `full-delta-store.rpk` | `1ab8989b42de83cbf0a25e18cd45302980c84e2db50473e3ec2328a2cad65b39` |
-| `encrypted-store.rpk` | `e7b0f8a715b6af17b0bb7bbe4d7de75981243cd6b755fb6d4638403e4816bf14` |
+| `rows-payload-all-types.bin` | `5f9b9022e858016dc2490b347de8edc58cba2a843797912e4fb210d01f9331a3` |
+| `full-delta-store.rpk` | `886a7e882a963c47cf2662ba6b179a52a11192ff0fd0df7542392686d57e6fd7` |
+| `encrypted-store.rpk` | `0aca420805e0fe1d6af8b489b35ad8fb87a8e43c4db84f973e4ab8e3c395dc6c` |
 
 摘要对应冻结的 v1 IndexTxn 格式（排序 Row Index Page + Fence Directory）。修改任一摘要即视为
 有意的磁盘格式变更，必须经过格式审查并按版本策略建立新的 golden 样本族。
 
-最近一次变更：新增快照 Meta 块（`BlockKind=3`）后，两个 Store 样本各写入该块（FULL 一份、DELTA
-覆盖一份），摘要随之更新；`empty-store.rpk` 与 `rows-payload-all-types.bin` 无快照、无 Meta 块，
-字节与摘要保持不变。生成器见 `golden_store_test.go` 的 `goldenMetaFull`/`goldenMetaDelta` 与
-`encryption_test.go` 的 `TestGoldenEncryptedStoreGenerate`。
+最近一次变更：DateTime 改为秒+纳秒 12B(TZ 16B 含偏移)、RowsBlockHeader 从 24B 扩展到 32B（新增 BoundsOffset/BoundsLen，承载声明主键的
+每块 PK 边界段：`[u32 len][first][u32 len][last][u32 CRC32C]`，位于最后一个存储页之后），全部
+含 Rows 块的样本摘要随之更新；`empty-store.rpk` 无 Rows 块，字节与摘要保持不变。生成器见
+`golden_store_test.go` 的 `goldenMetaFull`/`goldenMetaDelta` 与 `encryption_test.go` 的
+`TestGoldenEncryptedStoreGenerate`。
 
 损坏样本不静态保存，由测试从健康 Store 动态构造：坏 Magic / 短头 / 未知主版本 →
 `TestReadDataHeaderCorruptFiles`（未知主版本要求 `ErrVersionUnsupported`）；Block 头与负载损坏 →

@@ -97,7 +97,7 @@ func TestIteratorArenaGrowsForLargeBytes(t *testing.T) {
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "blob", Type: TypeBytes}}))
 
 	big := bytes.Repeat([]byte{0xAB}, 40<<10) // > iterArenaChunkSize
-	require.NoError(t, tx.Insert("t", 1, Row{Bytes(big)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Bytes(big)}))
 	snap, err := tx.Commit(ctx)
 	require.NoError(t, err)
 

@@ -55,7 +55,7 @@ func TestNamespaceDefaultIsImplicit(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("users", nsCols()))
-	require.NoError(t, tx.Insert("users", 1, nsRow(1, "a")))
+	require.NoError(t, tx.Insert(ctx, "users", 1, nsRow(1, "a")))
 	full, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
@@ -83,10 +83,10 @@ func TestNSUserChosen(t *testing.T) {
 	require.NoError(t, tx.DefineTable("users", nsCols()))
 	require.NoError(t, tx.DefineTableIn("catalog", "_src_columns", nsCols()))
 	require.NoError(t, tx.DefineTableIn("public", "orders", nsCols()))
-	require.NoError(t, tx.Insert("users", 1, nsRow(1, "a")))
+	require.NoError(t, tx.Insert(ctx, "users", 1, nsRow(1, "a")))
 	// A non-default namespace is addressed as "<namespace>.<name>".
-	require.NoError(t, tx.Insert("catalog._src_columns", 1, nsRow(1, "c")))
-	require.NoError(t, tx.Insert("public.orders", 1, nsRow(1, "o")))
+	require.NoError(t, tx.Insert(ctx, "catalog._src_columns", 1, nsRow(1, "c")))
+	require.NoError(t, tx.Insert(ctx, "public.orders", 1, nsRow(1, "o")))
 	full, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
@@ -141,8 +141,8 @@ func TestNamespaceSameNameCoexists(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTableIn("public", "users", nsCols()))
 	require.NoError(t, tx.DefineTableIn("audit", "users", nsCols()))
-	require.NoError(t, tx.Insert("public.users", 1, nsRow(1, "pub")))
-	require.NoError(t, tx.Insert("audit.users", 1, nsRow(1, "aud")))
+	require.NoError(t, tx.Insert(ctx, "public.users", 1, nsRow(1, "pub")))
+	require.NoError(t, tx.Insert(ctx, "audit.users", 1, nsRow(1, "aud")))
 	full, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
@@ -227,9 +227,9 @@ func TestNamespaceSeparatorIsNotForbidden(t *testing.T) {
 	require.NoError(t, tx.DefineTableIn("public", "order.items", nsCols()))
 	// A dotted ns.
 	require.NoError(t, tx.DefineTableIn("a.b", "c", nsCols()))
-	require.NoError(t, tx.Insert("a.b", 1, nsRow(1, "default-ns a.b")))
-	require.NoError(t, tx.Insert("public.order.items", 1, nsRow(1, "public dotted")))
-	require.NoError(t, tx.Insert("a.b.c", 1, nsRow(1, "dotted ns")))
+	require.NoError(t, tx.Insert(ctx, "a.b", 1, nsRow(1, "default-ns a.b")))
+	require.NoError(t, tx.Insert(ctx, "public.order.items", 1, nsRow(1, "public dotted")))
+	require.NoError(t, tx.Insert(ctx, "a.b.c", 1, nsRow(1, "dotted ns")))
 	snap, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
@@ -358,14 +358,14 @@ func TestNamespaceFullCheckpointRewritesOwnLayer(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTableIn("catalog", "_src_columns", nsCols()))
-	require.NoError(t, tx.Insert("catalog._src_columns", 1, nsRow(1, "c")))
+	require.NoError(t, tx.Insert(ctx, "catalog._src_columns", 1, nsRow(1, "c")))
 	full, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
 	tx, err = db.Begin(ctx, NoParent) // FULL checkpoint, no parent
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTableIn("catalog", "_src_columns", nsCols()))
-	require.NoError(t, tx.Insert("catalog._src_columns", 1, nsRow(1, "c")))
+	require.NoError(t, tx.Insert(ctx, "catalog._src_columns", 1, nsRow(1, "c")))
 	check, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
@@ -506,7 +506,7 @@ func TestNamespaceDuplicateAddressReportedByVerify(t *testing.T) {
 	_, err = db2.Get(ctx, snap, "a.b", 1, nil)
 	require.ErrorIs(t, err, ErrNotFound, "neither table has rows")
 
-	_, err = db2.Verify(ctx, VerifyQuick)
+	_, err = db2.Verify(ctx, VerifyQuick, VerifyScope{})
 	require.ErrorIs(t, err, ErrCorruptIndex)
 	require.Contains(t, err.Error(), "claimed by tables")
 }
@@ -524,14 +524,14 @@ func TestDefineTableIdempotentAfterWriteInDelta(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("users", nsCols()))
-	require.NoError(t, tx.Insert("users", 1, nsRow(1, "a")))
+	require.NoError(t, tx.Insert(ctx, "users", 1, nsRow(1, "a")))
 	full, err := tx.Commit(ctx)
 	require.NoError(t, err)
 
 	d, err := db.Begin(ctx, full)
 	require.NoError(t, err)
 	defer d.Rollback()
-	require.NoError(t, d.Insert("users", 2, nsRow(2, "b")))
+	require.NoError(t, d.Insert(ctx, "users", 2, nsRow(2, "b")))
 	require.NoError(t, d.DefineTable("users", nsCols()),
 		"DefineTable after a write must stay an idempotent no-op")
 	delta, err := d.Commit(ctx)
@@ -598,14 +598,14 @@ func TestDefineTableIdempotentAfterWriteInFull(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("users", nsCols()))
-	require.NoError(t, tx.Insert("users", 1, nsRow(1, "a")))
+	require.NoError(t, tx.Insert(ctx, "users", 1, nsRow(1, "a")))
 	_, err = tx.Commit(ctx)
 	require.NoError(t, err)
 
 	ck, err := db.Begin(ctx, NoParent) // FULL checkpoint, no parent
 	require.NoError(t, err)
 	defer ck.Rollback()
-	require.NoError(t, ck.Insert("users", 2, nsRow(2, "b")))
+	require.NoError(t, ck.Insert(ctx, "users", 2, nsRow(2, "b")))
 	require.NoError(t, ck.DefineTable("users", nsCols()),
 		"a FULL re-definition must write the checkpoint's own metadata layer")
 	check, err := ck.Commit(ctx)

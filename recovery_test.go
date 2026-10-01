@@ -45,7 +45,7 @@ func buildTwoSnapshots(t *testing.T, db *Store) SnapshotID {
 	full, err := w.Commit(ctx)
 	require.NoError(t, err)
 	d, _ := db.Begin(ctx, full)
-	require.NoError(t, d.Delete("users", 5))
+	require.NoError(t, d.Delete(ctx, "users", 5))
 	delta, err := d.Commit(ctx)
 	require.NoError(t, err)
 	return delta
@@ -297,7 +297,7 @@ func TestCorruptBlockPayloadDamagesRead(t *testing.T) {
 	require.ErrorIs(t, err, ErrCorruptData)
 	// VerifyFull and VerifyQuick both report a structured error.
 	for _, mode := range []VerifyMode{VerifyFull, VerifyQuick} {
-		_, err = db2.Verify(ctx, mode)
+		_, err = db2.Verify(ctx, mode, VerifyScope{})
 		var cerr *CorruptionError
 		require.ErrorAs(t, err, &cerr, "verify mode %v", mode)
 		require.ErrorIs(t, cerr, ErrCorruptData)
@@ -310,14 +310,14 @@ func TestVerifyCleanStore(t *testing.T) {
 	ctx := context.Background()
 	db := scratchStore(t)
 	buildTwoSnapshots(t, db)
-	rep, err := db.Verify(ctx, VerifyFull)
+	rep, err := db.Verify(ctx, VerifyFull, VerifyScope{})
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), rep.SnapshotsChecked)
 	require.Greater(t, rep.BlocksChecked, uint64(0))
 	require.Greater(t, rep.RowsChecked, uint64(0))
 	require.Greater(t, rep.DataBytesRead, uint64(0))
 	require.Greater(t, rep.Duration, int64(0))
-	quick, err := db.Verify(ctx, VerifyQuick)
+	quick, err := db.Verify(ctx, VerifyQuick, VerifyScope{})
 	require.NoError(t, err)
 	require.Equal(t, rep.SnapshotsChecked, quick.SnapshotsChecked)
 }

@@ -191,6 +191,7 @@ ColumnID 领先作为记录的第一个字段，其余按 DefineTable 语义顺�
 | 3 | ColumnType(String) | String |
 | 4 | Nullable(String) | String |
 | 5 | DataScale(Sint64) | Sint |
+| 6 | PrimaryKey(Sint64) | Sint |
 
 引擎只识别 Column 记录字段 3（`ColumnType`，即 `metadata.ColColumnType`）中的规范类型字符串
 （`bool`、`int8`…`uint64`、`string`、`bytes`、`date`、`time`、`datetime`、`decimal`，即

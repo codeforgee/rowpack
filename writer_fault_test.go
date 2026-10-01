@@ -29,7 +29,7 @@ func TestCommitUnknownAfterSyncFailure(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 
 	fault.Inject("commit.sync.before", func() { _ = db.data.Close() })
 	defer fault.Clear()
@@ -40,7 +40,7 @@ func TestCommitUnknownAfterSyncFailure(t *testing.T) {
 	require.True(t, ce.Unknown, "sync failure after footer append is an unknown outcome")
 
 	// The writer is failed; every further mutation and a second commit fail.
-	require.ErrorIs(t, tx.Insert("t", 2, Row{Uint64(2)}), ErrSnapshotFailed)
+	require.ErrorIs(t, tx.Insert(ctx, "t", 2, Row{Uint64(2)}), ErrSnapshotFailed)
 	_, err = tx.Commit(ctx)
 	require.ErrorIs(t, err, ErrSnapshotFailed)
 
@@ -77,7 +77,7 @@ func TestCommitUnknownWhenViewRejects(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 	_, err = tx.Commit(ctx)
 	require.NoError(t, err)
 
@@ -85,7 +85,7 @@ func TestCommitUnknownWhenViewRejects(t *testing.T) {
 	require.NoError(t, err)
 	// Forge a snapshot-ID collision with the committed snapshot 1.
 	tx2.w.id = 1
-	require.NoError(t, tx2.Insert("t", 2, Row{Uint64(2)}))
+	require.NoError(t, tx2.Insert(ctx, "t", 2, Row{Uint64(2)}))
 	_, err = tx2.Commit(ctx)
 	require.Error(t, err)
 	var ce *CommitError
@@ -107,7 +107,7 @@ func TestCommitTornOnTrailingAppend(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 
 	fault.Inject("commit.footer.after", func() { _, _ = db.data.Append([]byte{0xAA}) })
 	defer fault.Clear()
@@ -129,7 +129,7 @@ func TestCommitTornOnHeaderWriteFailure(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 
 	fault.Inject("commit.header.before", func() { _ = db.data.Close() })
 	defer fault.Clear()
@@ -153,7 +153,7 @@ func TestCommitTornOnBlockWriteFailure(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 
 	fault.Inject("commit.block.before", func() { _ = db.data.Close() })
 	defer fault.Clear()
@@ -200,8 +200,8 @@ func TestPutRejectedBranches(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 
 	// Duplicate row inside one snapshot.
-	require.NoError(t, tx.Insert("t", 5, Row{Uint64(5)}))
-	err = tx.Insert("t", 5, Row{Uint64(6)})
+	require.NoError(t, tx.Insert(ctx, "t", 5, Row{Uint64(5)}))
+	err = tx.Insert(ctx, "t", 5, Row{Uint64(6)})
 	require.ErrorIs(t, err, ErrAlreadyExists)
 
 	// FULL snapshots reject UPDATE/DELETE even before parent checks.
@@ -239,15 +239,15 @@ func TestDeltaRejectsMissingParentRows(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 	_, err = tx.Commit(ctx)
 	require.NoError(t, err)
 
 	tx2, err := db.Begin(ctx, Latest)
 	require.NoError(t, err)
-	require.ErrorIs(t, tx2.Update("t", 42, Row{Uint64(9)}), ErrNotFound)
-	require.ErrorIs(t, tx2.Delete("t", 42), ErrNotFound)
-	require.ErrorIs(t, tx2.Insert("t", 1, Row{Uint64(2)}), ErrAlreadyExists)
+	require.ErrorIs(t, tx2.Update(ctx, "t", 42, Row{Uint64(9)}), ErrNotFound)
+	require.ErrorIs(t, tx2.Delete(ctx, "t", 42), ErrNotFound)
+	require.ErrorIs(t, tx2.Insert(ctx, "t", 1, Row{Uint64(2)}), ErrAlreadyExists)
 	require.NoError(t, tx2.Rollback())
 }
 
@@ -311,7 +311,7 @@ func TestFullReopenRedefinesSameTable(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, tx.Insert(ctx, "t", 1, Row{Uint64(1)}))
 	_, err = tx.Commit(ctx)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
@@ -322,7 +322,7 @@ func TestFullReopenRedefinesSameTable(t *testing.T) {
 	tx2, err := db2.Begin(ctx, NoParent) // FULL checkpoint over the history
 	require.NoError(t, err)
 	require.NoError(t, tx2.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, tx2.Insert("t", 2, Row{Uint64(2)}))
+	require.NoError(t, tx2.Insert(ctx, "t", 2, Row{Uint64(2)}))
 	snap, err := tx2.Commit(ctx)
 	require.NoError(t, err)
 

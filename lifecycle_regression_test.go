@@ -101,7 +101,7 @@ func TestUnknownCommitFailureRequiresReopen(t *testing.T) {
 	// an unknown outcome after the durability point.
 	tx2, err := db.Begin(ctx, Latest)
 	require.NoError(t, err)
-	require.NoError(t, tx2.Insert("users", 4, Row{Uint64(4), String("user-4"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(400), Scale: 2})}))
+	require.NoError(t, tx2.Insert(ctx, "users", 4, Row{Uint64(4), String("user-4"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(400), Scale: 2})}))
 	_, err = tx2.Commit(ctx)
 	var ce *CommitError
 	require.ErrorAs(t, err, &ce)
@@ -136,7 +136,7 @@ func TestUnknownCommitFailureRequiresReopen(t *testing.T) {
 
 	tx3, err := db2.Begin(ctx, Latest)
 	require.NoError(t, err)
-	require.NoError(t, tx3.Insert("users", 5, Row{Uint64(5), String("user-5"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(500), Scale: 2})}))
+	require.NoError(t, tx3.Insert(ctx, "users", 5, Row{Uint64(5), String("user-5"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(500), Scale: 2})}))
 	_, err = tx3.Commit(ctx)
 	require.NoError(t, err)
 }

@@ -18,7 +18,7 @@ func TestReadLookupNotFoundArms(t *testing.T) {
 	w, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, w.DefineTable("t", []Column{{Name: "id", Type: TypeUint64}}))
-	require.NoError(t, w.Insert("t", 1, Row{Uint64(1)}))
+	require.NoError(t, w.Insert(ctx, "t", 1, Row{Uint64(1)}))
 	snap, err := w.Commit(ctx)
 	require.NoError(t, err)
 
@@ -35,13 +35,13 @@ func TestReadLookupNotFoundArms(t *testing.T) {
 	require.False(t, ok)
 
 	// Blocks: unknown snapshot and unknown table.
-	_, err = db.Blocks(ctx, missing, "t")
+	_, err = db.Blocks(missing, "t")
 	require.ErrorIs(t, err, ErrNotFound)
-	_, err = db.Blocks(ctx, snap, "nope")
+	_, err = db.Blocks(snap, "nope")
 	require.ErrorIs(t, err, ErrNotFound)
 
 	// BlockRange (lo >= hi) and Scan: unknown snapshot.
-	_, err = db.Blocks(ctx, snap, "t")
+	_, err = db.Blocks(snap, "t")
 	require.NoError(t, err)
 	_, err = db.Scan(ctx, missing, "t", ScanOptions{})
 	require.ErrorIs(t, err, ErrNotFound)

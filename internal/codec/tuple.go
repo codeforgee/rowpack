@@ -226,8 +226,20 @@ func (d Decoder) decodeFixedInto(dst []Value, payload []byte) ([]Value, bool) {
 			row[i] = Value{typ: TypeTime, i: x}
 			pos += 8
 		case TypeDateTime:
-			row[i] = Value{typ: TypeDateTime, i: int64(binary.LittleEndian.Uint64(payload[pos:]))}
-			pos += 8
+			row[i] = Value{
+				typ: TypeDateTime,
+				i:   int64(binary.LittleEndian.Uint64(payload[pos:])),
+				u:   uint64(binary.LittleEndian.Uint32(payload[pos+8:])),
+			}
+			pos += 12
+		case TypeDateTimeTZ:
+			row[i] = Value{
+				typ: TypeDateTimeTZ,
+				i:   int64(binary.LittleEndian.Uint64(payload[pos:])),
+				u:   uint64(binary.LittleEndian.Uint32(payload[pos+8:])),
+				tz:  int32(binary.LittleEndian.Uint32(payload[pos+12:])),
+			}
+			pos += 16
 		}
 	}
 	return row, true
@@ -433,6 +445,17 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 			return Value{}, 0, errors.New("truncated float64")
 		}
 		return Float64(math.Float64frombits(binary.LittleEndian.Uint64(raw))), 8, nil
+	case TypeDateTimeTZ:
+		raw, ok := need(16)
+		if !ok {
+			return Value{}, 0, errors.New("truncated datetime_tz")
+		}
+		return Value{
+			typ: TypeDateTimeTZ,
+			i:   int64(binary.LittleEndian.Uint64(raw)),
+			u:   uint64(binary.LittleEndian.Uint32(raw[8:])),
+			tz:  int32(binary.LittleEndian.Uint32(raw[12:])),
+		}, 16, nil
 	case TypeString, TypeBytes:
 		ln, ok := getVarLen(b)
 		if !ok {
@@ -476,11 +499,15 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 		}
 		return TimeValue(TimeOfDay(ns)), 8, nil
 	case TypeDateTime:
-		raw, ok := need(8)
+		raw, ok := need(12)
 		if !ok {
 			return Value{}, 0, errors.New("truncated datetime")
 		}
-		return Value{typ: TypeDateTime, i: int64(binary.LittleEndian.Uint64(raw))}, 8, nil
+		return Value{
+			typ: TypeDateTime,
+			i:   int64(binary.LittleEndian.Uint64(raw)),
+			u:   uint64(binary.LittleEndian.Uint32(raw[8:])),
+		}, 12, nil
 	case TypeDecimal:
 		ln, ok := getVarLen(b)
 		if !ok {
@@ -552,7 +579,12 @@ func appendValue(buf []byte, v Value, limits Limits) ([]byte, error) {
 		}
 		return appendU64(buf, uint64(v.i)), nil
 	case TypeDateTime:
-		return appendU64(buf, uint64(v.i)), nil
+		buf = appendU64(buf, uint64(v.i))
+		return appendU32(buf, uint32(v.u)), nil
+	case TypeDateTimeTZ:
+		buf = appendU64(buf, uint64(v.i))
+		buf = appendU32(buf, uint32(v.u))
+		return appendU32(buf, uint32(v.tz)), nil
 	case TypeDecimal:
 		if v.d.Scale < 0 {
 			return nil, fmt.Errorf("decimal scale %d is negative", v.d.Scale)
@@ -577,8 +609,12 @@ func fixedWidth(t Type) int {
 		return 2
 	case TypeInt32, TypeUint32, TypeFloat32, TypeDate:
 		return 4
-	case TypeInt64, TypeUint64, TypeFloat64, TypeTime, TypeDateTime:
+	case TypeInt64, TypeUint64, TypeFloat64, TypeTime:
 		return 8
+	case TypeDateTime:
+		return 12
+	case TypeDateTimeTZ:
+		return 16
 	}
 	return 0
 }

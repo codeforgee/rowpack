@@ -27,10 +27,11 @@ func (s *Schema) Clone() *Schema {
 
 // Column describes one column of a Schema.
 type Column struct {
-	Name     string
-	Type     Type
-	Nullable bool
-	Scale    int32 // only used when Type == TypeDecimal
+	Name       string
+	Type       Type
+	Nullable   bool
+	Scale      int32 // only used when Type == TypeDecimal
+	PrimaryKey bool  // declared part of the table's primary key (declaration order)
 }
 
 // Validate checks the schema against the given limits and the v1 type rules.
@@ -106,7 +107,8 @@ func isValidType(t Type) bool {
 	case TypeBool, TypeInt8, TypeInt16, TypeInt32, TypeInt64,
 		TypeUint8, TypeUint16, TypeUint32, TypeUint64,
 		TypeFloat32, TypeFloat64, TypeString, TypeBytes,
-		TypeDate, TypeTime, TypeDateTime, TypeDecimal:
+		TypeDate, TypeTime, TypeDateTime, TypeDecimal,
+		TypeDateTimeTZ:
 		return true
 	}
 	return false

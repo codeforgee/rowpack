@@ -239,6 +239,9 @@ const (
 	TypeTime     ValueType = 15
 	TypeDateTime ValueType = 16
 	TypeDecimal  ValueType = 17
+	// TypeDateTimeTZ carries a UTC instant plus the original zone offset in
+	// seconds, so timezone-aware timestamps round-trip byte-faithfully.
+	TypeDateTimeTZ ValueType = 18
 )
 
 // Payload versions for the Metadata payload (Rows moved to the page

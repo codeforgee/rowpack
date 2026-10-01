@@ -37,7 +37,7 @@ func usersSchema() []Column {
 func insertUsers(t testing.TB, tx *Tx, n int) {
 	t.Helper()
 	for i := 1; i <= n; i++ {
-		require.NoError(t, tx.Insert("users", uint64(i), Row{
+		require.NoError(t, tx.Insert(context.Background(), "users", uint64(i), Row{
 			Uint64(uint64(i)), String(fmt.Sprintf("user-%d", i)), Bool(i%2 == 0),
 			DecimalValue(Decimal{Unscaled: big.NewInt(int64(i * 100)), Scale: 2}),
 		}))
@@ -48,11 +48,9 @@ func insertUsers(t testing.TB, tx *Tx, n int) {
 // paths and existing files, Open of a missing store fails with ErrNotFound.
 func TestCreateOpenLifecycle(t *testing.T) {
 	base := filepath.Join(tmpdb(t), "lf")
-	// Extension suffixes on the base path are rejected.
-	_, err := Create(base+".rpk", Options{})
-	require.ErrorIs(t, err, ErrInvalidPath)
-
-	db, err := Create(base, Options{})
+	// A .rpk suffix on the base path is stripped, so the logical name and
+	// the physical file are interchangeable and Path reports the base.
+	db, err := Create(base+".rpk", Options{})
 	require.NoError(t, err)
 	require.False(t, db.ReadOnly())
 	require.Equal(t, base, db.Path())
@@ -105,10 +103,10 @@ func TestFullDeltaRoundTrip(t *testing.T) {
 	// DELTA: update 2, delete 3, insert 11.
 	d, err := db.Begin(ctx, full)
 	require.NoError(t, err)
-	require.NoError(t, d.Update("users", 2, Row{Uint64(2), String("updated-2"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(999), Scale: 2})}))
-	require.NoError(t, d.Delete("users", 3))
-	require.NoError(t, d.Insert("users", 11, Row{Uint64(11), String("new-11"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(1), Scale: 2})}))
-	require.NoError(t, d.Insert("events", 1, Row{Uint64(1)}))
+	require.NoError(t, d.Update(ctx, "users", 2, Row{Uint64(2), String("updated-2"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(999), Scale: 2})}))
+	require.NoError(t, d.Delete(ctx, "users", 3))
+	require.NoError(t, d.Insert(ctx, "users", 11, Row{Uint64(11), String("new-11"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(1), Scale: 2})}))
+	require.NoError(t, d.Insert(ctx, "events", 1, Row{Uint64(1)}))
 	delta, err := d.Commit(ctx)
 	require.NoError(t, err)
 
@@ -203,7 +201,7 @@ func TestReadByTableName(t *testing.T) {
 	require.Nil(t, rows)
 
 	// Blocks + ScanBlocks (block-level raw stream).
-	blks, err := db.Blocks(ctx, full, "users")
+	blks, err := db.Blocks(full, "users")
 	require.NoError(t, err)
 	require.NotEmpty(t, blks)
 	bit, err := db.ScanBlocks(ctx, full, "users", blks[0].BlockID, blks[len(blks)-1].BlockID+1)
@@ -255,7 +253,7 @@ func TestReadBatchInto(t *testing.T) {
 	}))
 	const n = 64
 	for i := 1; i <= n; i++ {
-		require.NoError(t, w.Insert("u", uint64(i), Row{Uint64(uint64(i)), String(fmt.Sprintf("v-%d", i))}))
+		require.NoError(t, w.Insert(ctx, "u", uint64(i), Row{Uint64(uint64(i)), String(fmt.Sprintf("v-%d", i))}))
 	}
 	snap, err := w.Commit(ctx)
 	require.NoError(t, err)
@@ -320,22 +318,22 @@ func TestWriterErrors(t *testing.T) {
 
 	w, _ := db.Begin(ctx, NoParent)
 	// Argument validation.
-	require.ErrorIs(t, w.Insert("users", 0, Row{Uint64(0)}), ErrInvalidArgument)
-	require.ErrorIs(t, w.Delete("users", 0), ErrInvalidArgument)
+	require.ErrorIs(t, w.Insert(ctx, "users", 0, Row{Uint64(0)}), ErrInvalidArgument)
+	require.ErrorIs(t, w.Delete(ctx, "users", 0), ErrInvalidArgument)
 	require.ErrorIs(t, w.DefineTable("", nil), ErrInvalidArgument)
 	require.Error(t, w.DefineTable("x", []Column{{Name: "a", Type: TypeUint64}, {Name: "a", Type: TypeUint64}}), "duplicate column names must be rejected")
 
 	// FULL snapshots reject UPDATE/DELETE.
 	require.NoError(t, w.DefineTable("users", usersSchema()))
-	require.ErrorIs(t, w.Update("users", 1, Row{}), ErrInvalidArgument)
-	require.ErrorIs(t, w.Delete("users", 1), ErrInvalidArgument)
+	require.ErrorIs(t, w.Update(ctx, "users", 1, Row{}), ErrInvalidArgument)
+	require.ErrorIs(t, w.Delete(ctx, "users", 1), ErrInvalidArgument)
 
 	// Unknown table.
-	require.ErrorIs(t, w.Insert("ghost", 1, Row{Uint64(1)}), ErrNotFound)
+	require.ErrorIs(t, w.Insert(ctx, "ghost", 1, Row{Uint64(1)}), ErrNotFound)
 
 	// Duplicate row within the snapshot.
-	require.NoError(t, w.Insert("users", 1, Row{Uint64(1), String("a"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(1), Scale: 2})}))
-	require.ErrorIs(t, w.Insert("users", 1, Row{}), ErrAlreadyExists)
+	require.NoError(t, w.Insert(ctx, "users", 1, Row{Uint64(1), String("a"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(1), Scale: 2})}))
+	require.ErrorIs(t, w.Insert(ctx, "users", 1, Row{}), ErrAlreadyExists)
 
 	// CreateTable idempotence vs conflict.
 	require.NoError(t, w.DefineTable("users", usersSchema()), "identical redefinition is a no-op")
@@ -344,7 +342,7 @@ func TestWriterErrors(t *testing.T) {
 	require.NoError(t, err)
 
 	// After commit, the writer rejects further use.
-	require.ErrorIs(t, w.Insert("users", 2, Row{}), ErrSnapshotCommitted)
+	require.ErrorIs(t, w.Insert(ctx, "users", 2, Row{}), ErrSnapshotCommitted)
 	_, err = w.Commit(ctx)
 	require.ErrorIs(t, err, ErrSnapshotCommitted)
 	require.ErrorIs(t, w.Rollback(), ErrSnapshotCommitted)
@@ -380,9 +378,9 @@ func TestWriterErrors(t *testing.T) {
 	d, err := db.Begin(ctx, full)
 	require.NoError(t, err)
 	validRow := Row{Uint64(1), String("x"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(0), Scale: 2})}
-	require.ErrorIs(t, d.Insert("users", 1, validRow), ErrAlreadyExists, "strict: row exists in parent")
-	require.ErrorIs(t, d.Update("users", 500, validRow), ErrNotFound, "strict: row missing in parent")
-	require.ErrorIs(t, d.Delete("users", 500), ErrNotFound)
+	require.ErrorIs(t, d.Insert(ctx, "users", 1, validRow), ErrAlreadyExists, "strict: row exists in parent")
+	require.ErrorIs(t, d.Update(ctx, "users", 500, validRow), ErrNotFound, "strict: row missing in parent")
+	require.ErrorIs(t, d.Delete(ctx, "users", 500), ErrNotFound)
 	require.NoError(t, d.Rollback())
 
 	// Read-only store rejects writes.
@@ -410,7 +408,7 @@ func TestFullSnapshotRequiresOwnSchema(t *testing.T) {
 	// The chain resolves users, but this FULL layer defines nothing.
 	ck, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
-	require.NoError(t, ck.Insert("users", 2, Row{
+	require.NoError(t, ck.Insert(ctx, "users", 2, Row{
 		Uint64(2), String("user-2"), Bool(true),
 		DecimalValue(Decimal{Unscaled: big.NewInt(200), Scale: 2}),
 	}))
@@ -428,7 +426,7 @@ func TestFullSnapshotRequiresOwnSchema(t *testing.T) {
 	ck, err = db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, ck.DefineTable("users", usersSchema()))
-	require.NoError(t, ck.Insert("users", 2, Row{
+	require.NoError(t, ck.Insert(ctx, "users", 2, Row{
 		Uint64(2), String("user-2"), Bool(true),
 		DecimalValue(Decimal{Unscaled: big.NewInt(200), Scale: 2}),
 	}))
@@ -450,8 +448,8 @@ func TestValidationNone(t *testing.T) {
 	full, _ := w.Commit(ctx)
 	d, _ := db.Begin(ctx, full)
 	// Strict would reject; ValidationNone allows the stale-write pattern.
-	require.NoError(t, d.Insert("users", 1, Row{Uint64(1), String("dup"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(0), Scale: 2})}))
-	require.NoError(t, d.Update("users", 500, Row{Uint64(500), String("x"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(0), Scale: 2})}))
+	require.NoError(t, d.Insert(ctx, "users", 1, Row{Uint64(1), String("dup"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(0), Scale: 2})}))
+	require.NoError(t, d.Update(ctx, "users", 500, Row{Uint64(500), String("x"), Bool(false), DecimalValue(Decimal{Unscaled: big.NewInt(0), Scale: 2})}))
 	_, err := d.Commit(ctx)
 	require.NoError(t, err)
 }
@@ -467,7 +465,7 @@ func TestSchemaVersioning(t *testing.T) {
 	full1, _ := w.Commit(ctx)
 
 	d, _ := db.Begin(ctx, full1)
-	require.NoError(t, d.Insert("users", 4, Row{Uint64(4), String("u4"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(4), Scale: 2})}))
+	require.NoError(t, d.Insert(ctx, "users", 4, Row{Uint64(4), String("u4"), Bool(true), DecimalValue(Decimal{Unscaled: big.NewInt(4), Scale: 2})}))
 	delta, _ := d.Commit(ctx)
 
 	// New FULL checkpoint: same schema is re-emitted for its own layer.
@@ -499,7 +497,7 @@ func TestStatsSanity(t *testing.T) {
 	insertUsers(t, w, 10)
 	full, _ := w.Commit(ctx)
 	d, _ := db.Begin(ctx, full)
-	require.NoError(t, d.Delete("users", 1))
+	require.NoError(t, d.Delete(ctx, "users", 1))
 	_, err := d.Commit(ctx)
 	require.NoError(t, err)
 
@@ -640,13 +638,13 @@ func TestBlocksMaxRowIDOverflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := RowID(^uint64(0))
-	if err := tx.Insert("t", id, Row{Int64(1)}); err != nil {
+	if err := tx.Insert(context.Background(), "t", id, Row{Int64(1)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	blocks, err := s.Blocks(context.Background(), SnapshotID(1), "t")
+	blocks, err := s.Blocks(SnapshotID(1), "t")
 	if err != nil {
 		t.Fatal(err)
 	}

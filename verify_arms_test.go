@@ -29,7 +29,7 @@ func TestVerifyReportsClosed(t *testing.T) {
 	db := armCommittedStore(t)
 	require.NoError(t, db.Close())
 
-	_, err := db.Verify(ctx, VerifyFull)
+	_, err := db.Verify(ctx, VerifyFull, VerifyScope{})
 	require.ErrorIs(t, err, ErrClosed)
 }
 
@@ -47,7 +47,7 @@ func TestVerifyRejectsUnloadableBlock(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, db.Close()) }()
 
-	_, err = db.Verify(ctx, VerifyFull)
+	_, err = db.Verify(ctx, VerifyFull, VerifyScope{})
 	require.ErrorIs(t, err, ErrCorruptData)
 }
 
@@ -86,7 +86,7 @@ func TestVerifyRejectsUnparsableMetadataPayload(t *testing.T) {
 		}))
 	})
 
-	_, err = db.Verify(ctx, VerifyFull)
+	_, err = db.Verify(ctx, VerifyFull, VerifyScope{})
 	require.ErrorIs(t, err, ErrCorruptData)
 }
 
@@ -120,6 +120,6 @@ func TestVerifyRejectsForeignMetadataPayload(t *testing.T) {
 		}))
 	})
 
-	_, err = db.Verify(ctx, VerifyFull)
+	_, err = db.Verify(ctx, VerifyFull, VerifyScope{})
 	require.ErrorIs(t, err, ErrCorruptData)
 }

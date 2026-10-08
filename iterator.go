@@ -163,12 +163,17 @@ func (a *strArena) reset() { a.chunk = a.chunk[:0] }
 // finalization: defer Close immediately after Scan.
 func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opts ScanOptions) (*Iterator, error) {
 	s.readMu.RLock()
-	keepLock := false
-	defer func() {
-		if !keepLock {
-			s.readMu.RUnlock()
-		}
-	}()
+	it, err := s.scanLocked(ctx, snapshot, table, opts)
+	if err != nil {
+		s.readMu.RUnlock()
+		return nil, err
+	}
+	return it, nil // the read lock transfers to the iterator
+}
+
+// scanLocked builds the merge-mode iterator. The caller holds the read lock;
+// on success it transfers to the returned iterator (readHeld).
+func (s *Store) scanLocked(ctx context.Context, snapshot SnapshotID, table string, opts ScanOptions) (*Iterator, error) {
 	rc, err := s.resolveRead(snapshot, table)
 	if err != nil {
 		return nil, err
@@ -199,7 +204,6 @@ func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opt
 	// GC is not guaranteed to collect (see the field comment above).
 	it.arena = &strArena{}
 	it.sink = strArenaSink(it.arena)
-	keepLock = true
 	runtime.SetFinalizer(it, (*Iterator).finish)
 	return it, nil
 }

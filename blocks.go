@@ -93,12 +93,17 @@ func (s *Store) blocksByTable(view *index.View, snap uint64, tid TableID) ([]Blo
 // iterator is released by its GC finalizer, but defer Close regardless.
 func (s *Store) ScanBlocks(ctx context.Context, snap SnapshotID, table string, lo, hi uint64) (*Iterator, error) {
 	s.readMu.RLock()
-	keepLock := false
-	defer func() {
-		if !keepLock {
-			s.readMu.RUnlock()
-		}
-	}()
+	it, err := s.scanBlocksLocked(ctx, snap, table, lo, hi)
+	if err != nil {
+		s.readMu.RUnlock()
+		return nil, err
+	}
+	return it, nil // the read lock transfers to the iterator
+}
+
+// scanBlocksLocked builds the block-scan iterator. The caller holds the read
+// lock; on success it transfers to the returned iterator (readHeld).
+func (s *Store) scanBlocksLocked(ctx context.Context, snap SnapshotID, table string, lo, hi uint64) (*Iterator, error) {
 	rc, err := s.resolveRead(snap, table)
 	if err != nil {
 		return nil, err
@@ -132,7 +137,6 @@ func (s *Store) ScanBlocks(ctx context.Context, snap SnapshotID, table string, l
 	}
 	it.arena = &strArena{} // heap-allocated: see the arena field comment in iterator.go
 	it.sink = strArenaSink(it.arena)
-	keepLock = true
 	runtime.SetFinalizer(it, (*Iterator).finish)
 	return it, nil
 }

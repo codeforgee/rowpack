@@ -16,6 +16,16 @@ type Lock struct {
 
 // Acquire takes an exclusive lock on path (creating it if needed). It blocks
 // until the lock is free or returns an error if the platform cannot lock.
+//
+// The lock file is intentionally never removed, not even on Release: the lock
+// lives on the inode and the path is only the rendezvous point. Unlinking on
+// release opens the classic race where a waiter holding an fd on the old inode
+// and a newcomer creating a fresh inode both believe they hold the lock. The
+// kernel releases the lock when the process dies, so a leftover file is
+// harmless and simply re-locked by the next opener. The lock file lives next
+// to the store data, so any location permitted for the store (including macOS
+// App Sandbox containers) permits it too — flock itself is not
+// sandbox-restricted.
 func Acquire(path string) (*Lock, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {

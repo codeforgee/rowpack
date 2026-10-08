@@ -28,7 +28,9 @@ type Lock struct {
 	ov syscall.Overlapped
 }
 
-// Acquire takes an exclusive, non-blocking lock on path.
+// Acquire takes an exclusive, non-blocking lock on path. The lock file is
+// intentionally never removed (see lock_unix.go Acquire for the inode-reuse
+// race this avoids).
 func Acquire(path string) (*Lock, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {

@@ -1,11 +1,11 @@
 package index
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 
 	"github.com/codeforgee/rowpack/internal/block"
 	"github.com/codeforgee/rowpack/internal/format"
@@ -49,7 +49,12 @@ func (b *Builder) buildPages(crypto *ChunkCrypto, level int, pageSeqBase uint32)
 		b.pageCount = 0
 		return nil, nil
 	}
-	sortRowIndexEntries(b.rows)
+	slices.SortFunc(b.rows, func(a, b format.RowIndexEntry) int {
+		if c := cmp.Compare(a.TableID, b.TableID); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.RowID, b.RowID)
+	})
 	out := make([]pageBuild, 0, (n+indexPageEntryCount-1)/indexPageEntryCount)
 	// Partition into SINGLE-TABLE pages: a page never splits a table run. This
 	// makes each RowIndexFenceEntry a per-table key (TableID + Min/Max RowID fall
@@ -102,16 +107,6 @@ func appendChange(dst []byte, ordinal uint32, packed uint8) []byte {
 	shift := (ordinal % 4) * 2
 	dst[byteIdx] |= packed << shift
 	return dst
-}
-
-func sortRowIndexEntries(entries []format.RowIndexEntry) {
-	sort.Slice(entries, func(i, j int) bool {
-		a, b := entries[i], entries[j]
-		if a.TableID != b.TableID {
-			return a.TableID < b.TableID
-		}
-		return a.RowID < b.RowID
-	})
 }
 
 func encodePage(entries []format.RowIndexEntry, pageSize int) (page []byte, entryCount int, minRowID, maxRowID uint64, err error) {

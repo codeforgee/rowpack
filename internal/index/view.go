@@ -5,6 +5,7 @@
 package index
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -237,7 +238,7 @@ func (v *View) Snapshots() []*SnapshotMeta {
 	for _, s := range v.snapshots {
 		out = append(out, s)
 	}
-	sortSnapshots(out)
+	slices.SortFunc(out, func(a, b *SnapshotMeta) int { return cmp.Compare(a.ID, b.ID) })
 	return out
 }
 
@@ -508,7 +509,7 @@ func (a *viewApply) applyMetadata(metadata []format.MetadataIndexEntry) error {
 		typeMap[me.RecordType] = append(typeMap[me.RecordType], me.ObjectID)
 	}
 	for k := range typeMap {
-		sortU64s(typeMap[k])
+		slices.Sort(typeMap[k])
 	}
 	a.next.metadata[a.snapID] = metaMap
 	a.next.metadataByType[a.snapID] = typeMap
@@ -751,7 +752,7 @@ func (sh *rowShard) prepare(entries []RowKeyLoc) error {
 		}
 	}
 	if !sorted {
-		sortKeys(entries)
+		slices.SortFunc(entries, func(a, b RowKeyLoc) int { return cmp.Compare(a.RowID, b.RowID) })
 	}
 	n := len(entries)
 	sh.rowIDs = make([]uint64, n)
@@ -793,20 +794,4 @@ func (v *View) shallowCopy() *View {
 	maps.Copy(nv.rows, v.rows)
 	nv.memoryBytes = v.memoryBytes
 	return nv
-}
-
-func sortU64s(s []uint64) {
-	slices.Sort(s)
-}
-
-func sortSnapshots(s []*SnapshotMeta) {
-	sort.Slice(s, func(i, j int) bool {
-		return s[i].ID < s[j].ID
-	})
-}
-
-func sortKeys(s []RowKeyLoc) {
-	sort.Slice(s, func(i, j int) bool {
-		return s[i].RowID < s[j].RowID
-	})
 }

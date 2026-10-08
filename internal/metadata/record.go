@@ -1,9 +1,11 @@
 package metadata
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/codeforgee/rowpack/internal/format"
 )
@@ -40,7 +42,9 @@ func (r *Record) Encode(schema KnownFieldSchema) ([]byte, error) {
 	}
 	fields := make([]Field, len(r.Fields))
 	copy(fields, r.Fields)
-	sortFields(fields)
+	// Canonical order is by field ID, stable: fields sharing an ID keep their
+	// original relative order (the encoder previously used an insertion sort).
+	slices.SortStableFunc(fields, func(a, b Field) int { return cmp.Compare(a.ID, b.ID) })
 	if err := checkCanonical(fields); err != nil {
 		return nil, err
 	}
@@ -185,15 +189,6 @@ func ensureSingle(fields []Field, idx int) error {
 		}
 	}
 	return nil
-}
-
-func sortFields(fs []Field) {
-	// Insertion sort by ID, stable (order within same ID preserved).
-	for i := 1; i < len(fs); i++ {
-		for j := i; j > 0 && fs[j].ID < fs[j-1].ID; j-- {
-			fs[j], fs[j-1] = fs[j-1], fs[j]
-		}
-	}
 }
 
 // FieldByID returns the first field with the given ID, or nil.

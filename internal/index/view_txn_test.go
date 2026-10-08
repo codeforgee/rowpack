@@ -485,28 +485,6 @@ func TestApplyStreamingWithBlocksAndMeta(t *testing.T) {
 
 // --- misc helpers ------------------------------------------------------------
 
-func TestSortHelpers(t *testing.T) {
-	u := []uint64{3, 1, 2}
-	sortU64s(u)
-	if u[0] != 1 || u[1] != 2 || u[2] != 3 {
-		t.Fatalf("sortU64s = %v", u)
-	}
-
-	locs := []RowKeyLoc{
-		{RowID: 3}, {RowID: 1}, {RowID: 2},
-	}
-	sortKeys(locs)
-	if locs[0].RowID != 1 || locs[2].RowID != 3 {
-		t.Fatalf("sortKeys = %v", locs)
-	}
-
-	metas := []*SnapshotMeta{{ID: 5}, {ID: 2}, {ID: 9}}
-	sortSnapshots(metas)
-	if metas[0].ID != 2 || metas[2].ID != 9 {
-		t.Fatalf("sortSnapshots = %v", metas)
-	}
-}
-
 func TestDecodeIndexPage(t *testing.T) {
 	rows := riSeq(64, 8)
 	page, n, _, _, err := encodePage(rows, indexPageEntryCount)

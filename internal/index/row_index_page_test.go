@@ -1,9 +1,11 @@
 package index
 
 import (
+	"cmp"
 	"encoding/binary"
 	"math"
 	"math/rand"
+	"slices"
 	"strings"
 	"testing"
 
@@ -127,7 +129,12 @@ func TestRowIndexPageRandomPreSorted(t *testing.T) {
 	for i, id := range ids {
 		rows[i] = riEntry(1, id, id/50, uint32(id%50), format.ChangeInsert)
 	}
-	sortRowIndexEntries(rows)
+	slices.SortFunc(rows, func(a, b format.RowIndexEntry) int {
+		if c := cmp.Compare(a.TableID, b.TableID); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.RowID, b.RowID)
+	})
 	page, _, _, _, _ := encodePage(rows, indexPageEntryCount)
 	got, err := decodePage(page)
 	require.NoError(t, err, "decode")

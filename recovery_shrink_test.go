@@ -175,11 +175,12 @@ func TestRecoverRejectsForeignBlockOnRebuild(t *testing.T) {
 	require.ErrorContains(t, err, "snapshot mismatch")
 }
 
-// TestRecoverIgnoresFooterTxnOffsets: the footer's txn offsets are advisory —
-// the walk derives the txn extent from the txn header itself (its BodyBytes),
-// so a forged footer range cannot push recovery into reading outside the file.
-func TestRecoverIgnoresFooterTxnOffsets(t *testing.T) {
-	ctx := context.Background()
+// TestRecoverRejectsInconsistentFooterOffsets: the footer is the commit
+// authority, so its relative offsets must be internally consistent
+// (OffsetsAreConsistent). A footer whose range was forged past EOF or zeroed
+// is mid-file corruption, not an advisory mismatch: recovery refuses the
+// store instead of deriving extents from untrusted bytes.
+func TestRecoverRejectsInconsistentFooterOffsets(t *testing.T) {
 	db := armCommittedStore(t)
 	c := firstCommitted(t, db)
 
@@ -199,8 +200,6 @@ func TestRecoverIgnoresFooterTxnOffsets(t *testing.T) {
 	_, err = f.WriteAt(fb[:], c.footerOff)
 	require.NoError(t, err)
 
-	require.NoError(t, db.recover())
-	snaps, err := db.ListSnapshots(ctx)
-	require.NoError(t, err)
-	require.Len(t, snaps, 1, "the snapshot is still committed; the footer range did not move it")
+	err = db.recover()
+	require.ErrorContains(t, err, "footer offsets inconsistent")
 }

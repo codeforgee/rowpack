@@ -337,6 +337,14 @@ func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, n
 			if ftr.SnapshotID != c.snapshotID {
 				return c, false, 0, fmt.Errorf("rowpack: mid-file corruption: footer snapshot %d != header snapshot %d at %d", ftr.SnapshotID, c.snapshotID, cur)
 			}
+			// The footer is the commit authority: its relative offsets must be
+			// internally consistent (OffsetsAreConsistent — commit.writeFooter
+			// derives every field from resolved offsets, so a committed footer
+			// always satisfies this). A violation means these bytes were not
+			// written by a full commit: hard error, never a recoverable tail.
+			if !ftr.OffsetsAreConsistent() {
+				return c, false, 0, fmt.Errorf("rowpack: mid-file corruption: footer offsets inconsistent at %d", cur)
+			}
 			// Footer range disambiguation: an empty txn (no blocks) sees the
 			// IndexTxnHeader immediately after the SnapshotHeader, so
 			// c.txnStart is set while c.blocksEnd is still the header end.

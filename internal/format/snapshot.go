@@ -183,8 +183,9 @@ func (f *SnapshotFooter) Unmarshal(src []byte) error {
 //	SnapshotEndOffset == IndexTxnEndOffset + SnapshotFooterSize
 //
 // An empty transaction (no blocks) has BlocksEndOffset == IndexTxnStartOffset
-// == BlocksStartOffset. Callers additionally bound the minimum offset by the
-// file header size; this method validates relative consistency only.
+// == BlocksStartOffset. Recovery enforces this at footer acceptance
+// (walkSnapshot); callers additionally bound the minimum offset by the file
+// header size — the method validates relative consistency only.
 func (f *SnapshotFooter) OffsetsAreConsistent() bool {
 	if f.SnapshotStartOffset == 0 {
 		return false

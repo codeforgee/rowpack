@@ -420,6 +420,11 @@ func (s *Store) setupEncryption(dataHdr format.DataFileHeader) error {
 // hand over either the logical store name or the physical file; the extension
 // is appended exactly once.
 func storePaths(basePath string) (base, data string, err error) {
+	// Guard before Clean: Clean("") is ".", which would silently turn an
+	// empty base into a file named ".rpk" in the working directory.
+	if basePath == "" {
+		return "", "", fmt.Errorf("%w: base path %q is empty", ErrInvalidPath, basePath)
+	}
 	base = strings.TrimSuffix(strings.TrimSuffix(filepath.Clean(basePath), ".rpi"), ".rpk")
 	if base == "" {
 		return "", "", fmt.Errorf("%w: base path %q is empty", ErrInvalidPath, basePath)

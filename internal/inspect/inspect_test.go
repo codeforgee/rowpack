@@ -232,6 +232,8 @@ func TestValueRendering(t *testing.T) {
 		{rowpack.DateValue(rowpack.NewDate(dt)), "2026-02-03"},
 		{rowpack.TimeValue(tod), "13:45:06.123456789"},
 		{rowpack.DateTime(dt), "2026-02-03T04:05:06.000000007Z"},
+		{rowpack.DateTimeTZ(time.Date(2026, 8, 6, 15, 4, 5, 123456789, time.FixedZone("+08", 8*3600))),
+			"2026-08-06T15:04:05.123456789+08:00"},
 		{rowpack.DecimalValue(dec), "123450/4"},
 		{rowpack.DecimalValue(rowpack.Decimal{Unscaled: big.NewInt(0), Scale: 0}), "0/0"},
 	}

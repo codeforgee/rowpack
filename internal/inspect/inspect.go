@@ -277,6 +277,11 @@ func Value(v rowpack.Value) string {
 	case rowpack.TypeDateTime:
 		x, _ := v.DateTimeValue()
 		return x.UTC().Format(time.RFC3339Nano)
+	case rowpack.TypeDateTimeTZ:
+		x, _ := v.DateTimeTZValue()
+		// Render in the value's own zone so the stored offset survives;
+		// converting to UTC would discard the fact the column exists to keep.
+		return x.Format(time.RFC3339Nano)
 	case rowpack.TypeDecimal:
 		d, _ := v.Decimal()
 		return fmt.Sprintf("%s/%d", d.Unscaled.String(), d.Scale)

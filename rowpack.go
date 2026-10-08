@@ -101,7 +101,7 @@ type Store struct {
 	// readMu guards Close against in-flight reads (RLock per read op).
 	readMu sync.RWMutex
 	state  atomic.Pointer[publishedState]
-	writer atomic.Pointer[Writer]
+	writer atomic.Pointer[writer]
 	closed atomic.Bool
 
 	// mustReopen latches when a commit fails with an unknown outcome
@@ -307,7 +307,7 @@ func (s *Store) Close() error {
 	defer s.writeMu.Unlock()
 	var errs []error
 	if w := s.writer.Load(); w != nil {
-		if err := w.abort(); err != nil && !errors.Is(err, ErrSnapshotCommitted) {
+		if err := w.abortLocked(); err != nil && !errors.Is(err, ErrSnapshotCommitted) {
 			errs = append(errs, err)
 		}
 	}

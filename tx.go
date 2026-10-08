@@ -33,7 +33,7 @@ type Change struct {
 // callers do not need to retain their source rows or Change batches after a
 // method returns.
 type Tx struct {
-	w   *Writer
+	w   *writer
 	ctx context.Context
 }
 
@@ -71,10 +71,10 @@ func (s *Store) Begin(ctx context.Context, parent SnapshotID) (*Tx, error) {
 }
 
 // ID returns the snapshot ID reserved for this transaction.
-func (tx *Tx) ID() SnapshotID { return tx.w.ID() }
+func (tx *Tx) ID() SnapshotID { return tx.w.snapshotID() }
 
 // Parent returns NoParent for a FULL transaction or its DELTA parent.
-func (tx *Tx) Parent() SnapshotID { return tx.w.Parent() }
+func (tx *Tx) Parent() SnapshotID { return tx.w.parentID() }
 
 // SetMeta attaches this snapshot's meta block: one opaque byte block per
 // snapshot for "whole-block, once-per-snapshot" information the caller owns —
@@ -85,7 +85,7 @@ func (tx *Tx) Parent() SnapshotID { return tx.w.Parent() }
 // and as often as needed: the last call wins, the value is published
 // atomically with the rest of the snapshot, and nil clears it. A snapshot that
 // sets nothing carries no meta block and leaves its ancestors' value visible.
-func (tx *Tx) SetMeta(value []byte) error { return tx.w.SetMeta(value) }
+func (tx *Tx) SetMeta(value []byte) error { return tx.w.setMeta(value) }
 
 // DefineTable defines a table in the default ns (NSUser).
 func (tx *Tx) DefineTable(name string, columns []Column) error {
@@ -104,19 +104,19 @@ func (tx *Tx) DefineTableIn(ns, name string, columns []Column) error {
 // consistency with the rest of the API; like the writer it is not observed
 // mid-write (abort via Rollback or Close).
 func (tx *Tx) Insert(ctx context.Context, table string, id RowID, row Row) error {
-	return tx.w.Insert(ctx, table, id, row)
+	return tx.w.insert(ctx, table, id, row)
 }
 
 // Update records the complete replacement value of an existing row. ctx is
 // accepted for signature consistency; it is not observed mid-write.
 func (tx *Tx) Update(ctx context.Context, table string, id RowID, row Row) error {
-	return tx.w.Update(ctx, table, id, row)
+	return tx.w.update(ctx, table, id, row)
 }
 
 // Delete records removal of an existing row. ctx is accepted for signature
 // consistency; it is not observed mid-write.
 func (tx *Tx) Delete(ctx context.Context, table string, id RowID) error {
-	return tx.w.Delete(ctx, table, id)
+	return tx.w.delete(ctx, table, id)
 }
 
 // Apply dispatches one typed row mutation. ctx is accepted for signature
@@ -172,9 +172,9 @@ func (tx *Tx) SealTable(table string) error {
 
 // Commit publishes the transaction as a new snapshot.
 func (tx *Tx) Commit(ctx context.Context) (SnapshotID, error) {
-	return tx.w.Commit(ctx)
+	return tx.w.commit(ctx)
 }
 
 // Rollback discards the transaction. It is safe to defer immediately after
 // Begin; after a successful Commit it returns ErrSnapshotCommitted.
-func (tx *Tx) Rollback() error { return tx.w.Abort() }
+func (tx *Tx) Rollback() error { return tx.w.abort() }

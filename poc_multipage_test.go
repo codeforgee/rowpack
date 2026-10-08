@@ -25,7 +25,7 @@ func setupMultiPage(t *testing.T) (*Store, SnapshotID, int) {
 		{Name: "payload", Type: TypeString},
 	}))
 	const n = 200
-	for i := 0; i < n; i++ {
+	for i := range n {
 		require.NoError(t, tx.Insert(ctx, "t", RowID(i+1), Row{
 			Uint64(uint64(i + 1)),
 			String(fmt.Sprintf("payload-%04d-%s", i, "0123456789abcdef0123456789abcdef")),
@@ -186,10 +186,7 @@ func TestScanStartSeekMultiLayer(t *testing.T) {
 		// Expected: visible ids in [max(start,1), end) from FULL(1..100) ∪
 		// DELTA(201..210), minus the deleted 1..20.
 		var want []RowID
-		lo := tc.start
-		if lo < 1 {
-			lo = 1
-		}
+		lo := max(tc.start, 1)
 		for id := lo; tc.end == 0 || id < tc.end; id++ {
 			if id > 210 {
 				break

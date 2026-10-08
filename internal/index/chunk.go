@@ -162,7 +162,7 @@ func emitEntryChunks(cc *chunkWriter, kind uint8, n int, add func(dst []byte, i 
 		return nil
 	}
 	cb := &chunkBuild{kind: kind}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		cb.raw = add(cb.raw, i)
 		cb.entries++
 		if cb.entries >= format.IndexChunkTargetEntries || len(cb.raw) >= format.IndexChunkTargetRawBytes {
@@ -805,10 +805,7 @@ func (p *pageParser) parse() (crc uint32, rows uint64, err error) {
 		p.rowCount += uint64(len(entries))
 		p.plainCRC = format.CRC32CConcat(p.plainCRC, pageRaw)
 		for start := 0; start < len(entries); start += rowBatchSize {
-			end := start + rowBatchSize
-			if end > len(entries) {
-				end = len(entries)
-			}
+			end := min(start+rowBatchSize, len(entries))
 			if err := p.sink.AddRows(entries[start:end]); err != nil {
 				return 0, 0, fmt.Errorf("rowpack: row index page %d add rows: %w", i, err)
 			}

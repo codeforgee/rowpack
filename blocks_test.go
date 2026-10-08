@@ -22,8 +22,8 @@ func TestBlocksSpanTiling(t *testing.T) {
 	const batches = 5
 	const perBatch = 50
 	rowID := uint64(0)
-	for b := 0; b < batches; b++ {
-		for i := 0; i < perBatch; i++ {
+	for range batches {
+		for range perBatch {
 			rowID++
 			require.NoError(t, tx.Insert(ctx, "t", rowID, Row{Int64(int64(rowID)), Uint64(uint64(rowID * 7))}))
 		}
@@ -76,7 +76,7 @@ func TestSealTableEncryptedWholeContainer(t *testing.T) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "v", Type: TypeString}}))
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		require.NoError(t, tx.Insert(ctx, "t", uint64(i+1), Row{String("row")}))
 		require.NoError(t, tx.SealTable("t"))
 	}

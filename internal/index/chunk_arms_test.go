@@ -50,7 +50,7 @@ func TestBuildStoredBodyPropagatesSealFailure(t *testing.T) {
 
 	t.Run("tail chunk", func(t *testing.T) {
 		b := testBuilder(t, 1)
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			require.NoError(t, b.AddMetadata(armMetaEntry(uint64(i)+1)))
 		}
 		_, _, _, err := b.BuildStoredBody(crypto, 3, nil)
@@ -61,7 +61,7 @@ func TestBuildStoredBodyPropagatesSealFailure(t *testing.T) {
 		// Exactly one target worth of entries: the cut fires mid-stream, so the
 		// refusal surfaces from the cut rather than from the tail add.
 		b := testBuilder(t, 1)
-		for i := 0; i < format.IndexChunkTargetEntries; i++ {
+		for i := range format.IndexChunkTargetEntries {
 			require.NoError(t, b.AddMetadata(armMetaEntry(uint64(i)+1)))
 		}
 		_, _, _, err := b.BuildStoredBody(crypto, 3, nil)
@@ -73,7 +73,7 @@ func TestBuildStoredBodyPropagatesSealFailure(t *testing.T) {
 // threshold must not leave an empty trailing chunk behind.
 func TestBuildStoredBodyEndsOnAChunkCut(t *testing.T) {
 	b := testBuilder(t, 1)
-	for i := 0; i < format.IndexChunkTargetEntries; i++ {
+	for i := range format.IndexChunkTargetEntries {
 		require.NoError(t, b.AddMetadata(armMetaEntry(uint64(i)+1)))
 	}
 	sb, err := (&bodyParser{region: armBodyOfBuilder(t, b), snapshotID: 1}).parse()

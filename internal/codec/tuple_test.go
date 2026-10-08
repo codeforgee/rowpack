@@ -112,7 +112,7 @@ func TestEncodeIntoReuse(t *testing.T) {
 	require.NoError(t, schema.Validate(DefaultLimits()))
 
 	var buf []byte
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		row := []Value{Uint64(uint64(i)), Int64(int64(i * 10))}
 		var err error
 		buf, err = testCodec.EncodeInto(schema, row, buf)
@@ -161,7 +161,7 @@ func TestDecodeIntoReuse(t *testing.T) {
 	require.NoError(t, err)
 
 	var dst []Value
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		decoded, err := decodeTestBodyInto(t, testCodec, dst, schema, encoded)
 		require.NoError(t, err)
 		require.Equal(t, uint64(42), decoded[0].u)
@@ -237,7 +237,7 @@ func TestPreparedDecoderBatch(t *testing.T) {
 	decoder, err := testCodec.CompileDecoder(schema)
 	require.NoError(t, err)
 	var bodies [][]byte
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		body, err := testCodec.EncodeInto(schema, []Value{Uint64(uint64(i + 1)), Int32(int32(i * 10))}, nil)
 		require.NoError(t, err)
 		bodies = append(bodies, body)
@@ -249,7 +249,7 @@ func TestPreparedDecoderBatch(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, prefix[0], got[0])
 	require.Len(t, got, 1+3*2)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		id, ok := got[1+i*2].Uint64()
 		require.True(t, ok)
 		require.Equal(t, uint64(i+1), id)

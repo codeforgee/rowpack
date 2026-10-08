@@ -21,7 +21,7 @@ func TestArenaRotateLargeStrings(t *testing.T) {
 	require.NoError(t, tx.DefineTable("t", []Column{{Name: "a", Type: TypeString}}))
 
 	big := make([]byte, 0, 128<<10)
-	for i := 0; i < 128<<10; i++ {
+	for i := range 128 << 10 {
 		big = append(big, byte('a'+i%26))
 	}
 	want := map[RowID]string{}
@@ -82,7 +82,7 @@ func TestArenaRotateLargeStrings(t *testing.T) {
 	rids := make([]RowID, 0, 20)
 	tx2, err := s.Begin(ctx, 1)
 	require.NoError(t, err)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		id := RowID(1000 + i)
 		sz := 1 << uint(10+r.Intn(14)) // 1KiB..16MiB
 		b := make([]byte, sz)

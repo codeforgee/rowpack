@@ -96,10 +96,6 @@ func (c *RowsContainer) RetainedLen() int64 {
 	return c.retainedBytes
 }
 
-func rowsPageRetainedBytes(p *RowsPage) int64 {
-	return int64(len(p.raw)) + int64(len(p.ids))*8 + int64(len(p.ends))*4 + int64(len(p.vers))*4
-}
-
 // RecordsRegionStart is the byte offset (within stored) where the first page's
 // stored bytes begin.
 func (c *RowsContainer) RecordsRegionStart() int {
@@ -321,10 +317,7 @@ func (c *RowsContainer) decompress(i int, buf *rawBuf) ([]byte, error) {
 		raw = buf.data[:len(stored)]
 		copy(raw, stored)
 	} else {
-		maxOut := c.limits.MaxRawBytes
-		if dir.RawSize < maxOut {
-			maxOut = dir.RawSize
-		}
+		maxOut := min(dir.RawSize, c.limits.MaxRawBytes)
 		var err error
 		raw, err = decompressZstd(buf.data, stored, maxOut)
 		if err != nil {
@@ -392,7 +385,9 @@ func (c *RowsContainer) pageOwned(i int) (*RowsPage, error) {
 		return existing, nil
 	}
 	c.pages[i] = p
-	c.retainedBytes += rowsPageRetainedBytes(p)
+	// A page's retained bytes: raw payload + the columnar row slices
+	// (RowID 8B, page-end 4B, schema version 4B per row).
+	c.retainedBytes += int64(len(p.raw)) + int64(len(p.ids))*8 + int64(len(p.ends))*4 + int64(len(p.vers))*4
 	// Install and LRU accounting update under one pagesMu critical section:
 	// two goroutines memoizing different pages of the same container must not
 	// apply their absolute retained sizes out of order (a stale, smaller

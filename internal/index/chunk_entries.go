@@ -264,7 +264,7 @@ func validateEntryEnums(e *format.MetadataIndexEntry) error {
 func decodeMetadataChunk(raw []byte, count uint32, snapshotID uint64, add func(format.MetadataIndexEntry) error) error {
 	s := chunkStream{src: raw}
 	var prev format.MetadataIndexEntry
-	for i := uint32(0); i < count; i++ {
+	for i := range count {
 		var e format.MetadataIndexEntry
 		if i == 0 {
 			v, err := s.uvarint()
@@ -374,7 +374,7 @@ func validateBlockEntryEnums(e *format.BlockIndexEntry) error {
 func decodeBlockChunk(raw []byte, count uint32, snapshotID uint64, add func(format.BlockIndexEntry) error) error {
 	s := chunkStream{src: raw}
 	var prev format.BlockIndexEntry
-	for i := uint32(0); i < count; i++ {
+	for i := range count {
 		var e format.BlockIndexEntry
 		if i == 0 {
 			blk, err := s.uvarint()

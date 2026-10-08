@@ -3,6 +3,7 @@ package rowpack
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/codeforgee/rowpack/internal/codec"
@@ -49,19 +50,14 @@ func (sc VerifyScope) coversTable(addr string) bool {
 	if len(sc.Tables) == 0 {
 		return true
 	}
-	for _, t := range sc.Tables {
-		if t == addr {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(sc.Tables, addr)
 }
 
 // addressOfTable resolves a table's address at the newest snapshot that knows
 // it, for scope filtering; ok is false when unknown.
 func addressOfTable(schemas *schemaIndex, snapshots []SnapshotInfo, tid TableID) (string, bool) {
-	for i := len(snapshots) - 1; i >= 0; i-- {
-		snap := snapshots[i].ID
+	for _, snapshot := range slices.Backward(snapshots) {
+		snap := snapshot.ID
 		if schemas.nameOf(snap, tid) == "" {
 			continue
 		}

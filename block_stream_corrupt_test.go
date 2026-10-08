@@ -6,7 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/codeforgee/rowpack/internal/format"
@@ -127,7 +127,7 @@ func multiPageBlockOffset(t *testing.T, db *Store, snap SnapshotID, table string
 			offs = append(offs, int64(bl.DataOffset))
 		}
 	}
-	sort.Slice(offs, func(i, j int) bool { return offs[i] < offs[j] })
+	slices.Sort(offs)
 	require.NotEmpty(t, offs, "snapshot must own multi-record rows blocks")
 	return offs[0]
 }
@@ -145,7 +145,7 @@ func setupPlainMultiPageStore(t *testing.T, rows int) (string, SnapshotID) {
 		{Name: "name", Type: TypeString},
 		{Name: "n", Type: TypeUint64},
 	}))
-	for i := 0; i < rows; i++ {
+	for i := range rows {
 		require.NoError(t, tx.Insert(ctx, "t", RowID(i+1), Row{
 			String("name-" + filepath.Base(t.Name()) + "-padded-to-fill-a-page"),
 			Uint64(uint64(i + 1)),
@@ -392,7 +392,7 @@ func firstMetadataBlock(t *testing.T, db *Store) int64 {
 			offs = append(offs, int64(bl.DataOffset))
 		}
 	}
-	sort.Slice(offs, func(i, j int) bool { return offs[i] < offs[j] })
+	slices.Sort(offs)
 	require.NotEmpty(t, offs, "a store with tables owns metadata blocks")
 	return offs[0]
 }

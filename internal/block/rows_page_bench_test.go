@@ -42,7 +42,7 @@ func benchPageRows(b *testing.B, schema *codec.Schema) [][]byte {
 	b.Helper()
 	rng := rand.New(rand.NewSource(benchPageSeed))
 	pages := make([][]byte, 0, benchPageRowsN)
-	for i := 0; i < benchPageRowsN; i++ {
+	for i := range benchPageRowsN {
 		row := []codec.Value{
 			codec.Uint64(uint64(i) + 1),
 			codec.Int64(int64(i) * 7),
@@ -247,7 +247,7 @@ func BenchmarkValidateChangeBitsScalar(b *testing.B) {
 	b.SetBytes(entries / 4)
 	b.ReportAllocs()
 	for b.Loop() {
-		for ordinal := uint32(0); ordinal < entries; ordinal++ {
+		for ordinal := range uint32(entries) {
 			if (stream[ordinal/4]>>((ordinal%4)*2))&3 == 3 {
 				b.Fatal("unexpected reserved marker")
 			}

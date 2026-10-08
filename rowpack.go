@@ -420,19 +420,9 @@ func (s *Store) setupEncryption(dataHdr format.DataFileHeader) error {
 // hand over either the logical store name or the physical file; the extension
 // is appended exactly once.
 func storePaths(basePath string) (base, data string, err error) {
-	base, err = baseOf(basePath)
-	if err != nil {
-		return "", "", err
+	base = strings.TrimSuffix(strings.TrimSuffix(filepath.Clean(basePath), ".rpi"), ".rpk")
+	if base == "" {
+		return "", "", fmt.Errorf("%w: base path %q is empty", ErrInvalidPath, basePath)
 	}
 	return base, base + ".rpk", nil
-}
-
-// baseOf resolves the logical base path: filepath.Clean with a trailing
-// .rpk/.rpi extension stripped.
-func baseOf(basePath string) (string, error) {
-	base := strings.TrimSuffix(strings.TrimSuffix(filepath.Clean(basePath), ".rpi"), ".rpk")
-	if base == "" {
-		return "", fmt.Errorf("%w: base path %q is empty", ErrInvalidPath, basePath)
-	}
-	return base, nil
 }

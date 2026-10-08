@@ -119,7 +119,7 @@ func TestEncodeIntoWideSchemaBitmapFallback(t *testing.T) {
 	require.NoError(t, err, "compile")
 	got, err := dec.DecodeInto(nil, body, nil)
 	require.NoError(t, err, "decode wide row")
-	for i := 0; i < ncols; i++ {
+	for i := range ncols {
 		require.Equal(t, uint64(uint8(i)), got[i].u, "col %d = %d", i, got[i].u)
 	}
 }

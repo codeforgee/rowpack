@@ -58,7 +58,7 @@ func TestEncodeScratchBudgetCapsRetention(t *testing.T) {
 	prev := encodeDstBytes.Load()
 	t.Cleanup(func() { encodeDstBytes.Store(prev) })
 
-	for i := 0; i < 12; i++ { // 12 MiB offered against an 8 MiB budget
+	for range 12 { // 12 MiB offered against an 8 MiB budget
 		putEncodeDst(make([]byte, 0, 1<<20))
 	}
 	require.LessOrEqual(t, encodeDstBytes.Load(), int64(encodeDstBudget),
@@ -125,7 +125,7 @@ func TestRawBufBudgetCapsRetention(t *testing.T) {
 	t.Cleanup(func() { pooledBytes.Store(prev) })
 
 	bufs := make([]*rawBuf, 0, 200)
-	for i := 0; i < 200; i++ { // 200 x 256 KiB = 50 MiB > poolBudget
+	for range 200 { // 200 x 256 KiB = 50 MiB > poolBudget
 		bufs = append(bufs, getRawBuf(256<<10))
 	}
 	for _, b := range bufs {

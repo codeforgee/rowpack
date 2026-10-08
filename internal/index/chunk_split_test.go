@@ -47,7 +47,7 @@ func TestEmitChunksMetadataSplitRoundTrip(t *testing.T) {
 	require.NoError(t, b.SetSnapshot(format.SnapshotIndexEntry{
 		SnapshotID: 7, SnapshotType: format.SnapshotFull,
 	}))
-	for i := 0; i < n; i++ {
+	for i := range n {
 		require.NoError(t, b.AddMetadata(format.MetadataIndexEntry{
 			SnapshotID: 7,
 			ObjectID:   uint64(i + 1),
@@ -79,7 +79,7 @@ func TestEmitChunksBlockSplitRoundTrip(t *testing.T) {
 	require.NoError(t, b.SetSnapshot(format.SnapshotIndexEntry{
 		SnapshotID: 9, SnapshotType: format.SnapshotFull,
 	}))
-	for i := 0; i < n; i++ {
+	for i := range n {
 		require.NoError(t, b.AddBlock(format.BlockIndexEntry{
 			BlockID:    uint64(i + 1),
 			SnapshotID: 9,
@@ -112,7 +112,7 @@ func TestEmitChunksSplitFirstOrdinals(t *testing.T) {
 	require.NoError(t, b.SetSnapshot(format.SnapshotIndexEntry{
 		SnapshotID: 11, SnapshotType: format.SnapshotFull,
 	}))
-	for i := 0; i < n; i++ {
+	for i := range n {
 		require.NoError(t, b.AddMetadata(format.MetadataIndexEntry{
 			SnapshotID: 11, ObjectID: uint64(i + 1), RecordType: 1,
 			Operation: format.OperationUpsert,

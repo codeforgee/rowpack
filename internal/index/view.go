@@ -6,6 +6,8 @@ package index
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 
 	"github.com/codeforgee/rowpack/internal/format"
@@ -299,7 +301,7 @@ func (v *View) MetadataObjects(snapshot uint64) []uint64 {
 	for oid := range m {
 		out = append(out, oid)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 
@@ -331,7 +333,7 @@ func (v *View) RowTables(snapshot uint64) []uint32 {
 	for t := range tbl {
 		out = append(out, t)
 	}
-	sortU32s(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -757,7 +759,7 @@ func (sh *rowShard) prepare(entries []RowKeyLoc) error {
 	sh.changes = make([]uint8, n)
 	sh.runStart = make([]uint32, 0, 8)
 	sh.blockIDs = make([]uint64, 0, 8)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		e := entries[i]
 		if i > 0 && e.RowID == entries[i-1].RowID {
 			return fmt.Errorf("rowpack: duplicate row %d in snapshot", e.RowID)
@@ -784,35 +786,17 @@ func (v *View) shallowCopy() *View {
 		metadataByType: make(map[uint64]map[uint32][]uint64, len(v.metadataByType)+1),
 		rows:           make(map[uint64]map[uint32]*rowShard, len(v.rows)+1),
 	}
-	for k, s := range v.snapshots {
-		nv.snapshots[k] = s
-	}
-	for k, b := range v.blocks {
-		nv.blocks[k] = b
-	}
-	for k, m := range v.metadata {
-		nv.metadata[k] = m
-	}
-	for k, m := range v.metadataByType {
-		nv.metadataByType[k] = m
-	}
-	for k, r := range v.rows {
-		nv.rows[k] = r
-	}
+	maps.Copy(nv.snapshots, v.snapshots)
+	maps.Copy(nv.blocks, v.blocks)
+	maps.Copy(nv.metadata, v.metadata)
+	maps.Copy(nv.metadataByType, v.metadataByType)
+	maps.Copy(nv.rows, v.rows)
 	nv.memoryBytes = v.memoryBytes
 	return nv
 }
 
 func sortU64s(s []uint64) {
-	sort.Slice(s, func(i, j int) bool {
-		return s[i] < s[j]
-	})
-}
-
-func sortU32s(s []uint32) {
-	sort.Slice(s, func(i, j int) bool {
-		return s[i] < s[j]
-	})
+	slices.Sort(s)
 }
 
 func sortSnapshots(s []*SnapshotMeta) {

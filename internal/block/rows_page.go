@@ -262,7 +262,7 @@ func (p *RowsPage) buildIndex() error {
 		minID   uint64
 		maxID   uint64
 	)
-	for i := uint32(0); i < count; i++ {
+	for i := range count {
 		v, n := binary.Uvarint(p.rowIDs[idsPos:])
 		if n <= 0 {
 			return errPageTruncated
@@ -348,7 +348,7 @@ func validateChangeBits(stream []byte, count uint32) error {
 	// reducing branches this shape is friendly to wider compiler/assembly
 	// implementations later, while keeping the portable scalar path cheap.
 	full := count / 4
-	for byteIdx := uint32(0); byteIdx < full; byteIdx++ {
+	for byteIdx := range full {
 		x := stream[byteIdx]
 		bad := x & (x >> 1) & 0x55
 		if bad != 0 {

@@ -248,7 +248,7 @@ func TestGoldenRowsPayloadAllTypes(t *testing.T) {
 
 	var sink goldenCaptureSink
 	b := block.NewRowsBuilder(1, 1, block.Config{BlockSize: 1 << 20, Compression: format.CompressionNone, Level: 0, Limits: block.DefaultLimits(), OnFlush: sink.flush})
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		require.NoError(t, b.Add(uint64(100+i), 1, format.ChangeInsert, row))
 	}
 	require.NoError(t, b.Flush())

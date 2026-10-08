@@ -3,6 +3,7 @@ package rowpack
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
 	"math/rand"
@@ -289,9 +290,7 @@ func chaosOnce(t *testing.T, seed int64, opts Options) {
 		id, err := tx.Commit(ctx)
 		require.NoError(t, err)
 		cp := make(map[RowID]Row, len(live))
-		for k, v := range live {
-			cp[k] = v
-		}
+		maps.Copy(cp, live)
 		snaps = append(snaps, snapModel{id: id, rows: cp, records: records})
 	}
 
@@ -299,7 +298,7 @@ func chaosOnce(t *testing.T, seed int64, opts Options) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", cols))
-	for i := 0; i < 120; i++ {
+	for range 120 {
 		id := nextID
 		nextID++
 		row := chaosRow(r, cols)
@@ -309,12 +308,12 @@ func chaosOnce(t *testing.T, seed int64, opts Options) {
 	commit(tx, 120)
 
 	// Two DELTAs with mixed DML + schema evolution on the second.
-	for d := 0; d < 2; d++ {
+	for range 2 {
 		tx, err := db.Begin(ctx, snaps[len(snaps)-1].id)
 		require.NoError(t, err)
 		records := 0
 		touched := map[RowID]bool{} // one mutation per id per txn (writer dedups)
-		for i := 0; i < 60; i++ {
+		for range 60 {
 			ids := make([]RowID, 0, len(live))
 			for id := range live {
 				if !touched[id] {
@@ -368,7 +367,7 @@ func chaosOnce(t *testing.T, seed int64, opts Options) {
 	require.NoError(t, err)
 	records := 0
 	touched := map[RowID]bool{}
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		ids := make([]RowID, 0, len(live))
 		for id := range live {
 			if !touched[id] {

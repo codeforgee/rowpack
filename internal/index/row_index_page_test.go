@@ -45,7 +45,7 @@ func riEntry(tid uint32, rowID uint64, blockID uint64, ord uint32, ct format.Cha
 
 func riSeq(n, blkEvery int) []format.RowIndexEntry {
 	rows := make([]format.RowIndexEntry, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		rows[i] = riEntry(1, uint64(i)+1, uint64(i/blkEvery+1), uint32(i%blkEvery), format.ChangeInsert)
 	}
 	return rows

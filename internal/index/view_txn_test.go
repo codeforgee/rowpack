@@ -548,7 +548,7 @@ func TestParseChunkStoredBytesOverrunRejected(t *testing.T) {
 	// then recompute the chunk header CRC (covers the 64-byte header with
 	// bytes 44..47 zeroed).
 	pos := format.IndexTxnHeaderSize
-	for i := 0; i < 1; i++ {
+	for range 1 {
 		var h format.IndexChunkHeader
 		if err := h.Unmarshal(out[pos:]); err != nil {
 			t.Fatal(err)

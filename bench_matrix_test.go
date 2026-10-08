@@ -30,7 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strconv"
 	"syscall"
 	"testing"
@@ -331,7 +331,7 @@ func benchScan(b *testing.B, c benchCtx) {
 	db, snap := benchStoreAt(b, base, c.opts(), rows)
 	defer db.Close()
 	// Burn-in: two scans absorb one-time costs before the timer.
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		it, err := db.Scan(ctx, snap, "t", ScanOptions{})
 		require.NoError(b, err)
 		for {
@@ -421,10 +421,10 @@ func buildDeltaChainStore(b *testing.B, base string, depth, deltaRows, rows, bs 
 	ctx := context.Background()
 	parent := full
 	nextID := uint64(rows + 1)
-	for d := 0; d < depth; d++ {
+	for range depth {
 		w, err := db.Begin(ctx, parent)
 		require.NoError(b, err)
-		for i := 0; i < deltaRows; i++ {
+		for i := range deltaRows {
 			require.NoError(b, w.Insert(ctx, "t", nextID, deltaRow(nextID, i)))
 			nextID++
 		}
@@ -570,7 +570,6 @@ func BenchmarkMainMatrix(b *testing.B) {
 		}
 	}
 	for _, bs := range matrixBlockSizes {
-		bs := bs
 		for _, d := range matrixDurations {
 			name := fmt.Sprintf("write_full/bs=%s/dur=%s", bsLabel(bs), d.name)
 			b.Run(name, func(b *testing.B) {
@@ -616,12 +615,12 @@ func BenchmarkMainMatrix(b *testing.B) {
 func measureLatency(b *testing.B, n int, fn func() error) (p50, p95, p99 time.Duration) {
 	b.Helper()
 	durs := make([]time.Duration, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		start := time.Now()
 		require.NoError(b, fn())
 		durs[i] = time.Since(start)
 	}
-	sort.Slice(durs, func(i, j int) bool { return durs[i] < durs[j] })
+	slices.Sort(durs)
 	px := func(q int) time.Duration { return durs[n*q/100] }
 	return px(50), px(95), px(99)
 }
@@ -641,7 +640,7 @@ func BenchmarkLatency(b *testing.B) {
 		base := filepath.Join(tmpdb(b), "lh")
 		db, snap := benchStoreAt(b, base, Options{}, benchRows)
 		defer db.Close()
-		for i := uint64(0); i < 100; i++ {
+		for i := range uint64(100) {
 			_, err := db.Get(ctx, snap, "t", i+1, nil)
 			require.NoError(b, err)
 		}
@@ -660,7 +659,7 @@ func BenchmarkLatency(b *testing.B) {
 		base := filepath.Join(tmpdb(b), "lhi")
 		db, snap := benchStoreAt(b, base, Options{}, benchRows)
 		defer db.Close()
-		for i := uint64(0); i < 100; i++ {
+		for i := range uint64(100) {
 			_, err := db.Get(ctx, snap, "t", i+1, nil)
 			require.NoError(b, err)
 		}

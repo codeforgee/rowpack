@@ -164,10 +164,7 @@ func (r *Reader) ReadRowsPage(offset int64, c *RowsContainer, pageIdx int) (*Row
 	if c.comp == format.CompressionNone {
 		raw = stored
 	} else {
-		maxOut := c.limits.MaxRawBytes
-		if dir.RawSize < maxOut {
-			maxOut = dir.RawSize
-		}
+		maxOut := min(dir.RawSize, c.limits.MaxRawBytes)
 		var err error
 		raw, err = decompressZstd(nil, stored, maxOut)
 		if err != nil {

@@ -272,7 +272,7 @@ func TestRowDirectoryEntryResistsTruncation(t *testing.T) {
 	if e.RowID != 7 || e.RecordOffset != 64 || e.RecordLength != 32 || e.ChangeType != ChangeInsert || e.SchemaVersion != 1 {
 		t.Fatalf("roundtrip mismatch: %+v", e)
 	}
-	for l := 0; l < RowDirectoryEntrySize; l++ {
+	for l := range RowDirectoryEntrySize {
 		if err := e.Unmarshal(full[:l]); err == nil {
 			t.Fatalf("accepted %d/%d bytes", l, RowDirectoryEntrySize)
 		}

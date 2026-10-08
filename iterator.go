@@ -36,15 +36,6 @@ type strArena struct {
 	chunk []byte
 }
 
-// materialize copies payload into the arena and returns a view into it.
-func (a *strArena) materialize(payload []byte) string {
-	b := a.materializeBytes(payload)
-	if len(b) == 0 {
-		return ""
-	}
-	return unsafe.String(&b[0], len(b))
-}
-
 // scanMode selects the iterator traversal strategy.
 type scanMode uint8
 
@@ -119,8 +110,14 @@ type Iterator struct {
 // once at iterator creation so per-row decodes never allocate a sink.
 func strArenaSink(a *strArena) *codec.Sink {
 	return &codec.Sink{
-		String: func(payload []byte) string { return a.materialize(payload) },
-		Bytes:  func(payload []byte) []byte { return a.materializeBytes(payload) },
+		String: func(payload []byte) string {
+			b := a.materializeBytes(payload)
+			if len(b) == 0 {
+				return ""
+			}
+			return unsafe.String(&b[0], len(b))
+		},
+		Bytes: func(payload []byte) []byte { return a.materializeBytes(payload) },
 	}
 }
 
@@ -135,10 +132,7 @@ func (a *strArena) materializeBytes(payload []byte) []byte {
 	if len(a.chunk)+len(payload) > cap(a.chunk) {
 		// Rotate to a fresh chunk with at least enough room; never grow in
 		// place, because views into the old chunk may still be referenced.
-		c := iterArenaChunkSize
-		if len(payload) > c {
-			c = len(payload)
-		}
+		c := max(len(payload), iterArenaChunkSize)
 		a.chunk = make([]byte, 0, c)
 	}
 	off := len(a.chunk)

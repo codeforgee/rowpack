@@ -347,7 +347,7 @@ func BenchmarkDeepChainGet(b *testing.B) {
 	snap, err := w.Commit(ctx)
 	requireNilErr(b, err)
 	const depth = 32
-	for i := 0; i < depth; i++ {
+	for i := range depth {
 		d, err := db.Begin(ctx, snap)
 		requireNilErr(b, err)
 		// One change per layer: rewrite row 1 (a delete of a parent-invisible

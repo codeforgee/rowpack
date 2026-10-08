@@ -445,7 +445,7 @@ func assertFingerprintEqual(t *testing.T, want, got string) {
 	}
 	wl, gl := strings.Split(want, "\n"), strings.Split(got, "\n")
 	n := min(len(wl), len(gl))
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if wl[i] != gl[i] {
 			t.Fatalf("fingerprint differs at line %d (of %d vs %d):\n  want: %s\n  got:  %s\n  ctx:  %s",
 				i+1, len(wl), len(gl), wl[i], gl[i], firstNonEmpty([]string{wl[i-1], ""}))

@@ -77,7 +77,7 @@ const validateMapThreshold = 64
 func checkDuplicateColumnNames(s *Schema, maxColumns uint32) error {
 	n := len(s.Columns)
 	if n <= validateMapThreshold {
-		for i := 0; i < n; i++ {
+		for i := range n {
 			if s.Columns[i].Name == "" {
 				return fmt.Errorf("rowpack: schema %q column %d has empty name", s.Name, i)
 			}

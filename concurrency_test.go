@@ -40,7 +40,7 @@ func TestConcurrentReadersDuringCommits(t *testing.T) {
 
 	// Reader waves: each reader grabs the current latest snapshot and reads
 	// everything visible at it, forever until stop.
-	for g := 0; g < readers; g++ {
+	for g := range readers {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
@@ -104,7 +104,7 @@ func TestConcurrentReadersDuringCommits(t *testing.T) {
 	}
 
 	// Writer: sequential deltas updating the tail rows.
-	for c := 0; c < commits; c++ {
+	for c := range commits {
 		tx, err := db.Begin(ctx, Latest)
 		require.NoError(t, err)
 		id := RowID(40 + c%11)

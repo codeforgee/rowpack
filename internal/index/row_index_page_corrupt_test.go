@@ -132,7 +132,7 @@ func TestParseRowsFenceSizeZero(t *testing.T) {
 	pageCount := uint32((100 + indexPageEntryCount - 1) / indexPageEntryCount)
 	fenceStart := len(region) - int(pageCount)*format.IndexFenceEntrySize
 	// Zero the first fence's StoredSize (bytes 36..40).
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		region[fenceStart+36+i] = 0
 	}
 	if _, err := parseCorruptPages(region, pageCount, 9); err == nil {

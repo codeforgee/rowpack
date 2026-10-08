@@ -249,11 +249,11 @@ func TestLRUConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Multiple writers
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(start int) {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
+			for j := range 100 {
 				key := uint64(start + j)
 				lru.Put(key, 100, "value")
 			}
@@ -261,14 +261,12 @@ func TestLRUConcurrent(t *testing.T) {
 	}
 
 	// Multiple readers
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 100; j++ {
+	for range 10 {
+		wg.Go(func() {
+			for j := range 100 {
 				lru.Get(uint64(j))
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -449,14 +447,12 @@ func TestSingleflightDoConcurrent(t *testing.T) {
 	}
 
 	// Launch 10 concurrent calls for the same key
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			val, err := g.Do("key1", fn)
 			require.NoError(t, err)
 			require.Equal(t, "result", val)
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -526,25 +522,21 @@ func TestSingleflightDifferentKeysConcurrent(t *testing.T) {
 	}
 
 	// Launch 5 concurrent calls for key1
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 5 {
+		wg.Go(func() {
 			val, err := g.Do("key1", fn1)
 			require.NoError(t, err)
 			require.Equal(t, "result1", val)
-		}()
+		})
 	}
 
 	// Launch 5 concurrent calls for key2
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 5 {
+		wg.Go(func() {
 			val, err := g.Do("key2", fn2)
 			require.NoError(t, err)
 			require.Equal(t, "result2", val)
-		}()
+		})
 	}
 
 	wg.Wait()

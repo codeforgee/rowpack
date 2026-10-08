@@ -59,18 +59,14 @@ func (b *MetadataBuilder) Add(e metadata.DirectoryEntry, rec []byte) error {
 	b.records = append(b.records, rec)
 	b.count++
 	// Estimate raw payload size; flush when at or above target.
-	if b.rawSize() >= b.blockSize {
-		return b.Flush()
-	}
-	return nil
-}
-
-func (b *MetadataBuilder) rawSize() int {
 	n := metadata.PayloadHeaderSize + len(b.entries)*metadata.DirectoryEntrySize
 	for _, r := range b.records {
 		n += len(r)
 	}
-	return n
+	if n >= b.blockSize {
+		return b.Flush()
+	}
+	return nil
 }
 
 // Flush emits the pending records as one block, if any.

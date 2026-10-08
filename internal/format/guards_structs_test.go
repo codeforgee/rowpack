@@ -74,7 +74,7 @@ func TestRowsBlockHeaderGuards(t *testing.T) {
 	}
 
 	// 短输入：不得越界读。
-	for n := 0; n < RowsBlockHeaderSize; n++ {
+	for n := range RowsBlockHeaderSize {
 		var out RowsBlockHeader
 		if err := out.Unmarshal(make([]byte, n)); err == nil {
 			t.Fatalf("Unmarshal of %d bytes must fail", n)
@@ -114,7 +114,7 @@ func TestRowsPageDirEntryGuards(t *testing.T) {
 	for i := 52; i < RowsPageDirEntrySize; i++ {
 		require.EqualValues(t, 0, buf[i], "reserved byte %d = %d, want 0", i, buf[i])
 	}
-	for n := 0; n < RowsPageDirEntrySize; n++ {
+	for n := range RowsPageDirEntrySize {
 		var out RowsPageDirEntry
 		if err := out.Unmarshal(make([]byte, n)); err == nil {
 			t.Fatalf("Unmarshal of %d bytes must fail", n)

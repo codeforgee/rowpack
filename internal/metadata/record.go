@@ -135,7 +135,7 @@ func (r *Record) Decode(src []byte, known KnownFieldSchema) error {
 	}
 	pos := headerEnd
 	fields := make([]Field, 0, fieldCount)
-	for i := 0; i < fieldCount; i++ {
+	for i := range fieldCount {
 		if pos >= fieldsEnd {
 			return fmt.Errorf("rowpack: metadata record field %d exceeds fields region", i)
 		}
@@ -179,7 +179,7 @@ func (r *Record) Decode(src []byte, known KnownFieldSchema) error {
 
 // ensureSingle rejects repeated occurrences of a non-Repeated known field.
 func ensureSingle(fields []Field, idx int) error {
-	for i := 0; i < idx; i++ {
+	for i := range idx {
 		if fields[i].ID == fields[idx].ID {
 			return fmt.Errorf("rowpack: field %d appears multiple times without Repeated flag", fields[idx].ID)
 		}

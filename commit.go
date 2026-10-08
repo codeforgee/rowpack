@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/codeforgee/rowpack/internal/fault"
@@ -481,12 +482,8 @@ func (w *writer) buildSchemas(newView *index.View) (*schemaIndex, error) {
 	base := w.store.state.Load()
 	si := newSchemaIndex()
 	if base != nil && base.schemas != nil {
-		for snap, tables := range base.schemas.bySnapshot {
-			si.bySnapshot[snap] = tables
-		}
-		for snap, addrs := range base.schemas.byAddress {
-			si.byAddress[snap] = addrs
-		}
+		maps.Copy(si.bySnapshot, base.schemas.bySnapshot)
+		maps.Copy(si.byAddress, base.schemas.byAddress)
 
 	}
 	d, err := w.store.deriveTables(newView, w.id, nil)

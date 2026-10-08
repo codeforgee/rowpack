@@ -2,6 +2,7 @@ package rowpack
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -37,7 +38,7 @@ func PeekHeader(basePath string) (Header, error) {
 	}
 	defer f.Close()
 	buf := make([]byte, format.DataFileHeaderSize)
-	if _, err := readFull(f, buf); err != nil {
+	if _, err := io.ReadFull(f, buf); err != nil {
 		return Header{}, fmt.Errorf("rowpack: read store header: %w", err)
 	}
 	var dh format.DataFileHeader
@@ -59,16 +60,3 @@ func PeekHeader(basePath string) (Header, error) {
 // an encrypted store created with WithKeyID-style labeling, or the derived
 // digest. It is "" for a plain store.
 func (s *Store) KeyID() string { return string(s.header.KeyID) }
-
-// readFull fills buf from r, rejecting a short header.
-func readFull(f *os.File, buf []byte) (int, error) {
-	total := 0
-	for total < len(buf) {
-		n, err := f.Read(buf[total:])
-		total += n
-		if err != nil {
-			return total, err
-		}
-	}
-	return total, nil
-}

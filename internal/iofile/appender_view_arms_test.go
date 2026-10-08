@@ -71,7 +71,7 @@ func TestViewRaceSharesTheFreshMapping(t *testing.T) {
 	_, err := a.Append(payload)
 	require.NoError(t, err)
 
-	for round := 0; round < 200; round++ {
+	for range 200 {
 		// A view of the whole file establishes the current mapping.
 		_, done, err := a.View(0, a.Size())
 		require.NoError(t, err)
@@ -84,10 +84,8 @@ func TestViewRaceSharesTheFreshMapping(t *testing.T) {
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
-		for g := 0; g < 32; g++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range 32 {
+			wg.Go(func() {
 				<-start
 				v, d, verr := a.View(0, size)
 				if verr != nil {
@@ -98,7 +96,7 @@ func TestViewRaceSharesTheFreshMapping(t *testing.T) {
 					t.Errorf("view lost the appended bytes: %q", v[:len(payload)])
 				}
 				d()
-			}()
+			})
 		}
 		close(start)
 		wg.Wait()

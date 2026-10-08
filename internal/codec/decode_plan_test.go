@@ -44,7 +44,7 @@ func TestDecodePlanMatchesGeneric(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	row := make([]Value, len(schema.Columns))
 
-	for iter := 0; iter < 2000; iter++ {
+	for range 2000 {
 		for i := range schema.Columns {
 			col := &schema.Columns[i]
 			if col.Nullable && rng.Intn(3) == 0 {
@@ -57,7 +57,7 @@ func TestDecodePlanMatchesGeneric(t *testing.T) {
 		require.NoError(t, err)
 
 		cases := [][]byte{body}
-		for k := 0; k < 3; k++ {
+		for range 3 {
 			mut := append([]byte(nil), body...)
 			if len(mut) > 0 && rng.Intn(2) == 0 {
 				mut = mut[:rng.Intn(len(mut))]

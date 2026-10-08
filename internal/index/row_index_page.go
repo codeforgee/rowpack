@@ -62,10 +62,7 @@ func (b *Builder) buildPages(crypto *ChunkCrypto, level int, pageSeqBase uint32)
 			j++
 		}
 		for s := i; s < j; s += indexPageEntryCount {
-			e := s + indexPageEntryCount
-			if e > j {
-				e = j
-			}
+			e := min(s+indexPageEntryCount, j)
 			page, _, _, _, err := encodePage(b.rows[s:e], indexPageEntryCount)
 			if err != nil {
 				return nil, err

@@ -317,7 +317,7 @@ func TestRowsPageCorruption(t *testing.T) {
 }
 
 func TestValidateChangeBitsReportsFirstRecordAndIgnoresPadding(t *testing.T) {
-	for want := uint32(0); want < 12; want++ {
+	for want := range uint32(12) {
 		stream := make([]byte, 3)
 		stream[want/4] = 3 << ((want % 4) * 2)
 		err := validateChangeBits(stream, 12)
@@ -349,7 +349,7 @@ func lePutU32(b []byte, v uint32) {
 func TestRowsPageBuilderReuse(t *testing.T) {
 	schema := pageTestSchema()
 	b := NewPageBuilder(8 << 10)
-	for round := 0; round < 3; round++ {
+	for round := range 3 {
 		for i := uint64(1); i <= 100; i++ {
 			body := pageTestRow(t, schema, i)
 			requireNoErr(t, b.Add(i, 1, format.ChangeInsert, body))

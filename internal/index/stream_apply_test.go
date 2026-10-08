@@ -27,7 +27,7 @@ func mixedRows(n int) []format.RowIndexEntry {
 	// Three tables, each with strictly increasing RowIDs; interleave so the
 	// tables are not globally contiguous in insertion order (maliciously
 	// unsorted input) — the encode path re-sorts it.
-	for i := 0; i < n; i++ {
+	for i := range n {
 		rows = append(rows, riEntry(1, uint64(i)+1, uint64(i%97+1), uint32(i%50), format.ChangeInsert))
 		rows = append(rows, riEntry(2, uint64(i)+1, uint64(i%89+1), uint32(i%30), format.ChangeUpdate))
 		rows = append(rows, riEntry(3, uint64(i)+1, uint64(i%83+1), uint32(i%20), format.ChangeDelete))

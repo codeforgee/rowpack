@@ -40,7 +40,7 @@ func (s *pageSealer) seal(h *format.BlockHeader, container []byte) ([]byte, erro
 	}
 	n := len(rc.Dir)
 	sealedPages := make([][]byte, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		d := &rc.Dir[i]
 		src := container[int(d.StoredOffset) : int(d.StoredOffset)+int(d.StoredSize)]
 		// The AAD binds the on-disk (sealed) StoredSize, so set it before sealing.
@@ -72,7 +72,7 @@ func (s *pageSealer) seal(h *format.BlockHeader, container []byte) ([]byte, erro
 	_ = rc.Header.MarshalTo(hdr[:])
 	newContainer = append(newContainer, hdr[:]...)
 	off := dataStart
-	for i := 0; i < n; i++ {
+	for i := range n {
 		d := rc.Dir[i]
 		d.StoredOffset = uint64(off)
 		d.StoredSize = uint32(len(sealedPages[i]))

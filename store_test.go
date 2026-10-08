@@ -595,10 +595,10 @@ func TestConcurrentGetSharedPage(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, g)
 	wg.Add(g)
-	for i := 0; i < g; i++ {
+	for i := range g {
 		go func(seed RowID) {
 			defer wg.Done()
-			for r := 0; r < 400; r++ {
+			for r := range 400 {
 				id := RowID((int(seed)+r)%2000) + 1
 				row, err := db.Get(ctx, full, "users", id, nil)
 				if err != nil {

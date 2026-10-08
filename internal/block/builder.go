@@ -98,10 +98,7 @@ type Config struct {
 // the default page size (fileformat.DefaultPageSize); override it with
 // SetPageSize before the first Add.
 func NewRowsBuilder(snapshotID uint64, tableID uint32, cfg Config) *RowsBuilder {
-	ps := format.DefaultPageSize
-	if ps > cfg.BlockSize {
-		ps = cfg.BlockSize
-	}
+	ps := min(format.DefaultPageSize, cfg.BlockSize)
 	return &RowsBuilder{
 		snapshotID: snapshotID,
 		tableID:    tableID,

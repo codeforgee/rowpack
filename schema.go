@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/codeforgee/rowpack/internal/codec"
@@ -43,7 +44,7 @@ func addressIndex(tables map[uint32]*tableSchemas) map[string]TableID {
 	for tid := range tables {
 		tids = append(tids, tid)
 	}
-	sort.Slice(tids, func(i, j int) bool { return tids[i] < tids[j] })
+	slices.Sort(tids)
 	addrs := make(map[string]TableID, len(tables))
 	for _, tid := range tids {
 		ts := tables[tid]
@@ -279,7 +280,7 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 		}
 	}
 	for _, ts := range result {
-		sort.Slice(ts.versions, func(i, j int) bool { return ts.versions[i] < ts.versions[j] })
+		slices.Sort(ts.versions)
 	}
 	return &derivedSchemas{tables: result, byAddress: addressIndex(result)}, nil
 }
@@ -297,7 +298,9 @@ func (s *Store) addSchema(ts *tableSchemas, tableRec *metadata.Record, columnRec
 		return nil
 	}
 	name := fieldString(tableRec, metadata.TableName)
-	schema := &codec.Schema{TableID: mustTableID(tableRec.ObjectID), Version: version, Name: name}
+	// The table object ID was validated to fit a uint32 by the deriveTables
+	// walk (metadata.TableID), so the direct conversion cannot lose bits.
+	schema := &codec.Schema{TableID: uint32(tableRec.ObjectID), Version: version, Name: name}
 	var derived []derivedColumn
 	for _, rec := range columnRecords {
 		col, err := deriveColumn(rec)
@@ -352,11 +355,6 @@ func deriveColumn(rec *metadata.Record) (derivedColumn, error) {
 	}, nil
 }
 
-func mustTableID(oid uint64) uint32 {
-	id, _ := metadata.TableID(oid)
-	return id
-}
-
 func fieldString(rec *metadata.Record, id uint16) string {
 	f := rec.FieldByID(id)
 	if f == nil {
@@ -375,6 +373,9 @@ func fieldSint(rec *metadata.Record, id uint16) int64 {
 	return v
 }
 
+// isNullableString decodes the nullable marker written by DefineSchema (the
+// write side emits the canonical YES/NO text; the extra accepted spellings
+// are tolerance for foreign writers).
 func isNullableString(s string) bool {
 	// 可空性按 DefineSchema 写入的 YES/NO 原文判断（NO/no/N/0/FALSE 视为不可空）。
 	switch s {
@@ -441,14 +442,6 @@ func typeName(t codec.Type) string {
 		return name
 	}
 	return "unknown"
-}
-
-// nullString encodes nullable as the canonical YES/NO text written by DefineSchema.
-func nullString(nullable bool) string {
-	if nullable {
-		return "YES"
-	}
-	return "NO"
 }
 
 // metaRecKey identifies a metadata record by its physical block slot; the

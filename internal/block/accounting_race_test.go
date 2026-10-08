@@ -12,7 +12,7 @@ import (
 // size behind the container's true retained bytes. The accounting update runs
 // under pagesMu, so the last applied update always carries the final size.
 func TestConcurrentPageMemoizeAccountingConverges(t *testing.T) {
-	for trial := 0; trial < 50; trial++ {
+	for trial := range 50 {
 		// Small pages force a multi-page container.
 		var rows []expectedPageRow
 		var bodies [][]byte
@@ -34,11 +34,11 @@ func TestConcurrentPageMemoizeAccountingConverges(t *testing.T) {
 		})
 
 		var wg sync.WaitGroup
-		for g := 0; g < 8; g++ {
+		for g := range 8 {
 			wg.Add(1)
 			go func(seed int) {
 				defer wg.Done()
-				for k := 0; k < 200; k++ {
+				for k := range 200 {
 					pi := (seed + k) % rc.PageCount()
 					p, release, err := rc.PageScratch(pi)
 					if err != nil {

@@ -69,10 +69,7 @@ func forgeRowsContainer(tb testing.TB, mutate func(*forgedContainer)) *forgedCon
 	if f.post != nil {
 		f.post(f.stored)
 	}
-	dirEnd := format.RowsBlockHeaderSize + int(f.rh.DirectoryBytes)
-	if dirEnd > len(f.stored) {
-		dirEnd = len(f.stored)
-	}
+	dirEnd := min(format.RowsBlockHeaderSize+int(f.rh.DirectoryBytes), len(f.stored))
 	f.hdr.RawCRC32C = format.CRC32C(f.stored[:dirEnd])
 	return f
 }

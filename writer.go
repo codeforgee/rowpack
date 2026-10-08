@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/codeforgee/rowpack/internal/block"
@@ -545,6 +545,12 @@ func (w *writer) writeRecords(def tableDef) error {
 		if objectID > w.maxObject {
 			w.maxObject = objectID
 		}
+		// The canonical YES/NO nullable marker (see isNullableString on the
+		// read side).
+		nullable := "NO"
+		if col.Nullable {
+			nullable = "YES"
+		}
 		colRec := &metadata.Record{
 			RecordType: uint32(format.RecordColumn),
 			ObjectID:   objectID,
@@ -555,7 +561,7 @@ func (w *writer) writeRecords(def tableDef) error {
 				{ID: metadata.ColColumnID, WireType: format.WireSint, Value: int64(i + 1)},
 				{ID: metadata.ColColumnName, WireType: format.WireString, Value: col.Name},
 				{ID: metadata.ColColumnType, WireType: format.WireString, Value: typeName(col.Type)},
-				{ID: metadata.ColNullable, WireType: format.WireString, Value: nullString(col.Nullable)},
+				{ID: metadata.ColNullable, WireType: format.WireString, Value: nullable},
 				{ID: metadata.ColDataScale, WireType: format.WireSint, Value: int64(col.Scale)},
 			},
 		}
@@ -861,7 +867,7 @@ func (w *writer) flushAll() error {
 	for t := range w.rowBuilders {
 		tables = append(tables, t)
 	}
-	sortTableIDs(tables)
+	slices.Sort(tables)
 	for _, t := range tables {
 		if err := w.rowBuilders[t].Flush(); err != nil {
 			return err
@@ -875,8 +881,4 @@ func randUint64() uint64 {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return binary.LittleEndian.Uint64(b[:])
-}
-
-func sortTableIDs(ids []TableID) {
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 }

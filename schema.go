@@ -215,18 +215,34 @@ type derivedSchemas struct {
 // calls; see buildIndex.
 func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRecKey]*metadata.Record) (*derivedSchemas, error) {
 	result := make(map[uint32]*tableSchemas)
+	// deleted holds object ids a DELETE entry shadows: readers resolve records
+	// along the parent chain, so a tombstone on a newer layer must hide the
+	// same object's older definitions (and the columns hanging off a shadowed
+	// table). Without this, Tables() reports the table gone while Get/Schema
+	// still resolve it through the chain — the two answers disagree.
+	deleted := make(map[uint64]struct{})
 	walk := func(snap uint64) error {
 		// Decode and group the layer's columns once. Previously every table
 		// rescanned every column, making schema derivation quadratic in tables.
 		columnsByParent := make(map[uint64][]*metadata.Record)
 		for _, cid := range view.MetadataByType(snap, uint32(format.RecordColumn)) {
 			loc := view.Metadata(snap, cid)
-			if loc == nil || loc.Operation == format.OperationDelete || loc.RecordType != uint32(format.RecordColumn) {
+			if loc == nil || loc.RecordType != uint32(format.RecordColumn) {
+				continue
+			}
+			if loc.Operation == format.OperationDelete {
+				deleted[cid] = struct{}{}
+				continue
+			}
+			if _, gone := deleted[cid]; gone {
 				continue
 			}
 			rec, err := s.readMetadataCached(view, snap, cid, memo)
 			if err != nil {
 				return err
+			}
+			if _, gone := deleted[rec.ParentID]; gone {
+				continue // the table this column belongs to is shadowed
 			}
 			columnsByParent[rec.ParentID] = append(columnsByParent[rec.ParentID], rec)
 		}
@@ -234,7 +250,14 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 		tableIDs := view.MetadataByType(snap, uint32(format.RecordTable))
 		for _, oid := range tableIDs {
 			loc := view.Metadata(snap, oid)
-			if loc == nil || loc.Operation == format.OperationDelete {
+			if loc == nil {
+				continue
+			}
+			if loc.Operation == format.OperationDelete {
+				deleted[oid] = struct{}{}
+				continue
+			}
+			if _, gone := deleted[oid]; gone {
 				continue
 			}
 			rec, err := s.readMetadataCached(view, snap, oid, memo)

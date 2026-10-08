@@ -17,11 +17,12 @@
 | 文件 | SHA-256 |
 | --- | --- |
 | `empty-store.rpk` | `359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401` |
-| `rows-payload-all-types.bin` | `5f9b9022e858016dc2490b347de8edc58cba2a843797912e4fb210d01f9331a3` |
-| `full-delta-store.rpk` | `886a7e882a963c47cf2662ba6b179a52a11192ff0fd0df7542392686d57e6fd7` |
-| `encrypted-store.rpk` | `0aca420805e0fe1d6af8b489b35ad8fb87a8e43c4db84f973e4ab8e3c395dc6c` |
+| `rows-payload-all-types.bin` | `e95a2724cb1d8b486ee7934b5113cb328589243fdd814869ea5401692ec032a0` |
+| `full-delta-store.rpk` | `92e88440f926111cd20d00bddb8191e1dcd53d8214ee8c40eb922678eebf373c` |
+| `encrypted-store.rpk` | `e7b0f8a715b6af17b0bb7bbe4d7de75981243cd6b755fb6d4638403e4816bf14` |
 
-摘要对应冻结的 v1 IndexTxn 格式（排序 Row Index Page + Fence Directory）。修改任一摘要即视为
+摘要对应冻结的 v1 IndexTxn 格式（排序 Row Index Page + Fence Directory；Metadata/Block chunk
+为 delta/varint 条目流 + Zstd，见 docs/INDEX_TXN_FORMAT_V1.md §4.3）。修改任一摘要即视为
 有意的磁盘格式变更，必须经过格式审查并按版本策略建立新的 golden 样本族。
 
 最近一次变更：DateTime 改为秒+纳秒 12B(TZ 16B 含偏移)、RowsBlockHeader 从 24B 扩展到 32B（新增 BoundsOffset/BoundsLen，承载声明主键的

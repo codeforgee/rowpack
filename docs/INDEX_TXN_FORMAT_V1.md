@@ -20,8 +20,8 @@ IndexTxn 位于对应 Snapshot 的 Blocks 之后、SnapshotFooter 之前：
 ```text
 [IndexTxnHeader 80B]
 [SnapshotChunk]              // chunk seq 0，未压缩，定长 72B（加密 +16B tag）
-[MetadataChunk × A]          // chunk seq 1..A，定长条目拼接
-[BlockChunk × B]             // chunk seq A+1..A+B，定长条目拼接
+[MetadataChunk × A]          // chunk seq 1..A，delta/varint 条目流（§4.3）
+[BlockChunk × B]             // chunk seq A+1..A+B，delta/varint 条目流（§4.3）
 [ChunkDirectory]             // 明文 (A+B+1) × 32B
 [RowIndexPage × N]           // 每页独立压缩（+加密 tag）
 [RowIndexFenceEntry × N]     // 明文 52B，正文 CRC 认证
@@ -98,11 +98,50 @@ offset  size  field
 
 ### 4.3 条目编码
 
-- 快照 chunk：1 条定长 72B `SnapshotIndexEntry`（§7）；
-- 元数据 chunk：`MetadataIndexEntry`（48B/条）连续拼接；
-- 块 chunk：`BlockIndexEntry`（56B/条）连续拼接；
-- 每个 chunk 独立压缩、独立认证、独立可解码，不依赖前一个 chunk 的解码状态；
-- 定长条目内已含各自 CRC，chunk 级 `RawBytes`/`EntryCount` 再做一次边界校验。
+- 快照 chunk：1 条定长 72B `SnapshotIndexEntry`（§7），不压缩（长度必须内容无关）；
+- 元数据 / 块 chunk：**delta/varint 条目流**（非定长拼接），定义如下；
+- 每个 chunk 独立压缩、独立认证、独立可解码：每段流的**第一条绝对编码，其后逐条相对编码**，
+  delta 基准不跨 chunk 边界（`FirstEntryOrdinal` 仅标注流内位置）；
+- `SnapshotID` 不入流：写路径 Builder 强制全部条目归属本事务快照，解码端从 IndexTxnHeader
+  盖章回填；
+- 条目内不再携带 per-entry CRC：完整性由 chunk `PayloadCRC32C`（stored 字节）+ 正文 CRC
+  +（加密 store）AEAD 共同承担，强于逐条校验；
+- 解码端在解析期校验枚举（Operation / BlockKind / Compression）与 uint32 宽度，未知 tag 位
+  与流尾冗余字节均拒绝——非法枚举触发索引重建而不是污染内存视图。
+
+**Metadata 条目流**（`IndexChunkKindMetadata`）：
+
+```text
+首条:   uvarint(objectID) uvarint(recordType) uvarint(revision)
+        uvarint(blockID) uvarint(itemOrdinal) byte(operation) byte(flags)
+后续条: byte tag        // bit0 objectID 同前 · bit1 recordType 同前
+                        // bit2 revision 同前 · bit3 blockID 同前，未知位拒绝
+        [uvarint zigzag objectDelta]      // !bit0 时
+        [uvarint zigzag recordTypeDelta]  // !bit1 时
+        [uvarint zigzag revisionDelta]    // !bit2 时
+        [uvarint zigzag blockDelta]       // !bit3 时
+        uvarint zigzag ordinalDelta
+        byte(operation) byte(flags)
+```
+
+**Block 条目流**（`IndexChunkKindBlock`）：
+
+```text
+首条:   uvarint(blockID) uvarint(tableID) byte(blockKind) byte(compression)
+        uvarint(dataOffset) uvarint(rawSize) uvarint(storedSize) uvarint(itemCount)
+        4B-LE(rawCRC32C)
+后续条: byte tag        // bit0 tableID 同前 · bit1 blockKind 同前
+                        // bit2 compression 同前，未知位拒绝
+        [uvarint zigzag tableDelta]   // !bit0 时
+        [byte blockKind]              // !bit1 时
+        [byte compression]            // !bit2 时
+        uvarint zigzag blockIDDelta
+        uvarint zigzag dataOffsetDelta
+        uvarint(rawSize) uvarint(storedSize) uvarint(itemCount) 4B-LE(rawCRC32C)
+```
+
+§7 的 48B/56B 定长布局仍是内存结构（`format.MetadataIndexEntry`/`format.BlockIndexEntry`）的
+权威定义；磁盘上只存在上述流编码。
 
 ### 4.4 ChunkDirectory
 
@@ -231,7 +270,11 @@ FirstEntryOrdinal · RawBytes · StoredBytes · KeyEpoch`。**刻意不绑定文
 
 ## 7. 关键条目结构
 
-### SnapshotIndexEntry（72B）
+以下为各条目的**逻辑字段布局**：SnapshotIndexEntry 同时是磁盘定长结构（72B，快照 chunk）；
+MetadataIndexEntry / BlockIndexEntry / RowIndexEntry 的定长布局仅作为内存结构存在，磁盘上分别
+按 §4.3 条目流与 §5 排序页编码。
+
+### SnapshotIndexEntry（72B，磁盘定长）
 
 ```text
 SnapshotID(8) · ParentSnapshotID(8) · SnapshotType(1) · BlockCount(4)
@@ -256,7 +299,6 @@ BlockID(8) · SnapshotID(8) · TableID(4) · BlockKind(1) · Compression(1)
 
 Block 条目引用同一文件中更早的 Block offset。批量 planner 的 MinRowID/MaxRowIDExclusive 由内存
 索引按 RowIndexEntry 集合派生，不在磁盘块头存 envelope。
-
 ## 8. IndexTxnFooter（80B）
 
 ```text
@@ -313,8 +355,9 @@ Footer 交叉校验正文与对应数据 Footer，因此 IndexTxn 只有在 foot
 
 ## 10. 尺寸与限制
 
-结构尺寸（8 字节对齐，字段布局见对应小节）：IndexTxnHeader 80、IndexTxnFooter 80、
-IndexChunkHeader 64、IndexChunkDirEntry 32、SnapshotIndexEntry 72、MetadataIndexEntry 48、
-BlockIndexEntry 56、RowIndexPageHeader 64、RowIndexFenceEntry 52。每 chunk 上限 4096 条 /
+固定结构（8 字节对齐，字段布局见对应小节）：IndexTxnHeader 80、IndexTxnFooter 80、
+IndexChunkHeader 64、IndexChunkDirEntry 32、SnapshotIndexEntry 72、RowIndexPageHeader 64、
+RowIndexFenceEntry 52。内存条目结构尺寸：MetadataIndexEntry 48、BlockIndexEntry 56、
+RowIndexEntry 40（磁盘上分别为 §4.3 变宽流与 §5 页编码，无定长保证）。每 chunk 上限 4096 条 /
 256 KiB raw（硬解析上限见 §4.1）；每 Row Index Page 上限 4096 条并按表切页。Directory 每 Entry
 32B，超大事务场景需预留 directory 自身分 chunk 的演进空间。

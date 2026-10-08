@@ -149,7 +149,7 @@ func TestTablesSkipsUndecodableTable(t *testing.T) {
 	}))
 	require.NoError(t, b.AddMetadata(format.MetadataIndexEntry{
 		SnapshotID: newSnapID, ObjectID: metadata.ObjectID(ghostTID),
-		Revision: 1, RecordType: uint32(format.RecordTable),
+		Revision: 1, RecordType: uint32(format.RecordTable), Operation: format.OperationUpsert,
 		BlockID: 123456, ItemOrdinal: 0, // a block the view has never heard of
 	}))
 	_, txn, err := b.Build(index.BodyBounds{}, 0)

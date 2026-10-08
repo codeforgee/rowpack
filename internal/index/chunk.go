@@ -11,26 +11,19 @@ import (
 
 // Index txn chunking (docs/INDEX_TXN_FORMAT_V1.md): the txn body is
 // a sequence of independently compressed/authenticated chunks followed by a
-// plaintext chunk directory. Row chunks carry a delta/varint encoding that
-// removes per-entry context (SnapshotID is txn-wide, TableID/BlockID are
-// run-length tagged, RowID/ItemOrdinal are zigzag deltas); snapshot, metadata
-// and block chunks keep their fixed-size entries concatenated. The snapshot
-// chunk is always uncompressed: its 72-byte stored size is content-independent,
-// which keeps the total body length resolvable in a single build pass (the
-// snapshot entry's DataEnd depends on the body length).
+// plaintext chunk directory. Metadata and block chunks carry the delta/varint
+// encodings in chunk_entries.go; the snapshot chunk keeps its fixed 72-byte
+// uncompressed entry, whose content-independent size keeps the body length
+// resolvable in a single build pass (the snapshot's DataEnd depends on it).
 //
-// Frozen v1 row-chunk encoding (every chunk is independently decodable; the
-// first entry is the absolute base):
+// Historical note — the obsolete row-chunk encoding (no longer produced; the
+// parse path rejects IndexChunkKindRow). Row entries live in sorted Row Index
+// Pages instead (row_index_page.go):
 //
 //	first entry: uvarint(tableID) uvarint(rowID) uvarint(blockID)
 //	             uvarint(itemOrdinal) byte(changeType)
-//	next entry:  byte tag            // bit0 = tableID same as previous
-//	                                   bit1 = blockID same as previous
-//	             [uvarint zigzag tableDelta]   // only when bit0 == 0
-//	             [uvarint zigzag blockDelta]   // only when bit1 == 0
-//	             uvarint zigzag rowDelta
-//	             uvarint zigzag ordinalDelta
-//	             byte changeType
+//	next entry:  byte tag + [zigzag tableDelta] + [zigzag blockDelta]
+//	             + zigzag rowDelta + zigzag ordinalDelta + byte changeType
 
 // ChunkCrypto carries the txn-scoped encryption context for chunk sealing and
 // opening. A nil *ChunkCrypto means the txn is stored plain; when non-nil,
@@ -160,27 +153,24 @@ func (cc *chunkWriter) reserveDir(n int) []byte {
 	return cc.dir[pos : pos+n : pos+n]
 }
 
-// emitChunks emits n fixed-size entries as chunks with the cut rules.
-func emitChunks(cc *chunkWriter, kind uint8, n, entrySize int, marshal func(i int, dst []byte) error) error {
+// emitEntryChunks streams n entries through add into chunks cut by the shared
+// rules (≤ IndexChunkTargetEntries entries and ≤ IndexChunkTargetRawBytes raw
+// bytes per chunk). restart re-bases the encoder's delta chain at every chunk
+// boundary so the next chunk's first entry encodes absolutely.
+func emitEntryChunks(cc *chunkWriter, kind uint8, n int, add func(dst []byte, i int) []byte, restart func()) error {
 	if n == 0 {
 		return nil
 	}
 	cb := &chunkBuild{kind: kind}
-	scratch := make([]byte, entrySize)
 	for i := 0; i < n; i++ {
-		for j := range scratch {
-			scratch[j] = 0
-		}
-		if err := marshal(i, scratch); err != nil {
-			return err
-		}
-		cb.raw = append(cb.raw, scratch...)
+		cb.raw = add(cb.raw, i)
 		cb.entries++
 		if cb.entries >= format.IndexChunkTargetEntries || len(cb.raw) >= format.IndexChunkTargetRawBytes {
 			if err := cc.add(cb); err != nil {
 				return err
 			}
 			cb = &chunkBuild{kind: kind, firstOrdinal: uint32(i + 1)}
+			restart()
 		}
 	}
 	if cb.entries > 0 {
@@ -190,21 +180,22 @@ func emitChunks(cc *chunkWriter, kind uint8, n, entrySize int, marshal func(i in
 }
 
 // emitChunks splits the builder's metadata and block entry streams into
-// chunks. The snapshot chunk head is reserved (not yet filled); snapshot,
-// metadata and block chunks are emitted here in frozen order. Row entries are
-// NOT chunked: they are written as sorted Row Index Pages + a Fence Directory
-// by `buildPages`, and `cc.seq` is left at the next free chunk
-// sequence so pages can seal under distinct chunk sequences.
+// delta-encoded chunks. The snapshot chunk head is reserved (not yet filled);
+// snapshot, metadata and block chunks are emitted here in frozen order. Row
+// entries are NOT chunked: they are written as sorted Row Index Pages + a
+// Fence Directory by `buildPages`, and `cc.seq` is left at the next free
+// chunk sequence so pages can seal under distinct chunk sequences.
 func (b *Builder) emitChunks(cc *chunkWriter) error {
-	if err := emitChunks(cc, format.IndexChunkKindMetadata, len(b.metadata), format.MetadataIndexEntrySize,
-		func(i int, dst []byte) error { return b.metadata[i].MarshalTo(dst) }); err != nil {
+	meta := &metaEncoder{}
+	if err := emitEntryChunks(cc, format.IndexChunkKindMetadata, len(b.metadata),
+		func(dst []byte, i int) []byte { return meta.add(dst, b.metadata[i]) },
+		meta.restart); err != nil {
 		return err
 	}
-	if err := emitChunks(cc, format.IndexChunkKindBlock, len(b.blocks), format.BlockIndexEntrySize,
-		func(i int, dst []byte) error { return b.blocks[i].MarshalTo(dst) }); err != nil {
-		return err
-	}
-	return nil
+	blk := &blockEncoder{}
+	return emitEntryChunks(cc, format.IndexChunkKindBlock, len(b.blocks),
+		func(dst []byte, i int) []byte { return blk.add(dst, b.blocks[i]) },
+		blk.restart)
 }
 
 // BodyBounds is the resolved layout of one stored index-txn body: the
@@ -564,33 +555,19 @@ func (p *bodyParser) parse() (*storedBody, error) {
 			}
 			sb.hasSnap = true
 		case format.IndexChunkKindMetadata:
-			if len(raw) != int(h.EntryCount)*format.MetadataIndexEntrySize {
-				return nil, fmt.Errorf("rowpack: metadata chunk %d: %d bytes for %d entries", seq, len(raw), h.EntryCount)
-			}
-			for i := uint32(0); i < h.EntryCount; i++ {
-				var e format.MetadataIndexEntry
-				off := int(i) * format.MetadataIndexEntrySize
-				if err := e.Unmarshal(raw[off : off+format.MetadataIndexEntrySize]); err != nil {
-					return nil, fmt.Errorf("rowpack: metadata chunk %d entry %d: %w", seq, i, err)
-				}
-				if err := sink.AddMetadata(e); err != nil {
-					return nil, fmt.Errorf("rowpack: metadata chunk %d entry %d: %w", seq, i, err)
-				}
+			err := decodeMetadataChunk(raw, h.EntryCount, p.snapshotID, func(e format.MetadataIndexEntry) error {
+				return sink.AddMetadata(e)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("rowpack: metadata chunk %d: %w", seq, err)
 			}
 			sb.metaCount += h.EntryCount
 		case format.IndexChunkKindBlock:
-			if len(raw) != int(h.EntryCount)*format.BlockIndexEntrySize {
-				return nil, fmt.Errorf("rowpack: block chunk %d: %d bytes for %d entries", seq, len(raw), h.EntryCount)
-			}
-			for i := uint32(0); i < h.EntryCount; i++ {
-				var e format.BlockIndexEntry
-				off := int(i) * format.BlockIndexEntrySize
-				if err := e.Unmarshal(raw[off : off+format.BlockIndexEntrySize]); err != nil {
-					return nil, fmt.Errorf("rowpack: block chunk %d entry %d: %w", seq, i, err)
-				}
-				if err := sink.AddBlock(e); err != nil {
-					return nil, fmt.Errorf("rowpack: block chunk %d entry %d: %w", seq, i, err)
-				}
+			err := decodeBlockChunk(raw, h.EntryCount, p.snapshotID, func(e format.BlockIndexEntry) error {
+				return sink.AddBlock(e)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("rowpack: block chunk %d: %w", seq, err)
 			}
 			sb.blockCount += h.EntryCount
 		case format.IndexChunkKindRow:

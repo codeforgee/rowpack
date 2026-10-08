@@ -3,6 +3,7 @@ package rowpack
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,6 +43,58 @@ func TestMetaRoundTrip(t *testing.T) {
 	blocks, err := db.Blocks(snap1, "t")
 	require.NoError(t, err)
 	require.Len(t, blocks, 1)
+}
+
+// TestMetaStoredCompressed pins the on-disk contract: SetMeta values are
+// always block-compressed (no expansion fallback), and Meta() returns the
+// decompressed bytes verbatim — both for a highly compressible value (stored
+// shrinks) and an incompressible one (stored may exceed raw; still committed
+// within the stored limit and round-trips byte for byte).
+func TestMetaStoredCompressed(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t, Options{})
+
+	// Compressible: 420 KB of repetition must shrink on disk.
+	big := bytes.Repeat([]byte("rowpack-meta-payload-"), 20000)
+	tx, err := db.Begin(ctx, NoParent)
+	require.NoError(t, err)
+	require.NoError(t, tx.DefineTable("t", []Column{{Name: "v", Type: TypeUint64}}))
+	require.NoError(t, tx.SetMeta(big))
+	snap1, err := tx.Commit(ctx)
+	require.NoError(t, err)
+	got, err := db.Meta(ctx, snap1)
+	require.NoError(t, err)
+	require.Equal(t, big, got)
+
+	st, err := db.captureState()
+	require.NoError(t, err)
+	loc := metaBlockLoc(st.view, snap1)
+	require.NotNil(t, loc)
+	blk, err := db.loader.reader.ReadAtBlock(int64(loc.DataOffset))
+	require.NoError(t, err)
+	require.Equal(t, format.CompressionZstd, blk.Header.Compression, "meta must be stored compressed")
+	require.Less(t, blk.Header.StoredSize, blk.Header.RawSize, "compressible meta must shrink on disk")
+
+	// Incompressible: forced compression may expand, but must still commit
+	// (within MaxStoredBlockBytes) and round-trip verbatim.
+	raw := make([]byte, 1<<16)
+	_, err = rand.Read(raw)
+	require.NoError(t, err)
+	tx2, err := db.Begin(ctx, Latest)
+	require.NoError(t, err)
+	require.NoError(t, tx2.SetMeta(raw))
+	snap2, err := tx2.Commit(ctx)
+	require.NoError(t, err)
+	got2, err := db.Meta(ctx, snap2)
+	require.NoError(t, err)
+	require.Equal(t, raw, got2)
+	st2, err := db.captureState()
+	require.NoError(t, err)
+	loc2 := metaBlockLoc(st2.view, snap2)
+	blk2, err := db.loader.reader.ReadAtBlock(int64(loc2.DataOffset))
+	require.NoError(t, err)
+	require.Equal(t, format.CompressionZstd, blk2.Header.Compression,
+		"incompressible meta must stay compressed, never fall back to plain")
 }
 
 // TestMetaParentChainResolution pins the per-snapshot inheritance rule: the

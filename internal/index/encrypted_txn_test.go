@@ -53,10 +53,10 @@ func mustBuildEncrypted(t *testing.T, crypto *ChunkCrypto) []byte {
 	if err := b.SetSnapshot(format.SnapshotIndexEntry{SnapshotID: 1, SnapshotType: format.SnapshotFull, BlockCount: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.AddMetadata(format.MetadataIndexEntry{SnapshotID: 1, ObjectID: 7}); err != nil {
+	if err := b.AddMetadata(format.MetadataIndexEntry{SnapshotID: 1, ObjectID: 7, Operation: format.OperationUpsert}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.AddBlock(format.BlockIndexEntry{BlockID: 11, SnapshotID: 1, TableID: 1}); err != nil {
+	if err := b.AddBlock(format.BlockIndexEntry{BlockID: 11, SnapshotID: 1, TableID: 1, BlockKind: format.BlockKindRows}); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range riSeq(30, 10) {

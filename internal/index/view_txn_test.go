@@ -536,7 +536,7 @@ func TestParseChunkStoredBytesOverrunRejected(t *testing.T) {
 	if err := b.SetSnapshot(format.SnapshotIndexEntry{SnapshotID: 1, SnapshotType: format.SnapshotFull}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.AddMetadata(format.MetadataIndexEntry{SnapshotID: 1, ObjectID: 3, Revision: 1, RecordType: 2}); err != nil {
+	if err := b.AddMetadata(format.MetadataIndexEntry{SnapshotID: 1, ObjectID: 3, Revision: 1, RecordType: 2, Operation: format.OperationUpsert}); err != nil {
 		t.Fatal(err)
 	}
 	out, _, err := b.Build(BodyBounds{}, 0)

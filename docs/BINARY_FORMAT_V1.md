@@ -92,7 +92,8 @@ BlockKind 分配：`1 = Rows`、`2 = Metadata`（引擎解析的 TLV 记录目�
 | 是否解析 | 是（行解码契约） | 否（只读回字节） |
 
 - payload 即值本身：`RawSize = len(value)`、`RawCRC32C = CRC32C(value)`、`ItemCount = 1`、
-  `TableID = 0`；写路径在压缩膨胀时回退为 `CompressionNone`，使「长度合规」等价于「可提交」；
+  `TableID = 0`；值恒按 store 块压缩算法压缩落盘，无膨胀回退——`Meta()` 读取时透明解压；若压缩
+  后超过 `Limits.MaxStoredBlockBytes`（仅接近上限的不可压值可能出现），Commit 拒绝；
 - 长度上限为 `Limits.MaxRawBlockBytes`（值成为一块原始 payload），写入时在发布前校验，越界返回
   `ErrInvalidArgument`，不产生任何字节；
 - 定位与 Rows/Metadata Block 完全相同：`BlockIndexEntry` 记 `BlockKind`，索引重放和
@@ -159,9 +160,9 @@ Directory**。正文布局：
 
 ```text
 IndexTxnHeader (80B, RowIndexPageCount @ offset 12..16)
-SnapshotChunk // 定长 SnapshotIndexEntry，chunk seq 0
-MetadataChunk × A // 定长条目，chunk seq 1..A
-BlockChunk × B // 定长条目，chunk seq A+1..A+B
+SnapshotChunk // 定长 SnapshotIndexEntry，chunk seq 0，不压缩
+MetadataChunk × A // delta/varint 条目流 + zstd，chunk seq 1..A
+BlockChunk × B // delta/varint 条目流 + zstd，chunk seq A+1..A+B
 ChunkDirectory // 明文 (A+B+1) × 32B，chunk 定位
 IndexPage × N // 每页独立 zstd（复用 store 压缩级别），加密 +16B tag
 RowIndexFenceEntry × N // 明文 52B，由正文 CRC 认证

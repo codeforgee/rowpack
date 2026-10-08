@@ -217,7 +217,8 @@ func (w *Writer) parentOf() uint64 {
 //
 // Repeated calls replace the pending value (last write wins); nil or an empty
 // slice clears it, so a snapshot never carries an empty block. SetMeta copies
-// its argument, so the caller may reuse the slice afterwards.
+// its argument, so the caller may reuse the slice afterwards. Commit stores
+// the value block-compressed; Meta() returns it decompressed, byte for byte.
 func (w *Writer) SetMeta(value []byte) error {
 	if err := w.checkState(); err != nil {
 		return err
@@ -295,7 +296,10 @@ func (w *Writer) metaFlush(fb *block.FlushedBlock) error {
 //
 // The value is the whole payload: no envelope, no directory, no records.
 // ItemCount is 1 (one blob) and RawCRC32C covers the value itself, which is
-// all the length validation the read path needs.
+// all the length validation the read path needs. The value is always stored
+// compressed with the store's block algorithm — Meta() decompresses on read —
+// with no expansion fallback: a near-limit incompressible value whose
+// compressed form exceeds MaxStoredBlockBytes is rejected here instead.
 func (w *Writer) flushMetaBlock() error {
 	if len(w.meta) == 0 {
 		return nil
@@ -304,14 +308,6 @@ func (w *Writer) flushMetaBlock() error {
 	stored, err := block.Compress(comp, w.store.opts.CompressionLevel, w.meta)
 	if err != nil {
 		return err
-	}
-	if len(stored) > len(w.meta) {
-		// Compression expanded an already-incompressible value. Storing it
-		// plain keeps every value SetMeta accepted committable: the promise
-		// is about the value's size, and the stored bound
-		// (Limits.MaxStoredBlockBytes) is met by construction.
-		comp = format.CompressionNone
-		stored = w.meta
 	}
 	if uint64(len(stored)) > uint64(w.store.opts.Limits.MaxStoredBlockBytes) {
 		return fmt.Errorf("%w: meta block of %d stored bytes exceeds limit %d",

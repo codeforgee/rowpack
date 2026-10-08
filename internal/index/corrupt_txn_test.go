@@ -51,10 +51,10 @@ func mustBuildTxn(t *testing.T, nRows int) []byte {
 	if err := b.SetSnapshot(format.SnapshotIndexEntry{SnapshotID: 1, SnapshotType: format.SnapshotFull, BlockCount: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.AddMetadata(format.MetadataIndexEntry{SnapshotID: 1, ObjectID: 7}); err != nil {
+	if err := b.AddMetadata(format.MetadataIndexEntry{SnapshotID: 1, ObjectID: 7, Operation: format.OperationUpsert}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.AddBlock(format.BlockIndexEntry{BlockID: 11, SnapshotID: 1, TableID: 1}); err != nil {
+	if err := b.AddBlock(format.BlockIndexEntry{BlockID: 11, SnapshotID: 1, TableID: 1, BlockKind: format.BlockKindRows}); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range riSeq(nRows, 4) {
@@ -386,7 +386,7 @@ func TestTxnParseRejectsCorruptions(t *testing.T) {
 			restampChunk(t, d, chunks[1].off, func(h *format.IndexChunkHeader) { h.EntryCount = 2 })
 			syncDirEntry(t, d, dirOff, 1, 1, chunks[1].raw)
 			return d
-		}, "metadata chunk 1: 48 bytes for 2 entries"},
+		}, "metadata chunk 1: entry 1"},
 		{"metadata entry corrupt", func(t *testing.T, d []byte) []byte {
 			// Flip a byte inside the decompressed metadata entry, then let
 			// reframeTxn re-stamp every CRC: the entry-level CRC check fires.
@@ -397,12 +397,12 @@ func TestTxnParseRejectsCorruptions(t *testing.T) {
 			}
 			plain[3] ^= 0xFF
 			return reframeTxn(t, d, chunks, dirOff, fenceOff, [][]byte{nil, plain, nil}, nil)
-		}, "metadata chunk 1 entry 0"},
+		}, "metadata chunk 1: entry 0"},
 		{"block chunk size mismatch", func(t *testing.T, d []byte) []byte {
 			restampChunk(t, d, chunks[2].off, func(h *format.IndexChunkHeader) { h.EntryCount = 2 })
 			syncDirEntry(t, d, dirOff, 2, 2, chunks[2].raw)
 			return d
-		}, "block chunk 2: 56 bytes for 2 entries"},
+		}, "block chunk 2: entry 1"},
 		{"block entry corrupt", func(t *testing.T, d []byte) []byte {
 			plain, err := block.Decompress(format.CompressionZstd, nil,
 				d[chunks[2].paylo:chunks[2].paylo+int(chunks[2].raw.StoredBytes)], chunks[2].raw.RawBytes)
@@ -411,7 +411,7 @@ func TestTxnParseRejectsCorruptions(t *testing.T) {
 			}
 			plain[3] ^= 0xFF
 			return reframeTxn(t, d, chunks, dirOff, fenceOff, [][]byte{nil, nil, plain}, nil)
-		}, "block chunk 2 entry 0"},
+		}, "block chunk 2: entry 0"},
 		{"obsolete row chunk kind", func(t *testing.T, d []byte) []byte {
 			restampChunk(t, d, chunks[2].off, func(h *format.IndexChunkHeader) {
 				h.EntryKind = format.IndexChunkKindRow
@@ -550,12 +550,10 @@ func TestTxnParseRejectsSnapshotIDMismatch(t *testing.T) {
 // TestTxnParseRejectsSnapshotlessBody frames a body whose only chunk is a
 // metadata chunk: the parser must refuse a txn without a snapshot chunk.
 func TestTxnParseRejectsSnapshotlessBody(t *testing.T) {
-	// Assemble: header + [metadata chunk] + dir + footer.
-	meta := format.MetadataIndexEntry{SnapshotID: 1, ObjectID: 7}
-	metaRaw := make([]byte, format.MetadataIndexEntrySize)
-	if err := meta.MarshalTo(metaRaw); err != nil {
-		t.Fatal(err)
-	}
+	// Assemble: header + [metadata chunk] + dir + footer. The payload is one
+	// absolutely-encoded metadata stream entry (the frozen v1 encoding).
+	enc := &metaEncoder{}
+	metaRaw := enc.add(nil, format.MetadataIndexEntry{SnapshotID: 1, ObjectID: 7, Operation: format.OperationUpsert})
 	h := format.IndexChunkHeader{
 		EntryKind:   format.IndexChunkKindMetadata,
 		EntryCount:  1,

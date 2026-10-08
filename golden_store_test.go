@@ -27,7 +27,7 @@ func TestGoldenManifest(t *testing.T) {
 		// kind's bytes and its parent-chain resolution too.
 		"empty-store.rpk":            "359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401",
 		"rows-payload-all-types.bin": "e95a2724cb1d8b486ee7934b5113cb328589243fdd814869ea5401692ec032a0",
-		"full-delta-store.rpk":       "1ab8989b42de83cbf0a25e18cd45302980c84e2db50473e3ec2328a2cad65b39",
+		"full-delta-store.rpk":       "92e88440f926111cd20d00bddb8191e1dcd53d8214ee8c40eb922678eebf373c",
 		"encrypted-store.rpk":        "e7b0f8a715b6af17b0bb7bbe4d7de75981243cd6b755fb6d4638403e4816bf14",
 	}
 	for name, digest := range want {

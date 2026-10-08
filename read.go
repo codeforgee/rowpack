@@ -1,9 +1,10 @@
 package rowpack
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/codeforgee/rowpack/internal/codec"
@@ -72,7 +73,7 @@ func (s *Store) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 	for _, sm := range metas {
 		out = append(out, snapshotInfo(sm))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	slices.SortFunc(out, func(a, b SnapshotInfo) int { return cmp.Compare(a.ID, b.ID) })
 	return out, nil
 }
 
@@ -237,7 +238,7 @@ func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error
 			NS:            st.schemas.nsOf(uint64(snapshot), uint32(tid)),
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	slices.SortFunc(out, func(a, b Table) int { return cmp.Compare(a.ID, b.ID) })
 	return out, nil
 }
 

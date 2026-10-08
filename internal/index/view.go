@@ -136,8 +136,8 @@ func (sh *rowShard) lookup(rowID uint64) (RowLoc, bool) {
 	if sh == nil {
 		return RowLoc{}, false
 	}
-	i := sort.Search(len(sh.rowIDs), func(i int) bool { return sh.rowIDs[i] >= rowID })
-	if i >= len(sh.rowIDs) || sh.rowIDs[i] != rowID {
+	i, ok := slices.BinarySearch(sh.rowIDs, rowID)
+	if !ok {
 		return RowLoc{}, false
 	}
 	return sh.rowLocAt(i), true
@@ -194,7 +194,7 @@ func (it *rowShardIter) RowID() uint64 { return it.sh.rowIDAt(it.pos) }
 func (it *rowShardIter) Loc() RowLoc   { return it.sh.rowLocAt(it.pos) }
 func (it *rowShardIter) Next()         { it.pos++ }
 func (it *rowShardIter) Seek(target uint64) {
-	it.pos = sort.Search(len(it.sh.rowIDs), func(i int) bool { return it.sh.rowIDs[i] >= target })
+	it.pos, _ = slices.BinarySearch(it.sh.rowIDs, target)
 }
 
 // RowIter returns a fresh iterator over rows for (snapshot, table), or nil

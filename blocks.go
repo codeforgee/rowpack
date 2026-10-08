@@ -1,10 +1,11 @@
 package rowpack
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"runtime"
-	"sort"
+	"slices"
 
 	"github.com/codeforgee/rowpack/internal/format"
 	"github.com/codeforgee/rowpack/internal/index"
@@ -38,7 +39,7 @@ func (s *Store) blocksByTable(view *index.View, snap uint64, tid TableID) ([]Blo
 	if len(locs) == 0 {
 		return nil, nil
 	}
-	sort.Slice(locs, func(i, j int) bool { return locs[i].BlockID < locs[j].BlockID })
+	slices.SortFunc(locs, func(a, b *index.BlockLoc) int { return cmp.Compare(a.BlockID, b.BlockID) })
 	// Derive each block's row range from the snapshot's own row shard
 	// (tombstones included): min/max RowID per BlockID, zero block I/O.
 	out := make([]Block, 0, len(locs))

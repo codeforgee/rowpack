@@ -1,11 +1,11 @@
 package rowpack
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 
 	"github.com/codeforgee/rowpack/internal/codec"
 	"github.com/codeforgee/rowpack/internal/format"
@@ -309,10 +309,9 @@ func (s *Store) addSchema(ts *tableSchemas, tableRec *metadata.Record, columnRec
 		}
 		derived = append(derived, col)
 	}
-	// Sort columns by column ID (field 10).
-	sort.SliceStable(derived, func(i, j int) bool {
-		return derived[i].columnID < derived[j].columnID
-	})
+	// Sort columns by column ID (field 10), stable: column records sharing
+	// an ID keep their record order.
+	slices.SortStableFunc(derived, func(a, b derivedColumn) int { return cmp.Compare(a.columnID, b.columnID) })
 	for _, c := range derived {
 		schema.Columns = append(schema.Columns, c.codecColumn)
 	}

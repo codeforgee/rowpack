@@ -73,8 +73,8 @@ func TestCreateTableRejectsOversizedTableRecord(t *testing.T) {
 	sabotageMetadata(tx, 1)
 	err := tx.DefineTable("t", armCols)
 	require.ErrorContains(t, err, "exceeds limit")
-	require.Len(t, tx.w.metaRecords, 1, "only the Table record ever reached the block builder")
-	require.EqualValues(t, format.RecordTable, tx.w.metaRecords[0].RecordType)
+	require.Equal(t, map[format.RecordType]int{format.RecordTable: 1}, tx.w.metaCounts,
+		"only the Table record ever reached the block builder")
 }
 
 // TestCreateTableRejectsOversizedColumnRecord: a Table record is ~77 bytes and
@@ -85,8 +85,8 @@ func TestCreateTableRejectsOversizedColumnRecord(t *testing.T) {
 	sabotageMetadata(tx, 100)
 	long := []Column{{Name: strings.Repeat("c", 200), Type: TypeUint64}}
 	require.ErrorContains(t, tx.DefineTable("t", long), "exceeds limit")
-	require.Len(t, tx.w.metaRecords, 2, "the Table record was accepted before the column failed")
-	require.EqualValues(t, format.RecordColumn, tx.w.metaRecords[1].RecordType)
+	require.Equal(t, map[format.RecordType]int{format.RecordTable: 1, format.RecordColumn: 1}, tx.w.metaCounts,
+		"the Table record was accepted before the column failed")
 }
 
 // TestCreateTableFullRedefinitionRejectsOversizedRecord: a FULL snapshot does

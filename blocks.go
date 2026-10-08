@@ -20,19 +20,11 @@ import (
 func (s *Store) Blocks(snap SnapshotID, table string) ([]Block, error) {
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
-	st, err := s.captureState()
+	rc, err := s.resolveRead(snap, table)
 	if err != nil {
 		return nil, err
 	}
-	view := st.view
-	if view.Snapshot(uint64(snap)) == nil {
-		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snap)
-	}
-	tid, ok := st.schemas.tableID(uint64(snap), table)
-	if !ok {
-		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snap)
-	}
-	return s.blocksByTable(st.view, uint64(snap), tid)
+	return s.blocksByTable(rc.st.view, uint64(snap), rc.tid)
 }
 
 func (s *Store) blocksByTable(view *index.View, snap uint64, tid TableID) ([]Block, error) {
@@ -107,19 +99,11 @@ func (s *Store) ScanBlocks(ctx context.Context, snap SnapshotID, table string, l
 			s.readMu.RUnlock()
 		}
 	}()
-	st, err := s.captureState()
+	rc, err := s.resolveRead(snap, table)
 	if err != nil {
 		return nil, err
 	}
-	view := st.view
-	if view.Snapshot(uint64(snap)) == nil {
-		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snap)
-	}
-	tid, ok := st.schemas.tableID(uint64(snap), table)
-	if !ok {
-		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snap)
-	}
-	blocks, err := s.blocksByTable(view, uint64(snap), tid)
+	blocks, err := s.blocksByTable(rc.st.view, uint64(snap), rc.tid)
 	if err != nil {
 		return nil, err
 	}
@@ -138,10 +122,10 @@ func (s *Store) ScanBlocks(ctx context.Context, snap SnapshotID, table string, l
 	}
 	it := &Iterator{
 		store:    s,
-		state:    st,
+		state:    rc.st,
 		ctx:      ctx,
 		snapshot: snap,
-		table:    tid,
+		table:    rc.tid,
 		mode:     scanModeBlocks,
 		blockIDs: ids,
 		readHeld: true,

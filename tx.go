@@ -153,12 +153,15 @@ func (tx *Tx) ApplyBatch(ctx context.Context, changes []Change) error {
 // SealTable flushes the rows accumulated for one table into a sealed rows
 // block immediately, instead of waiting for the block target or Commit. Back
 // callers that stream a table in self-contained batches use it to make block
-// boundaries coincide with batch boundaries. A table with no pending rows (or
-// never written) is a no-op.
+// boundaries coincide with batch boundaries. A table with no pending rows is
+// a no-op; an unknown table is ErrNotFound.
 func (tx *Tx) SealTable(table string) error {
+	if err := tx.w.checkState(); err != nil {
+		return err
+	}
 	tid, _, err := tx.w.tableForWrite(table)
 	if err != nil {
-		return nil
+		return err
 	}
 	rb := tx.w.rowBuilder(tid)
 	if rb.Len() == 0 {

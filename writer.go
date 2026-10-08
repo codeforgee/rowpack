@@ -3,6 +3,7 @@ package rowpack
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
@@ -92,6 +93,10 @@ type Writer struct {
 
 	// schemas defined in this snapshot: (table, version) -> schema
 	schemas map[schemaKey]*codec.Schema
+	// latestVer tracks the highest schema version defined per table in this
+	// snapshot, so the write path (tableForWrite runs per Insert/Update)
+	// resolves it in O(1) instead of scanning the schemas map.
+	latestVer map[TableID]SchemaVersion
 
 	// encBuf is reused across row encodes to cut per-row allocation.
 	encBuf []byte
@@ -102,8 +107,11 @@ type Writer struct {
 
 	// pending blocks in flush order (rows and metadata interleaved)
 	pending []*pendingBlock
-	// metadata records written in this snapshot (for schema index build)
-	metaRecords []*metadata.Record
+	// metaCounts counts the metadata records accepted per record type in this
+	// transaction (encoded and handed to the builder). The builder owns the
+	// buffered bytes, so the writer retains only this small counter instead
+	// of every record.
+	metaCounts map[format.RecordType]int
 
 	allocator *metadata.IDAllocator
 	maxObject uint64
@@ -154,9 +162,11 @@ func (s *Store) newWriter(typ SnapshotType, parent SnapshotID) (*Writer, error) 
 		state:       writerOpen,
 		rowBuilders: make(map[TableID]*block.RowsBuilder),
 		schemas:     make(map[schemaKey]*codec.Schema),
+		latestVer:   make(map[TableID]SchemaVersion),
 		seenRows:    make(map[TableID]*rowIDSet),
 		tableIDs:    make(map[string]TableID),
 		tableNS:     make(map[TableID]string),
+		metaCounts:  make(map[format.RecordType]int),
 		allocator:   metadata.NewIDAllocator(),
 	}
 	if !s.writer.CompareAndSwap(nil, w) {
@@ -238,7 +248,7 @@ func (w *Writer) writeMetadata(rec *metadata.Record) error {
 	if err != nil {
 		return err
 	}
-	w.metaRecords = append(w.metaRecords, rec)
+	w.metaCounts[format.RecordType(rec.RecordType)]++
 	return w.addMetadata(rec, body)
 }
 
@@ -560,6 +570,9 @@ func (w *Writer) writeRecords(def tableDef) error {
 		}
 	}
 	w.schemas[schemaKey{Table: def.ID, Version: schema.Version}] = schema.Clone()
+	if SchemaVersion(schema.Version) > w.latestVer[def.ID] {
+		w.latestVer[def.ID] = SchemaVersion(schema.Version)
+	}
 	return nil
 }
 
@@ -628,67 +641,68 @@ func (w *Writer) tableForWrite(table string) (TableID, SchemaVersion, error) {
 	return tid, ver, nil
 }
 
+// latestVersion returns the highest schema version this transaction defined
+// for the table (0 when none), via the latestVer index maintained by
+// writeRecords.
 func (w *Writer) latestVersion(tid TableID) SchemaVersion {
-	var latest SchemaVersion
-	for key := range w.schemas {
-		if key.Table == tid && key.Version > latest {
-			latest = key.Version
-		}
+	return w.latestVer[tid]
+}
+
+// resolveWrite validates the writer state and the public arguments and
+// resolves the table address to its internal form: the single preamble shared
+// by Insert/Update/Delete. A DELETE tombstone pins no schema (version 0):
+// it carries no payload, matching the historical on-disk form.
+func (w *Writer) resolveWrite(table string, rowID RowID, typ ChangeType) (rowChange, error) {
+	if err := w.checkState(); err != nil {
+		return rowChange{}, err
 	}
-	return latest
+	if rowID == 0 {
+		return rowChange{}, fmt.Errorf("%w: row id is zero", ErrInvalidArgument)
+	}
+	tid, ver, err := w.tableForWrite(table)
+	if err != nil {
+		return rowChange{}, err
+	}
+	if typ == ChangeDelete {
+		ver = 0
+	}
+	return rowChange{typ: typ, table: tid, rowID: rowID, schemaVersion: ver}, nil
 }
 
 // Insert appends an INSERT change. The table address is resolved against the
 // committed parent chain and this transaction's definitions; the row is encoded
 // against the table's latest schema.
 func (w *Writer) Insert(ctx context.Context, table string, rowID RowID, row Row) error {
-	if err := w.checkState(); err != nil {
-		return err
-	}
-	if rowID == 0 {
-		return fmt.Errorf("%w: row id is zero", ErrInvalidArgument)
-	}
-	tid, ver, err := w.tableForWrite(table)
+	c, err := w.resolveWrite(table, rowID, ChangeInsert)
 	if err != nil {
 		return err
 	}
-	return w.put(ctx, rowChange{typ: ChangeInsert, table: tid, rowID: rowID, schemaVersion: ver, row: row})
+	c.row = row
+	return w.put(ctx, c)
 }
 
 // Update appends an UPDATE change (DELTA snapshots only).
 func (w *Writer) Update(ctx context.Context, table string, rowID RowID, row Row) error {
-	if err := w.checkState(); err != nil {
-		return err
-	}
-	if rowID == 0 {
-		return fmt.Errorf("%w: row id is zero", ErrInvalidArgument)
-	}
-	tid, ver, err := w.tableForWrite(table)
+	c, err := w.resolveWrite(table, rowID, ChangeUpdate)
 	if err != nil {
 		return err
 	}
-	return w.put(ctx, rowChange{typ: ChangeUpdate, table: tid, rowID: rowID, schemaVersion: ver, row: row})
+	c.row = row
+	return w.put(ctx, c)
 }
 
 // Delete appends a DELETE tombstone (DELTA snapshots only).
 func (w *Writer) Delete(ctx context.Context, table string, rowID RowID) error {
-	if err := w.checkState(); err != nil {
-		return err
-	}
-	if rowID == 0 {
-		return fmt.Errorf("%w: row id is zero", ErrInvalidArgument)
-	}
-	tid, _, err := w.tableForWrite(table)
+	c, err := w.resolveWrite(table, rowID, ChangeDelete)
 	if err != nil {
 		return err
 	}
-	return w.put(ctx, rowChange{typ: ChangeDelete, table: tid, rowID: rowID})
+	return w.put(ctx, c)
 }
 
 // rowChange is the internal, already-resolved form of one row mutation: the
 // public Change with its table address resolved to a TableID and its schema
-// version pinned. Insert/Update/Delete resolve the public arguments once and
-// hand put a single semantic value.
+// version pinned. resolveWrite produces it once per public call.
 type rowChange struct {
 	typ           ChangeType
 	table         TableID
@@ -698,6 +712,8 @@ type rowChange struct {
 }
 
 func (w *Writer) put(ctx context.Context, c rowChange) error {
+	// Belt and braces: put is also called directly (tests, future callers),
+	// so it re-checks the invariants resolveWrite established.
 	if err := w.checkState(); err != nil {
 		return err
 	}
@@ -1281,12 +1297,7 @@ func (w *Writer) flushAll() error {
 func randUint64() uint64 {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
-	return le64(b[:])
-}
-
-func le64(b []byte) uint64 {
-	return uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
-		uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
+	return binary.LittleEndian.Uint64(b[:])
 }
 
 func sortTableIDs(ids []TableID) {

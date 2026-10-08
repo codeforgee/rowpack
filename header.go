@@ -24,7 +24,7 @@ type Header struct {
 // plaintext. A missing store reports ErrNotFound; a damaged or foreign header
 // reports ErrVersionUnsupported or a corruption error.
 func PeekHeader(basePath string) (Header, error) {
-	dataPath, err := dataPathOf(basePath)
+	_, dataPath, err := storePaths(basePath)
 	if err != nil {
 		return Header{}, err
 	}

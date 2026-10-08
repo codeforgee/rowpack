@@ -25,6 +25,38 @@ func (s *Store) captureState() (*publishedState, error) {
 	return st, nil
 }
 
+// readContext is the per-call captured read state: the immutable published
+// state plus the resolved internal table ID. Every table-taking read API
+// captures one under the store's read lock, so the shared validation — open,
+// known snapshot, known table — lives in exactly one place. It is returned
+// by value: three words that stay on the caller's stack (the zero-allocation
+// batch read pins that).
+type readContext struct {
+	st   *publishedState
+	snap SnapshotID
+	tid  TableID
+}
+
+// resolveRead captures the published state and resolves the table address at
+// the snapshot. The caller holds the store's read lock (RLock at the call
+// site) for as long as it uses the returned context: iterator constructors
+// keep the lock past this helper for the iterator's lifetime. An unknown
+// snapshot or table is ErrNotFound.
+func (s *Store) resolveRead(snapshot SnapshotID, table string) (readContext, error) {
+	st, err := s.captureState()
+	if err != nil {
+		return readContext{}, err
+	}
+	if st.view.Snapshot(uint64(snapshot)) == nil {
+		return readContext{}, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
+	}
+	tid, ok := st.schemas.tableID(uint64(snapshot), table)
+	if !ok {
+		return readContext{}, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
+	}
+	return readContext{st: st, snap: snapshot, tid: tid}, nil
+}
+
 // ListSnapshots returns committed snapshots sorted by ID.
 // ListSnapshots returns every committed snapshot in ascending ID order
 // (commit order): the last element is always the newest snapshot.
@@ -70,26 +102,19 @@ func snapshotInfo(sm *index.SnapshotMeta) SnapshotInfo {
 func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowID RowID, dst Row) (Row, error) {
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
-	st, err := s.captureState()
+	rc, err := s.resolveRead(snapshot, table)
 	if err != nil {
 		return nil, err
 	}
-	if st.view.Snapshot(uint64(snapshot)) == nil {
-		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
-	}
-	tid, ok := st.schemas.tableID(uint64(snapshot), table)
+	view := rc.st.view
+	loc, ok := view.ResolveRow(uint64(snapshot), uint32(rc.tid), uint64(rowID))
 	if !ok {
-		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
-	}
-	view := st.view
-	loc, ok := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
-	if !ok {
-		return nil, fmt.Errorf("%w: (table %d, row %d) in snapshot %d", ErrNotFound, tid, rowID, snapshot)
+		return nil, fmt.Errorf("%w: (table %d, row %d) in snapshot %d", ErrNotFound, rc.tid, rowID, snapshot)
 	}
 	if loc.ChangeType == format.ChangeDelete {
-		return nil, fmt.Errorf("%w: (table %d, row %d) deleted in snapshot %d", ErrNotFound, tid, rowID, snapshot)
+		return nil, fmt.Errorf("%w: (table %d, row %d) deleted in snapshot %d", ErrNotFound, rc.tid, rowID, snapshot)
 	}
-	row, _, err := s.readRowInto(view, st.schemas, snapshot, tid, loc, dst)
+	row, _, err := s.readRowInto(view, rc.st.schemas, snapshot, rc.tid, loc, dst)
 	if err != nil {
 		return nil, err
 	}
@@ -103,19 +128,11 @@ func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowI
 func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, rowID RowID) (bool, error) {
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
-	st, err := s.captureState()
+	rc, err := s.resolveRead(snapshot, table)
 	if err != nil {
 		return false, err
 	}
-	if st.view.Snapshot(uint64(snapshot)) == nil {
-		return false, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
-	}
-	tid, ok := st.schemas.tableID(uint64(snapshot), table)
-	if !ok {
-		return false, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
-	}
-	view := st.view
-	loc, ok := view.ResolveRow(uint64(snapshot), uint32(tid), uint64(rowID))
+	loc, ok := rc.st.view.ResolveRow(uint64(snapshot), uint32(rc.tid), uint64(rowID))
 	if !ok || loc.ChangeType == format.ChangeDelete {
 		return false, nil
 	}
@@ -171,23 +188,17 @@ func (s *Store) rowCodec() codec.Codec {
 func (s *Store) Schema(ctx context.Context, snapshot SnapshotID, table string, version SchemaVersion) (Schema, error) {
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
-	st, err := s.captureState()
+	rc, err := s.resolveRead(snapshot, table)
 	if err != nil {
 		return Schema{}, err
 	}
-	if st.view.Snapshot(snapshot) == nil {
-		return Schema{}, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
-	}
-	tid, ok := st.schemas.tableID(snapshot, table)
-	if !ok {
-		return Schema{}, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
-	}
+	si := rc.st.schemas
 	if version == 0 {
-		version = st.schemas.latest(snapshot, uint32(tid))
+		version = si.latest(snapshot, uint32(rc.tid))
 	}
-	schema := st.schemas.schema(snapshot, uint32(tid), version)
+	schema := si.schema(snapshot, uint32(rc.tid), version)
 	if schema == nil {
-		return Schema{}, fmt.Errorf("%w: schema for table %d version %d", ErrSchemaMismatch, tid, version)
+		return Schema{}, fmt.Errorf("%w: schema for table %d version %d", ErrSchemaMismatch, rc.tid, version)
 	}
 	return *schema, nil
 }
@@ -206,16 +217,11 @@ func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error
 	// Gather candidates strictly along the target's parent chain. tableRecord
 	// below resolves deletes/overrides on that same chain.
 	seen := make(map[TableID]bool)
-	for cur := uint64(snapshot); ; {
-		ids := st.view.MetadataByType(cur, uint32(format.RecordTable))
-		for _, oid := range ids {
+	sm := st.view.Snapshot(uint64(snapshot)) // validated above
+	for _, cur := range sm.Chain() {
+		for _, oid := range st.view.MetadataByType(cur, uint32(format.RecordTable)) {
 			seen[TableID(oid)] = true
 		}
-		sm := st.view.Snapshot(cur)
-		if sm == nil || sm.Parent == 0 {
-			break
-		}
-		cur = sm.Parent
 	}
 	out := make([]Table, 0, len(seen))
 	for tid := range seen {
@@ -254,16 +260,14 @@ func (s *Store) TablesIn(ctx context.Context, snapshot SnapshotID, ns string) ([
 
 // tableRecord returns the Table metadata record visible at a snapshot.
 func (s *Store) tableRecord(view *index.View, snapshot uint64, tableOID uint64) (*metadata.Record, error) {
-	// Find the table in the chain.
-	cur := snapshot
-	for {
+	sm := view.Snapshot(snapshot)
+	if sm == nil {
+		return nil, fmt.Errorf("%w: table object %d", ErrNotFound, tableOID)
+	}
+	for _, cur := range sm.Chain() {
 		if loc := view.Metadata(cur, tableOID); loc != nil {
 			return s.readMetadataCached(view, cur, tableOID, nil)
 		}
-		sm := view.Snapshot(cur)
-		if sm == nil || sm.Parent == 0 {
-			return nil, fmt.Errorf("%w: table object %d", ErrNotFound, tableOID)
-		}
-		cur = sm.Parent
 	}
+	return nil, fmt.Errorf("%w: table object %d", ErrNotFound, tableOID)
 }

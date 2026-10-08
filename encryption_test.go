@@ -2,6 +2,7 @@ package rowpack
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -267,7 +268,7 @@ func TestEncryptionTamperDetect(t *testing.T) {
 	require.NoError(t, err)
 	_, err = f.ReadAt(chdr[:], blkOff)
 	require.NoError(t, err)
-	pageCount := le32(chdr[12:]) // RowsBlockHeader.PageCount
+	pageCount := binary.LittleEndian.Uint32(chdr[12:]) // RowsBlockHeader.PageCount
 	require.Greater(t, pageCount, uint32(0))
 	page0Stored := blkOff + int64(format.RowsBlockHeaderSize) + int64(pageCount)*int64(format.RowsPageDirEntrySize)
 	payload := make([]byte, 16)

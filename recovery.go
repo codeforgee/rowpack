@@ -1,6 +1,7 @@
 package rowpack
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/codeforgee/rowpack/internal/codec"
@@ -348,7 +349,7 @@ func (s *Store) walkSnapshot(start int64) (c committedSnapshot, complete bool, n
 			c.end = cur + format.SnapshotFooterSize
 			c.prevFooter = ftr.PreviousFooterOffset
 			c.ftrTxnCRC = ftr.IndexTxnCRC32C
-			c.footerCRC = le32(fb[format.SnapshotFooterCRC32COffset:])
+			c.footerCRC = binary.LittleEndian.Uint32(fb[format.SnapshotFooterCRC32COffset:])
 			c.footerBytes = append([]byte(nil), fb[:]...)
 			c.blockCount = ftr.BlockCount
 			c.metaCount = ftr.MetadataBlockCount

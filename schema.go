@@ -236,19 +236,12 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 		return nil
 	}
 	// Walk from the snapshot up to its FULL ancestor.
-	snap := snapshot
-	for depth := 0; ; depth++ {
-		sm := view.Snapshot(snap)
-		if sm == nil {
-			break
+	if sm := view.Snapshot(snapshot); sm != nil {
+		for _, snap := range sm.Chain() {
+			if err := walk(snap); err != nil {
+				return nil, err
+			}
 		}
-		if err := walk(snap); err != nil {
-			return nil, err
-		}
-		if sm.Parent == 0 {
-			break
-		}
-		snap = sm.Parent
 	}
 	for _, ts := range result {
 		sort.Slice(ts.versions, func(i, j int) bool { return ts.versions[i] < ts.versions[j] })
@@ -362,48 +355,46 @@ func isNullableString(s string) bool {
 // them.
 var errUnknownColumnType = errors.New("rowpack: unknown column type string")
 
+// columnTypeNames maps every engine-interpreted type to its canonical type
+// string — the single source of truth for the (codec.Type <-> string) mapping
+// written by DefineSchema and resolved by schema derivation. columnTypes is
+// its inverse.
+var columnTypeNames = map[codec.Type]string{
+	codec.TypeBool:       "bool",
+	codec.TypeInt8:       "int8",
+	codec.TypeInt16:      "int16",
+	codec.TypeInt32:      "int32",
+	codec.TypeInt64:      "int64",
+	codec.TypeUint8:      "uint8",
+	codec.TypeUint16:     "uint16",
+	codec.TypeUint32:     "uint32",
+	codec.TypeUint64:     "uint64",
+	codec.TypeFloat32:    "float32",
+	codec.TypeFloat64:    "float64",
+	codec.TypeString:     "string",
+	codec.TypeBytes:      "bytes",
+	codec.TypeDate:       "date",
+	codec.TypeTime:       "time",
+	codec.TypeDateTime:   "datetime",
+	codec.TypeDateTimeTZ: "datetime_tz",
+	codec.TypeDecimal:    "decimal",
+}
+
+var columnTypes = func() map[string]codec.Type {
+	m := make(map[string]codec.Type, len(columnTypeNames))
+	for t, name := range columnTypeNames {
+		m[name] = t
+	}
+	return m
+}()
+
 // columnType resolves the engine-interpreted TypedTuple type of a Column
 // record's canonical type string. Only the strings written by DefineSchema
 // are understood; unknown type strings mark the record as plain stored data
 // (their table is skipped in the schema index, never failing the open).
 func columnType(t string) (codec.Type, error) {
-	switch t {
-	case "bool":
-		return codec.TypeBool, nil
-	case "int8":
-		return codec.TypeInt8, nil
-	case "int16":
-		return codec.TypeInt16, nil
-	case "int32":
-		return codec.TypeInt32, nil
-	case "int64":
-		return codec.TypeInt64, nil
-	case "uint8":
-		return codec.TypeUint8, nil
-	case "uint16":
-		return codec.TypeUint16, nil
-	case "uint32":
-		return codec.TypeUint32, nil
-	case "uint64":
-		return codec.TypeUint64, nil
-	case "float32":
-		return codec.TypeFloat32, nil
-	case "float64":
-		return codec.TypeFloat64, nil
-	case "string":
-		return codec.TypeString, nil
-	case "bytes":
-		return codec.TypeBytes, nil
-	case "date":
-		return codec.TypeDate, nil
-	case "time":
-		return codec.TypeTime, nil
-	case "datetime":
-		return codec.TypeDateTime, nil
-	case "datetime_tz":
-		return codec.TypeDateTimeTZ, nil
-	case "decimal":
-		return codec.TypeDecimal, nil
+	if v, ok := columnTypes[t]; ok {
+		return v, nil
 	}
 	return 0, fmt.Errorf("%w: %q", errUnknownColumnType, t)
 }
@@ -411,43 +402,8 @@ func columnType(t string) (codec.Type, error) {
 // typeName maps a codec type to its canonical type string (the inverse of
 // columnType).
 func typeName(t codec.Type) string {
-	switch t {
-	case codec.TypeBool:
-		return "bool"
-	case codec.TypeInt8:
-		return "int8"
-	case codec.TypeInt16:
-		return "int16"
-	case codec.TypeInt32:
-		return "int32"
-	case codec.TypeInt64:
-		return "int64"
-	case codec.TypeUint8:
-		return "uint8"
-	case codec.TypeUint16:
-		return "uint16"
-	case codec.TypeUint32:
-		return "uint32"
-	case codec.TypeUint64:
-		return "uint64"
-	case codec.TypeFloat32:
-		return "float32"
-	case codec.TypeFloat64:
-		return "float64"
-	case codec.TypeString:
-		return "string"
-	case codec.TypeBytes:
-		return "bytes"
-	case codec.TypeDate:
-		return "date"
-	case codec.TypeTime:
-		return "time"
-	case codec.TypeDateTime:
-		return "datetime"
-	case codec.TypeDateTimeTZ:
-		return "datetime_tz"
-	case codec.TypeDecimal:
-		return "decimal"
+	if name, ok := columnTypeNames[t]; ok {
+		return name
 	}
 	return "unknown"
 }
@@ -472,33 +428,33 @@ type metaRecKey struct {
 // file via its index location, resolving along the parent chain. An optional
 // memo avoids decoding the same physical record repeatedly.
 func (s *Store) readMetadataCached(view *index.View, snapshot, objectID uint64, memo map[metaRecKey]*metadata.Record) (*metadata.Record, error) {
-	cur := snapshot
-	for {
+	sm := view.Snapshot(snapshot)
+	if sm == nil {
+		return nil, fmt.Errorf("%w: metadata object %d in snapshot %d", ErrNotFound, objectID, snapshot)
+	}
+	for _, cur := range sm.Chain() {
 		loc := view.Metadata(cur, objectID)
-		if loc != nil {
-			if loc.Operation == format.OperationDelete {
-				return nil, fmt.Errorf("%w: metadata object %d deleted", ErrNotFound, objectID)
-			}
-			if memo != nil {
-				key := metaRecKey{blockID: loc.BlockID, ordinal: loc.ItemOrdinal}
-				if rec, ok := memo[key]; ok {
-					return rec, nil
-				}
-				rec, err := s.decodeRecord(view, loc, objectID)
-				if err != nil {
-					return nil, err
-				}
-				memo[key] = rec
+		if loc == nil {
+			continue
+		}
+		if loc.Operation == format.OperationDelete {
+			return nil, fmt.Errorf("%w: metadata object %d deleted", ErrNotFound, objectID)
+		}
+		if memo != nil {
+			key := metaRecKey{blockID: loc.BlockID, ordinal: loc.ItemOrdinal}
+			if rec, ok := memo[key]; ok {
 				return rec, nil
 			}
-			return s.decodeRecord(view, loc, objectID)
+			rec, err := s.decodeRecord(view, loc, objectID)
+			if err != nil {
+				return nil, err
+			}
+			memo[key] = rec
+			return rec, nil
 		}
-		sm := view.Snapshot(cur)
-		if sm == nil || sm.Parent == 0 {
-			return nil, fmt.Errorf("%w: metadata object %d in snapshot %d", ErrNotFound, objectID, snapshot)
-		}
-		cur = sm.Parent
+		return s.decodeRecord(view, loc, objectID)
 	}
+	return nil, fmt.Errorf("%w: metadata object %d in snapshot %d", ErrNotFound, objectID, snapshot)
 }
 
 // decodeRecord loads, parses and decodes the metadata record at loc.

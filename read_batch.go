@@ -92,23 +92,16 @@ func (s *Store) readBatchInto(snapshot SnapshotID, table string, ids []RowID, bu
 	}
 	s.readMu.RLock()
 	defer s.readMu.RUnlock()
-	st, err := s.captureState()
+	rc, err := s.resolveRead(snapshot, table)
 	if err != nil {
 		return nil, err
-	}
-	if st.view.Snapshot(snapshot) == nil {
-		return nil, fmt.Errorf("%w: snapshot %d", ErrNotFound, snapshot)
-	}
-	tid, ok := st.schemas.tableID(snapshot, table)
-	if !ok {
-		return nil, fmt.Errorf("%w: table %q in snapshot %d", ErrNotFound, table, snapshot)
 	}
 	if len(ids) == 0 {
 		return nil, nil
 	}
 	var br batchReader
-	br.init(s, st, snapshot, uint32(tid), len(ids), buf)
-	if err := br.resolve(snapshot, uint32(tid), table, ids); err != nil {
+	br.init(s, rc.st, snapshot, uint32(rc.tid), len(ids), buf)
+	if err := br.resolve(snapshot, uint32(rc.tid), table, ids); err != nil {
 		return nil, err
 	}
 	// The sink is a per-call local (not a field): its closures never escape, so
@@ -116,7 +109,7 @@ func (s *Store) readBatchInto(snapshot SnapshotID, table string, ids []RowID, bu
 	// objects. Only the arena's chunk is retained by buf.
 	sink := strArenaSink(&buf.arena)
 	if err := br.readBlocks(sink); err != nil {
-		return nil, s.recordError(br.curBlock, snapshot, tid, err)
+		return nil, s.recordError(br.curBlock, snapshot, rc.tid, err)
 	}
 	s.batchCalls.Add(1)
 	s.batchRows.Add(uint64(len(ids)))

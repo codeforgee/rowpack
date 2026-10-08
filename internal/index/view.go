@@ -26,6 +26,24 @@ type SnapshotMeta struct {
 	DataEnd            uint64
 	DataFooterCRC      uint32
 	Depth              uint32 // chain depth; FULL has depth 1
+
+	// chain is the ancestor chain, target first: [ID, Parent, ..., FULL
+	// root]. Precomputed at Apply time (the parent chain is validated there),
+	// so every chain-resolving read — row lookup, schema derivation, meta
+	// inheritance — iterates a slice instead of re-walking Parent links.
+	// Read-only: never mutated after Apply.
+	chain []uint64
+}
+
+// Chain returns the snapshot's ancestor chain, target first: [ID, Parent,
+// ..., FULL root]. The returned slice is shared immutable state; callers must
+// not modify it. A meta built outside Apply (tests) falls back to itself as
+// the only layer.
+func (m *SnapshotMeta) Chain() []uint64 {
+	if m.chain == nil {
+		return []uint64{m.ID}
+	}
+	return m.chain
 }
 
 // BlockLoc locates a block in the .rpk data file.
@@ -291,17 +309,16 @@ func (v *View) MemoryBytes() uint64 { return v.memoryBytes }
 // ResolveRow finds the row location for (snapshot, table, rowID) along the
 // parent chain.
 func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool) {
-	cur := snapshot
-	for {
+	sm := v.snapshots[snapshot]
+	if sm == nil {
+		return RowLoc{}, false
+	}
+	for _, cur := range sm.chain {
 		if loc, ok := v.Row(cur, table, rowID); ok {
 			return loc, true
 		}
-		sm := v.Snapshot(cur)
-		if sm == nil || sm.Parent == 0 {
-			return RowLoc{}, false
-		}
-		cur = sm.Parent
 	}
+	return RowLoc{}, false
 }
 
 // RowTables returns the table IDs that have row entries at the snapshot.
@@ -322,90 +339,27 @@ func (v *View) RowTables(snapshot uint64) []uint32 {
 // table after resolving overrides and tombstones along the parent chain. It
 // merges the per-layer sorted incremental indexes without reading blocks.
 func (v *View) LogicalRowCount(snapshot uint64, table uint32) uint64 {
-	type layer struct {
-		keys  *RowKeyIter
-		depth int
+	sm := v.snapshots[snapshot]
+	if sm == nil {
+		return 0
 	}
-	type rowHeap []*layer
-	less := func(h rowHeap, i, j int) bool {
-		a, b := h[i].keys.RowID(), h[j].keys.RowID()
-		if a != b {
-			return a < b
-		}
-		return h[i].depth < h[j].depth
-	}
-	push := func(h *rowHeap, l *layer) {
-		*h = append(*h, l)
-		i := len(*h) - 1
-		for i > 0 {
-			p := (i - 1) / 2
-			if less(*h, i, p) {
-				(*h)[i], (*h)[p] = (*h)[p], (*h)[i]
-				i = p
-			} else {
-				break
-			}
+	layers := make([]*RowKeyIter, 0, len(sm.chain))
+	for _, cur := range sm.chain {
+		if keys := v.RowIter(cur, table); keys != nil && keys.Len() > 0 {
+			layers = append(layers, keys)
 		}
 	}
-	pop := func(h *rowHeap) *layer {
-		top := (*h)[0]
-		(*h)[0] = (*h)[len(*h)-1]
-		*h = (*h)[:len(*h)-1]
-		i := 0
-		for {
-			l, r := 2*i+1, 2*i+2
-			m := i
-			if l < len(*h) && less(*h, l, m) {
-				m = l
-			}
-			if r < len(*h) && less(*h, r, m) {
-				m = r
-			}
-			if m == i {
-				break
-			}
-			(*h)[i], (*h)[m] = (*h)[m], (*h)[i]
-			i = m
-		}
-		return top
-	}
-	advance := func(h *rowHeap, l *layer) {
-		l.keys.Next()
-		if !l.keys.Done() {
-			push(h, l)
-		}
-	}
-	var layers []*layer
-	cur := snapshot
-	for depth := 0; ; depth++ {
-		keys := v.RowIter(cur, table)
-		if keys != nil && keys.Len() > 0 {
-			layers = append(layers, &layer{keys: keys, depth: depth})
-		}
-		sm := v.Snapshot(cur)
-		if sm == nil || sm.Parent == 0 {
-			break
-		}
-		cur = sm.Parent
-	}
-	var h rowHeap
-	for _, l := range layers {
-		push(&h, l)
-	}
+	m := NewMergeIter(layers...)
 	var count uint64
-	for len(h) > 0 {
-		winner := pop(&h)
-		rowID := winner.keys.RowID()
-		loc := winner.keys.Loc()
-		for len(h) > 0 && h[0].keys.RowID() == rowID {
-			advance(&h, pop(&h))
+	for {
+		_, loc, ok := m.Next()
+		if !ok {
+			return count
 		}
-		advance(&h, winner)
 		if loc.ChangeType != format.ChangeDelete {
 			count++
 		}
 	}
-	return count
 }
 
 // Apply returns a NEW immutable view that adds the committed txn's entries.
@@ -468,6 +422,7 @@ func (v *View) beginApply(se format.SnapshotIndexEntry, maxDepth uint32) (*View,
 		return nil, nil, fmt.Errorf("rowpack: snapshot %d already committed", se.SnapshotID)
 	}
 	depth := uint32(1)
+	var chain []uint64
 	if se.SnapshotType == format.SnapshotDelta {
 		parent := v.snapshots[se.ParentSnapshotID]
 		if parent == nil {
@@ -480,8 +435,13 @@ func (v *View) beginApply(se format.SnapshotIndexEntry, maxDepth uint32) (*View,
 		if depth > maxDepth {
 			return nil, nil, fmt.Errorf("rowpack: snapshot %d depth %d exceeds limit %d", se.SnapshotID, depth, maxDepth)
 		}
+		chain = make([]uint64, 0, len(parent.chain)+1)
+		chain = append(chain, se.SnapshotID)
+		chain = append(chain, parent.chain...)
 	} else if se.SnapshotType != format.SnapshotFull {
 		return nil, nil, fmt.Errorf("rowpack: snapshot %d bad type %d", se.SnapshotID, se.SnapshotType)
+	} else {
+		chain = []uint64{se.SnapshotID}
 	}
 	if se.ParentSnapshotID != 0 && se.SnapshotType == format.SnapshotFull {
 		return nil, nil, fmt.Errorf("rowpack: FULL snapshot %d has parent %d", se.SnapshotID, se.ParentSnapshotID)
@@ -497,6 +457,7 @@ func (v *View) beginApply(se format.SnapshotIndexEntry, maxDepth uint32) (*View,
 		DataEnd:           se.DataEnd,
 		DataFooterCRC:     se.DataFooterCRC32C,
 		Depth:             depth,
+		chain:             chain,
 	}
 	nv.snapshots[se.SnapshotID] = meta
 	return nv, meta, nil

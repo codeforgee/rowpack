@@ -128,13 +128,11 @@ type batchReader struct {
 	view    *index.View
 	buf     *batchBuffer
 
-	// curBlock plus the decoder memo belong to the block being read: blocks
-	// normally hold a single schema version, so repeated pages of one block
-	// resolve and prepare the decoder once.
+	// curBlock is the block being read (also the error-classification
+	// context); decoders memoizes its schema-bound decoders, so repeated
+	// pages of one block resolve the decoder once.
 	curBlock *index.BlockLoc
-	decVer   uint32
-	decoder  codec.Decoder
-	decOK    bool
+	decoders blockDecoders
 
 	blocks   uint64 // Stats.Batch counters
 	rawBytes uint64
@@ -223,7 +221,7 @@ func (br *batchReader) readBlock(i, end int, sink *codec.Sink) error {
 		return err
 	}
 	br.curBlock = bl
-	br.decOK = false
+	br.decoders.bind(br.schemas, bl)
 	br.blocks++
 	br.rawBytes += uint64(bl.RawSize)
 
@@ -320,7 +318,7 @@ func (br *batchReader) collectChunk(page *block.RowsPage, first uint32, i, end i
 // decodeChunk decodes one homogeneous run and scatters the resulting row views
 // into their caller slots.
 func (br *batchReader) decodeChunk(ver uint32, bodies [][]byte, slots []int, sink *codec.Sink) error {
-	decoder, err := br.decoderFor(ver)
+	decoder, err := br.decoders.forVersion(ver)
 	if err != nil {
 		return err
 	}
@@ -336,18 +334,4 @@ func (br *batchReader) decodeChunk(ver uint32, bodies [][]byte, slots []int, sin
 		buf.out[slot] = buf.slab[rowStart : rowStart+columns]
 	}
 	return nil
-}
-
-// decoderFor returns the prepared decoder for a schema version under the
-// current block, memoizing it for the block's remaining pages.
-func (br *batchReader) decoderFor(ver uint32) (codec.Decoder, error) {
-	if br.decOK && br.decVer == ver {
-		return br.decoder, nil
-	}
-	decoder, err := br.schemas.decoderFor(br.curBlock, ver)
-	if err != nil {
-		return codec.Decoder{}, err
-	}
-	br.decVer, br.decoder, br.decOK = ver, decoder, true
-	return decoder, nil
 }

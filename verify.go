@@ -121,15 +121,15 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode, scope VerifyScope) 
 		}
 	}
 
+	infos := make([]SnapshotInfo, len(snapshots))
+	for i, sm := range snapshots {
+		infos[i] = snapshotInfo(sm)
+	}
 	for _, bl := range view.Blocks() {
 		if !scope.coversSnapshot(bl.SnapshotID) {
 			continue
 		}
 		if bl.Kind == format.BlockKindRows {
-			infos := make([]SnapshotInfo, len(snapshots))
-			for i, sm := range snapshots {
-				infos[i] = snapshotInfo(sm)
-			}
 			addr, _ := addressOfTable(st.schemas, infos, TableID(bl.TableID))
 			if !scope.coversTable(addr) {
 				continue

@@ -5,8 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestCivilDayRoundtripExtremeDates drives daysFromCivil/civilFromDays

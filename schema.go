@@ -144,6 +144,41 @@ func (si *schemaIndex) decoderFor(bl *index.BlockLoc, version uint32) (codec.Dec
 	return decoder, nil
 }
 
+// blockDecoders resolves schema-bound row decoders against the schema index
+// while memoizing the current block's last version. Blocks normally hold a
+// single schema version, so consecutive rows of one page — and the pages of
+// one block — skip the index walk and reuse the compiled decoder, which also
+// hoists invariant schema/bitmap work out of every row decode. Rebind it when
+// the block cursor moves. Not safe for concurrent use; one per read cursor.
+type blockDecoders struct {
+	si  *schemaIndex
+	blk *index.BlockLoc
+
+	ver uint32
+	dec codec.Decoder
+	ok  bool
+}
+
+// bind points the memo at a new block cursor and invalidates the cached
+// decoder.
+func (d *blockDecoders) bind(si *schemaIndex, blk *index.BlockLoc) {
+	d.si, d.blk, d.ok = si, blk, false
+}
+
+// forVersion returns the prepared decoder for a schema version under the
+// bound block.
+func (d *blockDecoders) forVersion(ver uint32) (codec.Decoder, error) {
+	if d.ok && d.ver == ver {
+		return d.dec, nil
+	}
+	dec, err := d.si.decoderFor(d.blk, ver)
+	if err != nil {
+		return codec.Decoder{}, err
+	}
+	d.ver, d.dec, d.ok = ver, dec, true
+	return dec, nil
+}
+
 // buildIndex derives schemas for every snapshot in the view by reading
 // its Table and Column metadata records (resolved along the parent chain).
 // One decode memo is shared across all snapshots: deriveTables for snapshot

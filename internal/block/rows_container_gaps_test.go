@@ -129,7 +129,7 @@ func TestDecompressZstdGarbage(t *testing.T) {
 	fb, rc := buildContainer(t, 64, 1<<20, format.CompressionZstd, want, bodies)
 	_ = fb
 	payload := append([]byte(nil), rc.stored...)
-	start := rc.RecordsRegionStart()
+	start := format.RowsBlockHeaderSize + len(rc.Dir)*format.RowsPageDirEntrySize
 	payload[start+4] ^= 0xFF
 	payload[start+5] ^= 0xFF
 	rc2, err := ParseContainer(payload, fb.Header, DefaultLimits())

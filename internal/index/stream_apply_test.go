@@ -1,6 +1,7 @@
 package index
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -35,12 +36,22 @@ func mixedRows(n int) []format.RowIndexEntry {
 	return rows
 }
 
+// rowTablesOf lists the table IDs holding a row shard at snapshot 1, sorted.
+func rowTablesOf(v *View) []uint32 {
+	tids := make([]uint32, 0, len(v.rows[1]))
+	for tid := range v.rows[1] {
+		tids = append(tids, tid)
+	}
+	slices.Sort(tids)
+	return tids
+}
+
 // compareRowShards asserts two views expose identical per-table row shards
 // (rowIDs, item ordinals, change types, and block-run decomposition).
 func compareRowShards(t *testing.T, a, b *View) {
 	t.Helper()
-	tables := a.RowTables(1)
-	btables := b.RowTables(1)
+	tables := rowTablesOf(a)
+	btables := rowTablesOf(b)
 	if len(tables) != len(btables) {
 		t.Fatalf("table count %d != %d", len(tables), len(btables))
 	}

@@ -9,7 +9,6 @@ import (
 
 	"github.com/codeforgee/rowpack/internal/format"
 	"github.com/codeforgee/rowpack/internal/index"
-	"github.com/codeforgee/rowpack/internal/metadata"
 )
 
 // read_arms_test.go 覆盖读路径的「读不出来」臂:store 已关闭时每条读路径都必须回答
@@ -148,7 +147,7 @@ func TestTablesSkipsUndecodableTable(t *testing.T) {
 		CreatedUnixNano:  time.Now().UnixNano(),
 	}))
 	require.NoError(t, b.AddMetadata(format.MetadataIndexEntry{
-		SnapshotID: newSnapID, ObjectID: metadata.ObjectID(ghostTID),
+		SnapshotID: newSnapID, ObjectID: uint64(ghostTID),
 		Revision: 1, RecordType: uint32(format.RecordTable), Operation: format.OperationUpsert,
 		BlockID: 123456, ItemOrdinal: 0, // a block the view has never heard of
 	}))

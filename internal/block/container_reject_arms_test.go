@@ -142,7 +142,7 @@ func TestContainerRejectsDamagedPage(t *testing.T) {
 		[][]byte{[]byte("abcd")})
 
 	stored := append([]byte(nil), fb.Stored...)
-	stored[rc.RecordsRegionStart()+2] ^= 0xFF // inside the page, past the directory
+	stored[format.RowsBlockHeaderSize+len(rc.Dir)*format.RowsPageDirEntrySize+2] ^= 0xFF // inside the page, past the directory
 	bad, err := ParseContainer(stored, fb.Header, DefaultLimits())
 	require.NoError(t, err, "the container geometry and header CRC are still intact")
 

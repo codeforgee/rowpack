@@ -324,20 +324,6 @@ func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, 
 	return RowLoc{}, false
 }
 
-// RowTables returns the table IDs that have row entries at the snapshot.
-func (v *View) RowTables(snapshot uint64) []uint32 {
-	tbl := v.rows[snapshot]
-	if tbl == nil {
-		return nil
-	}
-	out := make([]uint32, 0, len(tbl))
-	for t := range tbl {
-		out = append(out, t)
-	}
-	slices.Sort(out)
-	return out
-}
-
 // LogicalRowCount returns the number of rows visible at a snapshot for a
 // table after resolving overrides and tombstones along the parent chain. It
 // merges the per-layer sorted incremental indexes without reading blocks.

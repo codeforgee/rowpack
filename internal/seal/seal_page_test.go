@@ -69,7 +69,7 @@ func TestPageNonceDomainSeparation(t *testing.T) {
 	if pageN == Nonce(epoch, blockID) {
 		t.Fatal("page nonce equals block nonce")
 	}
-	if pageN == NonceIndex(epoch, blockID) {
+	if pageN == Nonce(epoch|IndexDomainBit, blockID) {
 		t.Fatal("page nonce equals index nonce")
 	}
 	if pageN == c.NonceIndexChunk(blockID, 0) {

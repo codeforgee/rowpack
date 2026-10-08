@@ -74,7 +74,13 @@ func TestStatsLogicalRowsCoversAllVisibleTables(t *testing.T) {
 	defer db2.Close()
 	require.Equal(t, uint64(13), db2.Stats().LogicalRows)
 	db2.readMu.RLock()
-	ownRowTables := db2.state.Load().view.RowTables(uint64(s4))
+	pst := db2.state.Load()
+	tidA, _ := pst.schemas.tableID(uint64(s4), "a")
+	tidB, _ := pst.schemas.tableID(uint64(s4), "meta.b")
+	// 空尾快照对任何表都没有自己的行分片（这正是旧口径和为 0 的原因）。
+	ownRowsA := pst.view.RowIter(uint64(s4), uint32(tidA))
+	ownRowsB := pst.view.RowIter(uint64(s4), uint32(tidB))
 	db2.readMu.RUnlock()
-	require.Empty(t, ownRowTables, "the empty delta owns no row entries (why the old sum was 0)")
+	require.Nil(t, ownRowsA)
+	require.Nil(t, ownRowsB)
 }

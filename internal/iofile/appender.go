@@ -68,25 +68,7 @@ func (a *Appender) Append(b []byte) (int64, error) {
 	return start, nil
 }
 
-// AppendZeroes appends n zero bytes (padding), advancing the offset.
-func (a *Appender) AppendZeroes(n int) (int64, error) {
-	start := a.offset
-	block := make([]byte, 8192)
-	remaining := n
-	for remaining > 0 {
-		chunk := block
-		if remaining < len(chunk) {
-			chunk = chunk[:remaining]
-		}
-		if _, err := a.f.WriteAt(chunk, a.offset); err != nil {
-			return start, err
-		}
-		a.offset += int64(len(chunk))
-		remaining -= len(chunk)
-	}
-	a.size = a.offset
-	return start, nil
-}
+// Append appends b at the tail and returns the start offset.
 
 // Sync flushes the file to stable storage.
 func (a *Appender) Sync() error { return a.f.Sync() }
@@ -110,8 +92,8 @@ func (a *Appender) Truncate(n int64) error {
 func (a *Appender) ReadAt(b []byte, off int64) (int, error) { return a.f.ReadAt(b, off) }
 
 // Size returns the current file size. The Appender is the file's only writer
-// (single-writer model), so the size it tracks across Append/AppendZeroes/
-// Truncate is authoritative; the read path (recover, Stats) never needs a
+// (single-writer model), so the size it tracks across Append/Truncate
+// is authoritative; the read path (recover, Stats) never needs a
 // per-call fstat, and the accessor cannot fail.
 func (a *Appender) Size() int64 { return a.size }
 

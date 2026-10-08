@@ -25,8 +25,8 @@ func TestOperationsAfterCloseReportErrors(t *testing.T) {
 	if _, err := a.Append([]byte("more")); err == nil {
 		t.Fatal("Append after Close must fail")
 	}
-	if _, err := a.AppendZeroes(3 * 8192); err == nil {
-		t.Fatal("AppendZeroes after Close must fail")
+	if _, err := a.Append(make([]byte, 3*8192)); err == nil {
+		t.Fatal("zero Append after Close must fail")
 	}
 	require.Error(t, a.Truncate(0), "Truncate after Close must fail")
 	require.Error(t, a.Sync(), "Sync after Close must fail")

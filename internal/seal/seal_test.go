@@ -25,13 +25,13 @@ func TestNonceLayout(t *testing.T) {
 
 func TestNonceIndexSetsDomainBit(t *testing.T) {
 	epoch := uint32(5)
-	n := NonceIndex(epoch, 9)
+	n := Nonce(epoch|IndexDomainBit, 9)
 	if got := binary.LittleEndian.Uint32(n[0:4]); got != epoch|IndexDomainBit {
 		t.Fatalf("index nonce epoch word %x, want %x", got, epoch|IndexDomainBit)
 	}
 	require.Equal(t, binary.LittleEndian.Uint64(n[4:12]), binary.LittleEndian.Uint64(n[4:12]), "index nonce txn sequence")
 	// A block nonce for the same counters must differ from the index nonce.
-	if NonceIndex(epoch, 9) == Nonce(epoch, 9) {
+	if Nonce(epoch|IndexDomainBit, 9) == Nonce(epoch, 9) {
 		t.Fatal("index nonce collides with block nonce")
 	}
 }
@@ -206,7 +206,7 @@ func TestSealOpenBlockAuthFailures(t *testing.T) {
 
 func TestSealWithOpenWith(t *testing.T) {
 	c := testCipher(t)
-	nonce := NonceIndex(3, 1)
+	nonce := Nonce(3|IndexDomainBit, 1)
 	aad := BuildAADIndex(&testUUID, 1, 2, 3, 4)
 	pt := []byte("index txn bytes")
 
@@ -225,7 +225,7 @@ func TestSealWithOpenWith(t *testing.T) {
 	if _, err := c.OpenWith(nonce, aad[:], bad); !errors.Is(err, ErrAuth) {
 		t.Fatalf("tampered: err %v, want ErrAuth", err)
 	}
-	if _, err := c.OpenWith(NonceIndex(3, 2), aad[:], ct); !errors.Is(err, ErrAuth) {
+	if _, err := c.OpenWith(Nonce(3|IndexDomainBit, 2), aad[:], ct); !errors.Is(err, ErrAuth) {
 		t.Fatalf("wrong nonce: err %v, want ErrAuth", err)
 	}
 }

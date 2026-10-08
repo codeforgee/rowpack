@@ -62,14 +62,14 @@ func TestAppendAndReadAt(t *testing.T) {
 	}
 }
 
-func TestAppendZeroes(t *testing.T) {
+func TestAppendZeroPadding(t *testing.T) {
 	_, a := newTestAppender(t)
 	defer a.Close()
 
 	_, err := a.Append([]byte("abc"))
 	require.NoError(t, err, "Append")
-	zoff, err := a.AppendZeroes(20000)
-	require.NoError(t, err, "AppendZeroes")
+	zoff, err := a.Append(make([]byte, 20000))
+	require.NoError(t, err, "zero append")
 	require.Equal(t, int64(3), zoff, "zero append offset %d, want 3", zoff)
 	if a.Offset() != 20003 {
 		t.Fatalf("offset %d, want 20003", a.Offset())
@@ -130,8 +130,8 @@ func TestViewGrowsOnDemand(t *testing.T) {
 	if _, err := a.Append([]byte("short")); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if _, err := a.AppendZeroes(1000); err != nil {
-		t.Fatalf("AppendZeroes: %v", err)
+	if _, err := a.Append(make([]byte, 1000)); err != nil {
+		t.Fatalf("zero append: %v", err)
 	}
 	v, done, err := a.View(0, a.Offset())
 	require.NoError(t, err, "View across growth")

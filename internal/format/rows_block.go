@@ -104,17 +104,6 @@ func rowsDirectoryBytes(pageCount uint32) (uint32, bool) {
 	return uint32(n), true
 }
 
-// StoredDataBytes returns the total stored bytes of the page region (the sum
-// of per-page stored sizes). This is what the outer block payload must
-// contain beyond the header + directory.
-func (h *RowsBlockHeader) StoredDataBytes(dir []RowsPageDirEntry) uint64 {
-	var n uint64
-	for _, e := range dir {
-		n += uint64(e.StoredSize)
-	}
-	return n
-}
-
 // RowDirectoryEntry is the fixed 24-byte per-record directory entry of a Rows
 // Block payload. The directory is stored in call order. It is the only
 // surviving structure of the v1 Rows payload: the page-container block format

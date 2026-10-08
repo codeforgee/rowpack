@@ -58,7 +58,8 @@ func (a *IDAllocator) Force(id uint64, key string) {
 }
 
 // TableID returns the ObjectID as a uint32 TableID, failing when the object
-// does not fit (only Table objects must be uint32-convertible).
+// does not fit (only Table objects must be uint32-convertible). An ObjectID
+// is simply uint64(tableID): the widening needs no helper.
 func TableID(objectID uint64) (uint32, error) {
 	if objectID == 0 {
 		return 0, fmt.Errorf("rowpack: zero ObjectID has no TableID")
@@ -68,6 +69,3 @@ func TableID(objectID uint64) (uint32, error) {
 	}
 	return uint32(objectID), nil
 }
-
-// ObjectID returns a TableID widened back to ObjectID.
-func ObjectID(tableID uint32) uint64 { return uint64(tableID) }

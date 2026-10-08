@@ -255,9 +255,7 @@ func TestObjectIDAllocatorForce(t *testing.T) {
 	}
 }
 
-func TestTableIDObjectID(t *testing.T) {
-	got := ObjectID(42)
-	require.Equal(t, ObjectID(42), got, "ObjectID(42) = %d", got)
+func TestTableID(t *testing.T) {
 	id, err := TableID(42)
 	if err != nil || id != 42 {
 		t.Fatalf("TableID(42) = %d, %v", id, err)

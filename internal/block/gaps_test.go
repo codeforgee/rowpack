@@ -77,10 +77,6 @@ func TestRowsContainerAccountingHooks(t *testing.T) {
 	_ = schema
 	fb, rc := buildContainer(t, 0, 0, format.CompressionNone, rows, bodies)
 
-	// RecordsRegionStart: header + directory.
-	if got := rc.RecordsRegionStart(); got != format.RowsBlockHeaderSize+len(rc.Dir)*format.RowsPageDirEntrySize {
-		t.Fatalf("RecordsRegionStart = %d", got)
-	}
 	// StoredLen covers the whole plaintext container.
 	if got, want := rc.StoredLen(), len(fb.Stored); got != want {
 		t.Fatalf("StoredLen = %d, want %d", got, want)

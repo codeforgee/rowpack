@@ -142,19 +142,6 @@ func TestFrozenStructSizes(t *testing.T) {
 	}
 }
 
-func TestRowsBlockHeaderStoredDataBytes(t *testing.T) {
-	dir := []RowsPageDirEntry{
-		{StoredSize: 100},
-		{StoredSize: 200},
-		{StoredSize: 24 + AESGCMTagLen},
-	}
-	var h RowsBlockHeader
-	if got := h.StoredDataBytes(dir); got != 100+200+24+AESGCMTagLen {
-		t.Fatalf("StoredDataBytes = %d", got)
-	}
-	require.EqualValues(t, 0, h.StoredDataBytes(nil), "StoredDataBytes(nil) = %d", h.StoredDataBytes(nil))
-}
-
 func TestSnapshotFooterOffsetsAreConsistent(t *testing.T) {
 	valid := SnapshotFooter{
 		SnapshotStartOffset: 100,

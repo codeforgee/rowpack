@@ -95,12 +95,6 @@ func BuildAAD(uuid *[16]byte, h *format.BlockHeader) [AADSize]byte {
 // values. Nonce uniqueness never relies on the AAD.
 const IndexDomainBit = uint32(0x80000000)
 
-// NonceIndex returns the deterministic 96-bit nonce for one encrypted index
-// transaction: (epoch | IndexDomainBit)(4B, LE) ‖ txnSequence(8B, LE).
-func NonceIndex(epoch uint32, txnSequence uint64) [format.EncNonceLen]byte {
-	return Nonce(epoch|IndexDomainBit, txnSequence)
-}
-
 // pageNonceKeyLabel domain-separates the page-nonce HMAC subkey derivation
 // (Rows Page encryption) from the block and index-chunk subkeys.
 var pageNonceKeyLabel = []byte("RowPack rows page nonce key v1")

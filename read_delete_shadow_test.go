@@ -103,7 +103,6 @@ func TestVerifyFullCatchesUnparseableMetadataPayload(t *testing.T) {
 	require.ErrorIs(t, err, ErrCorruptData)
 }
 
-
 // TestDerivedSchemaShadowsDeletedColumn: a DELETE entry for one column object
 // removes that column from the schema derived for the shadowing snapshot —
 // including its older definition on the parent chain — while the table and

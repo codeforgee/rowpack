@@ -488,6 +488,41 @@ func TestSchemaVersioning(t *testing.T) {
 	require.Len(t, s.Columns, 4)
 }
 
+// TestSchemaVersionZeroResolvesLatest: Schema(version 0) resolves to the
+// table's latest version — following a DELTA that inherits the schema without
+// redefining it — and matches the explicit version.
+func TestSchemaVersionZeroResolvesLatest(t *testing.T) {
+	db := testDB(t, Options{BlockSize: 1024})
+	ctx := context.Background()
+
+	w, err := db.Begin(ctx, NoParent)
+	require.NoError(t, err)
+	require.NoError(t, w.DefineTable("t", []Column{{Name: "a", Type: TypeInt64}}))
+	require.NoError(t, w.Insert(ctx, "t", 1, Row{Int64(1)}))
+	snap1, err := w.Commit(ctx)
+	require.NoError(t, err)
+
+	// A DELTA that inherits the schema without redefining it.
+	w, err = db.Begin(ctx, snap1)
+	require.NoError(t, err)
+	require.NoError(t, w.Insert(ctx, "t", 2, Row{Int64(2)}))
+	snap2, err := w.Commit(ctx)
+	require.NoError(t, err)
+
+	sc1, err := db.Schema(ctx, snap1, "t", 0)
+	require.NoError(t, err)
+	require.Len(t, sc1.Columns, 1)
+
+	sc2, err := db.Schema(ctx, snap2, "t", 0)
+	require.NoError(t, err)
+	require.Len(t, sc2.Columns, 1, "version 0 must resolve to the table's latest schema")
+
+	// Explicit version 1 matches the resolved one.
+	scExplicit, err := db.Schema(ctx, snap2, "t", 1)
+	require.NoError(t, err)
+	require.Len(t, scExplicit.Columns, 1)
+}
+
 // TestStatsSanity verifies Stats counters reflect the store contents.
 func TestStatsSanity(t *testing.T) {
 	db := testDB(t, Options{})

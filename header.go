@@ -1,9 +1,12 @@
 package rowpack
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/codeforgee/rowpack/internal/format"
@@ -22,8 +25,9 @@ type Header struct {
 
 // PeekHeader reads and validates the store file header at basePath without
 // opening the store. It works for encrypted stores too: the header is always
-// plaintext. A missing store reports ErrNotFound; a damaged or foreign header
-// reports ErrVersionUnsupported or a corruption error.
+// plaintext. A missing store reports ErrNotFound; an unusable path, a damaged
+// header or a foreign header reports the open/parse failure, ErrVersionUnsupported
+// or a corruption error.
 func PeekHeader(basePath string) (Header, error) {
 	_, dataPath, err := storePaths(basePath)
 	if err != nil {
@@ -31,7 +35,7 @@ func PeekHeader(basePath string) (Header, error) {
 	}
 	f, err := os.Open(dataPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if storeFileMissing(dataPath, err) {
 			return Header{}, fmt.Errorf("%w: missing store file %s", ErrNotFound, dataPath)
 		}
 		return Header{}, fmt.Errorf("rowpack: open store file: %w", err)
@@ -54,6 +58,36 @@ func PeekHeader(basePath string) (Header, error) {
 		Encrypted: dh.EncryptionAlgorithm != format.EncNone,
 		KeyID:     string(dh.KeyID),
 	}, nil
+}
+
+// storeFileMissing reports whether an os.Open failure on dataPath means the
+// store file itself is absent, rather than a path component in front of it
+// being unusable. A plain os.IsNotExist check is not portable: for a component
+// that is a regular file Windows fails with ERROR_PATH_NOT_FOUND, which Go maps
+// to fs.ErrNotExist, while Unix fails with ENOTDIR, which it does not. The same
+// Windows status also covers a genuinely missing directory, so the error alone
+// cannot tell the two apart. The path is therefore only "missing" when its
+// deepest existing ancestor is a directory.
+func storeFileMissing(dataPath string, err error) bool {
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	for dir := filepath.Dir(dataPath); ; {
+		info, statErr := os.Stat(dir)
+		if statErr == nil {
+			return info.IsDir()
+		}
+		if !errors.Is(statErr, fs.ErrNotExist) {
+			// Present but unreadable: the open failure stands.
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Walked up to the volume root without finding anything.
+			return true
+		}
+		dir = parent
+	}
 }
 
 // KeyID returns the key id recorded in the store header: the caller label for

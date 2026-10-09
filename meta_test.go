@@ -538,6 +538,29 @@ func TestMetaVerifyChecksTheBlock(t *testing.T) {
 	require.Equal(t, []byte("verifiable"), got)
 }
 
+// TestSetMetaStoredOverflow: the block limit applies to the stored
+// (compressed) form, so oversized metadata is rejected at commit even though
+// the raw bytes fit MaxRawBlockBytes. CompressionNone makes stored == raw, so
+// the overflow is deterministic.
+func TestSetMetaStoredOverflow(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t, Options{
+		Compression: CompressionNone, // stored == raw: deterministic overflow
+		Limits:      Limits{MaxStoredBlockBytes: 4096},
+	})
+	w, err := db.Begin(ctx, NoParent)
+	require.NoError(t, err)
+	require.NoError(t, w.DefineTable("t", []Column{{Name: "a", Type: TypeInt64}}))
+	big := make([]byte, 8192)
+	for i := range big {
+		big[i] = byte(i)
+	}
+	require.NoError(t, w.SetMeta(big)) // raw within MaxRawBlockBytes
+	_, err = w.Commit(ctx)
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	require.ErrorContains(t, err, "exceeds limit")
+}
+
 func repeatString(s string, n int) string {
 	out := make([]byte, 0, len(s)*n)
 	for range n {

@@ -164,7 +164,7 @@ func buildRowsBlockImage(tb testing.TB, alg format.Compression, encrypted bool) 
 	}
 }
 
-func TestReadRowsDirErrorArms(t *testing.T) {
+func TestReadRowsDirErrors(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
 	t.Run("header io failure", func(t *testing.T) {
@@ -193,7 +193,7 @@ func TestReadRowsDirErrorArms(t *testing.T) {
 	})
 }
 
-func TestReadRowsPagePlainErrorArms(t *testing.T) {
+func TestReadRowsPagePlainErrors(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 
 	t.Run("page io failure", func(t *testing.T) {
@@ -248,7 +248,7 @@ func TestReadRowsPagePlainErrorArms(t *testing.T) {
 	})
 }
 
-func TestReadRowsPageEncryptedArms(t *testing.T) {
+func TestReadRowsPageEncryptedErrors(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 	img := buildRowsBlockImage(t, format.CompressionZstd, true)
 
@@ -294,8 +294,8 @@ func TestReadRowsPageEncryptedArms(t *testing.T) {
 	})
 }
 
-// TestReadAtBlockViewErrorArms walks the zero-copy (mmap) path.
-func TestReadAtBlockViewErrorArms(t *testing.T) {
+// TestReadAtBlockViewPathErrors walks the zero-copy (mmap) path.
+func TestReadAtBlockViewPathErrors(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 	raw := []byte("view-path block payload")
 	compressed, err := Compress(format.CompressionZstd, 3, raw)
@@ -378,8 +378,8 @@ func TestReadAtBlockViewErrorArms(t *testing.T) {
 	})
 }
 
-// TestReadAtBlockCopyErrorArms walks the io.ReaderAt path (no viewer).
-func TestReadAtBlockCopyErrorArms(t *testing.T) {
+// TestReadAtBlockCopyPathErrors walks the io.ReaderAt path (no viewer).
+func TestReadAtBlockCopyPathErrors(t *testing.T) {
 	limits := Limits{MaxStoredBytes: 1 << 20, MaxRawBytes: 1 << 20}
 	raw := []byte("copy-path block payload")
 	compressed, err := Compress(format.CompressionZstd, 3, raw)
@@ -457,7 +457,7 @@ func TestReadAtBlockCopyErrorArms(t *testing.T) {
 	})
 }
 
-func TestMaybeDecryptEncryptedArms(t *testing.T) {
+func TestMaybeDecryptEncryptedErrors(t *testing.T) {
 	r := NewReader(plainReaderAt(nil), Limits{MaxStoredBytes: 1 << 16, MaxRawBytes: 1 << 16})
 	h := format.BlockHeader{BlockID: 7, StoredSize: 32, Encrypted: true}
 	ct := bytes.Repeat([]byte{0xA5}, int(h.StoredSize))

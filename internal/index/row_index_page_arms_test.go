@@ -304,7 +304,7 @@ func TestPageFenceRejectsUnusablePages(t *testing.T) {
 	})
 }
 
-func TestFirstTableIDOfPageArms(t *testing.T) {
+func TestFirstTableIDOfPageGuards(t *testing.T) {
 	t.Run("shorter than the page header", func(t *testing.T) {
 		_, ok := firstTableIDOfPage(make([]byte, 10))
 		require.False(t, ok)

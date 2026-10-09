@@ -49,8 +49,8 @@ func TestCivilDayRoundtripExtremeDates(t *testing.T) {
 	}
 }
 
-// TestBitmapHelperBranches pins the two bitmap helpers' edge outputs.
-func TestBitmapHelperBranches(t *testing.T) {
+// TestBitmapHelpers pins the two bitmap helpers' edge outputs.
+func TestBitmapHelpers(t *testing.T) {
 	if !bitmapIsZero(nil) || !bitmapIsZero([]byte{0, 0}) {
 		t.Fatal("zero bitmaps must report zero")
 	}

@@ -92,3 +92,42 @@ func TestOptionsScanCacheValidation(t *testing.T) {
 		t.Fatalf("scan-window disable must be accepted: %v", err)
 	}
 }
+
+// TestNegativeCacheBudget: a negative cache budget disables both caches rather
+// than wrapping around, and reads still work with both caches switched off.
+func TestNegativeCacheBudget(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t, Options{BlockSize: 1024, CacheBytes: -1, ScanCacheBytes: -1})
+	w, err := db.Begin(ctx, NoParent)
+	require.NoError(t, err)
+	require.NoError(t, w.DefineTable("t", []Column{{Name: "a", Type: TypeInt64}}))
+	require.NoError(t, w.Insert(ctx, "t", 1, Row{Int64(1)}))
+	require.NoError(t, w.Insert(ctx, "t", 2, Row{Int64(2)}))
+	snap, err := w.Commit(ctx)
+	require.NoError(t, err)
+
+	row, err := db.Get(ctx, snap, "t", 1, nil)
+	require.NoError(t, err)
+	v, ok := row[0].Int64()
+	require.True(t, ok)
+	require.Equal(t, int64(1), v)
+
+	it, err := db.Scan(ctx, snap, "t", ScanOptions{})
+	require.NoError(t, err)
+	n := 0
+	for {
+		_, ok := it.Next()
+		if !ok {
+			break
+		}
+		n++
+	}
+	require.NoError(t, it.Err())
+	require.Equal(t, 2, n)
+	require.NoError(t, it.Close())
+
+	st := db.Stats()
+	require.Zero(t, st.Cache.CapacityBytes)
+	require.Zero(t, st.Cache.Hits)
+	require.Zero(t, st.Cache.Loads)
+}

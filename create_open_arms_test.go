@@ -51,3 +51,15 @@ func TestOpenRejectsUnopenableDataFile(t *testing.T) {
 	require.ErrorContains(t, err, "open store file")
 	require.NotErrorIs(t, err, ErrNotFound)
 }
+
+// TestCreateOpenInvalidPath: an empty base path stays empty after suffix
+// trimming (filepath.Clean("") is ".", which would silently become ".rpk"), so
+// both entry points reject it before touching the filesystem.
+func TestCreateOpenInvalidPath(t *testing.T) {
+	for _, base := range []string{"", ".rpk", ".rpi"} {
+		_, err := Create(base, Options{})
+		require.ErrorIs(t, err, ErrInvalidPath, "Create(%q)", base)
+		_, err = Open(base, Options{})
+		require.ErrorIs(t, err, ErrInvalidPath, "Open(%q)", base)
+	}
+}

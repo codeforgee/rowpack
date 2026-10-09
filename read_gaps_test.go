@@ -7,9 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReadLookupNotFoundArms pins the ErrNotFound contract of the read-side
+// TestReadLookupNotFound pins the ErrNotFound contract of the read-side
 // lookups for unknown snapshots and unknown tables.
-func TestReadLookupNotFoundArms(t *testing.T) {
+func TestReadLookupNotFound(t *testing.T) {
 	ctx := context.Background()
 	db, err := Create(tmpdb(t), Options{})
 	require.NoError(t, err)

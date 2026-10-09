@@ -48,9 +48,9 @@ func patchBlockHeaderStoredSize(t *testing.T, base string, off int64, newStored 
 	require.NoError(t, f.Close())
 }
 
-// TestWalkTailBranches：文件末尾追加各种"半截结构"，都必须被当作
+// TestWalkIgnoresUncommittedTail：文件末尾追加各种"半截结构"，都必须被当作
 // 可丢弃尾部静默截断，不影响已提交数据。
-func TestWalkTailBranches(t *testing.T) {
+func TestWalkIgnoresUncommittedTail(t *testing.T) {
 	cases := []struct {
 		name string
 		tail []byte

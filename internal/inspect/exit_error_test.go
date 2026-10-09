@@ -10,11 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestExitErrorMessageBranches 钉住 ExitError 的两个身份:命令失败时它就是被包装
+// TestExitErrorMessage 钉住 ExitError 的两个身份:命令失败时它就是被包装
 // 的那个错误(Error 转发、Unwrap 可被 errors.Is 命中);用法错误没有底层错误时退
 // 化为「状态码+退出码」的稳定文案。main 只做code → os.Exit 的映射,这层语义必须
 // 由 ExitError 自己保持。
-func TestExitErrorMessageBranches(t *testing.T) {
+func TestExitErrorMessage(t *testing.T) {
 	sentinel := errors.New("open: missing.rpk: no such file or directory")
 
 	wrapped := &ExitError{Code: ExitFailure, Err: sentinel}

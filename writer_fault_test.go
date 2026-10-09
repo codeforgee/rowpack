@@ -179,9 +179,9 @@ func TestCommitCtxCanceled(t *testing.T) {
 	require.NoError(t, tx.Rollback())
 }
 
-// TestPutRejectedBranches drives put()'s validation arms that the public
+// TestPutRejectsInvalidChanges drives put()'s validation arms that the public
 // methods cannot reach with ordinary arguments.
-func TestPutRejectedBranches(t *testing.T) {
+func TestPutRejectsInvalidChanges(t *testing.T) {
 	ctx := context.Background()
 	db, err := Create(tmpdb(t), Options{})
 	require.NoError(t, err)

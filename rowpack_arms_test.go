@@ -130,3 +130,26 @@ func TestReadOnlyCloseNeedsNoLock(t *testing.T) {
 	require.NoError(t, ro.Close())
 	require.NoError(t, ro.Close(), "Close is idempotent")
 }
+
+// TestStatsAndMetaAfterClose: the post-Close accessors degrade predictably —
+// Stats reports zeroes (a snapshot of nothing, not stale numbers) and Meta
+// reports ErrClosed.
+func TestStatsAndMetaAfterClose(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t, Options{BlockSize: 1024})
+	w, err := db.Begin(ctx, NoParent)
+	require.NoError(t, err)
+	require.NoError(t, w.DefineTable("t", []Column{{Name: "a", Type: TypeInt64}}))
+	require.NoError(t, w.SetMeta([]byte("m")))
+	require.NoError(t, w.Insert(ctx, "t", 1, Row{Int64(1)}))
+	snap, err := w.Commit(ctx)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	st := db.Stats()
+	require.Zero(t, st.Snapshots)
+	require.Zero(t, st.Blocks)
+
+	_, err = db.Meta(ctx, snap)
+	require.ErrorIs(t, err, ErrClosed)
+}

@@ -40,7 +40,7 @@ func TestFrozenSizes(t *testing.T) {
 		"IndexTxnHeaderSize":     80,
 		"IndexTxnFooterSize":     80,
 		"IndexChunkHeaderSize":   64,
-		"IndexChunkDirEntrySize": 32,
+		"IndexChunkDirEntrySize": 20,
 		"SnapshotIndexEntrySize": 72,
 		"MetadataIndexEntrySize": 48,
 		"BlockIndexEntrySize":    56,

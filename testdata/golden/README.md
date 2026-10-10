@@ -17,7 +17,14 @@
 这里不再静态列出样本的 SHA-256：摘要就是文件内容本身的函数，真正的锁定在测试侧
 （`TestGoldenManifest`），再抄一份到文档只会多一处必须同步、又不同步也不会报错的地方。
 
-最近一次变更：RowIndexFenceEntry 删掉 StoredOffset（44→36 B）。页在 IndexTxn 正文里连续
+最近一次变更：IndexChunkDirEntry 删掉 ChunkSequence 与 RegionOffset（32→20 B）。chunk 按序
+排列并铺满正文区，所以序号就是目录下的下标、偏移就是前面各 chunk 头+负载之和——旧解析要
+逐条把这两个副本校验回推导值。现在由解析侧填入，目录剩下的字段（条目数/序数/尺寸/种类）
+仍与各自的 chunk 头交叉校验。目录因此仍能只读一次、累加 StoredBytes 就定位任意 chunk，
+不必触碰任何 chunk 头。`full-delta-store.rpk` 4605→4533 B、`encrypted-store.rpk`
+2013→1977 B。
+
+上一次变更：RowIndexFenceEntry 删掉 StoredOffset（44→36 B）。页在 IndexTxn 正文里连续
 排列，偏移由解析侧按「页区起点 + 前序 StoredSize」累加回填——与上一次变更里
 RowsPageDirEntry 的做法一致。原先还要逐条校验偏移连续，现在那是构造出来的恒等式。
 `full-delta-store.rpk` 4629→4605 B、`encrypted-store.rpk` 2021→2013 B。

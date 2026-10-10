@@ -22,7 +22,7 @@ IndexTxn 位于对应 Snapshot 的 Blocks 之后、SnapshotFooter 之前：
 [SnapshotChunk]              // chunk seq 0，未压缩，定长 72B（加密 +16B tag）
 [MetadataChunk × A]          // chunk seq 1..A，delta/varint 条目流（§4.3）
 [BlockChunk × B]             // chunk seq A+1..A+B，delta/varint 条目流（§4.3）
-[ChunkDirectory]             // 明文 (A+B+1) × 32B
+[ChunkDirectory]             // 明文 (A+B+1) × 20B
 [RowIndexPage × N]           // 每页独立压缩（+加密 tag）
 [RowIndexFenceEntry × N]     // 明文 36B，正文 CRC 认证
 [IndexTxnFooter 80B]
@@ -145,19 +145,22 @@ offset  size  field
 
 ### 4.4 ChunkDirectory
 
-明文，每 chunk 一条 32B `IndexChunkDirEntry`：
+明文，每 chunk 一条 20B `IndexChunkDirEntry`：
 
 ```text
 offset  size  field
-0       4     ChunkSequence
-4       4     EntryCount
-8       4     FirstEntryOrdinal
-12      4     RawBytes
-16      4     StoredBytes        // 仅 payload；chunk header 另加固定 64B
-20      1     EntryKind
-21      3     reserved
-24      8     RegionOffset       // chunk header 相对 IndexTxn body 起点的偏移
+0       4     EntryCount
+4       4     FirstEntryOrdinal
+8       4     RawBytes
+12      4     StoredBytes        // 仅 payload；chunk header 另加固定 64B
+16      1     EntryKind
+17      3     reserved
 ```
+
+`ChunkSequence` 与 `RegionOffset` 不落盘：chunk 按序排列并铺满正文区，所以序号就是目录下的
+下标、偏移就是前面各 chunk 头 + 负载之和。解析时填入这两个字段（旧版则是逐条把磁盘上的副本
+校验回推导值）。于是定位第 i 个 chunk 仍然只需读一次目录并累加 `StoredBytes`，不必触碰任何
+chunk 头——而剩下的字段仍与各自 chunk 头交叉校验（§4.5）。
 
 ## 5. Row Index Page + Fence Directory
 
@@ -363,8 +366,8 @@ Footer 交叉校验正文与对应数据 Footer，因此 IndexTxn 只有在 foot
 ## 10. 尺寸与限制
 
 固定结构（8 字节对齐，字段布局见对应小节）：IndexTxnHeader 80、IndexTxnFooter 80、
-IndexChunkHeader 64、IndexChunkDirEntry 32、SnapshotIndexEntry 72、RowIndexPageHeader 64、
+IndexChunkHeader 64、IndexChunkDirEntry 20、SnapshotIndexEntry 72、RowIndexPageHeader 64、
 RowIndexFenceEntry 36。内存条目结构尺寸：MetadataIndexEntry 48、BlockIndexEntry 56、
 RowIndexEntry 40（磁盘上分别为 §4.3 变宽流与 §5 页编码，无定长保证）。每 chunk 上限 4096 条 /
 256 KiB raw（硬解析上限见 §4.1）；每 Row Index Page 上限 4096 条并按表切页。Directory 每 Entry
-32B，超大事务场景需预留 directory 自身分 chunk 的演进空间。
+20B，超大事务场景需预留 directory 自身分 chunk 的演进空间。

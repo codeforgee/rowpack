@@ -837,22 +837,23 @@ function parseChunkHeader(buf, off) {
     info:{kindC:buf[off+10], seq:u32(buf,off+16), entryCount:u32(buf,off+20), storedBytes, firstOrd:u32(buf,off+24)}};
 }
 
-function parseChunkDirEntry(buf, off) {
+/* 20B：ChunkSequence 与 RegionOffset 不落盘，分别由目录下标和前序 chunk 头+负载累加得出。 */
+function parseChunkDirEntry(buf, off, seq, regionOffset) {
   return {
-    start:off, end:off+32, title:`ChunkDirEntry`, magic:null, kind:'IndexChunkDirEntry',
+    start:off, end:off+20, title:`ChunkDirEntry`, magic:null, kind:'IndexChunkDirEntry',
     fields:[
-      F(off,4,'u32','ChunkSequence',u32(buf,off),'id',''),
-      F(off+4,4,'u32','EntryCount',u32(buf,off+4),'cnt',''),
-      F(off+8,4,'u32','FirstEntryOrdinal',u32(buf,off+8),'id',''),
-      F(off+12,4,'u32','RawBytes',u32(buf,off+12),'cnt',''),
-      F(off+16,4,'u32','StoredBytes',u32(buf,off+16),'cnt','不含 64B 块头'),
-      F(off+20,1,'u8','EntryKind',dec(DICT.ckind,buf[off+20]),'enum',''),
-      F(off+21,3,'—','Reserved','0 × 3','rsv',R),
-      F(off+24,8,'u64','RegionOffset',u64(buf,off+24),'off','相对 IndexTxn 体起点'),
+      F(off,4,'u32','EntryCount',u32(buf,off),'cnt',''),
+      F(off+4,4,'u32','FirstEntryOrdinal',u32(buf,off+4),'id',''),
+      F(off+8,4,'u32','RawBytes',u32(buf,off+8),'cnt',''),
+      F(off+12,4,'u32','StoredBytes',u32(buf,off+12),'cnt','不含 64B 块头'),
+      F(off+16,1,'u8','EntryKind',dec(DICT.ckind,buf[off+16]),'enum',''),
+      F(off+17,3,'—','Reserved','0 × 3','rsv',R),
     ],
     crc:null, errs:[],
-    info:{seq:u32(buf,off), kindC:buf[off+20], regionOffset:u64(buf,off+24), entryCount:u32(buf,off+4),
-          rawBytes:u32(buf,off+12), storedBytes:u32(buf,off+16)},
+    info:{seq, kindC:buf[off+16], regionOffset, entryCount:u32(buf,off),
+          rawBytes:u32(buf,off+8), storedBytes:u32(buf,off+12)},
+    notes:[`ChunkSequence=${seq} 不落盘（目录下标）`,
+           `RegionOffset=${regionOffset} 不落盘（前序 chunk 头+负载累加）`],
   };
 }
 
@@ -964,10 +965,16 @@ function scanStore(buf) {
         p = ch.end;
         if (ch.end > bEnd) { ch.errs.push('载荷越出事务体'); break; }
       }
-      const dirLen = txn.chunks.length * 32;
+      const dirLen = txn.chunks.length * 20;
       if (dirLen > 0 && p + dirLen <= bEnd) {
         txn.dirStart = p;
-        for (let i = 0; i < txn.chunks.length; i++) txn.dir.push(parseChunkDirEntry(buf, p + i*32));
+        // ChunkSequence/RegionOffset 由下标与前序尺寸累加回填。
+        let rel = 0;
+        for (let i = 0; i < txn.chunks.length; i++) {
+          const d = parseChunkDirEntry(buf, p + i*20, i, rel);
+          rel += 64 + d.info.storedBytes;
+          txn.dir.push(d);
+        }
         p += dirLen;
       }
       const nPages = ith.info.pageCount;
@@ -1240,7 +1247,7 @@ function buildDemoStore() {
     const nBlkCh  = opt.idx.blockEntries.length ? 1 : 0;
     const pages = opt.idx.pages.map(p => ({ ...p, bytes: indexPageBytes(p) }));
     const chunkLen = 64+72 + nMetaCh*(64+48*opt.idx.metaEntries.length) + nBlkCh*(64+56*opt.idx.blockEntries.length);
-    const dirLen = (1 + nMetaCh + nBlkCh) * 32;
+    const dirLen = (1 + nMetaCh + nBlkCh) * 20;
     const pagesLen = pages.reduce((s,p) => s + p.bytes.length, 0);
     const bodyLen = chunkLen + dirLen + pagesLen + pages.length * 36;
     const idxStart = blocksEnd, bodyStart = idxStart + 80, bodyEnd = bodyStart + bodyLen;
@@ -1276,8 +1283,8 @@ function buildDemoStore() {
     }
     /* ⑦ chunk directory */
     for (const d of dirRows) {
-      wu32(w,d.seq); wu32(w,d.entryCount); wu32(w,0); wu32(w,d.len); wu32(w,d.len);
-      wu8(w,d.kind); wzeros(w,3); wu64(w,d.rel);
+      wu32(w,d.entryCount); wu32(w,0); wu32(w,d.len); wu32(w,d.len);
+      wu8(w,d.kind); wzeros(w,3);
     }
     /* ⑧ pages + fences（rel 需先加上目录长度：fence 的 StoredOffset = chunkLen + dirLen） */
     rel += dirLen;

@@ -124,18 +124,17 @@ func dirEntryAt(data []byte, dirOff, i int) []byte {
 	return data[off : off+format.IndexChunkDirEntrySize]
 }
 
-// syncDirEntry rewrites directory entry i from the given header (offsets are
-// recomputed from the entry index).
-func syncDirEntry(t *testing.T, data []byte, dirOff, i int, seq uint32, h format.IndexChunkHeader) {
+// syncDirEntry rewrites directory entry i from the given header. ChunkSequence
+// and RegionOffset are left zero: neither is encoded, and the parser recomputes
+// both from the entry index and the preceding stored sizes.
+func syncDirEntry(t *testing.T, data []byte, dirOff, i int, h format.IndexChunkHeader) {
 	t.Helper()
 	e := format.IndexChunkDirEntry{
-		ChunkSequence:     seq,
 		EntryKind:         h.EntryKind,
 		EntryCount:        h.EntryCount,
 		FirstEntryOrdinal: h.FirstEntryOrdinal,
 		RawBytes:          h.RawBytes,
 		StoredBytes:       h.StoredBytes,
-		RegionOffset:      uint64(i * (format.IndexChunkHeaderSize + int(h.StoredBytes))),
 	}
 	if err := e.MarshalTo(dirEntryAt(data, dirOff, i)); err != nil {
 		t.Fatal(err)
@@ -221,13 +220,11 @@ func reframeTxn(t *testing.T, data []byte, chunks []chunkInfo, dirOff, _ int, pa
 		out = append(out, comp...)
 		crc = format.CRC32CConcat(crc, raw)
 		e := format.IndexChunkDirEntry{
-			ChunkSequence:     uint32(i),
 			EntryKind:         h.EntryKind,
 			EntryCount:        h.EntryCount,
 			FirstEntryOrdinal: h.FirstEntryOrdinal,
 			RawBytes:          h.RawBytes,
 			StoredBytes:       h.StoredBytes,
-			RegionOffset:      uint64(len(out) - format.IndexChunkHeaderSize - len(comp)),
 		}
 		eb := make([]byte, format.IndexChunkDirEntrySize)
 		if err := e.MarshalTo(eb); err != nil {
@@ -391,7 +388,7 @@ func TestTxnParseRejectsCorruptions(t *testing.T) {
 		}, "duplicate snapshot chunk 1"},
 		{"metadata entry count mismatch", func(t *testing.T, d []byte) []byte {
 			restampChunk(t, d, chunks[1].off, func(h *format.IndexChunkHeader) { h.EntryCount = 2 })
-			syncDirEntry(t, d, dirOff, 1, 1, chunks[1].raw)
+			syncDirEntry(t, d, dirOff, 1, chunks[1].raw)
 			return d
 		}, "metadata chunk 1: entry 1"},
 		{"metadata entry corrupt", func(t *testing.T, d []byte) []byte {
@@ -407,7 +404,7 @@ func TestTxnParseRejectsCorruptions(t *testing.T) {
 		}, "metadata chunk 1: entry 0"},
 		{"block chunk size mismatch", func(t *testing.T, d []byte) []byte {
 			restampChunk(t, d, chunks[2].off, func(h *format.IndexChunkHeader) { h.EntryCount = 2 })
-			syncDirEntry(t, d, dirOff, 2, 2, chunks[2].raw)
+			syncDirEntry(t, d, dirOff, 2, chunks[2].raw)
 			return d
 		}, "block chunk 2: entry 1"},
 		{"block entry corrupt", func(t *testing.T, d []byte) []byte {
@@ -424,7 +421,7 @@ func TestTxnParseRejectsCorruptions(t *testing.T) {
 				h.EntryKind = format.IndexChunkKindRow
 				h.EntryCount = 1
 			})
-			syncDirEntry(t, d, dirOff, 2, 2, chunks[2].raw)
+			syncDirEntry(t, d, dirOff, 2, chunks[2].raw)
 			return d
 		}, "obsolete row-chunk layout"},
 
@@ -441,28 +438,32 @@ func TestTxnParseRejectsCorruptions(t *testing.T) {
 			})
 			return out
 		}, "chunk directory 16 bytes malformed"},
-		{"directory entry sequence", func(t *testing.T, d []byte) []byte {
+		// ChunkSequence and RegionOffset are no longer on disk: the parser
+		// derives both from the walk, so there is no copy left to contradict.
+		// What a forged record can still do is disagree with the chunk header
+		// that actually sits where the walk reached.
+		{"directory entry count disagrees", func(t *testing.T, d []byte) []byte {
 			var e format.IndexChunkDirEntry
 			if err := e.Unmarshal(dirEntryAt(d, dirOff, 0)); err != nil {
 				t.Fatal(err)
 			}
-			e.ChunkSequence = 5
+			e.EntryCount += 1
 			if err := e.MarshalTo(dirEntryAt(d, dirOff, 0)); err != nil {
 				t.Fatal(err)
 			}
 			return d
-		}, "directory entry 0 sequence 5"},
-		{"directory entry offset", func(t *testing.T, d []byte) []byte {
+		}, "directory entry 0 disagrees"},
+		{"directory entry size disagrees", func(t *testing.T, d []byte) []byte {
 			var e format.IndexChunkDirEntry
 			if err := e.Unmarshal(dirEntryAt(d, dirOff, 1)); err != nil {
 				t.Fatal(err)
 			}
-			e.RegionOffset += 1
+			e.StoredBytes += 1
 			if err := e.MarshalTo(dirEntryAt(d, dirOff, 1)); err != nil {
 				t.Fatal(err)
 			}
 			return d
-		}, "directory entry 1 offset"},
+		}, "directory entry 1 disagrees"},
 		{"directory entry disagrees", func(t *testing.T, d []byte) []byte {
 			var e format.IndexChunkDirEntry
 			if err := e.Unmarshal(dirEntryAt(d, dirOff, 0)); err != nil {

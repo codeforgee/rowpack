@@ -163,7 +163,7 @@ IndexTxnHeader (80B, RowIndexPageCount @ offset 12..16)
 SnapshotChunk // 定长 SnapshotIndexEntry，chunk seq 0，不压缩
 MetadataChunk × A // delta/varint 条目流 + zstd，chunk seq 1..A
 BlockChunk × B // delta/varint 条目流 + zstd，chunk seq A+1..A+B
-ChunkDirectory // 明文 (A+B+1) × 32B，chunk 定位
+ChunkDirectory // 明文 (A+B+1) × 20B，chunk 定位
 IndexPage × N // 每页独立 zstd（复用 store 压缩级别），加密 +16B tag
 RowIndexFenceEntry × N // 明文 36B，由正文 CRC 认证
 IndexTxnFooter (80B)

@@ -124,17 +124,14 @@ func (cc *chunkWriter) add(cb *chunkBuild) error {
 		StoredBytes:       uint32(len(stored)),
 		PayloadCRC32C:     format.CRC32C(stored),
 	}
-	off := uint64(len(cc.out))
 	_ = h.MarshalTo(cc.reserve(format.IndexChunkHeaderSize)) // exact-size buffer: cannot fail
 	cc.out = append(cc.out, stored...)
 	var de format.IndexChunkDirEntry
-	de.ChunkSequence = cc.seq
 	de.EntryCount = h.EntryCount
 	de.FirstEntryOrdinal = cb.firstOrdinal
 	de.RawBytes = h.RawBytes
 	de.StoredBytes = h.StoredBytes
 	de.EntryKind = cb.kind
-	de.RegionOffset = off
 	_ = de.MarshalTo(cc.reserveDir(format.IndexChunkDirEntrySize)) // exact-size buffer: cannot fail
 	cc.rawParts = append(cc.rawParts, cb.raw)
 	cc.seq++
@@ -287,12 +284,10 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 	// Snapshot directory entry first, then the streamed chunks' entries; the
 	// directory bytes join the plaintext CRC.
 	var sde format.IndexChunkDirEntry
-	sde.ChunkSequence = 0
 	sde.EntryCount = 1
 	sde.RawBytes = h.RawBytes
 	sde.StoredBytes = h.StoredBytes
 	sde.EntryKind = format.IndexChunkKindSnapshot
-	sde.RegionOffset = 0
 	var sdeBuf [format.IndexChunkDirEntrySize]byte
 	_ = sde.MarshalTo(sdeBuf[:]) // exact-size buffer: cannot fail
 	cc.dir = append(sdeBuf[:], cc.dir...)
@@ -594,15 +589,13 @@ func (p *bodyParser) parse() (*storedBody, error) {
 	// the size word), so Parse cannot fail here and always yields seq entries.
 	dir, _ := format.ParseIndexChunkDirectory(dirBytes)
 	// Re-walk to cross-check directory records against the chunk headers.
+	// ChunkSequence and RegionOffset are filled in rather than checked: chunks
+	// are in sequence order and tile the region, so both follow from the walk.
+	// What still needs proving is that each record agrees with the header that
+	// actually sits at the position the walk reached.
 	checkPos := 0
 	for i := range dir {
 		de := &dir[i]
-		if de.ChunkSequence != uint32(i) {
-			return nil, fmt.Errorf("rowpack: directory entry %d sequence %d", i, de.ChunkSequence)
-		}
-		if de.RegionOffset != uint64(checkPos) {
-			return nil, fmt.Errorf("rowpack: directory entry %d offset %d, want %d", i, de.RegionOffset, checkPos)
-		}
 		var h format.IndexChunkHeader
 		// The same header bytes unmarshalled successfully in the walk above.
 		_ = h.Unmarshal(p.region[checkPos:])
@@ -610,6 +603,8 @@ func (p *bodyParser) parse() (*storedBody, error) {
 			de.FirstEntryOrdinal != h.FirstEntryOrdinal || de.RawBytes != h.RawBytes || de.StoredBytes != h.StoredBytes {
 			return nil, fmt.Errorf("rowpack: directory entry %d disagrees with chunk header", i)
 		}
+		de.ChunkSequence = uint32(i)
+		de.RegionOffset = uint64(checkPos)
 		checkPos += format.IndexChunkHeaderSize + int(h.StoredBytes)
 	}
 	sb.dir = dir

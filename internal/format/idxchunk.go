@@ -27,7 +27,7 @@ const (
 	// IndexChunkHeaderSize is the fixed chunk header size.
 	IndexChunkHeaderSize = 64
 	// IndexChunkDirEntrySize is the fixed directory entry size.
-	IndexChunkDirEntrySize = 32
+	IndexChunkDirEntrySize = 20
 
 	// Chunk entry kinds (EntryKind).
 	IndexChunkKindSnapshot uint8 = 1
@@ -188,26 +188,32 @@ func (h *IndexChunkHeader) CheckLimits() error {
 	return nil
 }
 
-// IndexChunkDirEntry is the fixed 32-byte directory record of one chunk.
+// IndexChunkDirEntry is the fixed 20-byte directory record of one chunk.
 // The directory is plaintext (even in encrypted stores) so readers can locate
 // chunks without a key; it reveals only chunk sizes and entry counts.
 //
-//	 0..3  ChunkSequence
-//	 4..7  EntryCount
-//	 8..11 FirstEntryOrdinal
-//	12..15 RawBytes
-//	16..19 StoredBytes (payload only; the chunk header adds a fixed 64B)
-//	20    EntryKind
-//	21..23 reserved
-//	24..31 RegionOffset (chunk header offset relative to the IndexTxn body start)
+//	 0..3   EntryCount
+//	 4..7   FirstEntryOrdinal
+//	 8..11  RawBytes
+//	12..15  StoredBytes (payload only; the chunk header adds a fixed 64B)
+//	16      EntryKind
+//	17..19  reserved
+//
+// ChunkSequence and RegionOffset are not encoded, and for the same reason in
+// both cases: chunks are laid out in sequence order and tile the body region,
+// so the sequence is just the entry's index and the offset is the sum of the
+// preceding headers and stored payloads. The parser used to have to police
+// both against those derivations (rejecting a mismatched copy of each); it now
+// fills them in, so callers still locate a chunk by accumulating the stored
+// sizes in the directory without ever touching a chunk header.
 type IndexChunkDirEntry struct {
-	ChunkSequence     uint32
+	ChunkSequence     uint32 // not encoded; equals the entry's index
 	EntryCount        uint32
 	FirstEntryOrdinal uint32
 	RawBytes          uint32
 	StoredBytes       uint32
 	EntryKind         uint8
-	RegionOffset      uint64
+	RegionOffset      uint64 // not encoded; sum of preceding header + payloads
 }
 
 // Size returns the serialized size.
@@ -221,13 +227,11 @@ func (e *IndexChunkDirEntry) MarshalTo(dst []byte) error {
 	for i := range dst[:IndexChunkDirEntrySize] {
 		dst[i] = 0
 	}
-	putU32(dst[0:], e.ChunkSequence)
-	putU32(dst[4:], e.EntryCount)
-	putU32(dst[8:], e.FirstEntryOrdinal)
-	putU32(dst[12:], e.RawBytes)
-	putU32(dst[16:], e.StoredBytes)
-	dst[20] = e.EntryKind
-	putU64(dst[24:], e.RegionOffset)
+	putU32(dst[0:], e.EntryCount)
+	putU32(dst[4:], e.FirstEntryOrdinal)
+	putU32(dst[8:], e.RawBytes)
+	putU32(dst[12:], e.StoredBytes)
+	dst[16] = e.EntryKind
 	return nil
 }
 
@@ -237,13 +241,11 @@ func (e *IndexChunkDirEntry) Unmarshal(src []byte) error {
 	if len(src) < IndexChunkDirEntrySize {
 		return formatError("IndexChunkDirEntry", -1, errShortInput)
 	}
-	e.ChunkSequence = binary.LittleEndian.Uint32(src[0:])
-	e.EntryCount = binary.LittleEndian.Uint32(src[4:])
-	e.FirstEntryOrdinal = binary.LittleEndian.Uint32(src[8:])
-	e.RawBytes = binary.LittleEndian.Uint32(src[12:])
-	e.StoredBytes = binary.LittleEndian.Uint32(src[16:])
-	e.EntryKind = src[20]
-	e.RegionOffset = binary.LittleEndian.Uint64(src[24:])
+	e.EntryCount = binary.LittleEndian.Uint32(src[0:])
+	e.FirstEntryOrdinal = binary.LittleEndian.Uint32(src[4:])
+	e.RawBytes = binary.LittleEndian.Uint32(src[8:])
+	e.StoredBytes = binary.LittleEndian.Uint32(src[12:])
+	e.EntryKind = src[16]
 	return nil
 }
 

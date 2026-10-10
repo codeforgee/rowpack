@@ -38,7 +38,12 @@ func TestIndexChunkDirEntryRoundtrip(t *testing.T) {
 	var got IndexChunkDirEntry
 	err = got.Unmarshal(dst)
 	require.NoError(t, err, "Unmarshal")
-	require.Equal(t, e, got, "roundtrip mismatch: %+v vs %+v", got, e)
+	// ChunkSequence and RegionOffset are not encoded: the parser derives them
+	// from the entry's index and the preceding stored sizes.
+	want := e
+	want.ChunkSequence = 0
+	want.RegionOffset = 0
+	require.Equal(t, want, got, "roundtrip mismatch: %+v vs %+v", got, want)
 	require.Error(t, got.Unmarshal(dst[:IndexChunkDirEntrySize-1]), "truncated input should error")
 }
 
@@ -55,7 +60,7 @@ func TestParseIndexChunkDirectory(t *testing.T) {
 	}
 	got, err := ParseIndexChunkDirectory(dir)
 	require.NoError(t, err, "ParseIndexChunkDirectory")
-	if len(got) != 2 || got[1].ChunkSequence != 1 || got[0].EntryCount != 10 {
+	if len(got) != 2 || got[0].EntryCount != 10 || got[1].EntryCount != 10 {
 		t.Fatalf("parsed directory: %+v", got)
 	}
 

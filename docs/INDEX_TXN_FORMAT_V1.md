@@ -24,7 +24,7 @@ IndexTxn 位于对应 Snapshot 的 Blocks 之后、SnapshotFooter 之前：
 [BlockChunk × B]             // chunk seq A+1..A+B，delta/varint 条目流（§4.3）
 [ChunkDirectory]             // 明文 (A+B+1) × 32B
 [RowIndexPage × N]           // 每页独立压缩（+加密 tag）
-[RowIndexFenceEntry × N]     // 明文 44B，正文 CRC 认证
+[RowIndexFenceEntry × N]     // 明文 36B，正文 CRC 认证
 [IndexTxnFooter 80B]
 ```
 
@@ -202,23 +202,27 @@ offset  size  field
 - 每页条目上限 4096（`indexPageEntryCount`）；
 - Page CRC 覆盖流区。
 
-### 5.2 RowIndexFenceEntry（44B，明文）
+### 5.2 RowIndexFenceEntry（36B，明文）
 
 ```text
 offset  size  field
 0       4     TableID
 4       8     MinRowID
 12      8     MaxRowID
-20      8     StoredOffset     // stored page 相对 txn body 起点
-28      4     StoredSize       // 压缩 + tag
-32      4     RawSize
-36      4     EntryCount
-40      4     PageCRC32C
+20      4     StoredSize       // 压缩 + tag
+24      4     RawSize
+28      4     EntryCount
+32      4     PageCRC32C
 ```
 
-`SnapshotID` 不落盘：一个 Fence Directory 从属于单个 IndexTxn，快照号已由 `IndexTxnHeader`
-声明，逐条目再存一份只是给伪造者多一个「可以与头不一致」的位置（旧版解析因此还要专门拒绝
-不匹配）。解析时由 txn 头注入 `RowIndexFenceEntry.SnapshotID`，消费方看到的字段不变。
+`SnapshotID` 与 `StoredOffset` 都不落盘，理由相同——它们描述的是条目所处的位置，而不是页
+本身；逐条目存一份只是给伪造者多一个「可以与其他字段不一致」的位置（旧版解析因此要分别
+拒绝不匹配的快照号和偏移）。解析时：
+
+- `SnapshotID` 由 `IndexTxnHeader` 注入（一个 Fence Directory 从属于单个 IndexTxn）；
+- `StoredOffset` 由「页区起点 + 前序 StoredSize」累加回填（页在正文里连续排列）。
+
+两个字段在内存里照旧可见，消费方无需改动。
 
 Fence 按 `StoredOffset` 递增排列，由正文 CRC 认证；`RowIndexPageCount == 0` 表示快照无行条目
 （pages == fences == 0）。
@@ -360,7 +364,7 @@ Footer 交叉校验正文与对应数据 Footer，因此 IndexTxn 只有在 foot
 
 固定结构（8 字节对齐，字段布局见对应小节）：IndexTxnHeader 80、IndexTxnFooter 80、
 IndexChunkHeader 64、IndexChunkDirEntry 32、SnapshotIndexEntry 72、RowIndexPageHeader 64、
-RowIndexFenceEntry 44。内存条目结构尺寸：MetadataIndexEntry 48、BlockIndexEntry 56、
+RowIndexFenceEntry 36。内存条目结构尺寸：MetadataIndexEntry 48、BlockIndexEntry 56、
 RowIndexEntry 40（磁盘上分别为 §4.3 变宽流与 §5 页编码，无定长保证）。每 chunk 上限 4096 条 /
 256 KiB raw（硬解析上限见 §4.1）；每 Row Index Page 上限 4096 条并按表切页。Directory 每 Entry
 32B，超大事务场景需预留 directory 自身分 chunk 的演进空间。

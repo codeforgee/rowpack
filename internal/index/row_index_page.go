@@ -85,7 +85,7 @@ func (b *Builder) buildPages(crypto *ChunkCrypto, level int, pageSeqBase uint32)
 				stored = sealed
 				storedSize = uint32(len(sealed))
 			}
-			fence, err := pageFence(page, storedSize, 0)
+			fence, err := pageFence(page, storedSize)
 			if err != nil {
 				return nil, err
 			}
@@ -532,7 +532,11 @@ func decodePage(raw []byte) ([]format.RowIndexEntry, error) {
 	return out, nil
 }
 
-func pageFence(raw []byte, storedSize uint32, storedOffset uint64) (format.RowIndexFenceEntry, error) {
+// pageFence builds the fence directory entry for one encoded index page.
+// StoredOffset is left zero: pages tile the txn body's pages region, so the
+// parser recomputes it from the preceding sizes instead of reading a copy that
+// could disagree with them.
+func pageFence(raw []byte, storedSize uint32) (format.RowIndexFenceEntry, error) {
 	if len(raw) < format.IndexPageHeaderSize {
 		return format.RowIndexFenceEntry{}, errIndexPageCorrupt
 	}
@@ -545,14 +549,13 @@ func pageFence(raw []byte, storedSize uint32, storedOffset uint64) (format.RowIn
 		return format.RowIndexFenceEntry{}, errIndexPageCorrupt
 	}
 	return format.RowIndexFenceEntry{
-		TableID:      tid,
-		MinRowID:     h.MinRowID,
-		MaxRowID:     h.MaxRowID,
-		StoredOffset: storedOffset,
-		StoredSize:   storedSize,
-		RawSize:      uint32(len(raw)),
-		EntryCount:   h.EntryCount,
-		PageCRC32C:   h.CRC32C,
+		TableID:    tid,
+		MinRowID:   h.MinRowID,
+		MaxRowID:   h.MaxRowID,
+		StoredSize: storedSize,
+		RawSize:    uint32(len(raw)),
+		EntryCount: h.EntryCount,
+		PageCRC32C: h.CRC32C,
 	}, nil
 }
 

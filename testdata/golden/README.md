@@ -12,20 +12,17 @@
 | `full-delta-store.rpk` | FULL + DELTA + 空 DELTA + 超大行（单文件，含内嵌 IndexTxn；Row Index Page + Fence Directory）；含**快照 Meta 块**：FULL 设置、DELTA 覆盖、空 DELTA 沿父链继承 | v1 |
 | `encrypted-store.rpk` | 加密 FULL Store（None 压缩 + 固定 key，锁定 Header 加密字段/块 Flags/KeyEpoch/密文布局；IndexTxn 页按 Index 域 chunk-nonce/AAD 密封）；含**整容器密封的快照 Meta 块** | v1 |
 
-## 锁定摘要（SHA-256）
+## 变更日志
 
-| 文件 | SHA-256 |
-| --- | --- |
-| `empty-store.rpk` | `359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401` |
-| `rows-payload-all-types.bin` | `a9fd25de96141b17cad28b44e69b5c84fcc199880c8c2f426d1a1152c75437d5` |
-| `full-delta-store.rpk` | `e73f6774b94dfa92753ffad6ba69bf3162af2a13887648e1563262bdfd286708` |
-| `encrypted-store.rpk` | `90b8547de1e65aebb1da3324470a8f83d40dd94b64c374595082d833f569e998` |
+这里不再静态列出样本的 SHA-256：摘要就是文件内容本身的函数，真正的锁定在测试侧
+（`TestGoldenManifest`），再抄一份到文档只会多一处必须同步、又不同步也不会报错的地方。
 
-摘要对应冻结的 v1 IndexTxn 格式（排序 Row Index Page + Fence Directory；Metadata/Block chunk
-为 delta/varint 条目流 + Zstd，见 docs/INDEX_TXN_FORMAT_V1.md §4.3）。修改任一摘要即视为
-有意的磁盘格式变更，必须经过格式审查并按版本策略建立新的 golden 样本族。
+最近一次变更：RowIndexFenceEntry 删掉 StoredOffset（44→36 B）。页在 IndexTxn 正文里连续
+排列，偏移由解析侧按「页区起点 + 前序 StoredSize」累加回填——与上一次变更里
+RowsPageDirEntry 的做法一致。原先还要逐条校验偏移连续，现在那是构造出来的恒等式。
+`full-delta-store.rpk` 4629→4605 B、`encrypted-store.rpk` 2021→2013 B。
 
-最近一次变更：RowIndexFenceEntry 删掉 SnapshotID（52→44 B）。一个 Fence Directory 从属于
+上一次变更：RowIndexFenceEntry 删掉 SnapshotID（52→44 B）。一个 Fence Directory 从属于
 单个 IndexTxn，快照号已由 IndexTxnHeader 声明，逐条目再存一份只是给伪造者多一个「可以与头
 不一致」的位置——旧版解析因此还要专门拒绝不匹配的副本。现在由解析侧注入字段，消费方不变。
 `full-delta-store.rpk` 4653→4629 B、`encrypted-store.rpk` 2029→2021 B。

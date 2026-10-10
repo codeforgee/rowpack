@@ -140,13 +140,19 @@ func TestEncryptedChunkRejectsTamperedPayload(t *testing.T) {
 func TestEncryptedPageRejectsTamperedPayload(t *testing.T) {
 	crypto := newStubCrypto(7)
 	data := mustBuildEncrypted(t, crypto)
-	_, _, fenceOff, _ := scanTxn(t, data)
-	var f format.RowIndexFenceEntry
-	if err := f.Unmarshal(data[fenceOff:]); err != nil {
-		t.Fatal(err)
+	_, _, fenceOff, pageCount := scanTxn(t, data)
+	// StoredOffset is no longer on disk: pages tile the region that ends where
+	// the fence directory begins, so the first page starts at fenceOff minus
+	// every stored size.
+	stored := 0
+	for i := 0; i < int(pageCount); i++ {
+		var f format.RowIndexFenceEntry
+		if err := f.Unmarshal(data[fenceOff+i*format.IndexFenceEntrySize:]); err != nil {
+			t.Fatal(err)
+		}
+		stored += int(f.StoredSize)
 	}
-	base := uint64(format.IndexTxnHeaderSize)
-	pos := base + f.StoredOffset
+	pos := fenceOff - stored
 	data[pos+2] ^= 0xFF
 	if _, err := parseStream(data, crypto, nil); err == nil || !strings.Contains(err.Error(), "row index page 0 open") {
 		t.Fatalf("want page-open auth failure, got %v", err)

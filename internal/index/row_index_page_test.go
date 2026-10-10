@@ -260,11 +260,11 @@ func TestRowIndexPageDecodeCorruptCRC(t *testing.T) {
 func TestFenceForRowIndexPage(t *testing.T) {
 	rows := riSeq(100, 25)
 	page, n, mn, mx := encodeRowIndexPage1(rows)
-	f, err := pageFence(page, 42, 0x1234)
+	f, err := pageFence(page, 42)
 	require.NoError(t, err, "pageFence")
-	// SnapshotID is no longer the fence's to carry: the parser injects it from
-	// the txn header, so the builder leaves it zero.
-	if f.TableID != 1 || f.StoredOffset != 0x1234 || f.SnapshotID != 0 {
+	// SnapshotID and StoredOffset are no longer the fence's to carry: the
+	// parser injects both, so the builder leaves them zero.
+	if f.TableID != 1 || f.StoredOffset != 0 || f.SnapshotID != 0 {
 		t.Fatalf("fence identity fields wrong: %+v", f)
 	}
 	require.Equal(t, uint32(n), f.EntryCount, "fence EntryCount = %d, want %d", f.EntryCount, n)

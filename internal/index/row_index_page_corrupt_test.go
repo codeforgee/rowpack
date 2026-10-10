@@ -1,6 +1,7 @@
 package index
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -110,20 +111,16 @@ func TestParseRowsForgedPageCount(t *testing.T) {
 	}
 }
 
-func TestParseRowsFenceOffsetOutOfBounds(t *testing.T) {
+// TestParseRowsFenceSizeOutOfBounds: StoredOffset is no longer on disk, so the
+// declared size is what can still run off the end of the pages region.
+func TestParseRowsFenceSizeOutOfBounds(t *testing.T) {
 	region := buildPageRegion(t, riSeq(100, 25), 9)
 	pageCount := uint32((100 + indexPageEntryCount - 1) / indexPageEntryCount)
 	fenceStart := len(region) - int(pageCount)*format.IndexFenceEntrySize
-	// Forge the first fence's StoredOffset (bytes 28..36 in the first fence)
-	// to an absurd in-body value that overflows the page region.
-	offs := fenceStart + 28
-	region[offs] = 0xFF
-	region[offs+1] = 0xFF
-	region[offs+2] = 0xFF
-	region[offs+3] = 0xFF
-	region[offs+7] = 0x7F
+	// Forge the first fence's StoredSize (bytes 20..24) to an absurd value.
+	binary.LittleEndian.PutUint32(region[fenceStart+20:], 0xFFFFFFFF)
 	if _, err := parseCorruptPages(region, pageCount, 9); err == nil {
-		t.Fatal("fence offset out of bounds = nil error")
+		t.Fatal("fence size out of bounds = nil error")
 	}
 }
 
@@ -131,9 +128,9 @@ func TestParseRowsFenceSizeZero(t *testing.T) {
 	region := buildPageRegion(t, riSeq(100, 25), 9)
 	pageCount := uint32((100 + indexPageEntryCount - 1) / indexPageEntryCount)
 	fenceStart := len(region) - int(pageCount)*format.IndexFenceEntrySize
-	// Zero the first fence's StoredSize (bytes 36..40).
+	// Zero the first fence's StoredSize (bytes 20..24).
 	for i := range 4 {
-		region[fenceStart+36+i] = 0
+		region[fenceStart+20+i] = 0
 	}
 	if _, err := parseCorruptPages(region, pageCount, 9); err == nil {
 		t.Fatal("fence zero stored size = nil error")
@@ -158,23 +155,18 @@ func TestParseRowsFenceSnapshotIsInjected(t *testing.T) {
 	}
 }
 
-func TestParseRowsOverlappingPages(t *testing.T) {
+// TestParseRowsPagesMustTileRegion: StoredOffset is recomputed by the parser
+// from the preceding sizes, so pages cannot be made to overlap from disk any
+// more. What still has to hold is that those sizes add up to exactly the pages
+// region; shrink the first by one byte and the region no longer tiles.
+func TestParseRowsPagesMustTileRegion(t *testing.T) {
 	region := buildPageRegion(t, riSeq(100, 25), 9)
 	pageCount := uint32((100 + indexPageEntryCount - 1) / indexPageEntryCount)
 	fenceStart := len(region) - int(pageCount)*format.IndexFenceEntrySize
-	// Two pages: make the second fence's StoredOffset equal the first's so the
-	// pages overlap instead of being contiguous.
-	if pageCount < 2 {
-		t.Skip("needs 2+ pages")
-	}
-	secondOffset := fenceStart + format.IndexFenceEntrySize + 28
-	region[secondOffset] = 0
-	region[secondOffset+1] = 0
-	region[secondOffset+2] = 0
-	region[secondOffset+3] = 0
-	region[secondOffset+7] = 0
+	binary.LittleEndian.PutUint32(region[fenceStart+20:],
+		binary.LittleEndian.Uint32(region[fenceStart+20:])-1)
 	if _, err := parseCorruptPages(region, pageCount, 9); err == nil {
-		t.Fatal("overlapping pages = nil error")
+		t.Fatal("pages region not tiled exactly = nil error")
 	}
 }
 

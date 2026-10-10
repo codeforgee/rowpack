@@ -661,8 +661,12 @@ func (p *pageParser) parseFences() (fences []format.RowIndexFenceEntry, pageEnd 
 		// There is no per-entry copy left for a forger to disagree with.
 		fences[i].SnapshotID = p.snapshotID
 	}
-	// Fence cohesion: strictly ordered and contiguous within the pages
-	// p.region, with non-zero sizes.
+	// Fence cohesion: non-zero sizes, and declared sizes that stay inside the
+	// pages region. StoredOffset is recomputed from those sizes rather than
+	// read from disk — pages tile the region, so the first begins at pageStart
+	// and every later one begins where the previous ended. Contiguity is then
+	// true by construction instead of something a forger can contradict; what
+	// still needs proving is that the sizes fit.
 	expectOff := uint64(p.pageStart)
 	for i := range fences {
 		f := &fences[i]
@@ -672,13 +676,10 @@ func (p *pageParser) parseFences() (fences []format.RowIndexFenceEntry, pageEnd 
 		if f.RawSize < format.IndexPageHeaderSize {
 			return nil, 0, fmt.Errorf("rowpack: row index fence %d raw size %d below page header %d", i, f.RawSize, format.IndexPageHeaderSize)
 		}
-		if f.StoredOffset < uint64(p.pageStart) || f.StoredOffset > uint64(pageEnd) ||
-			uint64(f.StoredSize) > uint64(pageEnd)-f.StoredOffset {
+		if expectOff > uint64(pageEnd) || uint64(f.StoredSize) > uint64(pageEnd)-expectOff {
 			return nil, 0, fmt.Errorf("rowpack: row index fence %d page out of bounds", i)
 		}
-		if f.StoredOffset != expectOff {
-			return nil, 0, fmt.Errorf("rowpack: row index fence %d offset %d, want %d", i, f.StoredOffset, expectOff)
-		}
+		f.StoredOffset = expectOff
 		expectOff += uint64(f.StoredSize)
 	}
 	if expectOff != uint64(pageEnd) {

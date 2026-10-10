@@ -246,13 +246,20 @@ func reframeTxn(t *testing.T, data []byte, chunks []chunkInfo, dirOff, _ int, pa
 		t.Fatal(err)
 	}
 	end := len(data) - format.IndexTxnFooterSize
-	tail := data[dirOff+int(th.RowIndexPageCount)*format.IndexChunkDirEntrySize : end]
+	tailStart := dirOff + int(th.RowIndexPageCount)*format.IndexChunkDirEntrySize
+	tail := data[tailStart:end]
 	fenceBytes := tail[len(tail)-int(th.RowIndexPageCount)*format.IndexFenceEntrySize:]
+	// StoredOffset is not on disk any more, so it is rebuilt from the preceding
+	// sizes exactly as the parser does: pages tile the region that begins where
+	// the chunk directory ends.
+	off := uint64(tailStart) - base
 	for i := 0; i < int(th.RowIndexPageCount); i++ {
 		var f format.RowIndexFenceEntry
 		if err := f.Unmarshal(fenceBytes[i*format.IndexFenceEntrySize:]); err != nil {
 			t.Fatal(err)
 		}
+		f.StoredOffset = off
+		off += uint64(f.StoredSize)
 		stored := data[base+f.StoredOffset : base+f.StoredOffset+uint64(f.StoredSize)]
 		raw, err := block.Decompress(format.CompressionZstd, nil, stored, f.RawSize)
 		require.Nil(t, err, "reframe: decompress page %d: %v", i, err)
@@ -468,17 +475,18 @@ func TestTxnParseRejectsCorruptions(t *testing.T) {
 			return d
 		}, "disagrees with chunk header"},
 
-		// --- row index fences / pages (3 pages; fence 1 sits mid-run, so an
-		// 8-byte shift stays inside the fence bounds checks and hits the
-		// exact-offset check instead) ---
+		// --- row index fences / pages (3 pages; fence 1 sits mid-run) ---
 		{"fence directory overrun", func(t *testing.T, d []byte) []byte {
 			restampTxnHeader(t, d, func(h *format.IndexTxnHeader) { h.RowIndexPageCount = 1 << 20 })
 			return d
 		}, "row index fence directory"},
-		{"fence offset moved", func(t *testing.T, d []byte) []byte {
-			fenceAt(t, d, fenceOff, 1, func(f *format.RowIndexFenceEntry) { f.StoredOffset += 8 })
+		// StoredOffset is recomputed from the preceding sizes, so there is no
+		// longer an offset on disk to move. What can still push a page out of
+		// the region is its declared size.
+		{"fence stored size inflated", func(t *testing.T, d []byte) []byte {
+			fenceAt(t, d, fenceOff, 1, func(f *format.RowIndexFenceEntry) { f.StoredSize += 8 })
 			return d
-		}, "row index fence 1 offset"},
+		}, "row index fence"},
 		{"fence raw size inflated", func(t *testing.T, d []byte) []byte {
 			fenceAt(t, d, fenceOff, 0, func(f *format.RowIndexFenceEntry) { f.RawSize += 1 })
 			return d

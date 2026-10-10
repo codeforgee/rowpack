@@ -20,7 +20,7 @@ const (
 	// IndexPageHeaderSize is the fixed size of RowIndexPageHeader.
 	IndexPageHeaderSize = 64
 	// IndexFenceEntrySize is the fixed size of RowIndexFenceEntry.
-	IndexFenceEntrySize = 44
+	IndexFenceEntrySize = 36
 )
 
 // RowIndexPageHeader is the fixed 64-byte header of a Row Index Page. All
@@ -129,7 +129,7 @@ func (h *RowIndexPageHeader) Unmarshal(src []byte, totalLen int) error {
 	return nil
 }
 
-// RowIndexFenceEntry is the fixed 44-byte entry of a Row Index Fence directory
+// RowIndexFenceEntry is the fixed 36-byte entry of a Row Index Fence directory
 // (§7.2). It stays plaintext so a reader binary-searches pages by RowID before
 // touching any page; the fence is authenticated by the enclosing IndexTxn
 // body CRC and (optionally) per-page sealing.
@@ -137,24 +137,22 @@ func (h *RowIndexPageHeader) Unmarshal(src []byte, totalLen int) error {
 //	0..4    TableID
 //	4..12   MinRowID
 //	12..20  MaxRowID
-//	20..28  StoredOffset (offset of the stored page in the txn body)
-//	28..32  StoredSize
-//	32..36  RawSize
-//	36..40  EntryCount
-//	40..44  PageCRC32C
+//	20..24  StoredSize
+//	24..28  RawSize
+//	28..32  EntryCount
+//	32..36  PageCRC32C
 //
-// SnapshotID is not part of the encoding: a fence directory belongs to one
-// IndexTxn, whose header already carries the snapshot id, and carrying it per
-// entry only gave a forger a second place to disagree from (the parser used to
-// have to reject a mismatched copy). Like StoredOffset in RowsPageDirEntry, it
-// is filled in by the parser from the txn header, so consumers keep seeing the
-// same field with nothing redundant on disk.
+// Two fields are not part of the encoding, and both for the same reason: they
+// are facts about where the entry sits rather than facts about the page, so
+// storing them only gave a forger a second place to disagree from (the parser
+// used to have to reject mismatched copies of both). The parser fills them in,
+// so consumers keep seeing the same fields with nothing redundant on disk.
 type RowIndexFenceEntry struct {
 	SnapshotID   uint64 // not encoded; injected from the IndexTxn header
 	TableID      uint32
 	MinRowID     uint64
 	MaxRowID     uint64
-	StoredOffset uint64
+	StoredOffset uint64 // not encoded; pages tile the txn's pages region
 	StoredSize   uint32
 	RawSize      uint32
 	EntryCount   uint32
@@ -175,11 +173,10 @@ func (e *RowIndexFenceEntry) MarshalTo(dst []byte) error {
 	putU32(dst[0:], e.TableID)
 	putU64(dst[4:], e.MinRowID)
 	putU64(dst[12:], e.MaxRowID)
-	putU64(dst[20:], e.StoredOffset)
-	putU32(dst[28:], e.StoredSize)
-	putU32(dst[32:], e.RawSize)
-	putU32(dst[36:], e.EntryCount)
-	putU32(dst[40:], e.PageCRC32C)
+	putU32(dst[20:], e.StoredSize)
+	putU32(dst[24:], e.RawSize)
+	putU32(dst[28:], e.EntryCount)
+	putU32(dst[32:], e.PageCRC32C)
 	return nil
 }
 
@@ -193,13 +190,12 @@ func (e *RowIndexFenceEntry) Unmarshal(src []byte) error {
 	e.TableID = binary.LittleEndian.Uint32(src[0:])
 	e.MinRowID = binary.LittleEndian.Uint64(src[4:])
 	e.MaxRowID = binary.LittleEndian.Uint64(src[12:])
-	e.StoredOffset = binary.LittleEndian.Uint64(src[20:])
-	e.StoredSize = binary.LittleEndian.Uint32(src[28:])
-	e.RawSize = binary.LittleEndian.Uint32(src[32:])
-	e.EntryCount = binary.LittleEndian.Uint32(src[36:])
-	e.PageCRC32C = binary.LittleEndian.Uint32(src[40:])
+	e.StoredSize = binary.LittleEndian.Uint32(src[20:])
+	e.RawSize = binary.LittleEndian.Uint32(src[24:])
+	e.EntryCount = binary.LittleEndian.Uint32(src[28:])
+	e.PageCRC32C = binary.LittleEndian.Uint32(src[32:])
 	if e.EntryCount == 0 {
-		return formatError("RowIndexFenceEntry", 36, "fence entry has zero entries")
+		return formatError("RowIndexFenceEntry", 28, "fence entry has zero entries")
 	}
 	return nil
 }

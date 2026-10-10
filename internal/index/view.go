@@ -309,6 +309,58 @@ func (v *View) MetadataObjects(snapshot uint64) []uint64 {
 // MemoryBytes estimates the in-memory footprint of the view.
 func (v *View) MemoryBytes() uint64 { return v.memoryBytes }
 
+// MemoryBreakdown splits the residential index estimate into the parts that
+// make it up. MemoryBytes is one number on purpose — it is a gate, not an
+// accounting — but a size change is only actionable once you can see which
+// part moved, so this exists purely as a diagnostic for tooling.
+//
+// The numbers are the estimate's own terms, not measured RSS: a shard costs
+// its slices plus a fixed 48 B, and nothing here accounts for Go slice
+// capacity overshoot or map cells.
+type MemoryBreakdown struct {
+	Shards          int    // distinct (snapshot, table) row shards
+	RowEntries      int    // index entries summed over every shard
+	Runs            int    // block runs: one per run, not one per row
+	RowIDsBytes     uint64 // rowIDs   8 B/entry
+	OrdinalsBytes   uint64 // ordinals 4 B/entry
+	ChangesBytes    uint64 // changes  1 B/entry
+	RunStartBytes   uint64 // runStart 4 B/run
+	BlockIDsBytes   uint64 // blockIDs 8 B/run
+	ShardFixedBytes uint64 // 48 B/shard whatever its size
+}
+
+// SliceBytes is the columnar payload: the part that scales with entries.
+func (b MemoryBreakdown) SliceBytes() uint64 {
+	return b.RowIDsBytes + b.OrdinalsBytes + b.ChangesBytes + b.RunStartBytes + b.BlockIDsBytes
+}
+
+// AccountedBytes is what this breakdown explains. MemoryBytes minus this is
+// the per-txn overhead finishMemory adds (metadata, blocks, map cells) — the
+// part no columnar change touches.
+func (b MemoryBreakdown) AccountedBytes() uint64 { return b.SliceBytes() + b.ShardFixedBytes }
+
+// MemoryBreakdown walks every (snapshot, table) shard and sums its slices.
+// Note the axis: shards are per snapshot, so the same row written in N
+// snapshots appears N times here — that repetition is the point, it is what
+// makes a long DELTA chain expensive.
+func (v *View) MemoryBreakdown() MemoryBreakdown {
+	var b MemoryBreakdown
+	for _, byTable := range v.rows {
+		for _, sh := range byTable {
+			b.Shards++
+			b.RowEntries += len(sh.rowIDs)
+			b.Runs += len(sh.blockIDs)
+			b.RowIDsBytes += uint64(len(sh.rowIDs)) * 8
+			b.OrdinalsBytes += uint64(len(sh.ordinals)) * 4
+			b.ChangesBytes += uint64(len(sh.changes))
+			b.RunStartBytes += uint64(len(sh.runStart)) * 4
+			b.BlockIDsBytes += uint64(len(sh.blockIDs)) * 8
+		}
+	}
+	b.ShardFixedBytes = uint64(b.Shards) * 48
+	return b
+}
+
 // ResolveRow finds the row location for (snapshot, table, rowID) along the
 // parent chain.
 func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool) {

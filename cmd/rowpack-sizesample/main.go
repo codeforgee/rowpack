@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -445,9 +446,15 @@ func run(out string, scale float64, snapshots int, seed int64, keep bool) error 
 	}
 
 	st := db.Stats()
+	mb := db.IndexMemoryBreakdown()
+	storePath := filepath.Join(out, "sample")
 	if err := db.Close(); err != nil {
 		return err
 	}
+	// Reopen and measure what the resident index really costs on the heap.
+	// IndexMemoryBytes is an estimate with deliberate round numbers in it;
+	// this is what shows up in RSS.
+	heapBytes := openHeapCost(storePath)
 
 	// Report. The DATA is reproducible from (flags, seed) — same tables, same
 	// rows, same change mix — but the FILE is not: FileHeader carries a
@@ -468,6 +475,7 @@ func run(out string, scale float64, snapshots int, seed int64, keep bool) error 
 	fmt.Fprintf(&b, "# tables: %d  snapshots: %d  blocks: %d  logicalRows: %d\n",
 		st.Tables, st.Snapshots, st.Blocks, rows)
 	fmt.Fprintf(&b, "# writes: %d\n", writes)
+	fmt.Fprintf(&b, "# shards: %d  entries: %d  runs: %d\n", mb.Shards, mb.RowEntries, mb.Runs)
 	fmt.Fprintf(&b, "# build: %s\n", time.Since(started).Round(time.Millisecond))
 	fmt.Fprintf(&b, "# note: 文件头含 StoreUUID/CreatedUnixNano，快照头含 CreatedUnixNano/WriterNonce，\n")
 	fmt.Fprintf(&b, "#       故字节不可复现；跨版本可比对的是体积（整数）与上面的形状行。\n")
@@ -478,6 +486,17 @@ func run(out string, scale float64, snapshots int, seed int64, keep bool) error 
 	fmt.Fprintf(&b, "%-20s %d\n", "rawBytes", st.RawBytes)
 	fmt.Fprintf(&b, "%-20s %d\n", "storedBytes", st.StoredBytes)
 	fmt.Fprintf(&b, "%-20s %d\n", "indexMemoryBytes", st.IndexMemoryBytes)
+	// Where that estimate goes: the columnar slices, split by column, plus
+	// the per-shard floor. Entry counts here are per snapshot, so a row
+	// touched in N snapshots is counted N times.
+	fmt.Fprintf(&b, "%-20s %d\n", "idxRowIDsBytes", mb.RowIDsBytes)
+	fmt.Fprintf(&b, "%-20s %d\n", "idxOrdinalsBytes", mb.OrdinalsBytes)
+	fmt.Fprintf(&b, "%-20s %d\n", "idxChangesBytes", mb.ChangesBytes)
+	fmt.Fprintf(&b, "%-20s %d\n", "idxRunStartBytes", mb.RunStartBytes)
+	fmt.Fprintf(&b, "%-20s %d\n", "idxBlockIDsBytes", mb.BlockIDsBytes)
+	fmt.Fprintf(&b, "%-20s %d\n", "idxShardFixedBytes", mb.ShardFixedBytes)
+	fmt.Fprintf(&b, "%-20s %d\n", "idxAccountedBytes", mb.AccountedBytes())
+	fmt.Fprintf(&b, "%-20s %d\n", "heapAfterOpenBytes", heapBytes)
 	fmt.Fprintf(&b, "%-20s %d\n", "oversizedPages", st.OversizedRowPages)
 	pct := func(k string, v float64) { fmt.Fprintf(&b, "%-20s %.6f\n", k, v) }
 	pct("ratio", float64(st.StoredBytes)/float64(st.RawBytes))
@@ -486,6 +505,29 @@ func run(out string, scale float64, snapshots int, seed int64, keep bool) error 
 	pct("idxBytePerRow", float64(st.IndexMemoryBytes)/float64(rows))
 	fmt.Print(b.String())
 	return nil
+}
+
+// openHeapCost reopens a committed store and reports what its resident index
+// costs on the Go heap: HeapAlloc after a full GC, minus the pre-open
+// baseline. Returns -1 if the store will not open.
+//
+// The estimate (IndexMemoryBytes) uses round per-entry constants and ignores
+// slice capacity overshoot, map cells and every other Go-level cost, so the
+// two numbers are expected to disagree — the gap is the point of reporting
+// both.
+func openHeapCost(path string) int64 {
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	db, err := rowpack.Open(path, rowpack.Options{})
+	if err != nil {
+		return -1
+	}
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	_ = db.Close()
+	return int64(after.HeapAlloc) - int64(before.HeapAlloc)
 }
 
 // gitRev, goVersion and goEnv annotate the report the same way

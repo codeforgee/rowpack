@@ -83,11 +83,13 @@ END {
 
   print "-- 体积（越小越好；仅列 |Δ| >= " thr "%，VERBOSE=1 显示全部）--"
   nreg = 0; nimp = 0; nok = 0; nskip = 0
-  # 固定顺序输出，避免 for-in 的随机次序
-  split("dataBytes rawBytes storedBytes indexMemoryBytes oversizedPages ratio bytePerRow bytePerWrittenRow idxBytePerRow", mk, " ")
-  for (i = 1; i <= 9; i++) {
+  # 固定顺序输出，避免 for-in 的随机次序。未列出的指标（如报告格式新增）
+  # 会在末尾按收集顺序补上，不会静默消失。
+  nk = split("dataBytes rawBytes storedBytes indexMemoryBytes idxRowIDsBytes idxOrdinalsBytes idxChangesBytes idxRunStartBytes idxBlockIDsBytes idxShardFixedBytes idxAccountedBytes heapAfterOpenBytes oversizedPages ratio bytePerRow bytePerWrittenRow idxBytePerRow", mk, " ")
+  for (i = 1; i <= nk; i++) {
     k = mk[i]
     if (!(k in keys)) continue
+    done[k] = 1
     if (!((1,k) in val) || !((2,k) in val)) { nskip++; continue }
     o = val[1,k]; n = val[2,k]
     if (o == 0 && n == 0) { nok++; continue }
@@ -102,6 +104,24 @@ END {
     else { tag = "OK     "; nok++ }
     if (tag == "OK     " && verbose != "1") continue
     printf "  %s  %-20s %14s -> %-14s %+8.2f%%\n", tag, k, o, n, d
+  }
+  # 报告格式新增的指标：上面的清单没列，这里补上，免得静默漏掉。
+  for (k in keys) {
+    if (done[k]) continue
+    if (!((1,k) in val) || !((2,k) in val)) { nskip++; continue }
+    o = val[1,k]; n = val[2,k]
+    if (o == 0 && n == 0) { nok++; continue }
+    if (o == 0) {
+      nreg++
+      printf "  REGRESS  %-20s %14s -> %-14s     n/a\n", k, o, n
+      continue
+    }
+    d = (n - o) / o * 100
+    if (d > thr) { tag = "REGRESS"; nreg++ }
+    else if (d < -thr) { tag = "IMPROVE"; nimp++ }
+    else { tag = "OK     "; nok++ }
+    if (tag == "OK     " && verbose != "1") continue
+    printf "  %s  %-20s %14s -> %-14s %+8.2f%%  (清单外)\n", tag, k, o, n, d
   }
   print ""
   printf "-- 汇总: 回退 %d · 改进 %d · 阈值内 %d · 缺测 %d --\n", nreg, nimp, nok, nskip

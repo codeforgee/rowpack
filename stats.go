@@ -1,5 +1,7 @@
 package rowpack
 
+import "github.com/codeforgee/rowpack/internal/index"
+
 // CacheStats summarizes one decoded-block cache: value bytes against the
 // configured capacity, plus the estimated management overhead (LRU list and
 // map nodes) which is NOT counted against the capacity but reported so the
@@ -68,6 +70,18 @@ type Stats struct {
 	Read              ReadStats  // cumulative physical read amplification
 	Batch             BatchStats
 	Recovery          RecoveryStats
+}
+
+// IndexMemoryBreakdown returns the diagnostic split of the residential index
+// estimate: how much of IndexMemoryBytes is columnar slices, how much is
+// per-shard overhead, and how many entries those slices actually hold. Stats
+// reports the total; this says what the total is made of.
+func (s *Store) IndexMemoryBreakdown() index.MemoryBreakdown {
+	st, err := s.captureState()
+	if err != nil {
+		return index.MemoryBreakdown{}
+	}
+	return st.view.MemoryBreakdown()
 }
 
 // Stats returns a snapshot of the store's statistics.

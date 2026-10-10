@@ -30,6 +30,7 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -310,6 +311,27 @@ func (l *liveRows) drop(id uint64) bool {
 }
 
 func main() {
+	// Child-process mode (see openHeapCost): handled before flag.Parse because
+	// it takes a bare path plus an optional -memprofile, and must not run the
+	// generator's flag set at all.
+	if len(os.Args) >= 3 && os.Args[1] == heapOnlyFlag {
+		args := os.Args[2:]
+		var path string
+		for i := 0; i < len(args); i++ {
+			if args[i] == "-memprofile" && i+1 < len(args) {
+				heapProfilePath = args[i+1]
+				i++
+				continue
+			}
+			path = args[i]
+		}
+		if err := heapOnly(path); err != nil {
+			fmt.Fprintln(os.Stderr, "rowpack-sizesample:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	out := flag.String("out", "testdata/size-sample", "directory to write the sample store into")
 	scale := flag.Float64("scale", 1, "multiplies every table's row count")
 	snapshots := flag.Int("snapshots", 20, "number of DELTA snapshots after the FULL baseline")
@@ -318,11 +340,14 @@ func main() {
 		"RowID stride: 1 = dense (consecutive IDs), N > 1 = sparse with gaps up to N. "+
 			"Only affects -rowid-gap>1 runs; the default matches the committed baseline.")
 	keep := flag.Bool("keep", true, "keep the generated store on disk (false removes it after reporting)")
+	zstdLevel := flag.Int("zstd-level", 0,
+		"zstd level for data blocks; 0 = engine default. Only affects -zstd-level>0 runs; "+
+			"the default matches the committed baseline.")
 	flag.StringVar(&heapProfilePath, "memprofile", "",
 		"write a heap profile of the reopened store to this path (go tool pprof)")
 	flag.Parse()
 
-	if err := run(*out, *scale, *snapshots, *seed, *rowidGap, *keep); err != nil {
+	if err := run(*out, *scale, *snapshots, *seed, *rowidGap, *keep, *zstdLevel); err != nil {
 		fmt.Fprintln(os.Stderr, "rowpack-sizesample:", err)
 		os.Exit(1)
 	}
@@ -338,7 +363,7 @@ func nextRowID(prev uint64, gap int, rnd *rand.Rand) uint64 {
 	return prev + 1 + uint64(rnd.Intn(gap))
 }
 
-func run(out string, scale float64, snapshots int, seed int64, gap int, keep bool) error {
+func run(out string, scale float64, snapshots int, seed int64, gap int, keep bool, zstdLevel int) error {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
 	}
@@ -354,7 +379,7 @@ func run(out string, scale float64, snapshots int, seed int64, gap int, keep boo
 	ctx := context.Background()
 	started := time.Now()
 
-	db, err := rowpack.Create(filepath.Join(out, "sample"), rowpack.Options{})
+	db, err := rowpack.Create(filepath.Join(out, "sample"), rowpack.Options{CompressionLevel: zstdLevel})
 	if err != nil {
 		return err
 	}
@@ -502,7 +527,13 @@ func run(out string, scale float64, snapshots int, seed int64, gap int, keep boo
 	fmt.Fprintf(&b, "# go: %s\n", goVersion())
 	fmt.Fprintf(&b, "# os/arch: %s/%s\n", goEnv("GOOS"), goEnv("GOARCH"))
 	fmt.Fprintf(&b, "# seed: %d  scale: %g  snapshots: %d\n", seed, scale, snapshots+1)
-	fmt.Fprintf(&b, "# config: BlockSize 256K / PageSize 32K / Zstd L3\n")
+	// The level is the engine's own default unless -zstd-level overrides it;
+	// printing a hardcoded number here is how the line went stale once.
+	levelDesc := "default"
+	if zstdLevel > 0 {
+		levelDesc = fmt.Sprintf("L%d", zstdLevel)
+	}
+	fmt.Fprintf(&b, "# config: BlockSize 256K / PageSize 32K / Zstd %s\n", levelDesc)
 	fmt.Fprintf(&b, "# tables: %d  snapshots: %d  blocks: %d  logicalRows: %d\n",
 		st.Tables, st.Snapshots, st.Blocks, rows)
 	fmt.Fprintf(&b, "# writes: %d\n", writes)
@@ -510,6 +541,8 @@ func run(out string, scale float64, snapshots int, seed int64, gap int, keep boo
 	fmt.Fprintf(&b, "# build: %s\n", time.Since(started).Round(time.Millisecond))
 	fmt.Fprintf(&b, "# note: 文件头含 StoreUUID/CreatedUnixNano，快照头含 CreatedUnixNano/WriterNonce，\n")
 	fmt.Fprintf(&b, "#       故字节不可复现；跨版本可比对的是体积（整数）与上面的形状行。\n")
+	fmt.Fprintf(&b, "# note: heapAfterOpenBytes 是「打开后的堆」，在子进程里测（见 openHeapCost）。\n")
+	fmt.Fprintf(&b, "#       2026-10-10 之前它测的是进程内增量，被生成器残留污染，两者不可直接比较。\n")
 	fmt.Fprintf(&b, "\n")
 	// Byte counts as integers: a size regression is a handful of bytes per
 	// page, and rounded output would hide it.
@@ -550,34 +583,60 @@ func run(out string, scale float64, snapshots int, seed int64, gap int, keep boo
 // only a profile says which objects that is.
 var heapProfilePath string
 
-// openHeapCost reopens a committed store and reports what its resident index
-// costs on the Go heap: HeapAlloc after a full GC, minus the pre-open
-// baseline. Returns -1 if the store will not open.
-//
-// The estimate (IndexMemoryBytes) uses round per-entry constants and ignores
-// slice capacity overshoot, map cells and every other Go-level cost, so the
-// two numbers are expected to disagree — the gap is the point of reporting
-// both.
-func openHeapCost(path string) int64 {
-	runtime.GC()
-	var before runtime.MemStats
-	runtime.ReadMemStats(&before)
+// heapOnlyFlag puts the tool in child-process mode: open one store, report the
+// heap it holds, exit. See openHeapCost for why this has to be a fresh process.
+const heapOnlyFlag = "-heap-only"
+
+// heapOnly is the child-process side of openHeapCost. It starts from a clean
+// heap, so the number it prints is the store's own footprint.
+func heapOnly(path string) error {
 	db, err := rowpack.Open(path, rowpack.Options{})
 	if err != nil {
-		return -1
+		return err
 	}
 	runtime.GC()
-	var after runtime.MemStats
-	runtime.ReadMemStats(&after)
-	// Profile while the index is still resident, i.e. before Close.
 	if heapProfilePath != "" {
 		if f, err := os.Create(heapProfilePath); err == nil {
 			_ = pprof.WriteHeapProfile(f)
 			_ = f.Close()
 		}
 	}
-	_ = db.Close()
-	return int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	// Print before Close: the index must still be resident to be counted.
+	fmt.Println(m.HeapAlloc)
+	return db.Close()
+}
+
+// openHeapCost reports what a committed store holds on the Go heap: HeapAlloc
+// after a full GC, measured in a child process. Returns -1 if it cannot be
+// measured.
+//
+// It used to be measured in-process as "after Open minus before Open", but the
+// generator's own state is still reachable at that point — rows, blobs, the
+// closed store's buffers and the zstd encoder pools, ~21 MB of it — and much
+// of that is collected *during* Open, so the delta came out negative
+// (-18 MB) while the store really only held 3.6 MB. A child process starts
+// from nothing, so the reading is the store's footprint and nothing else.
+//
+// The estimate (IndexMemoryBytes) uses round per-entry constants and ignores
+// slice capacity overshoot, map cells and every other Go-level cost, so the
+// two numbers are expected to disagree — the gap is the point of reporting
+// both.
+func openHeapCost(path string) int64 {
+	cmd := exec.Command(os.Args[0], heapOnlyFlag, path)
+	if heapProfilePath != "" {
+		cmd.Args = append(cmd.Args, "-memprofile", heapProfilePath)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return -1
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 // gitRev, goVersion and goEnv annotate the report the same way

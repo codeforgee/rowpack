@@ -1,20 +1,22 @@
 # RowPack 体积样本
-# date: 2026-10-10T07:16:28Z
-# git: dbf36be
+# date: 2026-10-10T07:59:57Z
+# git: 4f1fd25
 # go: go version go1.27.1 darwin/arm64
 # os/arch: darwin/arm64
 # seed: 20261010  scale: 1  snapshots: 21
-# config: BlockSize 256K / PageSize 32K / Zstd L3
+# config: BlockSize 256K / PageSize 32K / Zstd default
 # tables: 8  snapshots: 21  blocks: 291  logicalRows: 420298
 # writes: 332033
 # shards: 168  entries: 636033  runs: 394
-# build: 1.72s
+# build: 1.82s
 # note: 文件头含 StoreUUID/CreatedUnixNano，快照头含 CreatedUnixNano/WriterNonce，
 #       故字节不可复现；跨版本可比对的是体积（整数）与上面的形状行。
+# note: heapAfterOpenBytes 是「打开后的堆」，在子进程里测（见 openHeapCost）。
+#       2026-10-10 之前它测的是进程内增量，被生成器残留污染，两者不可直接比较。
 
-dataBytes            18657987
+dataBytes            16986363
 rawBytes             44813429
-storedBytes          18045637
+storedBytes          16389743
 indexMemoryBytes     2527692
 idxRowIDsBytes       906172
 idxOrdinalsBytes     946535
@@ -28,9 +30,9 @@ packRowIDRawBytes    5088264
 packRowIDPackedBytes 906172
 packOrdRawBytes      2544132
 packOrdPackedBytes   946535
-heapAfterOpenBytes   2839632
+heapAfterOpenBytes   3688688
 oversizedPages       0
-ratio                0.402684
-bytePerRow           44.392281
-bytePerWrittenRow    24.800237
+ratio                0.365733
+bytePerRow           40.415046
+bytePerWrittenRow    22.578311
 idxBytePerRow        6.014047

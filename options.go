@@ -96,6 +96,14 @@ func (o Options) applyDefaults() Options {
 	if o.Compression == CompressionDefault {
 		o.Compression = CompressionZstd
 	}
+	// The level must be resolved too, not just the algorithm: a bare 0 reaches
+	// EncoderLevelFromZstd(0), which is its own encoder setting — and not a
+	// deliberate one, since DefaultCompressionLvl was never wired up before.
+	// It is the largest and slowest-to-read of the three tiers; see that
+	// constant for the measured table.
+	if o.CompressionLevel <= 0 {
+		o.CompressionLevel = format.DefaultCompressionLvl
+	}
 	if o.CacheBytes == 0 {
 		o.CacheBytes = format.DefaultCacheBytes
 	}

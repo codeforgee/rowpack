@@ -17,7 +17,16 @@
 这里不再静态列出样本的 SHA-256：摘要就是文件内容本身的函数，真正的锁定在测试侧
 （`TestGoldenManifest`），再抄一份到文档只会多一处必须同步、又不同步也不会报错的地方。
 
-最近一次变更：IndexChunkDirEntry 删掉 ChunkSequence 与 RegionOffset（32→20 B）。chunk 按序
+最近一次变更：**不是格式变更**，但重写了两个 Store 样本——`applyDefaults` 漏了解析
+`CompressionLevel`，零值一路泄漏到 `EncoderLevelFromZstd(0)`，而 `DefaultCompressionLvl = 3`
+这个常量全仓库从未被接线过。补上解析后默认档位从 0 变 9。字节布局、版本号、AAD 字段集合
+全部未动，zstd 帧格式与解压也不依赖压缩级别，因此新旧库双向可读，**不提升格式版本**。
+证据是未压缩的 `empty-store.rpk` 与 `rows-payload-all-types.bin` 字节零变化，只有压缩样本
+动了几字节：`full-delta-store.rpk` 4533→4511 B、`encrypted-store.rpk` 1977→1976 B。样本太小
+看不出收益，实测见 `format.DefaultCompressionLvl` 的表（scale 1 样本 Store：-9.0% 磁盘，
+且 `BenchmarkGetCold` 反而快 5.9%；代价是 `BenchmarkWriteFull` 慢约 17%）。
+
+上一次变更：IndexChunkDirEntry 删掉 ChunkSequence 与 RegionOffset（32→20 B）。chunk 按序
 排列并铺满正文区，所以序号就是目录下的下标、偏移就是前面各 chunk 头+负载之和——旧解析要
 逐条把这两个副本校验回推导值。现在由解析侧填入，目录剩下的字段（条目数/序数/尺寸/种类）
 仍与各自的 chunk 头交叉校验。目录因此仍能只读一次、累加 StoredBytes 就定位任意 chunk，

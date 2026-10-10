@@ -269,7 +269,23 @@ const (
 	// read/compress/cache unit inside a Rows Block). Chosen at 32 KiB by the
 	// page-size sweep: it loses only ~7% compression vs 64 KiB while halving
 	// cold-read decompression.
-	DefaultPageSize       = 32 << 10
-	DefaultCacheBytes     = 64 << 20 // 64 MiB block cache
-	DefaultCompressionLvl = 3        // klauspost/compress default level mapping
+	DefaultPageSize   = 32 << 10
+	DefaultCacheBytes = 64 << 20 // 64 MiB block cache
+	// DefaultCompressionLvl is the zstd level every store uses unless Options
+	// overrides it. Klauspost maps levels onto four encoder settings, so only
+	// three distinct outputs exist in this range — measured on the sample
+	// store (1 FULL + 20 DELTA at scale 1), middle column is the cold read:
+	//
+	//	level   dataBytes    BenchmarkGetCold   BenchmarkWriteFull
+	//	0       18,657,987   53.2 us            91.0 ms   <- 0 lands on the 1 tier
+	//	3-5     17,293,714   56.3 us            95.2 ms
+	//	6-9     16,986,363   50.0 us           107.0 ms
+	//	19      16,569,174   (unmeasured)      (far slower)
+	//
+	// 9 wins on the two things a store is judged by: it is the smallest, and
+	// it is the only tier that also reads faster than the old default — the
+	// bytes it saves on disk more than pay for the extra decoder work. The
+	// price is write throughput, ~17% slower full writes. Writes are a batch
+	// path; reads are the steady state, so the trade goes this way.
+	DefaultCompressionLvl = 9
 )

@@ -668,7 +668,23 @@ function parseBlockHeader(buf, off) {
           itemCount:u32(buf,off+36), rawSize:u32(buf,off+40), storedSize:stored, enc:flags&1, comp:buf[off+13]}};
 }
 
-/* Rows 块页容器：[RowsBlockHeader 24B][RowsPageDirEntry × N 56B][stored pages…]（头与目录恒明文） */
+/* uvarint 解码（与 Go binary.Uvarint 同义）：返回 [值, 消耗字节数]，越界或超宽返回 null。 */
+function readUvarint(buf, pos, end) {
+  let x = 0n, s = 0n;
+  for (let i = 0; i < 10; i++) {
+    if (pos + i >= end) return null;
+    const b = buf[pos + i];
+    if (b < 0x80) {
+      if (i === 9 && b > 1) return null;
+      return [x | (BigInt(b) << s), i + 1];
+    }
+    x |= BigInt(b & 0x7f) << s;
+    s += 7n;
+  }
+  return null;
+}
+
+/* Rows 块页容器：[RowsBlockHeader 24B][RowsPageDirEntry × N 变长 uvarint][stored pages…]（头与目录恒明文） */
 function parseRowsContainer(buf, payloadStart, payloadEnd, bh) {
   const out = {hdr:null, dir:[], errs:[], dirStart:payloadStart, dataStart:0};
   if (payloadEnd - payloadStart < 24) { out.errs.push('载荷不足以容纳 RowsBlockHeader'); return out; }
@@ -681,38 +697,54 @@ function parseRowsContainer(buf, payloadStart, payloadEnd, bh) {
       F(payloadStart+8,1,'u8','Version',buf[payloadStart+8],'ver','固定 = 1'),
       F(payloadStart+9,3,'—','Reserved','0 × 3','rsv',R),
       F(payloadStart+12,4,'u32','PageCount',pageCount,'cnt',''),
-      F(payloadStart+16,4,'u32','DirectoryBytes',dirBytes,'cnt','= PageCount × 56'),
+      F(payloadStart+16,4,'u32','DirectoryBytes',dirBytes,'cnt',`PageCount × 8..80（变长）`),
       F(payloadStart+20,4,'u32','TotalRecords',totalRecords,'cnt','= Block.ItemCount'),
     ],
     crc:null, errs:[],
     info:{pageCount, totalRecords},
   };
   if (buf[payloadStart+8] !== 1) out.hdr.errs.push('Version ≠ 1');
-  if (dirBytes !== pageCount * 56) out.hdr.errs.push(`DirectoryBytes=${dirBytes} ≠ PageCount×56=${pageCount*56}`);
+  if (dirBytes < pageCount * 8 || dirBytes > pageCount * 80) {
+    out.hdr.errs.push(`DirectoryBytes=${dirBytes} 不在区间 [${pageCount*8}, ${pageCount*80}] 内`);
+  }
   out.dataStart = payloadStart + 24 + dirBytes;
+  const dirEnd = payloadStart + 24 + dirBytes;
+  if (dirEnd > payloadEnd) { out.errs.push(`页目录区越界`); return out; }
+  // 条目是变长的，顺序解码；StoredOffset 不落盘，按「目录末尾 + 前序 StoredSize」累加还原。
+  let e = payloadStart + 24;
+  let storedOff = dirEnd;
   for (let i = 0; i < pageCount; i++) {
-    const e = payloadStart + 24 + i*56;
-    if (e + 56 > payloadEnd) { out.errs.push(`页目录项 ${i} 越界`); break; }
-    const flags = u32(buf,e+48);
+    const vals = [], offs = [];
+    let p = e;
+    for (let k = 0; k < 8; k++) {
+      const r = readUvarint(buf, p, dirEnd);
+      if (r === null) { out.errs.push(`页目录项 ${i} 字段 ${k} 解码失败`); break; }
+      vals.push(Number(r[0])); offs.push(p - e); p += r[1];
+    }
+    if (vals.length < 8) break;
+    const w = (k) => (k < 7 ? offs[k+1] - offs[k] : (p - e) - offs[7]);
+    const storedOffset = storedOff - payloadStart;
     out.dir.push({
-      start:e, end:e+56, title:`RowsPageDirEntry[${i}]`, magic:null, kind:'RowsPageDirEntry',
+      start:e, end:p, title:`RowsPageDirEntry[${i}]`, magic:null, kind:'RowsPageDirEntry',
       fields:[
-        F(e,4,'u32','PageOrdinal',u32(buf,e),'id',''),
-        F(e+4,4,'u32','FirstRecordOrdinal',u32(buf,e+4),'id','块内记录序数基'),
-        F(e+8,4,'u32','RecordCount',u32(buf,e+8),'cnt',''),
-        F(e+12,8,'u64','StoredOffset',u64(buf,e+12),'off','相对容器数据区起点'),
-        F(e+20,4,'u32','StoredSize',fmtBytes(u32(buf,e+20)),'cnt',bh.info.enc?'密封页（压缩+16B tag）':'压缩页'),
-        F(e+24,4,'u32','RawSize',fmtBytes(u32(buf,e+24)),'cnt',''),
-        F(e+28,8,'u64','MinRowID',u64(buf,e+28),'id',''),
-        F(e+36,8,'u64','MaxRowID',u64(buf,e+36),'id',''),
-        F(e+44,4,'u32','PageCRC32C',hexn(u32(buf,e+44)),'crc','覆盖解压后整页（需解压验证）'),
-        F(e+48,4,'u32','Flags',flags,'flg',flags&1?'bit0=超大连行页':'0'),
+        F(e+offs[0],w(0),'uvarint','PageOrdinal',vals[0],'id',''),
+        F(e+offs[1],w(1),'uvarint','FirstRecordOrdinal',vals[1],'id','块内记录序数基'),
+        F(e+offs[2],w(2),'uvarint','RecordCount',vals[2],'cnt',''),
+        F(e+offs[3],w(3),'uvarint','StoredSize',fmtBytes(vals[3]),'cnt',bh.info.enc?'密封页（压缩+16B tag）':'压缩页'),
+        F(e+offs[4],w(4),'uvarint','RawSize',fmtBytes(vals[4]),'cnt',''),
+        F(e+offs[5],w(5),'uvarint','MinRowID',vals[5],'id',''),
+        F(e+offs[6],w(6),'uvarint','MaxRowID',vals[6],'id',''),
+        F(e+offs[7],w(7),'uvarint','Flags',vals[7],'flg',vals[7]&1?'bit0=超大连行页':'0'),
       ],
       crc:null, errs:[],
-      info:{ordinal:u32(buf,e), recCount:u32(buf,e+8), minRow:u64(buf,e+28), maxRow:u64(buf,e+36),
-            storedSize:u32(buf,e+20), rawSize:u32(buf,e+24), flags, storedOffset:u64(buf,e+12)},
+      info:{ordinal:vals[0], recCount:vals[2], minRow:vals[5], maxRow:vals[6],
+            storedSize:vals[3], rawSize:vals[4], flags:vals[7], storedOffset},
+      notes:[`StoredOffset=${storedOffset} 不落盘：由目录末尾 + 前序 StoredSize 累加得出`],
     });
+    storedOff += vals[3];
+    e = p;
   }
+  if (e !== dirEnd) out.errs.push(`页目录残留 ${dirEnd - e} 字节未读`);
   return out;
 }
 
@@ -824,24 +856,25 @@ function parseChunkDirEntry(buf, off) {
   };
 }
 
-function parseFenceEntry(buf, off) {
-  const e = u32(buf,off+44);
+/* RowIndexFenceEntry 44B：SnapshotID 不落盘（由 IndexTxnHeader 声明、解析时注入）。 */
+function parseFenceEntry(buf, off, snapID) {
+  const e = u32(buf,off+36);
   return {
-    start:off, end:off+52, title:'RowIndexFenceEntry', magic:null, kind:'RowIndexFenceEntry',
+    start:off, end:off+44, title:'RowIndexFenceEntry', magic:null, kind:'RowIndexFenceEntry',
     fields:[
-      F(off,8,'u64','SnapshotID',u64(buf,off),'id',''),
-      F(off+8,4,'u32','TableID',u32(buf,off+8),'id',''),
-      F(off+12,8,'u64','MinRowID',u64(buf,off+12),'id',''),
-      F(off+20,8,'u64','MaxRowID',u64(buf,off+20),'id',''),
-      F(off+28,8,'u64','StoredOffset',u64(buf,off+28),'off','页在 IndexTxn 体内的偏移'),
-      F(off+36,4,'u32','StoredSize',fmtBytes(u32(buf,off+36)),'cnt','压缩(+tag)'),
-      F(off+40,4,'u32','RawSize',fmtBytes(u32(buf,off+40)),'cnt',''),
-      F(off+44,4,'u32','EntryCount',e,'cnt',''),
-      F(off+48,4,'u32','PageCRC32C',hexn(u32(buf,off+48)),'crc','覆盖解压后页'),
+      F(off,4,'u32','TableID',u32(buf,off),'id',''),
+      F(off+4,8,'u64','MinRowID',u64(buf,off+4),'id',''),
+      F(off+12,8,'u64','MaxRowID',u64(buf,off+12),'id',''),
+      F(off+20,8,'u64','StoredOffset',u64(buf,off+20),'off','页在 IndexTxn 体内的偏移'),
+      F(off+28,4,'u32','StoredSize',fmtBytes(u32(buf,off+28)),'cnt','压缩(+tag)'),
+      F(off+32,4,'u32','RawSize',fmtBytes(u32(buf,off+32)),'cnt',''),
+      F(off+36,4,'u32','EntryCount',e,'cnt',''),
+      F(off+40,4,'u32','PageCRC32C',hexn(u32(buf,off+40)),'crc','覆盖解压后页'),
     ],
     crc:null, errs: e === 0 ? ['EntryCount = 0'] : [],
-    info:{snapID:u64(buf,off), tableID:u32(buf,off+8), minRow:u64(buf,off+12), maxRow:u64(buf,off+20),
-          storedOffset:u64(buf,off+28), storedSize:u32(buf,off+36), rawSize:u32(buf,off+40), entryCount:e},
+    info:{snapID, tableID:u32(buf,off), minRow:u64(buf,off+4), maxRow:u64(buf,off+12),
+          storedOffset:u64(buf,off+20), storedSize:u32(buf,off+28), rawSize:u32(buf,off+32), entryCount:e},
+    notes:[`SnapshotID=${snapID} 不落盘：由 IndexTxnHeader 声明并注入`],
   };
 }
 
@@ -938,13 +971,13 @@ function scanStore(buf) {
       }
       const nPages = ith.info.pageCount;
       if (nPages > 0) {
-        const fenceStart = bodyEnd - nPages * 52;
-        if (fenceStart >= p && fenceStart + nPages*52 <= bEnd + 0 && fenceStart <= N) {
+        const fenceStart = bodyEnd - nPages * 44;
+        if (fenceStart >= p && fenceStart + nPages*44 <= bEnd + 0 && fenceStart <= N) {
           txn.pagesRegion = {start:p, end:fenceStart};
           for (let i = 0; i < nPages; i++) {
-            const fe = fenceStart + i*52;
-            if (fe + 52 > N) break;
-            txn.fences.push(parseFenceEntry(buf, fe));
+            const fe = fenceStart + i*44;
+            if (fe + 44 > N) break;
+            txn.fences.push(parseFenceEntry(buf, fe, ith.info.snapID));
           }
         } else {
           ith.errs.push(`Fence 区越界: pageCount=${nPages}, body=[${bodyStart},${bodyEnd})`);
@@ -1204,7 +1237,7 @@ function buildDemoStore() {
     const chunkLen = 64+72 + nMetaCh*(64+48*opt.idx.metaEntries.length) + nBlkCh*(64+56*opt.idx.blockEntries.length);
     const dirLen = (1 + nMetaCh + nBlkCh) * 32;
     const pagesLen = pages.reduce((s,p) => s + p.bytes.length, 0);
-    const bodyLen = chunkLen + dirLen + pagesLen + pages.length * 52;
+    const bodyLen = chunkLen + dirLen + pagesLen + pages.length * 44;
     const idxStart = blocksEnd, bodyStart = idxStart + 80, bodyEnd = bodyStart + bodyLen;
     const idxEnd = bodyEnd + 80, snapEnd = idxEnd + 144; /* TxnEndOffset 含事务尾自身 80B（Go: te = ts + 80 + bodyLen + 80） */
     /* ④ 索引条目（此刻 dataOffset/dataEnd 均已知） */

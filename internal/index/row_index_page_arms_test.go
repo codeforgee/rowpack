@@ -272,14 +272,14 @@ func TestDecodeIndexPageGlobalMinAcrossTables(t *testing.T) {
 
 func TestPageFenceRejectsUnusablePages(t *testing.T) {
 	t.Run("shorter than the page header", func(t *testing.T) {
-		_, err := pageFence(make([]byte, 10), 8, 1, 0)
+		_, err := pageFence(make([]byte, 10), 8, 0)
 		require.ErrorIs(t, err, errIndexPageCorrupt)
 	})
 
 	t.Run("header does not decode", func(t *testing.T) {
 		raw := make([]byte, format.IndexPageHeaderSize+8)
 		raw[0] ^= 0xFF // break the page magic
-		_, err := pageFence(raw, 8, 1, 0)
+		_, err := pageFence(raw, 8, 0)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "bad magic")
 	})
@@ -289,15 +289,15 @@ func TestPageFenceRejectsUnusablePages(t *testing.T) {
 		// beyond uint32 still reaches pageFence's own extraction, which is what
 		// the fence must fail on rather than silently truncating into a fence key.
 		p := idxPageParts{count: 1, tableRun: uvarm(0x100000000), changeBits: []byte{0x00}}
-		_, err := pageFence(p.encode(t), 8, 1, 0)
+		_, err := pageFence(p.encode(t), 8, 0)
 		require.ErrorIs(t, err, errIndexPageCorrupt)
 	})
 
 	t.Run("well formed page", func(t *testing.T) {
 		raw := idxSingleRun(3).encode(t)
-		fence, err := pageFence(raw, 16, 7, 64)
+		fence, err := pageFence(raw, 16, 64)
 		require.NoError(t, err)
-		require.EqualValues(t, 7, fence.SnapshotID)
+		require.Zero(t, fence.SnapshotID, "the snapshot is injected by the parser, not stored")
 		require.EqualValues(t, 16, fence.StoredSize)
 		require.EqualValues(t, 64, fence.StoredOffset)
 		require.EqualValues(t, 3, fence.EntryCount)

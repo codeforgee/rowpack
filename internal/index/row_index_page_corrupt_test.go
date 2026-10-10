@@ -140,17 +140,21 @@ func TestParseRowsFenceSizeZero(t *testing.T) {
 	}
 }
 
-func TestParseRowsWrongSnapshot(t *testing.T) {
+// TestParseRowsFenceSnapshotIsInjected: SnapshotID is no longer on disk, so
+// there is no per-entry copy to forge — a fence always reports the snapshot the
+// txn header declared. What used to be a mismatch check over disk bytes is now
+// structural, so the same region follows the header.
+func TestParseRowsFenceSnapshotIsInjected(t *testing.T) {
 	region := buildPageRegion(t, riSeq(100, 25), 9)
 	pageCount := uint32((100 + indexPageEntryCount - 1) / indexPageEntryCount)
-	fenceStart := len(region) - int(pageCount)*format.IndexFenceEntrySize
-	// Forge the first fence's SnapshotID (bytes 0..8) to a different value.
-	region[fenceStart] = 0x2A
-	region[fenceStart+1] = 0
-	region[fenceStart+2] = 0
-	region[fenceStart+3] = 0
-	if _, err := parseCorruptPages(region, pageCount, 9); err == nil {
-		t.Fatal("wrong snapshot ownership = nil error")
+	for _, snap := range []uint64{9, 12345} {
+		sink := &fenceCaptureSink{}
+		_, _, err := (&pageParser{region: region, pageCount: pageCount, snapshotID: snap, sink: sink}).parse()
+		require.NoError(t, err, "snapshot %d", snap)
+		require.NotEmpty(t, sink.fences, "snapshot %d", snap)
+		for i, f := range sink.fences {
+			require.EqualValues(t, snap, f.SnapshotID, "fence %d", i)
+		}
 	}
 }
 

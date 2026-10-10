@@ -18,14 +18,19 @@
 | --- | --- |
 | `empty-store.rpk` | `359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401` |
 | `rows-payload-all-types.bin` | `a9fd25de96141b17cad28b44e69b5c84fcc199880c8c2f426d1a1152c75437d5` |
-| `full-delta-store.rpk` | `d264362df284d22c2d65026aed43e5a448df90185f170c57858dea50dfb789d4` |
-| `encrypted-store.rpk` | `e841ab22b485fbdae6ac4188616053c274d8e8126c3459accd071e32dea65a73` |
+| `full-delta-store.rpk` | `e73f6774b94dfa92753ffad6ba69bf3162af2a13887648e1563262bdfd286708` |
+| `encrypted-store.rpk` | `90b8547de1e65aebb1da3324470a8f83d40dd94b64c374595082d833f569e998` |
 
 摘要对应冻结的 v1 IndexTxn 格式（排序 Row Index Page + Fence Directory；Metadata/Block chunk
 为 delta/varint 条目流 + Zstd，见 docs/INDEX_TXN_FORMAT_V1.md §4.3）。修改任一摘要即视为
 有意的磁盘格式变更，必须经过格式审查并按版本策略建立新的 golden 样本族。
 
-最近一次变更：RowsPageDirEntry 由定长 56 B 改为 8 个 uvarint（典型 ~10 B），并删掉
+最近一次变更：RowIndexFenceEntry 删掉 SnapshotID（52→44 B）。一个 Fence Directory 从属于
+单个 IndexTxn，快照号已由 IndexTxnHeader 声明，逐条目再存一份只是给伪造者多一个「可以与头
+不一致」的位置——旧版解析因此还要专门拒绝不匹配的副本。现在由解析侧注入字段，消费方不变。
+`full-delta-store.rpk` 4653→4629 B、`encrypted-store.rpk` 2029→2021 B。
+
+上一次变更：RowsPageDirEntry 由定长 56 B 改为 8 个 uvarint（典型 ~10 B），并删掉
 `StoredOffset`（页在容器内连续排列，解析时由前序 StoredSize 累加回填）与 `PageCRC32C`
 （页头 CRC32C 已覆盖页流、ParseRowsPage 会校验）。`full-delta-store.rpk` 4793→4653 B、
 `encrypted-store.rpk` 2076→2029 B、`rows-payload-all-types.bin` 378→332 B。AAD 字段集合

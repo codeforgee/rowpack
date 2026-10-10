@@ -85,7 +85,7 @@ func (b *Builder) buildPages(crypto *ChunkCrypto, level int, pageSeqBase uint32)
 				stored = sealed
 				storedSize = uint32(len(sealed))
 			}
-			fence, err := pageFence(page, storedSize, b.snapshot.SnapshotID, 0)
+			fence, err := pageFence(page, storedSize, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -532,7 +532,7 @@ func decodePage(raw []byte) ([]format.RowIndexEntry, error) {
 	return out, nil
 }
 
-func pageFence(raw []byte, storedSize uint32, snapshotID uint64, storedOffset uint64) (format.RowIndexFenceEntry, error) {
+func pageFence(raw []byte, storedSize uint32, storedOffset uint64) (format.RowIndexFenceEntry, error) {
 	if len(raw) < format.IndexPageHeaderSize {
 		return format.RowIndexFenceEntry{}, errIndexPageCorrupt
 	}
@@ -545,7 +545,6 @@ func pageFence(raw []byte, storedSize uint32, snapshotID uint64, storedOffset ui
 		return format.RowIndexFenceEntry{}, errIndexPageCorrupt
 	}
 	return format.RowIndexFenceEntry{
-		SnapshotID:   snapshotID,
 		TableID:      tid,
 		MinRowID:     h.MinRowID,
 		MaxRowID:     h.MaxRowID,

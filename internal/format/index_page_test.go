@@ -64,7 +64,11 @@ func TestRowIndexFenceRoundTrip(t *testing.T) {
 	if err := got.Unmarshal(b[:]); err != nil {
 		t.Fatal(err)
 	}
-	require.Equal(t, e, got, "round trip = %+v, want %+v", got, e)
+	// SnapshotID is not encoded: the parser injects it from the IndexTxn
+	// header, so a fence that has been to disk and back carries none.
+	want := e
+	want.SnapshotID = 0
+	require.Equal(t, want, got, "round trip = %+v, want %+v", got, want)
 	// Zero EntryCount is rejected.
 	e2 := e
 	e2.EntryCount = 0

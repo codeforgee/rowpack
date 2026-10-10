@@ -656,15 +656,16 @@ func (p *pageParser) parseFences() (fences []format.RowIndexFenceEntry, pageEnd 
 		// Each slice is exactly IndexFenceEntrySize bytes; the only failing
 		// case is the zero-entry guard, which the cohesion check below covers.
 		_ = fences[i].Unmarshal(fenceRegion[off : off+format.IndexFenceEntrySize])
+		// SnapshotID is not on disk: the whole fence directory belongs to this
+		// txn, so every entry takes the snapshot the header already declared.
+		// There is no per-entry copy left for a forger to disagree with.
+		fences[i].SnapshotID = p.snapshotID
 	}
-	// Fence cohesion: snapshot ownership, strictly ordered and contiguous
-	// within the pages p.region, with non-zero sizes.
+	// Fence cohesion: strictly ordered and contiguous within the pages
+	// p.region, with non-zero sizes.
 	expectOff := uint64(p.pageStart)
 	for i := range fences {
 		f := &fences[i]
-		if f.SnapshotID != p.snapshotID {
-			return nil, 0, fmt.Errorf("rowpack: row index fence %d snapshot %d, want %d", i, f.SnapshotID, p.snapshotID)
-		}
 		if f.StoredSize == 0 || f.RawSize == 0 || f.EntryCount == 0 {
 			return nil, 0, fmt.Errorf("rowpack: row index fence %d zero size/entry", i)
 		}

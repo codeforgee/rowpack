@@ -165,7 +165,7 @@ MetadataChunk × A // delta/varint 条目流 + zstd，chunk seq 1..A
 BlockChunk × B // delta/varint 条目流 + zstd，chunk seq A+1..A+B
 ChunkDirectory // 明文 (A+B+1) × 32B，chunk 定位
 IndexPage × N // 每页独立 zstd（复用 store 压缩级别），加密 +16B tag
-RowIndexFenceEntry × N // 明文 52B，由正文 CRC 认证
+RowIndexFenceEntry × N // 明文 44B，由正文 CRC 认证
 IndexTxnFooter (80B)
 ```
 
@@ -174,9 +174,10 @@ IndexTxnFooter (80B)
 - 每个 `RowIndexPage` 是 `(TableID, RowID)` 升序的 ≤4096 条记录，且**按表切页**（末页可少、表
   边界可产生较小页）。页头为冻结 `RowIndexPageHeader`，五条流（TableID run / RowID 非负 uvarint
   delta / BlockID run / ItemOrdinal zigzag delta / ChangeType 2bit），页 CRC 覆盖流区。
-- 每个 `RowIndexFenceEntry`（52B）带 `SnapshotID/TableID/Min/MaxRowID/StoredOffset(正文内)/
+- 每个 `RowIndexFenceEntry`（44B）带 `TableID/Min/MaxRowID/StoredOffset(正文内)/
   StoredSize(压缩+tag)/RawSize/EntryCount/PageCRC32C`；Fence 明文，按 `StoredOffset` 递增排列，
-  用于按 RowID 二分定位页后 OPEN+decompress+decode。
+  用于按 RowID 二分定位页后 OPEN+decompress+decode。`SnapshotID` 不落盘：Fence 从属于单个
+  IndexTxn，快照号由 `IndexTxnHeader` 声明并在解析时注入条目。
 - `RowIndexPageCount == 0` 表示快照无行条目。
 
 IndexTxn 与 Snapshot 的关系：
@@ -419,11 +420,11 @@ v1 直接替代早期双文件草案：`Create` 只创建单个 `.rpk`；`Open` 
 | MetaPayloadHeader | 32 |
 | MetaDirectoryEntry | 32 |
 | RowsBlockHeader | 32 |
-| RowsPageDirEntry | 56 |
+| RowsPageDirEntry | 8..80（uvarint 变长，典型 ~10） |
 | IndexTxnHeader | 80 |
 | IndexTxnFooter | 80 |
 | IndexChunkHeader | 64 |
-| RowIndexFenceEntry | 52 |
+| RowIndexFenceEntry | 44 |
 
 **加密**：nonce 位内域分离（§13）使 Block/Index 域标志互斥、同密钥下 nonce 永不复用；索引 CRC
 覆盖落盘字节（§13），无密钥路径即可检出密文损坏；加密 store 的 Open/Verify/Rebuild 必须提供

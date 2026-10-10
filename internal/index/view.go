@@ -327,12 +327,20 @@ type MemoryBreakdown struct {
 	RunStartBytes   uint64 // runStart 4 B/run
 	BlockIDsBytes   uint64 // blockIDs 8 B/run
 	ShardFixedBytes uint64 // 48 B/shard whatever its size
+	SlackBytes      uint64 // cap-len: capacity append reserved and never filled
 }
 
 // SliceBytes is the columnar payload: the part that scales with entries.
 func (b MemoryBreakdown) SliceBytes() uint64 {
 	return b.RowIDsBytes + b.OrdinalsBytes + b.ChangesBytes + b.RunStartBytes + b.BlockIDsBytes
 }
+
+// CapacityBytes is what the slices actually reserve. SlackBytes is the gap:
+// append grows by doubling, so a shard built incrementally can end up holding
+// nearly twice the capacity it needs. Clipping it back costs nothing — no
+// layout change, no read-path change — which makes it the cheapest thing on
+// this list.
+func (b MemoryBreakdown) CapacityBytes() uint64 { return b.SliceBytes() + b.SlackBytes }
 
 // AccountedBytes is what this breakdown explains. MemoryBytes minus this is
 // the per-txn overhead finishMemory adds (metadata, blocks, map cells) — the
@@ -355,6 +363,11 @@ func (v *View) MemoryBreakdown() MemoryBreakdown {
 			b.ChangesBytes += uint64(len(sh.changes))
 			b.RunStartBytes += uint64(len(sh.runStart)) * 4
 			b.BlockIDsBytes += uint64(len(sh.blockIDs)) * 8
+			b.SlackBytes += uint64(cap(sh.rowIDs)-len(sh.rowIDs))*8 +
+				uint64(cap(sh.ordinals)-len(sh.ordinals))*4 +
+				uint64(cap(sh.changes)-len(sh.changes)) +
+				uint64(cap(sh.runStart)-len(sh.runStart))*4 +
+				uint64(cap(sh.blockIDs)-len(sh.blockIDs))*8
 		}
 	}
 	b.ShardFixedBytes = uint64(b.Shards) * 48

@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strings"
 	"time"
@@ -309,6 +310,8 @@ func main() {
 	snapshots := flag.Int("snapshots", 20, "number of DELTA snapshots after the FULL baseline")
 	seed := flag.Int64("seed", 20261010, "PRNG seed; fixed so the sample is byte-reproducible")
 	keep := flag.Bool("keep", true, "keep the generated store on disk (false removes it after reporting)")
+	flag.StringVar(&heapProfilePath, "memprofile", "",
+		"write a heap profile of the reopened store to this path (go tool pprof)")
 	flag.Parse()
 
 	if err := run(*out, *scale, *snapshots, *seed, *keep); err != nil {
@@ -496,6 +499,7 @@ func run(out string, scale float64, snapshots int, seed int64, keep bool) error 
 	fmt.Fprintf(&b, "%-20s %d\n", "idxBlockIDsBytes", mb.BlockIDsBytes)
 	fmt.Fprintf(&b, "%-20s %d\n", "idxShardFixedBytes", mb.ShardFixedBytes)
 	fmt.Fprintf(&b, "%-20s %d\n", "idxAccountedBytes", mb.AccountedBytes())
+	fmt.Fprintf(&b, "%-20s %d\n", "idxSlackBytes", mb.SlackBytes)
 	fmt.Fprintf(&b, "%-20s %d\n", "heapAfterOpenBytes", heapBytes)
 	fmt.Fprintf(&b, "%-20s %d\n", "oversizedPages", st.OversizedRowPages)
 	pct := func(k string, v float64) { fmt.Fprintf(&b, "%-20s %.6f\n", k, v) }
@@ -506,6 +510,11 @@ func run(out string, scale float64, snapshots int, seed int64, keep bool) error 
 	fmt.Print(b.String())
 	return nil
 }
+
+// heapProfilePath, when set, makes the reopen step dump a heap profile. The
+// estimate and the real heap disagree by a constant amount per entry, and
+// only a profile says which objects that is.
+var heapProfilePath string
 
 // openHeapCost reopens a committed store and reports what its resident index
 // costs on the Go heap: HeapAlloc after a full GC, minus the pre-open
@@ -526,6 +535,13 @@ func openHeapCost(path string) int64 {
 	runtime.GC()
 	var after runtime.MemStats
 	runtime.ReadMemStats(&after)
+	// Profile while the index is still resident, i.e. before Close.
+	if heapProfilePath != "" {
+		if f, err := os.Create(heapProfilePath); err == nil {
+			_ = pprof.WriteHeapProfile(f)
+			_ = f.Close()
+		}
+	}
 	_ = db.Close()
 	return int64(after.HeapAlloc) - int64(before.HeapAlloc)
 }

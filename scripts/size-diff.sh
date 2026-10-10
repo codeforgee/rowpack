@@ -85,7 +85,7 @@ END {
   nreg = 0; nimp = 0; nok = 0; nskip = 0
   # 固定顺序输出，避免 for-in 的随机次序。未列出的指标（如报告格式新增）
   # 会在末尾按收集顺序补上，不会静默消失。
-  nk = split("dataBytes rawBytes storedBytes indexMemoryBytes idxRowIDsBytes idxOrdinalsBytes idxChangesBytes idxRunStartBytes idxBlockIDsBytes idxShardFixedBytes idxAccountedBytes heapAfterOpenBytes oversizedPages ratio bytePerRow bytePerWrittenRow idxBytePerRow", mk, " ")
+  nk = split("dataBytes rawBytes storedBytes indexMemoryBytes idxRowIDsBytes idxOrdinalsBytes idxChangesBytes idxRunStartBytes idxBlockIDsBytes idxShardFixedBytes idxAccountedBytes idxSlackBytes heapAfterOpenBytes oversizedPages ratio bytePerRow bytePerWrittenRow idxBytePerRow", mk, " ")
   for (i = 1; i <= nk; i++) {
     k = mk[i]
     if (!(k in keys)) continue
@@ -99,8 +99,10 @@ END {
       continue
     }
     d = (n - o) / o * 100
-    if (d > thr) { tag = "REGRESS"; nreg++ }
-    else if (d < -thr) { tag = "IMPROVE"; nimp++ }
+    # 堆读数受 GC 时机影响，同一次代码两次跑也有 ~1% 抖动；体积是确定的。
+    mthr = (k == "heapAfterOpenBytes" && thr < 5) ? 5 : thr
+    if (d > mthr) { tag = "REGRESS"; nreg++ }
+    else if (d < -mthr) { tag = "IMPROVE"; nimp++ }
     else { tag = "OK     "; nok++ }
     if (tag == "OK     " && verbose != "1") continue
     printf "  %s  %-20s %14s -> %-14s %+8.2f%%\n", tag, k, o, n, d
@@ -117,8 +119,9 @@ END {
       continue
     }
     d = (n - o) / o * 100
-    if (d > thr) { tag = "REGRESS"; nreg++ }
-    else if (d < -thr) { tag = "IMPROVE"; nimp++ }
+    mthr = (k == "heapAfterOpenBytes" && thr < 5) ? 5 : thr
+    if (d > mthr) { tag = "REGRESS"; nreg++ }
+    else if (d < -mthr) { tag = "IMPROVE"; nimp++ }
     else { tag = "OK     "; nok++ }
     if (tag == "OK     " && verbose != "1") continue
     printf "  %s  %-20s %14s -> %-14s %+8.2f%%  (清单外)\n", tag, k, o, n, d

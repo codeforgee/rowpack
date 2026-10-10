@@ -73,7 +73,7 @@ func (c *RowsContainer) StoredLen() int {
 	if c.stored != nil {
 		return len(c.stored)
 	}
-	return format.RowsBlockHeaderSize + len(c.Dir)*format.RowsPageDirEntrySize
+	return format.RowsBlockHeaderSize + int(c.Header.DirectoryBytes)
 }
 
 // SetCacheAccounting installs the owning cache's size updater. It must be
@@ -99,7 +99,7 @@ func (c *RowsContainer) RetainedLen() int64 {
 // RecordsRegionStart is the byte offset (within stored) where the first page's
 // stored bytes begin.
 func (c *RowsContainer) RecordsRegionStart() int {
-	return format.RowsBlockHeaderSize + len(c.Dir)*format.RowsPageDirEntrySize
+	return format.RowsBlockHeaderSize + int(c.Header.DirectoryBytes)
 }
 
 // PageCount returns the number of pages.
@@ -146,7 +146,7 @@ func ParseContainer(container []byte, h format.BlockHeader, limits Limits) (*Row
 		return nil, err
 	}
 	c := &RowsContainer{Header: rh, Dir: dir, blockH: h, comp: h.Compression, limits: limits, stored: container}
-	if err := c.checkBounds(format.RowsBlockHeaderSize + len(dir)*format.RowsPageDirEntrySize); err != nil {
+	if err := c.checkBounds(format.RowsBlockHeaderSize + int(rh.DirectoryBytes)); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -197,7 +197,7 @@ func ParseRowsDir(offset int64, r *Reader, h format.BlockHeader, limits Limits) 
 		return nil, err
 	}
 	c := &RowsContainer{Header: rh, Dir: dir, blockH: h, comp: h.Compression, limits: limits, reader: r, blockOffset: offset}
-	if err := c.checkBounds(format.RowsBlockHeaderSize + len(dir)*format.RowsPageDirEntrySize); err != nil {
+	if err := c.checkBounds(format.RowsBlockHeaderSize + int(rh.DirectoryBytes)); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -208,26 +208,41 @@ func validateRowCounts(rh *format.RowsBlockHeader, h format.BlockHeader, _ Limit
 	if rh.TotalRecords != h.ItemCount {
 		return fmt.Errorf("rowpack: container total records %d != block item count %d", rh.TotalRecords, h.ItemCount)
 	}
-	wantDir := uint64(rh.PageCount) * uint64(format.RowsPageDirEntrySize)
-	if wantDir > uint64(h.StoredSize) || uint64(rh.DirectoryBytes) != wantDir {
-		return fmt.Errorf("rowpack: container directory %d != pageCount %d * %d", rh.DirectoryBytes, rh.PageCount, format.RowsPageDirEntrySize)
+	// The exact directory length is no longer derivable from PageCount, but it
+	// still has to fit inside the block's stored bytes.
+	if uint64(rh.DirectoryBytes) > uint64(h.StoredSize) {
+		return fmt.Errorf("rowpack: container directory %d bytes overruns stored %d", rh.DirectoryBytes, h.StoredSize)
 	}
 	return nil
 }
 
-// parsePageDir parses the PageCount directory entries from the header+dir region.
+// parsePageDir parses the PageCount directory entries from the header+dir
+// region. Entries are varint-encoded and therefore variable-width, so they are
+// decoded in order and must consume the directory exactly: a directory with
+// slack could otherwise hide a second, contradictory reading of the geometry.
+//
+// StoredOffset is not encoded (pages tile the container), so it is recomputed
+// here: the first page starts where the directory ends, and every later page
+// starts where the previous one ended.
 func parsePageDir(containerOrHeader []byte, rh *format.RowsBlockHeader) ([]format.RowsPageDirEntry, error) {
 	dir := make([]format.RowsPageDirEntry, rh.PageCount)
 	pos := format.RowsBlockHeaderSize
 	dirEnd := format.RowsBlockHeaderSize + int(rh.DirectoryBytes)
+	if dirEnd > len(containerOrHeader) {
+		return nil, fmt.Errorf("rowpack: container directory truncated")
+	}
+	off := dirEnd
 	for i := range dir {
-		if pos+format.RowsPageDirEntrySize > dirEnd {
-			return nil, fmt.Errorf("rowpack: container directory truncated")
+		n, err := dir[i].Unmarshal(containerOrHeader[pos:dirEnd])
+		if err != nil {
+			return nil, fmt.Errorf("rowpack: container directory entry %d: %w", i, err)
 		}
-		if err := dir[i].Unmarshal(containerOrHeader[pos : pos+format.RowsPageDirEntrySize]); err != nil {
-			return nil, err
-		}
-		pos += format.RowsPageDirEntrySize
+		pos += n
+		dir[i].StoredOffset = uint64(off)
+		off += int(dir[i].StoredSize)
+	}
+	if pos != dirEnd {
+		return nil, fmt.Errorf("rowpack: container directory has %d unread bytes", dirEnd-pos)
 	}
 	return dir, nil
 }
@@ -251,9 +266,10 @@ func (c *RowsContainer) checkBounds(recordsStart int) error {
 		if e.RecordCount == 0 {
 			return fmt.Errorf("rowpack: page %d has zero records", i)
 		}
-		if int(e.StoredOffset) != expectedOff {
-			return fmt.Errorf("rowpack: page %d stored offset %d, want %d", i, e.StoredOffset, expectedOff)
-		}
+		// StoredOffset is recomputed by the directory parser rather than read
+		// from disk, so it is contiguous by construction: the check that used
+		// to live here is now a tautology. What still needs proving is that the
+		// declared sizes stay inside the container.
 		if e.StoredSize > c.limits.MaxStoredBytes {
 			return fmt.Errorf("rowpack: page %d stored size %d exceeds limit %d", i, e.StoredSize, c.limits.MaxStoredBytes)
 		}
@@ -330,15 +346,13 @@ func (c *RowsContainer) decompress(i int, buf *rawBuf) ([]byte, error) {
 	return raw, nil
 }
 
-// parsePage parses and CRC-validates the uncompressed page raw bytes against
-// its directory entry.
+// parsePage parses the uncompressed page raw bytes. The page header's own
+// CRC32C covers the page streams and ParseRowsPage verifies it, so the
+// directory no longer carries a second copy of the same checksum.
 func (c *RowsContainer) parsePage(i int, raw []byte) (*RowsPage, error) {
 	p, err := ParseRowsPage(raw)
 	if err != nil {
-		return nil, err
-	}
-	if p.h.CRC32C != c.Dir[i].PageCRC32C {
-		return nil, fmt.Errorf("rowpack: page %d header CRC %d != directory %d", i, p.h.CRC32C, c.Dir[i].PageCRC32C)
+		return nil, fmt.Errorf("rowpack: page %d: %w", i, err)
 	}
 	return p, nil
 }

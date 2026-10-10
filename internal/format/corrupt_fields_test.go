@@ -73,9 +73,8 @@ func TestMarshalToRejectsShortDestination(t *testing.T) {
 		{"RowsPageHeader", RowsPageHeaderSize, func(d []byte) error {
 			return (&RowsPageHeader{EntryCount: 1, ChangeBitsBytes: 1}).MarshalTo(d)
 		}, nil},
-		{"RowsPageDirEntry", RowsPageDirEntrySize, func(d []byte) error {
-			return (&RowsPageDirEntry{PageOrdinal: 1, RecordCount: 1}).MarshalTo(d)
-		}, nil},
+		// RowsPageDirEntry is varint-encoded and has no fixed destination:
+		// it is covered by TestRowsPageDirEntryRejects, not by this table.
 		{"RowIndexPageHeader", IndexPageHeaderSize, func(d []byte) error {
 			return (&RowIndexPageHeader{EntryCount: 1, ChangeBitsBytes: 1}).MarshalTo(d)
 		}, nil},

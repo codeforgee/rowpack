@@ -233,7 +233,6 @@ func (b *RowsBuilder) storePage(rawPage []byte, oversized bool) error {
 		RawSize:            uint32(len(rawPage)),
 		MinRowID:           h.MinRowID,
 		MaxRowID:           h.MaxRowID,
-		PageCRC32C:         h.CRC32C,
 	}
 	if oversized {
 		dir.Flags = 1
@@ -258,14 +257,22 @@ func (b *RowsBuilder) Flush() error {
 		return nil
 	}
 	n := uint32(len(b.dirEntries))
+	// The directory is varint-encoded, so its length is not PageCount*const:
+	// measure the entries first, then lay the pages out behind them.
+	// StoredOffset is not part of an entry's encoding, so measuring it needs
+	// no offset values and there is no circular dependency to iterate over.
+	dirBytes := 0
+	for i := range b.dirEntries {
+		dirBytes += b.dirEntries[i].EncodedLen()
+	}
 	header := format.RowsBlockHeader{
 		PageCount:      n,
-		DirectoryBytes: n * format.RowsPageDirEntrySize,
+		DirectoryBytes: uint32(dirBytes),
 		TotalRecords:   uint32(len(b.entries)),
 	}
 	// Resolve per-page StoredOffset now that the directory length is known
 	// (the directory sits between the container header and the first page).
-	dataStart := format.RowsBlockHeaderSize + int(n)*format.RowsPageDirEntrySize
+	dataStart := format.RowsBlockHeaderSize + dirBytes
 	off := dataStart
 	for i := range b.dirEntries {
 		b.dirEntries[i].StoredOffset = uint64(off)
@@ -279,11 +286,9 @@ func (b *RowsBuilder) Flush() error {
 	var hdr [format.RowsBlockHeaderSize]byte
 	_ = header.MarshalTo(hdr[:])
 	copy(container[0:format.RowsBlockHeaderSize], hdr[:])
-	dir := container[format.RowsBlockHeaderSize:dataStart]
+	dirEnd := format.RowsBlockHeaderSize
 	for i := range b.dirEntries {
-		var e [format.RowsPageDirEntrySize]byte
-		_ = b.dirEntries[i].MarshalTo(e[:])
-		copy(dir[i*format.RowsPageDirEntrySize:], e[:])
+		dirEnd = len(b.dirEntries[i].AppendTo(container[:dirEnd]))
 	}
 	for i := range b.storedPages {
 		start := int(b.dirEntries[i].StoredOffset)

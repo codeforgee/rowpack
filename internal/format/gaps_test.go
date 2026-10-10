@@ -132,10 +132,8 @@ func TestFrozenStructSizes(t *testing.T) {
 	if f.Size() != IndexFenceEntrySize {
 		t.Fatal("RowIndexFenceEntry.Size mismatch")
 	}
-	var p RowsPageDirEntry
-	if p.Size() != RowsPageDirEntrySize {
-		t.Fatal("RowsPageDirEntry.Size mismatch")
-	}
+	// RowsPageDirEntry is varint-encoded and has no fixed size; see
+	// TestRowsPageDirEntryRoundtripAndRejects.
 	var rb RowsBlockHeader
 	if rb.Size() != RowsBlockHeaderSize {
 		t.Fatal("RowsBlockHeader.Size mismatch")
@@ -203,18 +201,24 @@ func TestSnapshotFooterOffsetsAreConsistent(t *testing.T) {
 	}
 }
 
-// TestRowsBlockHeaderDirectoryBytesMatches keeps the header's derived
-// directory length in sync with the page-directory entry size.
-func TestRowsBlockHeaderDirectoryBytesMatches(t *testing.T) {
-	n, ok := rowsDirectoryBytes(3)
-	if !ok || n != 3*RowsPageDirEntrySize {
-		t.Fatalf("rowsDirectoryBytes(3) = %d, %v", n, ok)
-	}
-	if n, ok := rowsDirectoryBytes(0); !ok || n != 0 {
-		t.Fatalf("rowsDirectoryBytes(0) = %d, %v", n, ok)
-	}
-	// Overflow guard: page count whose directory bytes exceed uint32.
-	if _, ok := rowsDirectoryBytes(1 << 31); ok {
+// TestRowsBlockHeaderDirectoryBytesBounds pins the bounds the header puts on
+// DirectoryBytes. Entries are varint-encoded, so the length is no longer
+// derivable from PageCount — only the range is, and that range is what stops a
+// hostile header from asking for a huge allocation.
+func TestRowsBlockHeaderDirectoryBytesBounds(t *testing.T) {
+	n, ok := maxDirectoryBytes(3)
+	require.True(t, ok, "three pages must have a representable bound")
+	require.Equal(t, uint32(3*MaxRowsPageDirEntrySize), n, "maxDirectoryBytes(3)")
+	// A directory of N pages cannot be shorter than N one-byte-per-field
+	// entries, and the header rejects anything below that.
+	inRange := RowsBlockHeader{PageCount: 3, DirectoryBytes: 3 * MaxRowsPageDirEntrySize}
+	require.NoError(t, inRange.MarshalTo(make([]byte, RowsBlockHeaderSize)), "upper bound accepted")
+	tooShort := RowsBlockHeader{PageCount: 3, DirectoryBytes: 3*MinRowsPageDirEntrySize - 1}
+	require.ErrorContains(t, tooShort.MarshalTo(make([]byte, RowsBlockHeaderSize)), "outside", "below the lower bound")
+	tooLong := RowsBlockHeader{PageCount: 3, DirectoryBytes: 3*MaxRowsPageDirEntrySize + 1}
+	require.ErrorContains(t, tooLong.MarshalTo(make([]byte, RowsBlockHeaderSize)), "outside", "above the upper bound")
+	// Overflow guard: page count whose directory bound exceeds uint32.
+	if _, ok := maxDirectoryBytes(1 << 31); ok {
 		t.Fatal("overflowing page count should be rejected")
 	}
 }

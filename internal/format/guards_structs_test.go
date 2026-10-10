@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -16,7 +17,7 @@ import (
 // 序列化往返钉死。
 
 func TestRowsBlockHeaderGuards(t *testing.T) {
-	h := RowsBlockHeader{PageCount: 3, DirectoryBytes: 3 * RowsPageDirEntrySize, TotalRecords: 17}
+	h := RowsBlockHeader{PageCount: 3, DirectoryBytes: 3 * MinRowsPageDirEntrySize, TotalRecords: 17}
 	var buf [RowsBlockHeaderSize]byte
 	err := h.MarshalTo(buf[:])
 	require.NoError(t, err, "marshal")
@@ -52,7 +53,8 @@ func TestRowsBlockHeaderGuards(t *testing.T) {
 		{"reserved-nonzero", func(_ *RowsBlockHeader, b *[RowsBlockHeaderSize]byte) { b[10] = 1 }, "reserved"},
 		{"reserved-nonzero-high", func(_ *RowsBlockHeader, b *[RowsBlockHeaderSize]byte) { b[11] = 9 }, "reserved"},
 		{"dir-bytes-mismatch", func(_ *RowsBlockHeader, b *[RowsBlockHeaderSize]byte) {
-			binary.LittleEndian.PutUint32(b[16:], 2*RowsPageDirEntrySize)
+			// 3 页的合法区间是 [3×8, 3×80]；0 落在下界之下。
+			binary.LittleEndian.PutUint32(b[16:], 0)
 		}, "directory bytes"},
 		{"pagecount-overflow", func(_ *RowsBlockHeader, b *[RowsBlockHeaderSize]byte) {
 			binary.LittleEndian.PutUint32(b[12:], 0xFFFFFFFF)
@@ -85,8 +87,9 @@ func TestRowsBlockHeaderGuards(t *testing.T) {
 		!strings.Contains(err.Error(), "destination too short") {
 		t.Fatalf("short destination = %v", err)
 	}
-	// MarshalTo 自己拒绝自相矛盾的目录长度。
-	bad := RowsBlockHeader{PageCount: 4, DirectoryBytes: 3 * RowsPageDirEntrySize}
+	// MarshalTo 自己拒绝越界的目录长度：4 页至少要有 4×MinRowsPageDirEntrySize
+	// 字节，条目是变长的，所以校验的是区间而非精确值。
+	bad := RowsBlockHeader{PageCount: 4, DirectoryBytes: 4*MinRowsPageDirEntrySize - 1}
 	if err := bad.MarshalTo(make([]byte, RowsBlockHeaderSize)); err == nil ||
 		!strings.Contains(err.Error(), "directory bytes") {
 		t.Fatalf("inconsistent DirectoryBytes = %v", err)
@@ -94,33 +97,48 @@ func TestRowsBlockHeaderGuards(t *testing.T) {
 	require.Error(t, (&RowsBlockHeader{PageCount: 1 << 24, DirectoryBytes: 0}).MarshalTo(make([]byte, RowsBlockHeaderSize)), "PageCount whose directory bytes overflow must be rejected on the write side")
 }
 
-func TestRowsPageDirEntryGuards(t *testing.T) {
+// TestRowsPageDirEntryRoundtripAndRejects pins the varint directory entry:
+// it round-trips, reports exactly the bytes it consumed, rejects every
+// truncation, and refuses a varint that would silently truncate into a uint32
+// field.
+func TestRowsPageDirEntryRoundtripAndRejects(t *testing.T) {
 	e := RowsPageDirEntry{
 		PageOrdinal: 2, FirstRecordOrdinal: 40, RecordCount: 20,
 		StoredOffset: 1 << 40, StoredSize: 4096, RawSize: 8192,
-		MinRowID: 7, MaxRowID: ^uint64(0), PageCRC32C: 0xDEADBEEF, Flags: 1,
+		MinRowID: 7, MaxRowID: ^uint64(0), Flags: 1,
 	}
-	var buf [RowsPageDirEntrySize]byte
-	err := e.MarshalTo(buf[:])
-	require.NoError(t, err, "marshal")
+	encoded := e.AppendTo(nil)
+	require.Len(t, encoded, e.EncodedLen(), "EncodedLen must match what AppendTo writes")
+
+	// StoredOffset is recomputed by the directory parser from the preceding
+	// sizes, so it is deliberately not part of the encoding.
+	want := e
+	want.StoredOffset = 0
 	var got RowsPageDirEntry
-	err = got.Unmarshal(buf[:])
+	n, err := got.Unmarshal(encoded)
 	require.NoError(t, err, "unmarshal")
-	require.Equal(t, e, got, "round trip = %+v, want %+v", got, e)
-	if got.Size() != RowsPageDirEntrySize {
-		t.Fatalf("Size() = %d", got.Size())
-	}
-	// 尾部 reserved 必须为零（前向兼容的余量不能被脏字节占掉）。
-	for i := 52; i < RowsPageDirEntrySize; i++ {
-		require.EqualValues(t, 0, buf[i], "reserved byte %d = %d, want 0", i, buf[i])
-	}
-	for n := range RowsPageDirEntrySize {
+	require.Equal(t, want, got, "round trip = %+v, want %+v", got, want)
+	require.Equal(t, len(encoded), n, "Unmarshal must report every byte it consumed")
+
+	// Every proper prefix is a truncation and must fail.
+	for i := range len(encoded) {
 		var out RowsPageDirEntry
-		if err := out.Unmarshal(make([]byte, n)); err == nil {
-			t.Fatalf("Unmarshal of %d bytes must fail", n)
-		}
+		_, err := out.Unmarshal(encoded[:i])
+		require.Error(t, err, "Unmarshal of %d/%d bytes must fail", i, len(encoded))
 	}
-	require.Error(t, e.MarshalTo(make([]byte, RowsPageDirEntrySize-1)), "short destination must fail")
+	// A varint wider than 10 bytes cannot be decoded at all.
+	var empty RowsPageDirEntry
+	_, err = empty.Unmarshal([]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF})
+	require.Error(t, err, "an over-wide varint must fail")
+	// A value that does not fit its uint32 field is rejected rather than
+	// silently truncated into a different page geometry.
+	over := binary.AppendUvarint(nil, math.MaxUint32+1)
+	for range dirEntryFields - 1 {
+		over = binary.AppendUvarint(over, 0)
+	}
+	var wide RowsPageDirEntry
+	_, err = wide.Unmarshal(over)
+	require.ErrorContains(t, err, "does not fit uint32", "an oversized field must be rejected")
 }
 
 func TestBlockHeaderGuards(t *testing.T) {

@@ -13,10 +13,18 @@ import (
 // 块头 CRC 覆盖,所以「几何自洽、页已损坏」与「目录长度对不上」是两类不同的输入,各自
 // 有不同的出口——前者要等到真的去读那一页才报错,后者在进入时就该被挡住。
 //
-// 到不了的四条:parsePageDir 的 truncated(229)与条目 Unmarshal 失败(232)——目录长度在
-// 容器头 Unmarshal 时就已被钉成 PageCount*RowsPageDirEntrySize,容器长度又已被 dirEnd
-// 检查过,所以每个条目都恒有完整的一条目可读,Unmarshal 只查长度也因此不会失败;
-// ParseContainer/ParseRowsDir 里传播 parsePageDir 错误的那两行(150、201)随之没有输入。
+// 目录条目是变长的,所以「目录长度正好等于 N 个条目」不再由容器头钉死:parsePageDir
+// 的 truncated 与条目 Unmarshal 失败两条分支现在都可达,下面各有一条用例覆盖。
+
+// encodeDir serializes page directory entries the way the container stores
+// them: back to back, varint-encoded, with no padding.
+func encodeDir(entries ...format.RowsPageDirEntry) []byte {
+	var b []byte
+	for i := range entries {
+		b = entries[i].AppendTo(b)
+	}
+	return b
+}
 
 // TestParseContainerRejectsShortContainer: a block whose stored size matches
 // but that cannot even hold a container header is rejected before any offset
@@ -43,8 +51,10 @@ func TestParseRowsDirRejectsNonRowsBlock(t *testing.T) {
 func TestParseRowsDirRejectsDirectoryGeometry(t *testing.T) {
 	h := format.BlockHeader{BlockID: 1, BlockKind: format.BlockKindRows, ItemCount: 1, StoredSize: 1 << 10}
 	rh := format.RowsBlockHeader{
-		PageCount:      1000,
-		DirectoryBytes: 1000 * format.RowsPageDirEntrySize,
+		PageCount: 1000,
+		// Entries are varint-encoded, but even the smallest possible one is
+		// MinRowsPageDirEntrySize: 1000 of them cannot fit a 1 KiB block.
+		DirectoryBytes: 1000 * format.MinRowsPageDirEntrySize,
 		TotalRecords:   1,
 	}
 
@@ -53,7 +63,7 @@ func TestParseRowsDirRejectsDirectoryGeometry(t *testing.T) {
 	require.NoError(t, rh.MarshalTo(data[format.BlockHeaderSize:]))
 
 	_, err := ParseRowsDir(0, NewReader(&mockReaderAt{data: data}, DefaultLimits()), h, DefaultLimits())
-	require.ErrorContains(t, err, "!=", "the directory cannot fit the block that carries it")
+	require.ErrorContains(t, err, "overruns stored", "the directory cannot fit the block that carries it")
 }
 
 // TestParseRowsDirRejectsUnreadableDirectory: the directory is read in one
@@ -61,9 +71,9 @@ func TestParseRowsDirRejectsDirectoryGeometry(t *testing.T) {
 // (193).
 func TestParseRowsDirRejectsUnreadableDirectory(t *testing.T) {
 	h := format.BlockHeader{BlockID: 1, BlockKind: format.BlockKindRows, ItemCount: 1, StoredSize: 1 << 20}
-	// One page, so the directory is 32 bytes past the container header — and
-	// the file stops right after that header.
-	rh := format.RowsBlockHeader{PageCount: 2, DirectoryBytes: 2 * format.RowsPageDirEntrySize, TotalRecords: 1}
+	// Two minimal entries, so the directory ends 16 bytes past the container
+	// header — and the file stops right after that header.
+	rh := format.RowsBlockHeader{PageCount: 2, DirectoryBytes: 2 * format.MinRowsPageDirEntrySize, TotalRecords: 1}
 
 	data := make([]byte, format.BlockHeaderSize+format.RowsBlockHeaderSize)
 	require.NoError(t, h.MarshalTo(data))
@@ -78,18 +88,14 @@ func TestParseRowsDirRejectsUnreadableDirectory(t *testing.T) {
 // compression is a corrupt directory, not a slow page (205).
 func TestParseRowsDirRejectsPageBounds(t *testing.T) {
 	h := format.BlockHeader{BlockID: 1, BlockKind: format.BlockKindRows, ItemCount: 1, StoredSize: 1 << 10}
-	rh := format.RowsBlockHeader{PageCount: 1, DirectoryBytes: format.RowsPageDirEntrySize, TotalRecords: 1}
 	// None-compressed pages are stored == raw; this one claims otherwise.
-	dir := format.RowsPageDirEntry{
-		RecordCount:  1,
-		StoredOffset: format.RowsBlockHeaderSize + format.RowsPageDirEntrySize,
-		StoredSize:   8,
-		RawSize:      16,
-	}
+	dir := format.RowsPageDirEntry{RecordCount: 1, StoredSize: 8, RawSize: 16}
+	encoded := encodeDir(dir)
+	rh := format.RowsBlockHeader{PageCount: 1, DirectoryBytes: uint32(len(encoded)), TotalRecords: 1}
 
-	data := make([]byte, format.BlockHeaderSize+format.RowsBlockHeaderSize+format.RowsPageDirEntrySize)
+	data := make([]byte, format.BlockHeaderSize+format.RowsBlockHeaderSize+len(encoded))
 	require.NoError(t, rh.MarshalTo(data[format.BlockHeaderSize:]))
-	require.NoError(t, dir.MarshalTo(data[format.BlockHeaderSize+format.RowsBlockHeaderSize:]))
+	copy(data[format.BlockHeaderSize+format.RowsBlockHeaderSize:], encoded)
 	// MarshalTo clears its destination, so the block header is stamped last
 	// and copied in.
 	h.RawCRC32C = format.CRC32C(data[format.BlockHeaderSize:])
@@ -108,21 +114,20 @@ func TestRecordAtRejectsOrdinalBeyondPageRecords(t *testing.T) {
 	page := insertPage(2).encode(t) // two records
 
 	h := format.BlockHeader{BlockID: 1, BlockKind: format.BlockKindRows, ItemCount: 5}
-	rh := format.RowsBlockHeader{PageCount: 1, DirectoryBytes: format.RowsPageDirEntrySize, TotalRecords: 5}
 	dir := format.RowsPageDirEntry{
-		RecordCount:  5, // claims five, the page holds two
-		StoredOffset: format.RowsBlockHeaderSize + format.RowsPageDirEntrySize,
-		StoredSize:   uint32(len(page)),
-		RawSize:      uint32(len(page)),
-		PageCRC32C:   format.CRC32C(page[format.RowsPageHeaderSize:]),
+		RecordCount: 5, // claims five, the page holds two
+		StoredSize:  uint32(len(page)),
+		RawSize:     uint32(len(page)),
 	}
+	encoded := encodeDir(dir)
+	rh := format.RowsBlockHeader{PageCount: 1, DirectoryBytes: uint32(len(encoded)), TotalRecords: 5}
 
-	container := make([]byte, format.RowsBlockHeaderSize+format.RowsPageDirEntrySize+len(page))
+	container := make([]byte, format.RowsBlockHeaderSize+len(encoded)+len(page))
 	require.NoError(t, rh.MarshalTo(container))
-	require.NoError(t, dir.MarshalTo(container[format.RowsBlockHeaderSize:]))
-	copy(container[format.RowsBlockHeaderSize+format.RowsPageDirEntrySize:], page)
+	copy(container[format.RowsBlockHeaderSize:], encoded)
+	copy(container[format.RowsBlockHeaderSize+len(encoded):], page)
 	h.StoredSize = uint32(len(container))
-	h.RawCRC32C = format.CRC32C(container[:format.RowsBlockHeaderSize+format.RowsPageDirEntrySize])
+	h.RawCRC32C = format.CRC32C(container[:format.RowsBlockHeaderSize+len(encoded)])
 
 	rc, err := ParseContainer(container, h, DefaultLimits())
 	require.NoError(t, err, "the geometry adds up even though the record count does not")
@@ -142,7 +147,7 @@ func TestContainerRejectsDamagedPage(t *testing.T) {
 		[][]byte{[]byte("abcd")})
 
 	stored := append([]byte(nil), fb.Stored...)
-	stored[format.RowsBlockHeaderSize+len(rc.Dir)*format.RowsPageDirEntrySize+2] ^= 0xFF // inside the page, past the directory
+	stored[rc.RecordsRegionStart()+2] ^= 0xFF // inside the page, past the directory
 	bad, err := ParseContainer(stored, fb.Header, DefaultLimits())
 	require.NoError(t, err, "the container geometry and header CRC are still intact")
 
@@ -180,7 +185,8 @@ func TestLazyContainerStoredLen(t *testing.T) {
 
 	lazy, err := ParseRowsDir(0, NewReader(&mockReaderAt{data: data}, DefaultLimits()), fb.Header, DefaultLimits())
 	require.NoError(t, err)
-	require.Equal(t, format.RowsBlockHeaderSize+len(lazy.Dir)*format.RowsPageDirEntrySize, lazy.StoredLen())
+	require.Equal(t, lazy.RecordsRegionStart(), lazy.StoredLen(),
+		"a lazy container owns the header and the directory, no more")
 	require.Less(t, lazy.StoredLen(), len(fb.Stored), "the pages are not resident")
 
 	// A container without cache accounting reports its stored length as the

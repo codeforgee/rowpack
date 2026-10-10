@@ -59,7 +59,7 @@ func TestFixedStructsResistTruncation(t *testing.T) {
 			return h.Unmarshal(s)
 		}},
 		{"RowsBlockHeader", RowsBlockHeaderSize, func(d []byte) {
-			h := RowsBlockHeader{PageCount: 1, DirectoryBytes: RowsPageDirEntrySize, TotalRecords: 1}
+			h := RowsBlockHeader{PageCount: 1, DirectoryBytes: MinRowsPageDirEntrySize, TotalRecords: 1}
 			if err := h.MarshalTo(d); err != nil {
 				t.Fatal(err)
 			}
@@ -139,15 +139,9 @@ func TestFixedStructsResistTruncation(t *testing.T) {
 			var e RowIndexFenceEntry
 			return e.Unmarshal(s)
 		}},
-		{"RowsPageDirEntry", RowsPageDirEntrySize, func(d []byte) {
-			e := RowsPageDirEntry{PageOrdinal: 1, RecordCount: 1}
-			if err := e.MarshalTo(d); err != nil {
-				t.Fatal(err)
-			}
-		}, func(s []byte) error {
-			var e RowsPageDirEntry
-			return e.Unmarshal(s)
-		}},
+		// RowsPageDirEntry is varint-encoded: it has no fixed length to
+		// truncate against, and its rejection branches are covered by
+		// TestRowsPageDirEntryRoundtripAndRejects.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

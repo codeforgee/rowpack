@@ -301,12 +301,6 @@ func TestReaderReadRowsDir(t *testing.T) {
 	pageStored, err := Compress(format.CompressionZstd, 3, pageRaw)
 	require.NoError(t, err)
 
-	containerHeader := format.RowsBlockHeader{
-		PageCount:      1,
-		DirectoryBytes: format.RowsPageDirEntrySize,
-		TotalRecords:   1,
-	}
-
 	dirEntry := format.RowsPageDirEntry{
 		PageOrdinal:        0,
 		FirstRecordOrdinal: 0,
@@ -315,17 +309,19 @@ func TestReaderReadRowsDir(t *testing.T) {
 		RawSize:            uint32(len(pageRaw)),
 		MinRowID:           1,
 		MaxRowID:           1,
-		PageCRC32C:         format.CRC32C(pageRaw),
-		StoredOffset:       uint64(format.RowsBlockHeaderSize + format.RowsPageDirEntrySize),
 	}
+	dirBuf := encodeDir(dirEntry)
+	containerHeader := format.RowsBlockHeader{
+		PageCount:      1,
+		DirectoryBytes: uint32(len(dirBuf)),
+		TotalRecords:   1,
+	}
+	dirEntry.StoredOffset = uint64(format.RowsBlockHeaderSize + len(dirBuf))
 
 	var containerBuf bytes.Buffer
 	hdr := make([]byte, format.RowsBlockHeaderSize)
 	_ = containerHeader.MarshalTo(hdr)
 	containerBuf.Write(hdr)
-
-	dirBuf := make([]byte, format.RowsPageDirEntrySize)
-	_ = dirEntry.MarshalTo(dirBuf)
 	containerBuf.Write(dirBuf)
 
 	// RawCRC32C is CRC of header + directory only (not including stored pages)
@@ -369,17 +365,8 @@ func TestReaderReadRowsPage(t *testing.T) {
 	pageRaw, err := pageBuilder.Finish()
 	require.NoError(t, err)
 
-	// The page CRC is over the streams (after the header)
-	pageCRC := format.CRC32C(pageRaw[format.RowsPageHeaderSize:])
-
 	pageStored, err := Compress(format.CompressionZstd, 3, pageRaw)
 	require.NoError(t, err)
-
-	containerHeader := format.RowsBlockHeader{
-		PageCount:      1,
-		DirectoryBytes: format.RowsPageDirEntrySize,
-		TotalRecords:   1,
-	}
 
 	dirEntry := format.RowsPageDirEntry{
 		PageOrdinal:        0,
@@ -389,17 +376,19 @@ func TestReaderReadRowsPage(t *testing.T) {
 		RawSize:            uint32(len(pageRaw)),
 		MinRowID:           1,
 		MaxRowID:           1,
-		PageCRC32C:         pageCRC,
-		StoredOffset:       uint64(format.RowsBlockHeaderSize + format.RowsPageDirEntrySize),
 	}
+	dirBuf := encodeDir(dirEntry)
+	containerHeader := format.RowsBlockHeader{
+		PageCount:      1,
+		DirectoryBytes: uint32(len(dirBuf)),
+		TotalRecords:   1,
+	}
+	dirEntry.StoredOffset = uint64(format.RowsBlockHeaderSize + len(dirBuf))
 
 	var containerBuf bytes.Buffer
 	hdr := make([]byte, format.RowsBlockHeaderSize)
 	_ = containerHeader.MarshalTo(hdr)
 	containerBuf.Write(hdr)
-
-	dirBuf := make([]byte, format.RowsPageDirEntrySize)
-	_ = dirEntry.MarshalTo(dirBuf)
 	containerBuf.Write(dirBuf)
 
 	// RawCRC32C is CRC of header + directory only (not including stored pages)
@@ -448,12 +437,6 @@ func TestReaderReadRowsPageEncryptedNoDecrypter(t *testing.T) {
 	pageStored, err := Compress(format.CompressionZstd, 3, pageRaw)
 	require.NoError(t, err)
 
-	containerHeader := format.RowsBlockHeader{
-		PageCount:      1,
-		DirectoryBytes: format.RowsPageDirEntrySize,
-		TotalRecords:   1,
-	}
-
 	dirEntry := format.RowsPageDirEntry{
 		PageOrdinal:        0,
 		FirstRecordOrdinal: 0,
@@ -462,17 +445,19 @@ func TestReaderReadRowsPageEncryptedNoDecrypter(t *testing.T) {
 		RawSize:            uint32(len(pageRaw)),
 		MinRowID:           1,
 		MaxRowID:           1,
-		PageCRC32C:         format.CRC32C(pageRaw),
-		StoredOffset:       uint64(format.RowsBlockHeaderSize + format.RowsPageDirEntrySize),
 	}
+	dirBuf := encodeDir(dirEntry)
+	containerHeader := format.RowsBlockHeader{
+		PageCount:      1,
+		DirectoryBytes: uint32(len(dirBuf)),
+		TotalRecords:   1,
+	}
+	dirEntry.StoredOffset = uint64(format.RowsBlockHeaderSize + len(dirBuf))
 
 	var containerBuf bytes.Buffer
 	hdr := make([]byte, format.RowsBlockHeaderSize)
 	_ = containerHeader.MarshalTo(hdr)
 	containerBuf.Write(hdr)
-
-	dirBuf := make([]byte, format.RowsPageDirEntrySize)
-	_ = dirEntry.MarshalTo(dirBuf)
 	containerBuf.Write(dirBuf)
 
 	// RawCRC32C is CRC of header + directory only (not including stored pages)

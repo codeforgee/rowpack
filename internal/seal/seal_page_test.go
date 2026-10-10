@@ -32,7 +32,6 @@ func pageDir(pageOrdinal, firstOrdinal, recordCount, storedSize, rawSize uint32,
 		RawSize:            rawSize,
 		MinRowID:           minID,
 		MaxRowID:           maxID,
-		PageCRC32C:         0xCAFEBABE,
 	}
 }
 

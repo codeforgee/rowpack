@@ -17,18 +17,24 @@
 | 文件 | SHA-256 |
 | --- | --- |
 | `empty-store.rpk` | `359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401` |
-| `rows-payload-all-types.bin` | `5440fe9407ad98b7609f30e2be48012376bb44da657f78e279ecc144f595666e` |
-| `full-delta-store.rpk` | `bef6fad68e9ca66b88c35c883e22e10bf2271b7f101c1a9e73d1430b823c5254` |
-| `encrypted-store.rpk` | `3cec92868911744c0a69b9586059008cbac944c77bc5c5c2106097b5d90cdad1` |
+| `rows-payload-all-types.bin` | `a9fd25de96141b17cad28b44e69b5c84fcc199880c8c2f426d1a1152c75437d5` |
+| `full-delta-store.rpk` | `d264362df284d22c2d65026aed43e5a448df90185f170c57858dea50dfb789d4` |
+| `encrypted-store.rpk` | `e841ab22b485fbdae6ac4188616053c274d8e8126c3459accd071e32dea65a73` |
 
 摘要对应冻结的 v1 IndexTxn 格式（排序 Row Index Page + Fence Directory；Metadata/Block chunk
 为 delta/varint 条目流 + Zstd，见 docs/INDEX_TXN_FORMAT_V1.md §4.3）。修改任一摘要即视为
 有意的磁盘格式变更，必须经过格式审查并按版本策略建立新的 golden 样本族。
 
-最近一次变更：Time/DateTime/DateTimeTZ 改为 varint 编码（秒 zigzag + 纳秒 varint，TZ 再
-加偏移 zigzag），整秒时间 12 B→6 B、带时区 16 B→7 B；`rows-payload-all-types.bin`
-390→378 B。两个 Store 样本的 Schema 不含时间类型，摘要不变。代价：这些类型 width 归 0，
-含它们的 Schema 退出定宽解码内核（实测 BenchmarkPreparedDecodeMixed +12%）。
+最近一次变更：RowsPageDirEntry 由定长 56 B 改为 8 个 uvarint（典型 ~10 B），并删掉
+`StoredOffset`（页在容器内连续排列，解析时由前序 StoredSize 累加回填）与 `PageCRC32C`
+（页头 CRC32C 已覆盖页流、ParseRowsPage 会校验）。`full-delta-store.rpk` 4793→4653 B、
+`encrypted-store.rpk` 2076→2029 B、`rows-payload-all-types.bin` 378→332 B。AAD 字段集合
+未变，`internal/seal` 无需改动。
+
+上一次变更：Time/DateTime/DateTimeTZ 改为 varint 编码（秒 zigzag + 纳秒 varint，TZ 再加
+偏移 zigzag），整秒时间 12 B→6 B、带时区 16 B→7 B；`rows-payload-all-types.bin` 390→378 B。
+代价：这些类型 width 归 0，含它们的 Schema 退出定宽解码内核（实测
+BenchmarkPreparedDecodeMixed +12%）。
 
 上一次变更：无任何可空列的 Schema 不再写 null bitmap（原本每行固定
 `ceil(ncols/8)` 字节纯属浪费），`full-delta-store.rpk` 4816→4793 B、

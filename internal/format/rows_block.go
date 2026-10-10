@@ -60,11 +60,7 @@ func (h *RowsBlockHeader) MarshalTo(dst []byte) error {
 	putU32(dst[12:], h.PageCount)
 	putU32(dst[16:], h.DirectoryBytes)
 	putU32(dst[20:], h.TotalRecords)
-	want, ok := rowsDirectoryBytes(h.PageCount)
-	if !ok || h.DirectoryBytes != want {
-		return formatError("RowsBlockHeader", 16, "directory bytes %d != pageCount %d * %d", h.DirectoryBytes, h.PageCount, RowsPageDirEntrySize)
-	}
-	return nil
+	return checkDirectoryBytes(h)
 }
 
 // Unmarshal validates src and fills h, cross-checking DirectoryBytes against
@@ -86,18 +82,29 @@ func (h *RowsBlockHeader) Unmarshal(src []byte) error {
 	h.PageCount = binary.LittleEndian.Uint32(src[12:])
 	h.DirectoryBytes = binary.LittleEndian.Uint32(src[16:])
 	h.TotalRecords = binary.LittleEndian.Uint32(src[20:])
-	want, valid := rowsDirectoryBytes(h.PageCount)
-	if !valid || h.DirectoryBytes != want {
-		return formatError("RowsBlockHeader", 16, "directory bytes %d != pageCount %d * %d", h.DirectoryBytes, h.PageCount, RowsPageDirEntrySize)
+	return checkDirectoryBytes(h)
+}
+
+// checkDirectoryBytes bounds DirectoryBytes against PageCount. Entries are
+// varint-encoded, so the exact length is no longer derivable from PageCount —
+// only the range is. The bounds still stop an untrusted header from claiming a
+// directory large enough to trigger a huge allocation, or small enough that
+// PageCount entries could not possibly fit.
+func checkDirectoryBytes(h *RowsBlockHeader) error {
+	lo := uint64(h.PageCount) * MinRowsPageDirEntrySize
+	hi, ok := maxDirectoryBytes(h.PageCount)
+	if !ok || uint64(h.DirectoryBytes) < lo || uint64(h.DirectoryBytes) > uint64(hi) {
+		return formatError("RowsBlockHeader", 16,
+			"directory bytes %d outside [%d, %d] for pageCount %d", h.DirectoryBytes, lo, hi, h.PageCount)
 	}
 	return nil
 }
 
-// rowsDirectoryBytes computes PageCount*entrySize without allowing the
-// uint32 wraparound that an untrusted header could otherwise use to pass the
+// maxDirectoryBytes is the most PageCount varint entries can occupy, guarding
+// the uint32 wraparound an untrusted header could otherwise use to pass the
 // geometry check and trigger a huge allocation later.
-func rowsDirectoryBytes(pageCount uint32) (uint32, bool) {
-	n := uint64(pageCount) * uint64(RowsPageDirEntrySize)
+func maxDirectoryBytes(pageCount uint32) (uint32, bool) {
+	n := uint64(pageCount) * MaxRowsPageDirEntrySize
 	if n > math.MaxUint32 {
 		return 0, false
 	}

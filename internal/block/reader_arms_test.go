@@ -126,18 +126,16 @@ func buildRowsBlockImage(tb testing.TB, alg format.Compression, encrypted bool) 
 		RawSize:            uint32(len(raw)),
 		MinRowID:           1,
 		MaxRowID:           1,
-		PageCRC32C:         format.CRC32C(raw[format.RowsPageHeaderSize:]),
-		StoredOffset:       uint64(format.RowsBlockHeaderSize + format.RowsPageDirEntrySize),
 	}
-	chdr := format.RowsBlockHeader{PageCount: 1, DirectoryBytes: format.RowsPageDirEntrySize, TotalRecords: 1}
+	encoded := encodeDir(dir)
+	chdr := format.RowsBlockHeader{PageCount: 1, DirectoryBytes: uint32(len(encoded)), TotalRecords: 1}
+	dir.StoredOffset = uint64(format.RowsBlockHeaderSize + len(encoded))
 
 	var container bytes.Buffer
 	cb := make([]byte, format.RowsBlockHeaderSize)
 	require.NoError(tb, chdr.MarshalTo(cb))
 	container.Write(cb)
-	db := make([]byte, format.RowsPageDirEntrySize)
-	require.NoError(tb, dir.MarshalTo(db))
-	container.Write(db)
+	container.Write(encoded)
 	hdrAndDir := container.Bytes()
 	container.Write(filePage)
 
@@ -157,7 +155,7 @@ func buildRowsBlockImage(tb testing.TB, alg format.Compression, encrypted bool) 
 
 	return &rowsBlockImage{
 		image:   append(append([]byte(nil), hb...), container.Bytes()...),
-		pageOff: format.BlockHeaderSize + int64(format.RowsBlockHeaderSize+format.RowsPageDirEntrySize),
+		pageOff: format.BlockHeaderSize + int64(format.RowsBlockHeaderSize+len(encoded)),
 		stored:  filePage,
 		plain:   plain,
 		raw:     raw,

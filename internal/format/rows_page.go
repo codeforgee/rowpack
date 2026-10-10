@@ -2,7 +2,17 @@ package format
 
 import (
 	"encoding/binary"
+	"math"
+	"math/bits"
 )
+
+// uvarintLen reports how many bytes binary.AppendUvarint will spend on v.
+func uvarintLen(v uint64) int {
+	if v < 0x80 {
+		return 1
+	}
+	return (bits.Len64(v) + 6) / 7
+}
 
 // Rows Page layout (uncompressed form; this is what Page CRC covers):
 //
@@ -128,68 +138,105 @@ func (h *RowsPageHeader) Unmarshal(src []byte, totalLen int) error {
 	return nil
 }
 
-// RowsPageDirEntry is the fixed 56-byte per-page directory entry stored after
-// the Rows Block header (page layout). It stays plaintext so readers
-// locate and skip pages without decrypting the block; the block header CRC
-// (and a dedicated directory CRC at the block level) authenticates it.
+// RowsPageDirEntry is the per-page directory entry stored after the Rows Block
+// header (page layout). It stays plaintext so readers locate and skip pages
+// without decrypting the block; the block header CRC (and a dedicated
+// directory CRC at the block level) authenticates it.
+//
+// The entry is eight uvarints written back to back with no padding: ordinals,
+// sizes and row ids are small in practice, so a typical entry costs ~9 bytes
+// instead of the 56 the fixed-width form spent on mostly-zero high bytes.
+//
+// Two fields of the old fixed form are gone:
+//
+//	StoredOffset — pages tile the container back to back, so the offset of a
+//	               page is the directory end plus the preceding StoredSizes.
+//	               Storing it would also be circular: the offset depends on the
+//	               directory length, which depends on how many bytes the offset
+//	               itself encodes. Parsers recompute it into the field below.
+//	PageCRC32C   — the page header's own CRC32C already covers the page
+//	               streams, so the directory copy was a second opinion on the
+//	               same bytes.
 type RowsPageDirEntry struct {
 	PageOrdinal        uint32
 	FirstRecordOrdinal uint32 // record ordinal base within the block
 	RecordCount        uint32
-	StoredOffset       uint64 // offset of the stored (compressed) page
+	StoredOffset       uint64 // not encoded; recomputed by the directory parser
 	StoredSize         uint32
 	RawSize            uint32
 	MinRowID           uint64
 	MaxRowID           uint64
-	PageCRC32C         uint32
 	Flags              uint32 // bit0: oversized (single-row) page
 }
 
-// RowsPageDirEntrySize is the fixed serialized size of RowsPageDirEntry.
-const RowsPageDirEntrySize = 56
+// dirEntryFields is the number of uvarints in one encoded entry.
+const dirEntryFields = 8
 
-// Size returns the serialized size.
-func (e *RowsPageDirEntry) Size() int { return RowsPageDirEntrySize }
+const (
+	// MinRowsPageDirEntrySize is the smallest an entry can be: eight uvarints
+	// of one byte each. A header claiming fewer bytes for N pages cannot be a
+	// directory of N entries.
+	MinRowsPageDirEntrySize = dirEntryFields
+	// MaxRowsPageDirEntrySize is the largest an entry can be. It bounds the
+	// allocation a hostile DirectoryBytes can ask for before any parsing.
+	MaxRowsPageDirEntrySize = dirEntryFields * binary.MaxVarintLen64
+)
 
-// MarshalTo writes e into dst.
-func (e *RowsPageDirEntry) MarshalTo(dst []byte) error {
-	if len(dst) < RowsPageDirEntrySize {
-		return formatError("RowsPageDirEntry", -1, "destination too short")
-	}
-	for i := range dst[:RowsPageDirEntrySize] {
-		dst[i] = 0
-	}
-	putU32(dst[0:], e.PageOrdinal)
-	putU32(dst[4:], e.FirstRecordOrdinal)
-	putU32(dst[8:], e.RecordCount)
-	putU64(dst[12:], e.StoredOffset)
-	putU32(dst[20:], e.StoredSize)
-	putU32(dst[24:], e.RawSize)
-	putU64(dst[28:], e.MinRowID)
-	putU64(dst[36:], e.MaxRowID)
-	putU32(dst[44:], e.PageCRC32C)
-	putU32(dst[48:], e.Flags)
-	return nil
+// EncodedLen returns the number of bytes AppendTo will produce for e.
+func (e *RowsPageDirEntry) EncodedLen() int {
+	return uvarintLen(uint64(e.PageOrdinal)) +
+		uvarintLen(uint64(e.FirstRecordOrdinal)) +
+		uvarintLen(uint64(e.RecordCount)) +
+		uvarintLen(uint64(e.StoredSize)) +
+		uvarintLen(uint64(e.RawSize)) +
+		uvarintLen(e.MinRowID) +
+		uvarintLen(e.MaxRowID) +
+		uvarintLen(uint64(e.Flags))
 }
 
-// Unmarshal validates src and fills e. The field reads have no per-field
-// bounds checks: the single top-level length check guarantees
-// len(src) >= RowsPageDirEntrySize and every offset is fixed.
-func (e *RowsPageDirEntry) Unmarshal(src []byte) error {
-	if len(src) < RowsPageDirEntrySize {
-		return formatError("RowsPageDirEntry", -1, errShortInput)
+// AppendTo appends e's encoding to buf. StoredOffset is recomputed on parse
+// and is not part of the encoding.
+func (e *RowsPageDirEntry) AppendTo(buf []byte) []byte {
+	buf = binary.AppendUvarint(buf, uint64(e.PageOrdinal))
+	buf = binary.AppendUvarint(buf, uint64(e.FirstRecordOrdinal))
+	buf = binary.AppendUvarint(buf, uint64(e.RecordCount))
+	buf = binary.AppendUvarint(buf, uint64(e.StoredSize))
+	buf = binary.AppendUvarint(buf, uint64(e.RawSize))
+	buf = binary.AppendUvarint(buf, e.MinRowID)
+	buf = binary.AppendUvarint(buf, e.MaxRowID)
+	return binary.AppendUvarint(buf, uint64(e.Flags))
+}
+
+// Unmarshal decodes one entry from src and returns the bytes it consumed. A
+// truncated varint, a varint wider than 10 bytes or a value that does not fit
+// its uint32 field is rejected, so an untrusted directory can never yield a
+// silently truncated page geometry. StoredOffset is left untouched: only the
+// directory parser knows where the pages start.
+func (e *RowsPageDirEntry) Unmarshal(src []byte) (int, error) {
+	var vals [dirEntryFields]uint64
+	pos := 0
+	for i := range vals {
+		v, n := binary.Uvarint(src[pos:])
+		if n <= 0 {
+			return 0, formatError("RowsPageDirEntry", int64(pos), errShortInput)
+		}
+		vals[i] = v
+		pos += n
 	}
-	e.PageOrdinal = binary.LittleEndian.Uint32(src[0:])
-	e.FirstRecordOrdinal = binary.LittleEndian.Uint32(src[4:])
-	e.RecordCount = binary.LittleEndian.Uint32(src[8:])
-	e.StoredOffset = binary.LittleEndian.Uint64(src[12:])
-	e.StoredSize = binary.LittleEndian.Uint32(src[20:])
-	e.RawSize = binary.LittleEndian.Uint32(src[24:])
-	e.MinRowID = binary.LittleEndian.Uint64(src[28:])
-	e.MaxRowID = binary.LittleEndian.Uint64(src[36:])
-	e.PageCRC32C = binary.LittleEndian.Uint32(src[44:])
-	e.Flags = binary.LittleEndian.Uint32(src[48:])
-	return nil
+	for _, i := range [...]int{0, 1, 2, 3, 4, 7} {
+		if vals[i] > math.MaxUint32 {
+			return 0, formatError("RowsPageDirEntry", int64(pos), "field value %d does not fit uint32", vals[i])
+		}
+	}
+	e.PageOrdinal = uint32(vals[0])
+	e.FirstRecordOrdinal = uint32(vals[1])
+	e.RecordCount = uint32(vals[2])
+	e.StoredSize = uint32(vals[3])
+	e.RawSize = uint32(vals[4])
+	e.MinRowID = vals[5]
+	e.MaxRowID = vals[6]
+	e.Flags = uint32(vals[7])
+	return pos, nil
 }
 
 // PackChangeType maps a ChangeType onto its 2-bit page encoding:

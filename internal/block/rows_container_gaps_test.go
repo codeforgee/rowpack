@@ -68,10 +68,10 @@ func TestParseContainerDirectoryOverrun(t *testing.T) {
 	payload := append([]byte(nil), fb.Stored...)
 	var rh format.RowsBlockHeader
 	require.NoError(t, rh.Unmarshal(payload[:format.RowsBlockHeaderSize]))
-	// Unmarshal enforces DirectoryBytes == PageCount * entry size, so the only
-	// way to escape the container is a huge-but-consistent page count.
+	// Unmarshal bounds DirectoryBytes against PageCount, so the only way to
+	// escape the container is a huge-but-in-range page count.
 	rh.PageCount = 1 << 20
-	rh.DirectoryBytes = rh.PageCount * format.RowsPageDirEntrySize
+	rh.DirectoryBytes = rh.PageCount * format.MinRowsPageDirEntrySize
 	require.NoError(t, rh.MarshalTo(payload[:format.RowsBlockHeaderSize]))
 	_, err := ParseContainer(payload, fb.Header, DefaultLimits())
 	require.ErrorContains(t, err, "overruns")
@@ -103,10 +103,13 @@ func TestDecompressStoredExceedsLimit(t *testing.T) {
 	payload := append([]byte(nil), fb.Stored...)
 	dirEnd := format.RowsBlockHeaderSize + int(containerDirBytes(payload))
 	var dir format.RowsPageDirEntry
-	require.NoError(t, dir.Unmarshal(payload[format.RowsBlockHeaderSize:dirEnd]))
+	n, err := dir.Unmarshal(payload[format.RowsBlockHeaderSize:dirEnd])
+	require.NoError(t, err, "parse the first directory entry")
 	pageLen := dir.StoredSize
 	dir.StoredSize += format.AESGCMTagLen
-	require.NoError(t, dir.MarshalTo(payload[format.RowsBlockHeaderSize:dirEnd]))
+	patched := encodeDir(dir)
+	require.Len(t, patched, n, "growing StoredSize must not change the directory length")
+	copy(payload[format.RowsBlockHeaderSize:], patched)
 	payload = append(payload, make([]byte, format.AESGCMTagLen)...)
 
 	h := fb.Header
@@ -129,7 +132,7 @@ func TestDecompressZstdGarbage(t *testing.T) {
 	fb, rc := buildContainer(t, 64, 1<<20, format.CompressionZstd, want, bodies)
 	_ = fb
 	payload := append([]byte(nil), rc.stored...)
-	start := format.RowsBlockHeaderSize + len(rc.Dir)*format.RowsPageDirEntrySize
+	start := rc.RecordsRegionStart()
 	payload[start+4] ^= 0xFF
 	payload[start+5] ^= 0xFF
 	rc2, err := ParseContainer(payload, fb.Header, DefaultLimits())
@@ -147,9 +150,15 @@ func TestForgedDirRawSizeMismatch(t *testing.T) {
 	payload := append([]byte(nil), rc.stored...)
 	dirEnd := format.RowsBlockHeaderSize + int(containerDirBytes(payload))
 	var dir format.RowsPageDirEntry
-	require.NoError(t, dir.Unmarshal(payload[format.RowsBlockHeaderSize:dirEnd]))
+	n, err := dir.Unmarshal(payload[format.RowsBlockHeaderSize:dirEnd])
+	require.NoError(t, err, "parse the first directory entry")
 	dir.RawSize++
-	require.NoError(t, dir.MarshalTo(payload[format.RowsBlockHeaderSize:dirEnd]))
+	// The patch is written back in place: RawSize++ stays inside the same
+	// varint width, so the directory keeps its length and the container keeps
+	// its layout. If that ever stops holding, re-lay the container out here.
+	patched := encodeDir(dir)
+	require.Len(t, patched, n, "the patch must not change the directory length")
+	copy(payload[format.RowsBlockHeaderSize:], patched)
 	h := fb.Header
 	h.RawCRC32C = format.CRC32C(payload[:dirEnd])
 
@@ -159,24 +168,26 @@ func TestForgedDirRawSizeMismatch(t *testing.T) {
 	require.ErrorContains(t, err, "decompressed")
 }
 
-// TestForgedPageCRCMismatch: a directory entry whose per-page CRC disagrees
-// with the actual page header (container CRC restamped) is rejected.
+// TestForgedPageCRCMismatch: the page header's own CRC32C is now the only
+// checksum a page carries — the directory no longer keeps a second copy — so
+// flipping it (container CRC restamped) must be rejected when the page decodes.
 func TestForgedPageCRCMismatch(t *testing.T) {
 	want, bodies := smallWant(t, 50)
-	fb, rc := buildContainer(t, 64, 1<<20, format.CompressionZstd, want, bodies)
+	// Uncompressed, so the stored page is the raw page and flipping its header
+	// CRC leaves a page that decompresses fine but fails its own check.
+	fb, rc := buildContainer(t, 64, 1<<20, format.CompressionNone, want, bodies)
 	payload := append([]byte(nil), rc.stored...)
 	dirEnd := format.RowsBlockHeaderSize + int(containerDirBytes(payload))
-	var dir format.RowsPageDirEntry
-	require.NoError(t, dir.Unmarshal(payload[format.RowsBlockHeaderSize:dirEnd]))
-	dir.PageCRC32C ^= 0x40
-	require.NoError(t, dir.MarshalTo(payload[format.RowsBlockHeaderSize:dirEnd]))
+	// RowsPageHeader.CRC32C sits at offset 60 of the first stored page. The
+	// block CRC covers only the header+directory, so the container still parses.
+	payload[dirEnd+60] ^= 0x40
 	h := fb.Header
 	h.RawCRC32C = format.CRC32C(payload[:dirEnd])
 
 	rc2, err := ParseContainer(payload, h, DefaultLimits())
 	require.NoError(t, err)
 	_, _, err = rc2.PageScratch(0)
-	require.ErrorContains(t, err, "header CRC")
+	require.ErrorContains(t, err, "CRC mismatch")
 }
 
 // ---- disk path (ParseRowsDir via Reader) ----
@@ -193,13 +204,6 @@ func diskRowsBlock(t *testing.T) ([]byte, format.BlockHeader) {
 	pageStored, err := Compress(format.CompressionZstd, 3, pageRaw)
 	require.NoError(t, err)
 
-	var rh format.RowsBlockHeader
-	rh.PageCount = 1
-	rh.DirectoryBytes = format.RowsPageDirEntrySize
-	rh.TotalRecords = 1
-	hdr := make([]byte, format.RowsBlockHeaderSize)
-	require.NoError(t, rh.MarshalTo(hdr))
-
 	dir := format.RowsPageDirEntry{
 		PageOrdinal:        0,
 		FirstRecordOrdinal: 0,
@@ -208,11 +212,16 @@ func diskRowsBlock(t *testing.T) ([]byte, format.BlockHeader) {
 		RawSize:            uint32(len(pageRaw)),
 		MinRowID:           1,
 		MaxRowID:           1,
-		PageCRC32C:         format.CRC32C(pageRaw[format.RowsPageHeaderSize:]),
-		StoredOffset:       uint64(format.RowsBlockHeaderSize + format.RowsPageDirEntrySize),
 	}
-	dirBuf := make([]byte, format.RowsPageDirEntrySize)
-	require.NoError(t, dir.MarshalTo(dirBuf))
+	dirBuf := encodeDir(dir)
+
+	var rh format.RowsBlockHeader
+	rh.PageCount = 1
+	rh.DirectoryBytes = uint32(len(dirBuf))
+	rh.TotalRecords = 1
+	hdr := make([]byte, format.RowsBlockHeaderSize)
+	require.NoError(t, rh.MarshalTo(hdr))
+	dir.StoredOffset = uint64(format.RowsBlockHeaderSize + len(dirBuf))
 
 	container := bytes.Join([][]byte{hdr, dirBuf, pageStored}, nil)
 	h := format.BlockHeader{
@@ -223,7 +232,7 @@ func diskRowsBlock(t *testing.T) ([]byte, format.BlockHeader) {
 		ItemCount:   1,
 		RawSize:     uint32(len(pageRaw)),
 		StoredSize:  uint32(len(container)),
-		RawCRC32C:   format.CRC32C(container[:format.RowsBlockHeaderSize+format.RowsPageDirEntrySize]),
+		RawCRC32C:   format.CRC32C(container[:format.RowsBlockHeaderSize+len(dirBuf)]),
 	}
 	blk := bytes.Join([][]byte{make([]byte, format.BlockHeaderSize), container}, nil)
 	require.NoError(t, h.MarshalTo(blk[:format.BlockHeaderSize]))
@@ -273,9 +282,11 @@ func TestReadRowsDirCorruptionMatrix(t *testing.T) {
 	require.ErrorContains(t, err, "total records")
 
 	// Directory region extending past the stored block: validateRowCounts
-	// passes (wantDir <= StoredSize) but the resolved dirEnd overruns it.
+	// passes (DirectoryBytes <= StoredSize) but the resolved dirEnd overruns
+	// it. A one-page directory is ~10 varint bytes, so a block that stops at
+	// the container header cannot hold it.
 	blk, h = diskRowsBlock(t)
-	h.StoredSize = format.RowsBlockHeaderSize + 36
+	h.StoredSize = format.RowsBlockHeaderSize
 	bh = make([]byte, format.BlockHeaderSize)
 	require.NoError(t, h.MarshalTo(bh))
 	copy(blk, bh)

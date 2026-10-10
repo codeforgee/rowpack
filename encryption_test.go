@@ -268,9 +268,11 @@ func TestEncryptionTamperDetect(t *testing.T) {
 	require.NoError(t, err)
 	_, err = f.ReadAt(chdr[:], blkOff)
 	require.NoError(t, err)
-	pageCount := binary.LittleEndian.Uint32(chdr[12:]) // RowsBlockHeader.PageCount
-	require.Greater(t, pageCount, uint32(0))
-	page0Stored := blkOff + int64(format.RowsBlockHeaderSize) + int64(pageCount)*int64(format.RowsPageDirEntrySize)
+	// Entries are varint-encoded, so the directory length is read from the
+	// header rather than derived from PageCount.
+	dirBytes := binary.LittleEndian.Uint32(chdr[16:]) // RowsBlockHeader.DirectoryBytes
+	require.Greater(t, dirBytes, uint32(0))
+	page0Stored := blkOff + int64(format.RowsBlockHeaderSize) + int64(dirBytes)
 	payload := make([]byte, 16)
 	_, err = f.ReadAt(payload, page0Stored)
 	require.NoError(t, err)

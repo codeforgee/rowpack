@@ -62,7 +62,18 @@ func (s *pageSealer) seal(h *format.BlockHeader, container []byte) ([]byte, erro
 	}
 	// Recompute the page directory with sealed sizes and re-run the stored
 	// offsets: each sealed page is 16 bytes larger, so the offsets shift.
-	dataStart := format.RowsBlockHeaderSize + n*format.RowsPageDirEntrySize
+	// Entries are varint-encoded, so the new directory length is measured from
+	// the entries instead of derived from the page count.
+	dir := make([]format.RowsPageDirEntry, n)
+	dirBytes := 0
+	for i := range n {
+		d := rc.Dir[i]
+		d.StoredSize = uint32(len(sealedPages[i]))
+		dir[i] = d
+		dirBytes += d.EncodedLen()
+	}
+	rc.Header.DirectoryBytes = uint32(dirBytes)
+	dataStart := format.RowsBlockHeaderSize + dirBytes
 	total := dataStart
 	for _, sp := range sealedPages {
 		total += len(sp)
@@ -72,14 +83,10 @@ func (s *pageSealer) seal(h *format.BlockHeader, container []byte) ([]byte, erro
 	_ = rc.Header.MarshalTo(hdr[:])
 	newContainer = append(newContainer, hdr[:]...)
 	off := dataStart
-	for i := range n {
-		d := rc.Dir[i]
-		d.StoredOffset = uint64(off)
-		d.StoredSize = uint32(len(sealedPages[i]))
-		off += len(sealedPages[i])
-		var e [format.RowsPageDirEntrySize]byte
-		_ = d.MarshalTo(e[:])
-		newContainer = append(newContainer, e[:]...)
+	for i := range dir {
+		dir[i].StoredOffset = uint64(off)
+		off += int(dir[i].StoredSize)
+		newContainer = dir[i].AppendTo(newContainer)
 	}
 	for _, sp := range sealedPages {
 		newContainer = append(newContainer, sp...)

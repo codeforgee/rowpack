@@ -48,11 +48,53 @@ func loadPatchableRowsBlock(t *testing.T, f *os.File, blkOff int64) *patchableBl
 	require.NoError(t, pb.rh.Unmarshal(pb.container[:format.RowsBlockHeaderSize]))
 	pb.dirEnd = format.RowsBlockHeaderSize + int(pb.rh.DirectoryBytes)
 	pb.dir = make([]format.RowsPageDirEntry, pb.rh.PageCount)
+	// Entries are varint-encoded and therefore variable-width: decode them in
+	// order, and recover StoredOffset the way the parser does.
+	pos := format.RowsBlockHeaderSize
+	off := pb.dirEnd
 	for i := range pb.dir {
-		pos := format.RowsBlockHeaderSize + i*format.RowsPageDirEntrySize
-		require.NoError(t, pb.dir[i].Unmarshal(pb.container[pos:]))
+		n, err := pb.dir[i].Unmarshal(pb.container[pos:pb.dirEnd])
+		require.NoError(t, err, "decode directory entry %d", i)
+		pos += n
+		pb.dir[i].StoredOffset = uint64(off)
+		off += int(pb.dir[i].StoredSize)
 	}
 	return pb
+}
+
+// writeDir re-encodes the directory into the container, re-laying the pages out
+// behind it. Entries are varint-encoded, so a mutation can change the directory
+// length; keeping the container well-formed means the only thing that fails is
+// what the mutation actually broke.
+func (pb *patchableBlock) writeDir(t *testing.T) {
+	t.Helper()
+	pages := make([][]byte, len(pb.dir))
+	for i := range pb.dir {
+		pages[i] = append([]byte(nil), pb.page(i)...)
+	}
+	dirBytes := 0
+	for i := range pb.dir {
+		dirBytes += pb.dir[i].EncodedLen()
+	}
+	pb.rh.DirectoryBytes = uint32(dirBytes)
+	pb.dirEnd = format.RowsBlockHeaderSize + dirBytes
+	off := pb.dirEnd
+	for i := range pb.dir {
+		pb.dir[i].StoredOffset = uint64(off)
+		off += int(pb.dir[i].StoredSize)
+	}
+	out := make([]byte, 0, off)
+	var hdr [format.RowsBlockHeaderSize]byte
+	require.NoError(t, pb.rh.MarshalTo(hdr[:]))
+	out = append(out, hdr[:]...)
+	for i := range pb.dir {
+		out = pb.dir[i].AppendTo(out)
+	}
+	for _, p := range pages {
+		out = append(out, p...)
+	}
+	pb.container = out
+	pb.hdr.StoredSize = uint32(len(out))
 }
 
 // page 返回第 i 页的 stored 字节（CompressionNone 下即 raw 页）。
@@ -67,8 +109,8 @@ func (pb *patchableBlock) pageStreams(i int) []byte {
 	return p[format.RowsPageHeaderSize:]
 }
 
-// write 重算整条 CRC 链并落盘：页头 CRC ← 页流 CRC；目录 PageCRC32C ← 页头 CRC；
-// 块头 RawCRC32C ← 容器头+目录区 CRC；块头 CRC 由 MarshalTo 重算。
+// write 重算整条 CRC 链并落盘：页头 CRC ← 页流 CRC；块头 RawCRC32C ← 容器头+目录区
+// CRC；块头 CRC 由 MarshalTo 重算。目录里不再存 PageCRC32C 副本，页头 CRC 是唯一来源。
 func (pb *patchableBlock) write(t *testing.T) {
 	t.Helper()
 	for i := range pb.dir {
@@ -76,9 +118,6 @@ func (pb *patchableBlock) write(t *testing.T) {
 		require.Greater(t, len(p), format.RowsPageHeaderSize)
 		crc := format.CRC32C(p[format.RowsPageHeaderSize:])
 		binary.LittleEndian.PutUint32(p[60:], crc) // RowsPageHeader.CRC32C
-		pb.dir[i].PageCRC32C = crc
-		pos := format.RowsBlockHeaderSize + i*format.RowsPageDirEntrySize
-		require.NoError(t, pb.dir[i].MarshalTo(pb.container[pos:]))
 	}
 	pb.hdr.RawCRC32C = format.CRC32C(pb.container[:pb.dirEnd])
 	var hb [format.BlockHeaderSize]byte
@@ -335,6 +374,9 @@ func TestCorruptPageDirGeometryFailsLoad(t *testing.T) {
 	pb := loadPatchableRowsBlock(t, f, off)
 	require.GreaterOrEqual(t, len(pb.dir), 2, "block must span pages")
 	pb.dir[0].RecordCount++ // page 1 的 FirstRecordOrdinal 不再衔接
+	// The directory is varint-encoded, so the patched entry has to be written
+	// back through writeDir before the CRC chain is restamped.
+	pb.writeDir(t)
 	pb.write(t)
 	require.NoError(t, f.Close())
 

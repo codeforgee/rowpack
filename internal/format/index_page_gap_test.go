@@ -9,34 +9,8 @@ import (
 // RowsPageDirEntry.Unmarshal / RowIndexPageHeader.Unmarshal 的错误分支覆盖
 // 偏低，补短输入、magic、版本、保留位、位流几何等校验测试。
 
-func TestRowsPageDirEntryRoundtripAndShort(t *testing.T) {
-	e := RowsPageDirEntry{
-		PageOrdinal:        2,
-		FirstRecordOrdinal: 5,
-		RecordCount:        9,
-		StoredOffset:       1234,
-		StoredSize:         77,
-		RawSize:            321,
-		MinRowID:           1,
-		MaxRowID:           88,
-		PageCRC32C:         0xABCDEF,
-		Flags:              1,
-	}
-	var buf [RowsPageDirEntrySize]byte
-	if err := e.MarshalTo(buf[:]); err != nil {
-		t.Fatal(err)
-	}
-	var out RowsPageDirEntry
-	if err := out.Unmarshal(buf[:]); err != nil {
-		t.Fatal(err)
-	}
-	require.Equal(t, e, out, "roundtrip mismatch: %+v vs %+v", out, e)
-	for _, n := range []int{0, 1, RowsPageDirEntrySize - 1} {
-		if err := out.Unmarshal(buf[:n]); err == nil {
-			t.Fatalf("short input %d accepted", n)
-		}
-	}
-}
+// RowsPageDirEntry 的往返与拒绝分支见 guards_structs_test.go 的
+// TestRowsPageDirEntryRoundtripAndRejects（条目已改为变长编码）。
 
 func TestRowIndexPageHeaderErrors(t *testing.T) {
 	h := RowIndexPageHeader{EntryCount: 4, ChangeBitsBytes: 1, TableRunBytes: 2, RowIDBytes: 8, BlockRunBytes: 2, OrdinalBytes: 4, FirstRowID: 3, MinRowID: 1, MaxRowID: 7}

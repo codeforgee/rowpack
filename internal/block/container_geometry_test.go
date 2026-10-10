@@ -21,9 +21,50 @@ type forgedContainer struct {
 	hdr    format.BlockHeader
 	rh     format.RowsBlockHeader
 	dir    []format.RowsPageDirEntry
+	pages  [][]byte
+	dirEnd int
 	// post 在目录回写之后按字节改写容器，用于构造「连 RowsBlockHeader 自身的
 	// 交叉校验都放行不了」的伪造（例如 DirectoryBytes 与 PageCount 不一致）。
 	post func(stored []byte)
+}
+
+// relayout re-encodes the (possibly forged) directory and moves the pages so
+// they start right behind it. Directory entries are varint-encoded, so a
+// mutation can change the directory length: rebuilding keeps the container
+// well-formed apart from whatever the mutation actually broke, instead of
+// leaving a stale length that would fail for the wrong reason.
+//
+// The page bytes are the ones captured before the mutation ran, so a mutation
+// that inflates StoredSize cannot read past the end of the fixture: the
+// inflated size is what the parser is meant to reject.
+func (f *forgedContainer) relayout() {
+	// StoredOffset is not part of an entry's encoding, so forging it has no
+	// on-disk effect: it is recomputed here exactly as the parser will.
+	dirBytes := 0
+	for i := range f.dir {
+		dirBytes += f.dir[i].EncodedLen()
+	}
+	f.rh.DirectoryBytes = uint32(dirBytes)
+	f.dirEnd = format.RowsBlockHeaderSize + dirBytes
+	off := f.dirEnd
+	for i := range f.dir {
+		f.dir[i].StoredOffset = uint64(off)
+		off += int(f.dir[i].StoredSize)
+	}
+	out := make([]byte, 0, off)
+	var hdr [format.RowsBlockHeaderSize]byte
+	if err := f.rh.MarshalTo(hdr[:]); err != nil {
+		panic("relayout: container header rejected: " + err.Error())
+	}
+	out = append(out, hdr[:]...)
+	for i := range f.dir {
+		out = f.dir[i].AppendTo(out)
+	}
+	for _, p := range f.pages {
+		out = append(out, p...)
+	}
+	f.stored = out
+	f.hdr.StoredSize = uint32(len(out))
 }
 
 // forgeRowsContainer 建一个合法的 3 页不压缩容器，套用 mutate，然后按改写后的容器
@@ -47,11 +88,26 @@ func forgeRowsContainer(tb testing.TB, mutate func(*forgedContainer)) *forgedCon
 		tb.Fatalf("unmarshal container header: %v", err)
 	}
 	f.dir = make([]format.RowsPageDirEntry, f.rh.PageCount)
+	f.dirEnd = format.RowsBlockHeaderSize + int(f.rh.DirectoryBytes)
+	pos := format.RowsBlockHeaderSize
+	// StoredOffset is not encoded, so recover it the way the parser does:
+	// the first page starts where the directory ends.
+	off := f.dirEnd
 	for i := range f.dir {
-		pos := format.RowsBlockHeaderSize + i*format.RowsPageDirEntrySize
-		if err := f.dir[i].Unmarshal(f.stored[pos:]); err != nil {
+		n, err := f.dir[i].Unmarshal(f.stored[pos:f.dirEnd])
+		if err != nil {
 			tb.Fatalf("unmarshal dir %d: %v", i, err)
 		}
+		pos += n
+		f.dir[i].StoredOffset = uint64(off)
+		off += int(f.dir[i].StoredSize)
+	}
+	// Capture the page bytes before the mutation runs: mutating StoredSize
+	// must not be able to read past the end of the fixture.
+	f.pages = make([][]byte, len(f.dir))
+	for i := range f.dir {
+		start := int(f.dir[i].StoredOffset)
+		f.pages[i] = append([]byte(nil), f.stored[start:start+int(f.dir[i].StoredSize)]...)
 	}
 	if mutate != nil {
 		mutate(f)
@@ -60,16 +116,11 @@ func forgeRowsContainer(tb testing.TB, mutate func(*forgedContainer)) *forgedCon
 	if err := f.rh.MarshalTo(f.stored[:format.RowsBlockHeaderSize]); err != nil {
 		tb.Fatalf("marshal container header: %v", err)
 	}
-	for i := range f.dir {
-		pos := format.RowsBlockHeaderSize + i*format.RowsPageDirEntrySize
-		if err := f.dir[i].MarshalTo(f.stored[pos:]); err != nil {
-			tb.Fatalf("marshal dir %d: %v", i, err)
-		}
-	}
+	f.relayout()
 	if f.post != nil {
 		f.post(f.stored)
 	}
-	dirEnd := min(format.RowsBlockHeaderSize+int(f.rh.DirectoryBytes), len(f.stored))
+	dirEnd := min(f.dirEnd, len(f.stored))
 	f.hdr.RawCRC32C = format.CRC32C(f.stored[:dirEnd])
 	return f
 }
@@ -89,16 +140,16 @@ func TestContainerGeometryGate(t *testing.T) {
 		{"clean", nil, ""},
 		{"item-count-disagrees", func(f *forgedContainer) { f.hdr.ItemCount++ }, "total records"},
 		{"directory-size-mismatch", func(f *forgedContainer) {
-			// RowsBlockHeader.MarshalTo 自己就拒绝 DirectoryBytes 与 PageCount
-			// 不一致，只能绕过序列化直接改字节。
+			// RowsBlockHeader.MarshalTo 自己就拒绝越界的 DirectoryBytes，
+			// 只能绕过序列化直接改字节。条目是变长的，所以校验的是区间而非
+			// 精确值：0 落在下界之下。
 			f.post = func(stored []byte) {
-				binary.LittleEndian.PutUint32(stored[16:], binary.LittleEndian.Uint32(stored[16:])+format.RowsPageDirEntrySize)
+				binary.LittleEndian.PutUint32(stored[16:], 0)
 			}
 		}, "directory bytes"},
 		{"page-ordinal", func(f *forgedContainer) { f.dir[1].PageOrdinal = 7 }, "out of order"},
 		{"first-record-ordinal", func(f *forgedContainer) { f.dir[1].FirstRecordOrdinal++ }, "first ordinal"},
 		{"empty-page", func(f *forgedContainer) { f.dir[0].RecordCount = 0 }, "zero records"},
-		{"stored-offset-gap", func(f *forgedContainer) { f.dir[1].StoredOffset += 4 }, "stored offset"},
 		{"stored-size-over-limit", func(f *forgedContainer) { f.dir[0].StoredSize = DefaultLimits().MaxStoredBytes + 1 }, "stored size"},
 		{"raw-size-over-limit", func(f *forgedContainer) { f.dir[0].RawSize = DefaultLimits().MaxRawBytes + 1 }, "raw size"},
 		{"page-escapes-container", func(f *forgedContainer) { f.dir[len(f.dir)-1].StoredSize += 8 }, "escape container"},
@@ -134,7 +185,7 @@ func TestContainerHeaderCRCIsEnforced(t *testing.T) {
 	dirEnd := format.RowsBlockHeaderSize + int(f.rh.DirectoryBytes)
 	// 目录区里的字节漂移必须被块头 RawCRC32C 拦下——几何判定跑在 CRC 之后，
 	// 没有这道关卡，伪造目录就能直接进 checkBounds。
-	for _, off := range []int{format.RowsBlockHeaderSize, format.RowsBlockHeaderSize + format.RowsPageDirEntrySize + 8, dirEnd - 1} {
+	for _, off := range []int{format.RowsBlockHeaderSize, format.RowsBlockHeaderSize + 8, dirEnd - 1} {
 		g := &forgedContainer{stored: append([]byte(nil), f.stored...), hdr: f.hdr}
 		g.stored[off] ^= 0xFF
 		// 注意：这里故意不重算 RawCRC32C。

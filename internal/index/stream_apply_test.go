@@ -65,11 +65,11 @@ func compareRowShards(t *testing.T, a, b *View) {
 		if sa == nil {
 			continue
 		}
-		if len(sa.rowIDs) != len(sb.rowIDs) {
-			t.Fatalf("table %d row count %d != %d", tables[i], len(sa.rowIDs), len(sb.rowIDs))
+		if sa.rowIDs.n != sb.rowIDs.n {
+			t.Fatalf("table %d row count %d != %d", tables[i], sa.rowIDs.n, sb.rowIDs.n)
 		}
-		for j := range sa.rowIDs {
-			require.Equal(t, sb.rowIDs[j], sa.rowIDs[j], "table %d row %d id %d != %d", tables[i], j, sa.rowIDs[j], sb.rowIDs[j])
+		for j := 0; j < sa.rowIDs.n; j++ {
+			require.Equal(t, sb.rowIDAt(j), sa.rowIDAt(j), "table %d row %d id %d != %d", tables[i], j, sa.rowIDAt(j), sb.rowIDAt(j))
 			require.Equal(t, sb.ordinals[j], sa.ordinals[j], "table %d row %d ordinal %d != %d", tables[i], j, sa.ordinals[j], sb.ordinals[j])
 			require.Equal(t, sb.changes[j], sa.changes[j], "table %d row %d change %d != %d", tables[i], j, sa.changes[j], sb.changes[j])
 		}
@@ -80,8 +80,8 @@ func compareRowShards(t *testing.T, a, b *View) {
 			require.Equal(t, sb.blockIDs[j], sa.blockIDs[j], "table %d run %d block %d != %d", tables[i], j, sa.blockIDs[j], sb.blockIDs[j])
 			require.Equal(t, sb.runStart[j], sa.runStart[j], "table %d run %d start %d != %d", tables[i], j, sa.runStart[j], sb.runStart[j])
 		}
-		if sa.runStart[len(sa.runStart)-1] != uint32(len(sa.rowIDs)) {
-			t.Fatalf("table %d terminal run start %d != %d", tables[i], sa.runStart[len(sa.runStart)-1], len(sa.rowIDs))
+		if sa.runStart[len(sa.runStart)-1] != uint32(sa.rowIDs.n) {
+			t.Fatalf("table %d terminal run start %d != %d", tables[i], sa.runStart[len(sa.runStart)-1], sa.rowIDs.n)
 		}
 	}
 }

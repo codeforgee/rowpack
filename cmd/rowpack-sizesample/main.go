@@ -529,12 +529,10 @@ func run(out string, scale float64, snapshots int, seed int64, gap int, keep boo
 	fmt.Fprintf(&b, "%-20s %d\n", "idxShardFixedBytes", mb.ShardFixedBytes)
 	fmt.Fprintf(&b, "%-20s %d\n", "idxAccountedBytes", mb.AccountedBytes())
 	fmt.Fprintf(&b, "%-20s %d\n", "idxSlackBytes", mb.SlackBytes)
-	// 位打包的前景，用真实分布算而不是猜：Raw 是今天 []uint64/[]uint32 的
-	// 成本，Var 是每值自带位宽的理论下界，Frame 是每 128 条一帧、帧内共用
-	// 位宽（含每帧一个基准值）——最后一个才是可实现的方案。
+	// RowIDs 已落地打包：Raw 是"若仍是 []uint64"的对照，Packed 是实际成本。
+	// ordinals 还没打包，Var/Frame 是剩余空间。
 	fmt.Fprintf(&b, "%-20s %d\n", "packRowIDRawBytes", pp.RawRowIDBits/8)
-	fmt.Fprintf(&b, "%-20s %d\n", "packRowIDVarBytes", pp.VarRowIDBits/8)
-	fmt.Fprintf(&b, "%-20s %d\n", "packRowIDFrameBytes", pp.RowIDFrameBytes())
+	fmt.Fprintf(&b, "%-20s %d\n", "packRowIDPackedBytes", pp.PackedRowIDBytes())
 	fmt.Fprintf(&b, "%-20s %d\n", "packOrdRawBytes", pp.RawOrdinalBits/8)
 	fmt.Fprintf(&b, "%-20s %d\n", "packOrdVarBytes", pp.VarOrdinalBits/8)
 	fmt.Fprintf(&b, "%-20s %d\n", "packOrdFrameBytes", pp.OrdinalFrameBytes())

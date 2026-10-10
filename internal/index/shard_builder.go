@@ -151,7 +151,7 @@ func (b *rowShardBuilder) finalize() error {
 	}
 	b.runStart = append(b.runStart, uint32(len(b.rowIDs)))
 	b.done[b.table] = &rowShard{
-		rowIDs:   b.rowIDs,
+		rowIDs:   packRowIDs(b.rowIDs),
 		ordinals: b.ordinals,
 		changes:  b.changes,
 		runStart: b.runStart,

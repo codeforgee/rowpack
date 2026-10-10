@@ -30,13 +30,13 @@ func TestPrepareSortsUnsortedEntries(t *testing.T) {
 	wantIDs := []uint64{10, 30, 50, 70, 90}
 	wantOrdinals := []uint32{0, 1, 3, 5, 7}
 	wantChanges := []uint8{uint8(format.ChangeInsert), uint8(format.ChangeInsert), uint8(format.ChangeDelete), uint8(format.ChangeInsert), uint8(format.ChangeUpdate)}
-	if len(sh.rowIDs) != len(wantIDs) {
-		t.Fatalf("rowIDs len %d, want %d", len(sh.rowIDs), len(wantIDs))
+	if sh.rowIDs.n != len(wantIDs) {
+		t.Fatalf("rowIDs len %d, want %d", sh.rowIDs.n, len(wantIDs))
 	}
 	for i := range wantIDs {
-		if sh.rowIDs[i] != wantIDs[i] || sh.ordinals[i] != wantOrdinals[i] || sh.changes[i] != wantChanges[i] {
+		if sh.rowIDAt(i) != wantIDs[i] || sh.ordinals[i] != wantOrdinals[i] || sh.changes[i] != wantChanges[i] {
 			t.Fatalf("row %d = (%d, ord %d, ch %d), want (%d, %d, %d)", i,
-				sh.rowIDs[i], sh.ordinals[i], sh.changes[i], wantIDs[i], wantOrdinals[i], wantChanges[i])
+				sh.rowIDAt(i), sh.ordinals[i], sh.changes[i], wantIDs[i], wantOrdinals[i], wantChanges[i])
 		}
 		if loc, ok := sh.lookup(wantIDs[i]); !ok || loc.ItemOrdinal != wantOrdinals[i] || loc.BlockID == 0 {
 			t.Fatalf("lookup(%d) = %+v ok=%v", wantIDs[i], loc, ok)
@@ -65,7 +65,7 @@ func TestPrepareSortsUnsortedEntries(t *testing.T) {
 		}
 	}
 	// Seek 定位到首个 >= target 的下标。
-	it := &rowShardIter{sh: sh}
+	it := newRowShardIter(sh)
 	it.Seek(51)
 	if it.Done() || it.RowID() != 70 {
 		t.Fatalf("Seek(51) = %d done=%v, want 70", it.RowID(), it.Done())

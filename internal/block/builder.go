@@ -54,10 +54,9 @@ type RowsBuilder struct {
 	page *PageBuilder
 
 	// entries carries one RowDirectoryEntry per buffered record in call order
-	// (only RowID/SchemaVersion/ChangeType are meaningful in the page layout;
-	// RecordOffset/RecordLength are unused). This exact slice is handed to
-	// FlushedBlock.Rows for index building, so the writer's index build needs
-	// no change.
+	// (the in-memory RowID/SchemaVersion/ChangeType triple; the page layout
+	// needs nothing else). This exact slice is handed to FlushedBlock.Rows for
+	// index building, so the writer's index build needs no change.
 	entries []format.RowDirectoryEntry
 
 	// dirEntries + storedPages hold the finished stored pages of the current

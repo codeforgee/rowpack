@@ -357,6 +357,31 @@ func (c *RowsContainer) parsePage(i int, raw []byte) (*RowsPage, error) {
 	return p, nil
 }
 
+// cachedPage returns the already-memoized page i, or nil.
+func (c *RowsContainer) cachedPage(i int) *RowsPage {
+	c.pagesMu.RLock()
+	defer c.pagesMu.RUnlock()
+	if c.pages != nil {
+		return c.pages[i]
+	}
+	return nil
+}
+
+// decodePage reads and decompresses page i without touching the page memo. For
+// a lazy container it goes through the reader; for a whole container it
+// decompresses from the owned buffer. The returned page owns its buffer.
+func (c *RowsContainer) decodePage(i int) (*RowsPage, error) {
+	if c.lazy() {
+		return c.reader.ReadRowsPage(c.blockOffset, c, i)
+	}
+	buf := &rawBuf{data: make([]byte, c.Dir[i].RawSize)}
+	raw, err := c.decompress(i, buf)
+	if err != nil {
+		return nil, err
+	}
+	return c.parsePage(i, raw)
+}
+
 // pageOwned obtains the (possibly memoized) page i. For a lazy container it
 // reads+decompresses just that page via the reader; for a whole container it
 // decompresses from the owned buffer. The returned page owns its buffer and
@@ -365,28 +390,12 @@ func (c *RowsContainer) pageOwned(i int) (*RowsPage, error) {
 	if i < 0 || i >= len(c.Dir) {
 		return nil, fmt.Errorf("rowpack: page index %d out of range (%d)", i, len(c.Dir))
 	}
-	c.pagesMu.RLock()
-	if c.pages != nil {
-		if p, ok := c.pages[i]; ok {
-			c.pagesMu.RUnlock()
-			return p, nil
-		}
+	if p := c.cachedPage(i); p != nil {
+		return p, nil
 	}
-	c.pagesMu.RUnlock()
 	// Decompress outside the lock so concurrent first accessors of the same
 	// page don't serialize the (expensive) page decode.
-	var p *RowsPage
-	var err error
-	if c.lazy() {
-		p, err = c.reader.ReadRowsPage(c.blockOffset, c, i)
-	} else {
-		buf := &rawBuf{data: make([]byte, c.Dir[i].RawSize)}
-		raw, derr := c.decompress(i, buf)
-		if derr != nil {
-			return nil, derr
-		}
-		p, err = c.parsePage(i, raw)
-	}
+	p, err := c.decodePage(i)
 	if err != nil {
 		return nil, err
 	}
@@ -429,6 +438,25 @@ func (c *RowsContainer) PageScratch(i int) (*RowsPage, func(), error) {
 	return p, func() {}, nil
 }
 
+// pageTransient returns page i for a single sequential pass over the container:
+// a page that is already memoized is reused, but a cold page is decoded without
+// being installed in the memo, so the pass does not pin every page it touches.
+//
+// Verify and the recovery rebuild are one-shot full-container walks: memoizing
+// their pages would retain the whole decoded container (charged against the
+// block cache, and displacing or duplicating the random-read hot set) for a
+// pass that never revisits a page. The page is still owned and valid for the
+// duration of the call; only the memo entry is skipped.
+func (c *RowsContainer) pageTransient(i int) (*RowsPage, error) {
+	if i < 0 || i >= len(c.Dir) {
+		return nil, fmt.Errorf("rowpack: page index %d out of range (%d)", i, len(c.Dir))
+	}
+	if p := c.cachedPage(i); p != nil {
+		return p, nil
+	}
+	return c.decodePage(i)
+}
+
 // RecordAt decodes one record by block item ordinal, decompressing only
 // the containing page. The returned codec.PageRecord's Body aliases the page
 // buffer, which is valid for the container's lifetime (release is a no-op). It
@@ -451,12 +479,15 @@ func (c *RowsContainer) RecordAt(ordinal uint32) (codec.PageRecord, func(), erro
 }
 
 // ForEach iterates every record of every page in call order, decompressing one
-// page at a time (memoized in the container, never the whole block at once).
-// Bodies alias the page buffer and must not be retained beyond the callback.
-// It is the recovery/rebuild/verify/scan accessor.
+// page at a time (never the whole block at once). Pages are NOT memoized: this
+// is the one-shot sequential accessor (verify / recovery rebuild), so pinning
+// every page would charge the whole decoded container to the block cache for a
+// pass that never revisits one. Bodies alias the page buffer and must not be
+// retained beyond the callback.
+// It is the recovery/rebuild/verify accessor.
 func (c *RowsContainer) ForEach(fn func(codec.PageRecord) error) error {
 	for i := range c.Dir {
-		page, err := c.pageOwned(i)
+		page, err := c.pageTransient(i)
 		if err != nil {
 			return err
 		}

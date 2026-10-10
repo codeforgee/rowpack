@@ -165,8 +165,11 @@ func (r *Reader) ReadRowsPage(offset int64, c *RowsContainer, pageIdx int) (*Row
 		raw = stored
 	} else {
 		maxOut := min(dir.RawSize, c.limits.MaxRawBytes)
+		// Decode into a destination sized exactly RawSize: DecodeAll(nil, …)
+		// returns cap == len+16 and the allocator rounds up to an 8 KiB page
+		// multiple, which put every 32 KiB page in a 40 KiB size class.
 		var err error
-		raw, err = decompressZstd(nil, stored, maxOut)
+		raw, err = decompressZstd(reserveDecode(dir.RawSize, maxOut), stored, maxOut)
 		if err != nil {
 			return nil, fmt.Errorf("rowpack: page %d: %w", pageIdx, err)
 		}
@@ -320,7 +323,10 @@ func (r *Reader) maybeDecrypt(stored []byte, h *format.BlockHeader) ([]byte, err
 }
 
 func (r *Reader) decompress(h *format.BlockHeader, stored []byte) ([]byte, error) {
-	out, err := Decompress(h.Compression, nil, stored, r.limits.MaxRawBytes)
+	// h.RawSize is validated against the limits by checkHeader, so reserving
+	// exactly that many bytes is bounded — and it keeps the decoded payload
+	// out of the next size class up (see reserveDecode).
+	out, err := Decompress(h.Compression, reserveDecode(h.RawSize, r.limits.MaxRawBytes), stored, r.limits.MaxRawBytes)
 	if err != nil {
 		return nil, fmt.Errorf("rowpack: block %d: %w", h.BlockID, err)
 	}

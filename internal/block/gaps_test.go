@@ -85,28 +85,36 @@ func TestRowsContainerAccountingHooks(t *testing.T) {
 	// Cache accounting: the callback fires as pages are memoized, so it must
 	// be installed before the first page load.
 	var reported int64
-	rc.SetCacheAccounting(func(delta int64) { reported += delta })
+	rc.SetCacheAccounting(func(retained int64) { reported = retained })
 
+	// ForEach is the one-shot sequential accessor (verify / recovery rebuild):
+	// it must stream, leaving nothing memoized and never reporting growth.
 	var n int
 	err := rc.ForEach(func(codec.PageRecord) error { n++; return nil })
 	require.NoError(t, err, "ForEach")
 	if n != len(rows) {
 		t.Fatalf("ForEach visited %d records, want %d", n, len(rows))
 	}
-	if reported == 0 {
-		t.Fatal("cache accounting callback never fired")
+	if reported != 0 {
+		t.Fatalf("ForEach memoized pages: accounting reported %d, want 0", reported)
+	}
+	if got, want := rc.RetainedLen(), int64(rc.StoredLen()); got != want {
+		t.Fatalf("RetainedLen after ForEach = %d, want %d", got, want)
 	}
 
-	if rc.RetainedLen() <= 0 {
-		t.Fatalf("RetainedLen = %d", rc.RetainedLen())
-	}
-
-	// PageScratch returns memoized pages with a no-op release.
+	// PageScratch returns memoized pages with a no-op release, and memoizing
+	// is what the LRU accounting is there to observe.
 	p, release, err := rc.PageScratch(0)
 	require.NoError(t, err, "PageScratch")
 	release()
 	if p == nil || len(p.raw) == 0 {
 		t.Fatal("PageScratch returned an empty page")
+	}
+	if reported <= int64(rc.StoredLen()) {
+		t.Fatalf("memoized page not accounted: reported %d, StoredLen %d", reported, rc.StoredLen())
+	}
+	if rc.RetainedLen() <= int64(rc.StoredLen()) {
+		t.Fatalf("RetainedLen = %d, want > StoredLen %d", rc.RetainedLen(), rc.StoredLen())
 	}
 }
 

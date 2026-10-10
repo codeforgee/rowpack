@@ -60,7 +60,7 @@ type Options struct {
 	// disables all caching.
 	CacheBytes int64
 	// ScanCacheBytes bounds the scan window explicitly. 0 selects the
-	// default split (half of CacheBytes, capped at 64 MiB); negative
+	// default split (a quarter of CacheBytes, capped at 16 MiB); negative
 	// disables the scan window while keeping the random-read cache. The
 	// random-read cache gets whatever the scan window leaves unused, so
 	// DataCache + ScanCacheBytes == CacheBytes always holds.

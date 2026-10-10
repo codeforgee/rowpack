@@ -53,7 +53,7 @@ const (
 	SnapshotHeaderSize     = 96
 	SnapshotFooterSize     = 144
 	BlockHeaderSize        = 64
-	RowDirectoryEntrySize  = 24
+	RowDirectoryEntrySize  = 16
 	MetaPayloadHeaderSize  = 32
 	MetaDirectoryEntrySize = 32
 	IndexTxnHeaderSize     = 80
@@ -269,8 +269,17 @@ const (
 	// read/compress/cache unit inside a Rows Block). Chosen at 32 KiB by the
 	// page-size sweep: it loses only ~7% compression vs 64 KiB while halving
 	// cold-read decompression.
-	DefaultPageSize   = 32 << 10
-	DefaultCacheBytes = 64 << 20 // 64 MiB block cache
+	DefaultPageSize = 32 << 10
+	// DefaultCacheBytes is the total decoded-block budget, split between the
+	// random-read cache and the scan window (see rowpack.scanBudgetFor). It is
+	// a ceiling on retained decoded pages, not a preallocation, so sizing it by
+	// the working set rather than by the file is what keeps resident memory in
+	// proportion: measured on a 200k-row / 9-snapshot store (25.5 MiB raw),
+	// 8 MiB and 32 MiB of random-read budget are indistinguishable —
+	// Get-hot 8 ms and Scan 47/48 ms in both — while VerifyFull is 93 vs 90 ms,
+	// inside run-to-run noise. Callers with a genuinely hot multi-MiB working
+	// set raise it through Options.CacheBytes.
+	DefaultCacheBytes = 16 << 20
 	// DefaultCompressionLvl is the zstd level every store uses unless Options
 	// overrides it. Klauspost maps levels onto four encoder settings, so only
 	// three distinct outputs exist in this range — measured on the sample

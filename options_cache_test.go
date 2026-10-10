@@ -19,11 +19,11 @@ func TestSplitCacheBudget(t *testing.T) {
 	}{
 		{0, 0, 0, 0},                             // total disabled
 		{-1, 0, 0, 0},                            // total disabled (bench cold)
-		{64 * MiB, 0, 32 * MiB, 32 * MiB},        // default split unchanged
-		{256 * MiB, 0, 192 * MiB, 64 * MiB},      // 64 MiB scan cap kicks in
+		{64 * MiB, 0, 48 * MiB, 16 * MiB},        // default split: total/4
+		{256 * MiB, 0, 240 * MiB, 16 * MiB},      // 16 MiB scan cap kicks in
 		{64 * MiB, 16 * MiB, 48 * MiB, 16 * MiB}, // explicit scan
 		{64 * MiB, -1, 64 * MiB, 0},              // explicit scan disable
-		{2 * MiB, 0, 1 * MiB, 1 * MiB},           // small total: no 1 MiB floor, sum preserved
+		{2 * MiB, 0, 3 * MiB / 2, 1 * MiB / 2},   // small total: no 1 MiB floor, sum preserved
 	}
 	for _, c := range cases {
 		data, scan := cacheBudget(c.total, c.scan)

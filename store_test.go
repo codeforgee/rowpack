@@ -309,6 +309,20 @@ func TestReadBatchInto(t *testing.T) {
 	want, err := db.ReadBatch(ctx, snap, "u", ids)
 	require.NoError(t, err)
 	check(want)
+
+	// ReadBatchInto is the exported form of the same contract: it reuses the
+	// caller's BatchBuffer (zero value usable) and rejects a nil one with the
+	// same sentinel.
+	var pub BatchBuffer
+	pubRows, err := db.ReadBatchInto(ctx, snap, "u", ids, &pub)
+	require.NoError(t, err)
+	check(pubRows)
+	pubRows2, err := db.ReadBatchInto(ctx, snap, "u", ids, &pub)
+	require.NoError(t, err)
+	check(pubRows2)
+	require.True(t, &pubRows[0] == &pubRows2[0], "BatchBuffer output must be reused, not reallocated")
+	_, err = db.ReadBatchInto(ctx, snap, "u", ids, nil)
+	require.ErrorIs(t, err, ErrInvalidArgument)
 }
 
 // TestWriterErrors covers the error sentinels on the write path.

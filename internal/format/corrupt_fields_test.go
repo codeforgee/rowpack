@@ -260,15 +260,16 @@ func TestRowsPageHeaderRejectsZeroEntries(t *testing.T) {
 }
 
 // TestRowDirectoryEntryResistsTruncation extends the truncation ladder to
-// RowDirectoryEntry, which the fixed-structs table does not include.
+// RowDirectoryEntry: the fixed-fill table above only exercises the 0 and size-1
+// destination arms, this one walks every prefix length.
 func TestRowDirectoryEntryResistsTruncation(t *testing.T) {
 	full := mustMarshalInto(t, RowDirectoryEntrySize, (&RowDirectoryEntry{
-		RowID: 7, RecordOffset: 64, RecordLength: 32, ChangeType: ChangeInsert, SchemaVersion: 1,
+		RowID: 7, ChangeType: ChangeInsert, SchemaVersion: 1,
 	}).MarshalTo)
 	var e RowDirectoryEntry
 	err := e.Unmarshal(full)
 	require.NoError(t, err, "full encoding rejected")
-	if e.RowID != 7 || e.RecordOffset != 64 || e.RecordLength != 32 || e.ChangeType != ChangeInsert || e.SchemaVersion != 1 {
+	if e.RowID != 7 || e.ChangeType != ChangeInsert || e.SchemaVersion != 1 {
 		t.Fatalf("roundtrip mismatch: %+v", e)
 	}
 	for l := range RowDirectoryEntrySize {

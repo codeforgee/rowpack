@@ -136,6 +136,9 @@ type Change struct {
 func (s *Store) Get(ctx context.Context, snapshot SnapshotID, table string, rowID RowID, dst Row) (Row, error)
 func (s *Store) Exists(ctx context.Context, snapshot SnapshotID, table string, rowID RowID) (bool, error)
 func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string, ids []RowID) ([]Row, error)
+func (s *Store) ReadBatchInto(ctx context.Context, snapshot SnapshotID, table string, ids []RowID, buf *BatchBuffer) ([]Row, error)
+
+type BatchBuffer struct{ /* 调用方自有的批读工作缓冲；零值可用，首次使用后不可复制、不可并发复用 */ }
 
 func (s *Store) Scan(ctx context.Context, snapshot SnapshotID, table string, opts ScanOptions) (*Iterator, error)
 func (s *Store) ScanBlocks(ctx context.Context, snapshot SnapshotID, table string, lo, hi uint64) (*Iterator, error)
@@ -154,7 +157,12 @@ func (s *Store) Blocks(ctx context.Context, snapshot SnapshotID, table string) (
 无关。语义与逐行 `Get` 一致：任一 id 在快照不可见（缺失或已删除）→ 整批返回 `ErrNotFound`；
 返回顺序与输入 `ids` 一一对应，**重复输入重复返回，不静默去重**；返回的行归调用方所有、互不
 别名。`ReadBatch` 每次调用分配输出与工作缓冲（7 列时约 700 B/行，主要是 `Value` slab）；聚合、
-顺序和错误语义与 `Get` 逐行一致，没有额外的复用接口。
+顺序和错误语义与 `Get` 逐行一致。
+
+需要消掉这部分分配时用 `ReadBatchInto`：语义、顺序和错误与 `ReadBatch` 完全相同，但请求、输出、
+value slab 与字符串 arena 都复用调用方自有的 `BatchBuffer`，缓冲热起来后每次调用零分配（批读多页
+id 的循环用得上）。代价是所有权：返回行只在**下一次对同一 `BatchBuffer` 的调用**前有效，需要留存
+的值必须复制。
 
 ### Scan / Iterator
 
@@ -223,7 +231,8 @@ func (tx *Tx) SetMeta(value []byte) error
 - `Iterator.Next()` 无参数，解码进迭代器内部缓冲并跨调用复用；返回的 Row 到下一次 `Next` 前
   有效，整表 Scan 无逐行分配；
 - `Get(dst)` 解码进调用者提供的 Row；`Get` 是并发入口，nil dst 每次分配新行；
-- `ReadBatch` 一次性返回整批行，行归调用方所有；
+- `ReadBatch` 一次性返回整批行，行归调用方所有；`ReadBatchInto` 改用调用方自有的 `BatchBuffer`
+  承接同一批行，换到零稳态分配，但行（含 `String`/`Bytes` 视图）在下一次复用同一缓冲的调用前有效；
 - `String()`/`Bytes()`/`Decimal()` 访问器始终返回独立副本，跨调用安全；
 - dst 槽自身的缓冲（`Decimal` 的 `big.Int`、容量足够的 `Bytes` 底层数组）会被复用，保留的
   Value 结构体在下一次解码进同一 dst 后可能看到被覆盖的值。

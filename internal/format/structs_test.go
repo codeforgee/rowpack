@@ -11,6 +11,10 @@ import (
 // TestFrozenSizes locks every fixed structure size. These values are part of
 // the on-disk format contract: changing any of them is a format break that
 // must go through versioning, not a routine refactor.
+//
+// RowDirectoryEntry is the one exception: the page container keeps no per-record
+// directory on disk (see rows_block.go), so its value locks the in-memory
+// write-path footprint rather than any file bytes.
 func TestFrozenSizes(t *testing.T) {
 	want := map[string]int{
 		"DataFileHeaderSize":     DataFileHeaderSize,
@@ -34,7 +38,7 @@ func TestFrozenSizes(t *testing.T) {
 		"SnapshotHeaderSize":     96,
 		"SnapshotFooterSize":     144,
 		"BlockHeaderSize":        64,
-		"RowDirectoryEntrySize":  24,
+		"RowDirectoryEntrySize":  16,
 		"MetaPayloadHeaderSize":  32,
 		"MetaDirectoryEntrySize": 32,
 		"IndexTxnHeaderSize":     80,
@@ -189,7 +193,7 @@ func TestFixedStructureRoundTrip(t *testing.T) {
 	}
 	marshalRoundTrip(t, &blockHdr, blockHdr.Size())
 
-	rowDir := RowDirectoryEntry{RowID: 1001, RecordOffset: 77, RecordLength: 88, ChangeType: ChangeUpdate, SchemaVersion: 2}
+	rowDir := RowDirectoryEntry{RowID: 1001, ChangeType: ChangeUpdate, SchemaVersion: 2}
 	marshalRoundTrip(t, &rowDir, rowDir.Size())
 
 	txnHdr := IndexTxnHeader{

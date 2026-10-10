@@ -118,8 +118,9 @@ Block 的 payload 是页容器：
 - `RowsPageDirEntry` 含 PageOrdinal / FirstRecordOrdinal / RecordCount / StoredOffset /
   StoredSize / RawSize / MinRowID / MaxRowID / PageCRC32C / Flags（bit0=超大连行页）。
 - 压缩页内部的 `RowsPage` 使用一次性列流（RowID zigzag delta / end-offset delta / SchemaVersion
-  RLE / ChangeType 2bit / body-only TypedTuple），不含冗余的逐行 `RowRecordHeader`
-  （`RowDirectoryEntry` 仍保留为块级目录，见 `FlushedBlock.Rows`）；Page CRC 覆盖解压后完整页。
+  RLE / ChangeType 2bit / body-only TypedTuple），不含冗余的逐行 `RowRecordHeader`；
+  v1 落盘的逐行 24 B `RowDirectoryEntry` 也随之消失——`RowDirectoryEntry` 现在只是**内存**里的块级
+  目录（见 `FlushedBlock.Rows`，提交时据此建 RowIndex），没有任何条目写入文件；Page CRC 覆盖解压后完整页。
 - 默认 PageSize = 32 KiB，是建库后不可变的写时分页参数；读取按容器目录定位页，不需要 PageSize。
 - 超过 PageSize 的单行使用独立 Large Row Page（Flags bit0）。
 
@@ -417,7 +418,7 @@ v1 直接替代早期双文件草案：`Create` 只创建单个 `.rpk`；`Open` 
 | SnapshotHeader | 96 |
 | SnapshotFooter | 144 |
 | BlockHeader | 64 |
-| RowDirectoryEntry | 24 |
+| RowDirectoryEntry | 16（仅内存，不落盘） |
 | MetaPayloadHeader | 32 |
 | MetaDirectoryEntry | 32 |
 | RowsBlockHeader | 32 |

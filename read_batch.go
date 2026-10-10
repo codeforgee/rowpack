@@ -50,6 +50,38 @@ type noCopy struct{}
 func (*noCopy) Lock()   {}
 func (*noCopy) Unlock() {}
 
+// BatchBuffer is the caller-owned working set of one ReadBatchInto call: the
+// request list, the output slice, the value slab and the string arena. Reusing
+// one across calls removes the per-call allocations entirely (measured: a
+// 1000-row x 7-column batch stops allocating once the buffer is warm), which
+// matters for loops that batch-read many pages of ids.
+//
+// Ownership mirrors Iterator.Next: the rows a call returns are valid only
+// until the next call that reuses this buffer, and every String/Bytes payload
+// is a view into the buffer's own arena. ReadBatch gives each call a fresh
+// buffer so its rows stay valid until the caller drops them; ReadBatchInto
+// trades that for zero steady-state allocation. A BatchBuffer must not be
+// copied after first use and must not be reused concurrently.
+type BatchBuffer struct {
+	_   noCopy
+	buf batchBuffer
+}
+
+// ReadBatchInto is ReadBatch writing through a caller-owned BatchBuffer.
+//
+// It returns the same rows ReadBatch would, in ids order, but reuses buf's
+// buffers instead of allocating them per call: the returned rows — including
+// every String/Bytes view — are invalidated by the next ReadBatchInto call on
+// the same buffer. Values that must outlive the call must be copied (the
+// String/Bytes/Decimal accessors return copies). ctx is accepted for signature
+// consistency; cancellation is not observed mid-batch, same as ReadBatch.
+func (s *Store) ReadBatchInto(ctx context.Context, snapshot SnapshotID, table string, ids []RowID, buf *BatchBuffer) ([]Row, error) {
+	if buf == nil {
+		return nil, fmt.Errorf("%w: nil BatchBuffer", ErrInvalidArgument)
+	}
+	return s.readBatchInto(snapshot, table, ids, &buf.buf)
+}
+
 // ReadBatch reads a set of rows in one call, aggregating the request by
 // block: every block touched by the batch is loaded, CRC-verified and
 // decompressed at most once, no matter how many requested rows fall inside
@@ -72,18 +104,21 @@ func (*noCopy) Unlock() {}
 // Blocks and RawBytes quantify the aggregation (Blocks <= len(ids); with
 // clustered ids, Blocks << len(ids) and the same payload is decompressed
 // once per batch instead of once per row).
+//
+// See ReadBatchInto for the zero-allocation form that reuses a BatchBuffer
+// across calls.
 func (s *Store) ReadBatch(ctx context.Context, snapshot SnapshotID, table string, ids []RowID) ([]Row, error) {
 	// A fresh buffer per call keeps the returned rows independent of any later
-	// call; see readBatchInto for the reuse entry point used internally.
+	// call; see readBatchInto for the reuse entry point.
 	var buf batchBuffer
 	return s.readBatchInto(snapshot, table, ids, &buf)
 }
 
 // readBatchInto is ReadBatch writing through a caller-owned batchBuffer, so a
 // repeated batch read does not reallocate the request, output and decode slab
-// (~700 B/row at 7 columns) on every call. Unexported on purpose: reusing a
-// buffer invalidates the previous call's rows, a contract only code in this
-// package may take on.
+// (~700 B/row at 7 columns) on every call. ReadBatchInto is the exported
+// form; this stays unexported because it hands the batchBuffer contract to
+// internal callers only.
 //
 // buf must not be nil, and must not be reused concurrently.
 func (s *Store) readBatchInto(snapshot SnapshotID, table string, ids []RowID, buf *batchBuffer) ([]Row, error) {

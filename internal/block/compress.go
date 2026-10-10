@@ -61,6 +61,29 @@ func Decompress(alg format.Compression, dst, src []byte, maxOut uint32) ([]byte,
 // are still enforced by the caller's maxOut check.
 const zstdMaxDecoded = 512 << 20
 
+// exactDecodeCap is the largest destination reserveDecode hands out. Go rounds
+// every allocation up to an 8 KiB page multiple, so DecodeAll's len+16 result
+// costs a 32 KiB page 25% of its footprint; above this size the same +16 B is
+// a rounding error (a 1 MiB payload wastes 0.8%), so the up-front reservation
+// is not worth acting on a declared size at all.
+const exactDecodeCap = 1 << 20
+
+// reserveDecode returns the destination buffer for decoding a payload whose
+// validated size is size bytes: capacity exactly size, so the result lands in
+// an exact size class instead of the next one up. It returns nil when the size
+// is unknown/oversized, which leaves DecodeAll to grow the buffer on demand —
+// a corrupt or unusually large declaration must not be able to force a large
+// reservation on its own.
+func reserveDecode(size, maxOut uint32) []byte {
+	if size > maxOut {
+		size = maxOut
+	}
+	if size == 0 || size > exactDecodeCap {
+		return nil
+	}
+	return make([]byte, 0, size)
+}
+
 var (
 	encPoolsMu sync.Mutex
 	encPools   = map[int]*sync.Pool{}

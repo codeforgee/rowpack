@@ -17,7 +17,7 @@
 | 文件 | SHA-256 |
 | --- | --- |
 | `empty-store.rpk` | `359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401` |
-| `rows-payload-all-types.bin` | `1c6aad29604eb830d7cebfb06d02a15da44b3eeba0f573b22176e67b7c8d1f88` |
+| `rows-payload-all-types.bin` | `5440fe9407ad98b7609f30e2be48012376bb44da657f78e279ecc144f595666e` |
 | `full-delta-store.rpk` | `bef6fad68e9ca66b88c35c883e22e10bf2271b7f101c1a9e73d1430b823c5254` |
 | `encrypted-store.rpk` | `3cec92868911744c0a69b9586059008cbac944c77bc5c5c2106097b5d90cdad1` |
 
@@ -25,10 +25,14 @@
 为 delta/varint 条目流 + Zstd，见 docs/INDEX_TXN_FORMAT_V1.md §4.3）。修改任一摘要即视为
 有意的磁盘格式变更，必须经过格式审查并按版本策略建立新的 golden 样本族。
 
-最近一次变更：无任何可空列的 Schema 不再写 null bitmap（原本每行固定
+最近一次变更：Time/DateTime/DateTimeTZ 改为 varint 编码（秒 zigzag + 纳秒 varint，TZ 再
+加偏移 zigzag），整秒时间 12 B→6 B、带时区 16 B→7 B；`rows-payload-all-types.bin`
+390→378 B。两个 Store 样本的 Schema 不含时间类型，摘要不变。代价：这些类型 width 归 0，
+含它们的 Schema 退出定宽解码内核（实测 BenchmarkPreparedDecodeMixed +12%）。
+
+上一次变更：无任何可空列的 Schema 不再写 null bitmap（原本每行固定
 `ceil(ncols/8)` 字节纯属浪费），`full-delta-store.rpk` 4816→4793 B、
-`encrypted-store.rpk` 2079→2076 B；`rows-payload-all-types.bin` 含 NULL 值、Schema 有可空
-列，仍保留 bitmap，摘要不变。宽度由 `Schema.nullBitmapBytes()` 单点决定，编解码两侧共用。
+`encrypted-store.rpk` 2079→2076 B。宽度由 `Schema.nullBitmapBytes()` 单点决定，编解码两侧共用。
 
 上一次变更：String/Bytes/Decimal 的值长度前缀由定长 u32 改为 uvarint（每值省 3 B，
 短值场景收益最大），全类型负载样本 `rows-payload-all-types.bin` 因此 417 B → 390 B。

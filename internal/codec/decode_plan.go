@@ -92,7 +92,7 @@ func compileDecodeSteps(schema *Schema) (steps []decodeStep, fixed bool) {
 		case TypeDateTime:
 			s.kind = decodeDateTime
 		case TypeDateTimeTZ:
-			s.kind, s.width = decodeDateTimeTZ, 16
+			s.kind = decodeDateTimeTZ // width stays 0: varint-encoded
 		case TypeString:
 			s.kind, s.width = decodeString, 0
 		case TypeBytes:
@@ -179,25 +179,6 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 				row[i] = Value{typ: s.typ, f64: math.Float64frombits(binary.LittleEndian.Uint64(payload[pos:]))}
 			case decodeDate:
 				row[i] = Value{typ: s.typ, i: int64(int32(binary.LittleEndian.Uint32(payload[pos:])))}
-			case decodeTime:
-				ns := int64(binary.LittleEndian.Uint64(payload[pos:]))
-				if ns < 0 || ns >= MaxTimeOfDay {
-					return nil, false
-				}
-				row[i] = Value{typ: s.typ, i: ns}
-			case decodeDateTime:
-				row[i] = Value{
-					typ: s.typ,
-					i:   int64(binary.LittleEndian.Uint64(payload[pos:])),
-					u:   uint64(binary.LittleEndian.Uint32(payload[pos+8:])),
-				}
-			case decodeDateTimeTZ:
-				row[i] = Value{
-					typ: s.typ,
-					i:   int64(binary.LittleEndian.Uint64(payload[pos:])),
-					u:   uint64(binary.LittleEndian.Uint32(payload[pos+8:])),
-					tz:  int32(binary.LittleEndian.Uint32(payload[pos+12:])),
-				}
 			}
 			pos += w
 			continue
@@ -241,6 +222,35 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 			}
 			row[i] = Value{typ: s.typ, d: Decimal{Unscaled: u, Scale: s.scale}}
 			pos += pfx + ln
+		case decodeTime:
+			// MaxTimeOfDay < 2^49, so a valid value always fits 7 bytes.
+			v, n := binary.Uvarint(payload[pos:])
+			if n <= 0 || v >= uint64(MaxTimeOfDay) {
+				return nil, false
+			}
+			row[i] = Value{typ: s.typ, i: int64(v)}
+			pos += n
+		case decodeDateTime, decodeDateTimeTZ:
+			// Seconds zigzag-varint, then nanoseconds varint (0 for whole
+			// seconds), then the zone offset for the TZ variant.
+			secs, n := binary.Uvarint(payload[pos:])
+			if n <= 0 {
+				return nil, false
+			}
+			nanos, m := binary.Uvarint(payload[pos+n:])
+			if m <= 0 {
+				return nil, false
+			}
+			row[i] = Value{typ: s.typ, i: unzigzag64(secs), u: nanos}
+			pos += n + m
+			if s.kind == decodeDateTimeTZ {
+				tz, k := binary.Uvarint(payload[pos:])
+				if k <= 0 {
+					return nil, false
+				}
+				row[i].tz = int32(unzigzag64(tz))
+				pos += k
+			}
 		default:
 			return nil, false
 		}

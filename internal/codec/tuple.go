@@ -20,10 +20,13 @@ import (
 // Unused high bits of the last bitmap byte must be zero; decoding must leave
 // no trailing bytes.
 //
-// Fixed-width values (integers, floats, Date, Time, DateTime, DateTimeTZ) are
-// little-endian with no padding. Variable-width values (String, Bytes, Decimal)
-// are written as [uvarint length][bytes]: the prefix width tracks the value, so
-// a short string costs 1 prefix byte instead of 4.
+// Fixed-width values (integers, floats, Date) are little-endian with no
+// padding. Variable-width values come in two shapes: String, Bytes and Decimal
+// are [uvarint length][bytes], where the prefix width tracks the value so a
+// short string costs 1 prefix byte instead of 4; Time is a bare uvarint
+// (MaxTimeOfDay < 2^49, so never more than 7 bytes) and DateTime/DateTimeTZ are
+// [zigzag varint seconds][uvarint nanoseconds] plus [zigzag varint zone offset]
+// for the TZ variant, which makes a whole-second instant 6 instead of 12 bytes.
 
 // ErrSchemaMismatch is returned when row and schema disagree.
 var ErrSchemaMismatch = errors.New("rowpack: schema mismatch")
@@ -229,28 +232,12 @@ func (d Decoder) decodeFixedInto(dst []Value, payload []byte) ([]Value, bool) {
 		case TypeDate:
 			row[i] = Value{typ: TypeDate, i: int64(int32(binary.LittleEndian.Uint32(payload[pos:])))}
 			pos += 4
-		case TypeTime:
-			x := int64(binary.LittleEndian.Uint64(payload[pos:]))
-			if x < 0 || x >= MaxTimeOfDay {
-				return nil, false
-			}
-			row[i] = Value{typ: TypeTime, i: x}
-			pos += 8
-		case TypeDateTime:
-			row[i] = Value{
-				typ: TypeDateTime,
-				i:   int64(binary.LittleEndian.Uint64(payload[pos:])),
-				u:   uint64(binary.LittleEndian.Uint32(payload[pos+8:])),
-			}
-			pos += 12
-		case TypeDateTimeTZ:
-			row[i] = Value{
-				typ: TypeDateTimeTZ,
-				i:   int64(binary.LittleEndian.Uint64(payload[pos:])),
-				u:   uint64(binary.LittleEndian.Uint32(payload[pos+8:])),
-				tz:  int32(binary.LittleEndian.Uint32(payload[pos+12:])),
-			}
-			pos += 16
+		// Time/DateTime/DateTimeTZ are varint-encoded: their width is 0, which
+		// turns off `fixed` for the whole schema, so this kernel never sees
+		// them. The default arm keeps that invariant from silently yielding a
+		// short row if a future type forgets to update it.
+		default:
+			return nil, false
 		}
 	}
 	return row, true
@@ -463,16 +450,24 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 		}
 		return Float64(math.Float64frombits(binary.LittleEndian.Uint64(raw))), 8, nil
 	case TypeDateTimeTZ:
-		raw, ok := need(16)
-		if !ok {
+		secs, n := binary.Uvarint(b)
+		if n <= 0 {
 			return Value{}, 0, errors.New("truncated datetime_tz")
+		}
+		nanos, m := binary.Uvarint(b[n:])
+		if m <= 0 {
+			return Value{}, 0, errors.New("truncated datetime_tz nanos")
+		}
+		tz, k := binary.Uvarint(b[n+m:])
+		if k <= 0 {
+			return Value{}, 0, errors.New("truncated datetime_tz zone offset")
 		}
 		return Value{
 			typ: TypeDateTimeTZ,
-			i:   int64(binary.LittleEndian.Uint64(raw)),
-			u:   uint64(binary.LittleEndian.Uint32(raw[8:])),
-			tz:  int32(binary.LittleEndian.Uint32(raw[12:])),
-		}, 16, nil
+			i:   unzigzag64(secs),
+			u:   nanos,
+			tz:  int32(unzigzag64(tz)),
+		}, n + m + k, nil
 	case TypeString, TypeBytes:
 		ln, pfx, ok := getVarLen(b)
 		if !ok {
@@ -506,25 +501,24 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 		}
 		return DateValue(Date(int32(binary.LittleEndian.Uint32(raw)))), 4, nil
 	case TypeTime:
-		raw, ok := need(8)
-		if !ok {
+		v, n := binary.Uvarint(b)
+		if n <= 0 {
 			return Value{}, 0, errors.New("truncated time")
 		}
-		ns := int64(binary.LittleEndian.Uint64(raw))
-		if ns < 0 || ns >= MaxTimeOfDay {
-			return Value{}, 0, fmt.Errorf("time of day %d out of range", ns)
+		if v >= uint64(MaxTimeOfDay) {
+			return Value{}, 0, fmt.Errorf("time of day %d out of range", v)
 		}
-		return TimeValue(TimeOfDay(ns)), 8, nil
+		return TimeValue(TimeOfDay(v)), n, nil
 	case TypeDateTime:
-		raw, ok := need(12)
-		if !ok {
+		secs, n := binary.Uvarint(b)
+		if n <= 0 {
 			return Value{}, 0, errors.New("truncated datetime")
 		}
-		return Value{
-			typ: TypeDateTime,
-			i:   int64(binary.LittleEndian.Uint64(raw)),
-			u:   uint64(binary.LittleEndian.Uint32(raw[8:])),
-		}, 12, nil
+		nanos, m := binary.Uvarint(b[n:])
+		if m <= 0 {
+			return Value{}, 0, errors.New("truncated datetime nanos")
+		}
+		return Value{typ: TypeDateTime, i: unzigzag64(secs), u: nanos}, n + m, nil
 	case TypeDecimal:
 		ln, pfx, ok := getVarLen(b)
 		if !ok {
@@ -594,14 +588,16 @@ func appendValue(buf []byte, v Value, limits Limits) ([]byte, error) {
 		if v.i < 0 || v.i >= MaxTimeOfDay {
 			return nil, fmt.Errorf("time of day %d out of range", v.i)
 		}
-		return appendU64(buf, uint64(v.i)), nil
+		// MaxTimeOfDay < 2^49, so the uvarint is at most 7 bytes: never worse
+		// than the fixed 8 it replaces, and 1 byte near midnight.
+		return binary.AppendUvarint(buf, uint64(v.i)), nil
 	case TypeDateTime:
-		buf = appendU64(buf, uint64(v.i))
-		return appendU32(buf, uint32(v.u)), nil
+		buf = binary.AppendUvarint(buf, zigzag64(v.i))
+		return binary.AppendUvarint(buf, v.u), nil
 	case TypeDateTimeTZ:
-		buf = appendU64(buf, uint64(v.i))
-		buf = appendU32(buf, uint32(v.u))
-		return appendU32(buf, uint32(v.tz)), nil
+		buf = binary.AppendUvarint(buf, zigzag64(v.i))
+		buf = binary.AppendUvarint(buf, v.u)
+		return binary.AppendUvarint(buf, zigzag64(int64(v.tz))), nil
 	case TypeDecimal:
 		if v.d.Scale < 0 {
 			return nil, fmt.Errorf("decimal scale %d is negative", v.d.Scale)
@@ -618,6 +614,14 @@ func appendValue(buf []byte, v Value, limits Limits) ([]byte, error) {
 	return nil, fmt.Errorf("unsupported type %d", v.Type())
 }
 
+// fixedWidth returns the payload width of a type, or 0 when the type is
+// variable-width and therefore cannot take the fixed-width decode kernel.
+//
+// Time, DateTime and DateTimeTZ are varint-encoded (Time fits 7 bytes because
+// MaxTimeOfDay < 2^49; DateTime/DateTimeTZ trade their former 12/16 fixed bytes
+// for a zigzag seconds varint plus a nanoseconds varint that is 1 byte for the
+// common whole-second case). Date stays fixed at 4: its values cluster near
+// zero where a varint would only save a byte, and the far future would cost one.
 func fixedWidth(t Type) int {
 	switch t {
 	case TypeInt8, TypeUint8:
@@ -626,15 +630,16 @@ func fixedWidth(t Type) int {
 		return 2
 	case TypeInt32, TypeUint32, TypeFloat32, TypeDate:
 		return 4
-	case TypeInt64, TypeUint64, TypeFloat64, TypeTime:
+	case TypeInt64, TypeUint64, TypeFloat64:
 		return 8
-	case TypeDateTime:
-		return 12
-	case TypeDateTimeTZ:
-		return 16
 	}
 	return 0
 }
+
+// zigzag64 / unzigzag64 map a signed value onto the unsigned varint space so
+// small-magnitude negatives stay one byte.
+func zigzag64(v int64) uint64   { return uint64(v<<1) ^ uint64(v>>63) }
+func unzigzag64(v uint64) int64 { return int64(v>>1) ^ -int64(v&1) }
 
 // getVarLen reads a uvarint length prefix at the start of b. It returns the
 // decoded length, the number of bytes the prefix occupied and whether the

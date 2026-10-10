@@ -26,7 +26,7 @@ func TestGoldenManifest(t *testing.T) {
 		// overrides it, the empty DELTA inherits), so they lock that block
 		// kind's bytes and its parent-chain resolution too.
 		"empty-store.rpk":            "359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401",
-		"rows-payload-all-types.bin": "1c6aad29604eb830d7cebfb06d02a15da44b3eeba0f573b22176e67b7c8d1f88",
+		"rows-payload-all-types.bin": "5440fe9407ad98b7609f30e2be48012376bb44da657f78e279ecc144f595666e",
 		"full-delta-store.rpk":       "bef6fad68e9ca66b88c35c883e22e10bf2271b7f101c1a9e73d1430b823c5254",
 		"encrypted-store.rpk":        "3cec92868911744c0a69b9586059008cbac944c77bc5c5c2106097b5d90cdad1",
 	}

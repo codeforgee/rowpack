@@ -194,6 +194,9 @@ func TestPreparedDecoderMatchesDecodeInto(t *testing.T) {
 }
 
 func TestPreparedDecoderFixedWidthFastPath(t *testing.T) {
+	// Time/DateTime/DateTimeTZ are varint-encoded and therefore absent here:
+	// a schema carrying any of them has variable-width columns and cannot take
+	// the fixed-width kernel (see TestPreparedDecoderVarintTimeTypes).
 	schema := &Schema{Name: "fixed", Columns: []Column{
 		{Name: "b", Type: TypeBool}, {Name: "i8", Type: TypeInt8},
 		{Name: "i16", Type: TypeInt16}, {Name: "i32", Type: TypeInt32},
@@ -201,13 +204,11 @@ func TestPreparedDecoderFixedWidthFastPath(t *testing.T) {
 		{Name: "u16", Type: TypeUint16}, {Name: "u32", Type: TypeUint32},
 		{Name: "u64", Type: TypeUint64}, {Name: "f32", Type: TypeFloat32},
 		{Name: "f64", Type: TypeFloat64}, {Name: "date", Type: TypeDate},
-		{Name: "time", Type: TypeTime}, {Name: "dt", Type: TypeDateTime},
 	}}
 	input := []Value{
 		Bool(true), Int8(-8), Int16(-16), Int32(-32), Int64(-64),
 		Uint8(8), Uint16(16), Uint32(32), Uint64(64), Float32(1.5),
-		Float64(2.5), DateValue(Date(-10)), TimeValue(TimeOfDay(123)),
-		DateTime(time.Unix(0, -456).UTC()),
+		Float64(2.5), DateValue(Date(-10)),
 	}
 	body, err := testCodec.EncodeInto(schema, input, nil)
 	require.NoError(t, err)
@@ -223,10 +224,78 @@ func TestPreparedDecoderFixedWidthFastPath(t *testing.T) {
 	badBool[decoder.bitmapBytes] = 2
 	_, err = decoder.DecodeInto(nil, badBool, nil)
 	require.ErrorContains(t, err, "invalid bool")
-	badTime := append([]byte(nil), body...)
-	timeOff := decoder.bitmapBytes + 1 + 1 + 2 + 4 + 8 + 1 + 2 + 4 + 8 + 4 + 8 + 4
-	binary.LittleEndian.PutUint64(badTime[timeOff:], uint64(MaxTimeOfDay))
-	_, err = decoder.DecodeInto(nil, badTime, nil)
+}
+
+// TestPreparedDecoderVarintTimeTypes pins the varint encoding of the time
+// types: they opt the schema out of the fixed-width kernel, round-trip exactly,
+// and cost far fewer bytes than the widths they replaced.
+func TestPreparedDecoderVarintTimeTypes(t *testing.T) {
+	instant := time.Date(2026, 10, 10, 12, 30, 45, 0, time.UTC)
+	cases := []struct {
+		name string
+		col  Column
+		in   Value
+		// wantBytes is the encoded width for this value, against the former
+		// fixed width given in wasBytes. No null bitmap: no nullable column.
+		wantBytes int
+		wasBytes  int
+		check     func(t *testing.T, got Value)
+	}{
+		{
+			name: "time", col: Column{Name: "t", Type: TypeTime},
+			in: TimeValue(TimeOfDay(123)), wantBytes: 1, wasBytes: 8,
+			check: func(t *testing.T, got Value) {
+				v, ok := got.Time()
+				require.True(t, ok)
+				require.Equal(t, TimeOfDay(123), v)
+			},
+		},
+		{
+			name: "datetime", col: Column{Name: "t", Type: TypeDateTime},
+			// Whole seconds: the nanosecond varint collapses to one byte.
+			in: DateTime(instant), wantBytes: 6, wasBytes: 12,
+			check: func(t *testing.T, got Value) {
+				v, ok := got.DateTimeValue()
+				require.True(t, ok)
+				require.Equal(t, instant, v)
+			},
+		},
+		{
+			name: "datetimetz", col: Column{Name: "t", Type: TypeDateTimeTZ},
+			in: DateTimeTZ(instant), wantBytes: 7, wasBytes: 16,
+			check: func(t *testing.T, got Value) {
+				v, ok := got.DateTimeTZValue()
+				require.True(t, ok)
+				// DateTimeTZValue restores the zone as a FixedZone offset, not
+				// the UTC location, so compare the instant.
+				require.True(t, v.Equal(instant), "got %v, want %v", v, instant)
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			schema := &Schema{Name: "t", Columns: []Column{c.col}}
+			dec, err := testCodec.CompileDecoder(schema)
+			require.NoError(t, err)
+			require.False(t, dec.fixed, "varint time types must leave the fixed kernel")
+
+			body, err := testCodec.EncodeInto(schema, []Value{c.in}, nil)
+			require.NoError(t, err)
+			require.Len(t, body, c.wantBytes, "encoded width (was %d fixed bytes)", c.wasBytes)
+
+			got, err := dec.DecodeInto(nil, body, nil)
+			require.NoError(t, err)
+			require.Len(t, got, 1)
+			c.check(t, got[0])
+		})
+	}
+
+	// An out-of-range varint Time must fall back to the generic validator.
+	schema := &Schema{Name: "t", Columns: []Column{{Name: "t", Type: TypeTime}}}
+	dec, err := testCodec.CompileDecoder(schema)
+	require.NoError(t, err)
+	outOfRange := binary.AppendUvarint(nil, uint64(MaxTimeOfDay))
+	_, err = dec.DecodeInto(nil, outOfRange, nil)
 	require.ErrorContains(t, err, "out of range")
 }
 

@@ -79,7 +79,9 @@ rows1m="${ROWPACK_BENCH_ROWS1M:-1000000}"
   echo "# mem: ${mem:-unknown}"
   echo "# zstd: ${zstd_ver}"
   echo "# format: v1 single-file (Magic ROWPACK1, Major 1)"
-  echo "# config: BlockSize 256K / PageSize 32K / Zstd L3 / mmap / SyncCommit"
+  # 不写死压缩级别：默认值由 format.DefaultCompressionLvl 决定，写死的数字
+  # 会在默认值变更后继续谎报配置（历史上就是 "Zstd L3"）。
+  echo "# config: BlockSize 256K / PageSize 32K / Zstd default / mmap / SyncCommit"
   echo "# benchtime: $benchtime  count: $count"
   echo "# rows: $rows  rows1m: $rows1m"
   echo "# command: make $make_target BENCHTIME=$benchtime BENCHCOUNT=$count"

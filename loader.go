@@ -44,6 +44,15 @@ type blockLoader struct {
 // streams through it either way — so the default is sized for the repeated
 // range-scan case and callers who stream whole tables repeatedly raise it
 // through Options.ScanCacheBytes.
+//
+// Because the window is a quarter of the total, the total caps the largest
+// scanned set that can stay resident, and undersizing it is not a small effect:
+// BenchmarkScan (100k rows, ~12 MB of decoded pages) runs in 10.7 ms with
+// 70 allocs/op at 64 MiB total (16 MiB window) and collapses to 20.1 ms with
+// 1368 allocs/op at 16 MiB total (4 MiB window). Halving the share is free at
+// the old total — MainMatrix/scan_deepchain/bs=64K does 4621 krows/s here vs
+// 4942 with a 32 MiB window, inside run-to-run noise, hit rate 97.5 vs 97.7% —
+// so the total is what has to be sized, not the split.
 func scanBudgetFor(cacheBytes int64) int64 {
 	b := cacheBytes / 4
 	if b > 16<<20 {

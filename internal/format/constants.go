@@ -272,14 +272,20 @@ const (
 	DefaultPageSize = 32 << 10
 	// DefaultCacheBytes is the total decoded-block budget, split between the
 	// random-read cache and the scan window (see rowpack.scanBudgetFor). It is
-	// a ceiling on retained decoded pages, not a preallocation, so sizing it by
-	// the working set rather than by the file is what keeps resident memory in
-	// proportion: measured on a 200k-row / 9-snapshot store (25.5 MiB raw),
-	// 8 MiB and 32 MiB of random-read budget are indistinguishable —
-	// Get-hot 8 ms and Scan 47/48 ms in both — while VerifyFull is 93 vs 90 ms,
-	// inside run-to-run noise. Callers with a genuinely hot multi-MiB working
-	// set raise it through Options.CacheBytes.
-	DefaultCacheBytes = 16 << 20
+	// a ceiling on retained decoded pages, not a preallocation — but it still
+	// has to clear the largest working set a caller walks, because the budget
+	// decides whether a full sequential scan finds its containers resident or
+	// re-decompresses every page on every pass. Measured on BenchmarkScan
+	// (100k rows, ~12 MB of decoded pages): 16 MiB leaves the scan a 4 MiB
+	// window and the benchmark collapses to 20.1 ms / 1368 allocs/op /
+	// 12.1 MB/op, while 64 MiB restores 10.7 ms / 70 allocs/op / 1.70 MB/op,
+	// where the historical default sat (9.65 ms / 69 allocs). MainMatrix/
+	// scan_deepchain hits the same cliff from the window side: its scan hit rate
+	// falls from 97.7% to 0 once the window cannot hold the scanned set.
+	// Resident memory follows the working set, not this ceiling, so the extra
+	// headroom is only paid for by callers who actually touch that many pages;
+	// callers with a different working set set Options.CacheBytes.
+	DefaultCacheBytes = 64 << 20
 	// DefaultCompressionLvl is the zstd level every store uses unless Options
 	// overrides it. Klauspost maps levels onto four encoder settings, so only
 	// three distinct outputs exist in this range — measured on the sample

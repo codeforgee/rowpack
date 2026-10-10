@@ -133,7 +133,7 @@ func BenchmarkGetHot(b *testing.B) {
 }
 
 // BenchmarkGetCold measures random reads with the decoded-block cache
-// disabled entirely (CacheBytes < 0; 0 resolves to the 16 MiB default): every
+// disabled entirely (CacheBytes < 0; 0 resolves to the 64 MiB default): every
 // Get pays block load + CRC + decompress into the pooled scratch. Custom
 // metrics quantify the block-level read amplification (frozen baselines):
 //

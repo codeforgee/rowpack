@@ -1,0 +1,38 @@
+# RowPack 体积样本
+# date: 2026-10-10T10:51:41Z
+# git: 14e02a7
+# go: go version go1.27.1 darwin/arm64
+# os/arch: darwin/arm64
+# seed: 20261010  scale: 1  snapshots: 21
+# config: BlockSize 256K / PageSize 32K / Zstd default
+# tables: 8  snapshots: 21  blocks: 291  logicalRows: 420298
+# writes: 332033
+# shards: 168  entries: 636033  runs: 394
+# build: 1.939s
+# note: 文件头含 StoreUUID/CreatedUnixNano，快照头含 CreatedUnixNano/WriterNonce，
+#       故字节不可复现；跨版本可比对的是体积（整数）与上面的形状行。
+# note: heapAfterOpenBytes 是「打开后的堆」，在子进程里测（见 openHeapCost）。
+#       2026-10-10 之前它测的是进程内增量，被生成器残留污染，两者不可直接比较。
+
+dataBytes            16986363
+rawBytes             44813429
+storedBytes          16389743
+indexMemoryBytes     2527692
+idxRowIDsBytes       906172
+idxOrdinalsBytes     946535
+idxChangesBytes      636033
+idxRunStartBytes     2248
+idxBlockIDsBytes     3152
+idxShardFixedBytes   8064
+idxAccountedBytes    2502204
+idxSlackBytes        13416
+packRowIDRawBytes    5088264
+packRowIDPackedBytes 906172
+packOrdRawBytes      2544132
+packOrdPackedBytes   946535
+heapAfterOpenBytes   3622184
+oversizedPages       0
+ratio                0.365733
+bytePerRow           40.415046
+bytePerWrittenRow    22.578311
+idxBytePerRow        6.014047

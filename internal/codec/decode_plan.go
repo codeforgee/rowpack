@@ -132,11 +132,14 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 	}
 	row = row[:len(steps)]
 	pos := 0
+	// A schema without a nullable column carries no bitmap, so no column can
+	// be NULL and the bitmap test is skipped entirely.
+	hasBitmap := d.bitmapBytes > 0
 	for i := range steps {
 		s := &steps[i]
 		// A set bit means NULL and consumes no payload, for nullable and
 		// non-nullable columns alike (the generic decoder does the same).
-		if bitmap[s.bitByte]&s.bitMask != 0 {
+		if hasBitmap && bitmap[s.bitByte]&s.bitMask != 0 {
 			row[i] = Null()
 			continue
 		}

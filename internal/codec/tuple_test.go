@@ -320,12 +320,52 @@ func TestEncodeErrors(t *testing.T) {
 	})
 }
 
+// TestNullBitmapOmittedWhenNoColumnIsNullable pins the space optimisation: a
+// schema with no nullable column writes no NULL bitmap at all, because no value
+// can be NULL and the ceil(ncols/8) bytes per row would be pure overhead. The
+// encoder and the decoder must agree on the width, so both are exercised.
+func TestNullBitmapOmittedWhenNoColumnIsNullable(t *testing.T) {
+	tight := &Schema{Name: "t", Columns: []Column{
+		{Name: "id", Type: TypeUint64},
+		{Name: "name", Type: TypeString},
+	}}
+	require.NoError(t, tight.Validate(DefaultLimits()))
+	require.Zero(t, tight.nullBitmapBytes(), "no nullable column => no bitmap")
+
+	loose := tight.Clone()
+	loose.Columns[1].Nullable = true
+	require.Equal(t, 1, loose.nullBitmapBytes(), "one nullable column keeps the bitmap")
+
+	row := []Value{Uint64(7), String("hi")}
+	tightBody, err := testCodec.EncodeInto(tight, row, nil)
+	require.NoError(t, err, "encode without bitmap")
+	looseBody, err := testCodec.EncodeInto(loose, row, nil)
+	require.NoError(t, err, "encode with bitmap")
+	require.Len(t, tightBody, len(looseBody)-1, "the bitmap byte must be gone")
+
+	got, err := decodeTestBody(t, testCodec, tight, tightBody)
+	require.NoError(t, err, "decode without a bitmap")
+	require.Equal(t, uint64(7), got[0].Uint64Or(0), "id")
+	require.Equal(t, "hi", got[1].StringOr(""), "name")
+
+	// A wide schema would spend the same single byte, and still spends none.
+	wide := &Schema{Name: "w", Columns: []Column{
+		{Name: "a", Type: TypeUint64},
+		{Name: "b", Type: TypeUint64},
+		{Name: "c", Type: TypeUint64},
+	}}
+	require.NoError(t, wide.Validate(DefaultLimits()))
+	require.Zero(t, wide.nullBitmapBytes(), "wide non-nullable schema => no bitmap")
+}
+
 func TestDecodeErrors(t *testing.T) {
 	schema := &Schema{
 		Name: "test",
 		Columns: []Column{
 			{Name: "id", Type: TypeUint64},
-			{Name: "name", Type: TypeString},
+			// Nullable so the row carries a NULL bitmap: the unused-high-bit
+			// check below only exists when there is a bitmap to check.
+			{Name: "name", Type: TypeString, Nullable: true},
 		},
 	}
 	require.NoError(t, schema.Validate(DefaultLimits()))

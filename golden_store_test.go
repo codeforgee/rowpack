@@ -27,8 +27,8 @@ func TestGoldenManifest(t *testing.T) {
 		// kind's bytes and its parent-chain resolution too.
 		"empty-store.rpk":            "359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401",
 		"rows-payload-all-types.bin": "1c6aad29604eb830d7cebfb06d02a15da44b3eeba0f573b22176e67b7c8d1f88",
-		"full-delta-store.rpk":       "1b91b7970930093e4c3dc9c8ad44233939a240bbc10b60c2be6bca7decedf5f9",
-		"encrypted-store.rpk":        "db4f4573babb81feb3d3c8c0c3f0010d4316d41a4a351b9163f10a1998ff6423",
+		"full-delta-store.rpk":       "bef6fad68e9ca66b88c35c883e22e10bf2271b7f101c1a9e73d1430b823c5254",
+		"encrypted-store.rpk":        "3cec92868911744c0a69b9586059008cbac944c77bc5c5c2106097b5d90cdad1",
 	}
 	for name, digest := range want {
 		data, err := os.ReadFile(goldenPath(name))

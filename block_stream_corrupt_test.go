@@ -142,7 +142,9 @@ func setupPlainMultiPageStore(t *testing.T, rows int) (string, SnapshotID) {
 	tx, err := db.Begin(ctx, NoParent)
 	require.NoError(t, err)
 	require.NoError(t, tx.DefineTable("t", []Column{
-		{Name: "name", Type: TypeString},
+		// Nullable so each row keeps a NULL bitmap: TestCorruptNullBitmapInPage
+		// patches that byte, and a schema without a nullable column writes none.
+		{Name: "name", Type: TypeString, Nullable: true},
 		{Name: "n", Type: TypeUint64},
 	}))
 	for i := range rows {

@@ -34,6 +34,22 @@ type Column struct {
 	PrimaryKey bool  // declared part of the table's primary key (declaration order)
 }
 
+// nullBitmapBytes returns the width in bytes of the row's NULL bitmap.
+//
+// A schema without a single nullable column carries no bitmap at all: no value
+// can be NULL, so the ceil(ncols/8) bytes per row would be pure overhead — one
+// byte per row for a narrow table, a megabyte per million rows. The encoder and
+// the decoder must agree on the width for every schema, so both derive it here
+// rather than computing it independently.
+func (s *Schema) nullBitmapBytes() int {
+	for i := range s.Columns {
+		if s.Columns[i].Nullable {
+			return (len(s.Columns) + 7) / 8
+		}
+	}
+	return 0
+}
+
 // Validate checks the schema against the given limits and the v1 type rules.
 // It returns an error for unknown types, too many columns, negative decimal
 // scale, empty names, or an illegal fixed-width combination. Validation is

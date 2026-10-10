@@ -18,19 +18,22 @@
 | --- | --- |
 | `empty-store.rpk` | `359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401` |
 | `rows-payload-all-types.bin` | `1c6aad29604eb830d7cebfb06d02a15da44b3eeba0f573b22176e67b7c8d1f88` |
-| `full-delta-store.rpk` | `1b91b7970930093e4c3dc9c8ad44233939a240bbc10b60c2be6bca7decedf5f9` |
-| `encrypted-store.rpk` | `db4f4573babb81feb3d3c8c0c3f0010d4316d41a4a351b9163f10a1998ff6423` |
+| `full-delta-store.rpk` | `bef6fad68e9ca66b88c35c883e22e10bf2271b7f101c1a9e73d1430b823c5254` |
+| `encrypted-store.rpk` | `3cec92868911744c0a69b9586059008cbac944c77bc5c5c2106097b5d90cdad1` |
 
 摘要对应冻结的 v1 IndexTxn 格式（排序 Row Index Page + Fence Directory；Metadata/Block chunk
 为 delta/varint 条目流 + Zstd，见 docs/INDEX_TXN_FORMAT_V1.md §4.3）。修改任一摘要即视为
 有意的磁盘格式变更，必须经过格式审查并按版本策略建立新的 golden 样本族。
 
-最近一次变更：String/Bytes/Decimal 的值长度前缀由定长 u32 改为 uvarint（每值省 3 B，
-短值场景收益最大），全类型负载样本 `rows-payload-all-types.bin` 因此 417 B → 390 B；含 Rows
-块的 `full-delta-store.rpk`(4833→4816 B) 与 `encrypted-store.rpk`(2184→2079 B) 摘要随之
-更新；`empty-store.rpk` 无 Rows 块，字节与摘要保持不变。生成器见
-`golden_store_test.go` 的 `goldenMetaFull`/`goldenMetaDelta` 与 `encryption_test.go` 的
-`TestGoldenEncryptedStoreGenerate`。
+最近一次变更：无任何可空列的 Schema 不再写 null bitmap（原本每行固定
+`ceil(ncols/8)` 字节纯属浪费），`full-delta-store.rpk` 4816→4793 B、
+`encrypted-store.rpk` 2079→2076 B；`rows-payload-all-types.bin` 含 NULL 值、Schema 有可空
+列，仍保留 bitmap，摘要不变。宽度由 `Schema.nullBitmapBytes()` 单点决定，编解码两侧共用。
+
+上一次变更：String/Bytes/Decimal 的值长度前缀由定长 u32 改为 uvarint（每值省 3 B，
+短值场景收益最大），全类型负载样本 `rows-payload-all-types.bin` 因此 417 B → 390 B。
+生成器见 `golden_store_test.go` 的 `goldenMetaFull`/`goldenMetaDelta` 与
+`encryption_test.go` 的 `TestGoldenEncryptedStoreGenerate`。
 
 上一次变更：DateTime 改为秒+纳秒 12B(TZ 16B 含偏移)、RowsBlockHeader 从 24B 扩展到 32B（新增 BoundsOffset/BoundsLen，承载声明主键的
 每块 PK 边界段：`[u32 len][first][u32 len][last][u32 CRC32C]`，位于最后一个存储页之后）。

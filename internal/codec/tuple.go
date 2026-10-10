@@ -73,12 +73,19 @@ func (c Codec) CompileDecoder(schema *Schema) (Decoder, error) {
 		return Decoder{}, fmt.Errorf("rowpack: schema %q has %d columns, limit %d", schema.Name, len(schema.Columns), c.Limits.MaxColumns)
 	}
 	steps, fixed := compileDecodeSteps(schema)
+	// A schema with no nullable column writes no bitmap, so there is no last
+	// byte whose unused high bits need the corruption check either.
+	nb := schema.nullBitmapBytes()
+	var mask byte
+	if nb > 0 {
+		mask = tailBitmapMask(len(schema.Columns))
+	}
 	d := Decoder{
 		codec:          c,
 		schema:         schema,
-		bitmapBytes:    (len(schema.Columns) + 7) / 8,
+		bitmapBytes:    nb,
 		steps:          steps,
-		tailBitmapMask: tailBitmapMask(len(schema.Columns)),
+		tailBitmapMask: mask,
 		fixed:          fixed,
 	}
 	for _, st := range steps {
@@ -264,7 +271,7 @@ func (c Codec) EncodeInto(schema *Schema, row []Value, reuse []byte) ([]byte, er
 	if len(row) != len(schema.Columns) {
 		return nil, fmt.Errorf("%w: row has %d values, schema has %d columns", ErrSchemaMismatch, len(row), len(schema.Columns))
 	}
-	bitmapBytes := (len(schema.Columns) + 7) / 8
+	bitmapBytes := schema.nullBitmapBytes()
 	need := bitmapBytes + 9*len(schema.Columns)
 	var buf []byte
 	if cap(reuse) >= need {
@@ -279,11 +286,13 @@ func (c Codec) EncodeInto(schema *Schema, row []Value, reuse []byte) ([]byte, er
 // The bitmap region is zero-filled from a stack array (bitmapBytes <= 2 KiB
 // even at the 16384-column limit) so the hot write path stays allocation-free.
 func (c Codec) encodeBodyInto(buf []byte, schema *Schema, row []Value) ([]byte, error) {
-	bitmapBytes := (len(schema.Columns) + 7) / 8
-	if bitmapBytes <= len(bitmapScratch) {
-		buf = append(buf, bitmapScratch[:bitmapBytes]...)
-	} else {
-		buf = append(buf, make([]byte, bitmapBytes)...)
+	bitmapBytes := schema.nullBitmapBytes()
+	if bitmapBytes > 0 {
+		if bitmapBytes <= len(bitmapScratch) {
+			buf = append(buf, bitmapScratch[:bitmapBytes]...)
+		} else {
+			buf = append(buf, make([]byte, bitmapBytes)...)
+		}
 	}
 	bitmapOff := len(buf) - bitmapBytes
 
@@ -349,10 +358,13 @@ func (c Codec) decodeBodyIntoPrepared(dst []Value, body []byte, schema *Schema, 
 	}
 	bitmap := body[:expectBitmap]
 	pos := expectBitmap
-	// Unused high bits of the last byte must be zero.
-	if bits := len(schema.Columns) % 8; bits != 0 {
-		if last := bitmap[len(bitmap)-1]; last>>uint(bits) != 0 {
-			return nil, fmt.Errorf("rowpack: non-zero unused null bitmap bits")
+	// Unused high bits of the last byte must be zero. A schema without a
+	// nullable column carries no bitmap, so there is nothing to check.
+	if expectBitmap > 0 {
+		if bits := len(schema.Columns) % 8; bits != 0 {
+			if last := bitmap[expectBitmap-1]; last>>uint(bits) != 0 {
+				return nil, fmt.Errorf("rowpack: non-zero unused null bitmap bits")
+			}
 		}
 	}
 
@@ -363,8 +375,9 @@ func (c Codec) decodeBodyIntoPrepared(dst []Value, body []byte, schema *Schema, 
 		row = make([]Value, len(schema.Columns))
 	}
 	row = row[:len(schema.Columns)]
+	hasBitmap := expectBitmap > 0
 	for i, col := range schema.Columns {
-		if bitmap[i/8]&(1<<uint(i%8)) != 0 {
+		if hasBitmap && bitmap[i/8]&(1<<uint(i%8)) != 0 {
 			row[i] = Null()
 			continue
 		}

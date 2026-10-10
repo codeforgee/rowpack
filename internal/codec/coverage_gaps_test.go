@@ -194,7 +194,8 @@ func TestDecodeSinkMaterialization(t *testing.T) {
 // a body whose unused null-bitmap bits are set declines the fast path, the
 // validating decoder rejects it, and the error names the offending row.
 func TestBatchDecodeFallsBackToValidator(t *testing.T) {
-	schema := &Schema{Name: "s", Columns: []Column{{Name: "a", Type: TypeString}}}
+	// Nullable, so the row carries a NULL bitmap whose bit 1 is unused.
+	schema := &Schema{Name: "s", Columns: []Column{{Name: "a", Type: TypeString, Nullable: true}}}
 	c := Codec{Limits: DefaultLimits()}
 	dec, err := c.CompileDecoder(schema)
 	require.NoError(t, err, "compile")

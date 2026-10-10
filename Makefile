@@ -10,7 +10,8 @@ BENCH_PATTERN = Benchmark(Env|MainMatrix|Latency|WriteFull|GetHot|GetCold|GetCol
 BENCH_ARGS = -run '^$$' -bench '$(BENCH_PATTERN)$$' -benchmem
 
 .PHONY: all build test race vet lint staticcheck fmt clean golden \
-		bench bench-quick bench-1m bench-batch bench-simd bench-profile baseline baseline-diff
+		bench bench-quick bench-1m bench-batch bench-simd bench-profile baseline baseline-diff \
+		size-baseline size-diff
 
 all: fmt vet test
 
@@ -81,6 +82,16 @@ baseline:
 # make baseline-diff OLD=<date> NEW=<date> [THRESHOLD=10]，有超阈值回退时退出码 1。
 baseline-diff:
 	scripts/baseline-diff.sh "$(OLD)" "$(NEW)" $(THRESHOLD)
+
+# ---- 体积基线归档（量字节，与上面的性能基线互补）----
+
+# make size-baseline [SIZE_SCALE=1] [SIZE_SNAPSHOTS=20] → testdata/size-baseline/<date>.txt
+size-baseline:
+	scripts/size-baseline.sh $(LABEL)
+
+# make size-diff OLD=<date> NEW=<date> [THRESHOLD=0.5]，有超阈值回退时退出码 1。
+size-diff:
+	scripts/size-diff.sh "$(OLD)" "$(NEW)" $(THRESHOLD)
 
 golden:
 	$(GO) test . -run 'TestGolden' -args -update-golden

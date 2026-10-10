@@ -1,0 +1,22 @@
+# RowPack 体积样本
+# date: 2026-10-10T05:53:27Z
+# git: fe7a3d5
+# go: go version go1.27.1 darwin/arm64
+# os/arch: darwin/arm64
+# seed: 20261010  scale: 1  snapshots: 21
+# config: BlockSize 256K / PageSize 32K / Zstd L3
+# tables: 8  snapshots: 21  blocks: 291  logicalRows: 420298
+# writes: 332033
+# build: 1.605s
+# note: 文件头含 StoreUUID/CreatedUnixNano，快照头含 CreatedUnixNano/WriterNonce，
+#       故字节不可复现；跨版本可比对的是体积（整数）与上面的形状行。
+
+dataBytes            18657987
+rawBytes             44813429
+storedBytes          18045637
+indexMemoryBytes     8307381
+oversizedPages       0
+ratio                0.402684
+bytePerRow           44.392281
+bytePerWrittenRow    24.800237
+idxBytePerRow        19.765455

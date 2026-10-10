@@ -1,6 +1,8 @@
 # Binaries
 *.test
 *.out
+/rowpack-sizesample
+/rowpack-inspect
 
 # Editor
 .idea/
@@ -21,3 +23,6 @@ bench/
 
 # Go fuzz corpus (regenerate locally: go test -run TestGenerateFuzzCorpus .)
 testdata/fuzz/
+
+# Generated size sample (~18 MB, regenerate: scripts/size-baseline.sh)
+testdata/size-sample/

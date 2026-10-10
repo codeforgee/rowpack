@@ -85,7 +85,7 @@ END {
   nreg = 0; nimp = 0; nok = 0; nskip = 0
   # 固定顺序输出，避免 for-in 的随机次序。未列出的指标（如报告格式新增）
   # 会在末尾按收集顺序补上，不会静默消失。
-  nk = split("dataBytes rawBytes storedBytes indexMemoryBytes idxRowIDsBytes idxOrdinalsBytes idxChangesBytes idxRunStartBytes idxBlockIDsBytes idxShardFixedBytes idxAccountedBytes idxSlackBytes heapAfterOpenBytes oversizedPages ratio bytePerRow bytePerWrittenRow idxBytePerRow", mk, " ")
+  nk = split("dataBytes rawBytes storedBytes indexMemoryBytes idxRowIDsBytes idxOrdinalsBytes idxChangesBytes idxRunStartBytes idxBlockIDsBytes idxShardFixedBytes idxAccountedBytes idxSlackBytes packRowIDRawBytes packRowIDVarBytes packRowIDFrameBytes packOrdRawBytes packOrdVarBytes packOrdFrameBytes heapAfterOpenBytes oversizedPages ratio bytePerRow bytePerWrittenRow idxBytePerRow", mk, " ")
   for (i = 1; i <= nk; i++) {
     k = mk[i]
     if (!(k in keys)) continue

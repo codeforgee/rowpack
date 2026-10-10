@@ -84,6 +84,17 @@ func (s *Store) IndexMemoryBreakdown() index.MemoryBreakdown {
 	return st.view.MemoryBreakdown()
 }
 
+// IndexPackProfile reports how far the row-index columns would compress under
+// frame-of-reference bit packing. Purely a measurement: it tells you the
+// headroom before you commit to changing the layout. See index.PackProfile.
+func (s *Store) IndexPackProfile() index.PackProfile {
+	st, err := s.captureState()
+	if err != nil {
+		return index.PackProfile{}
+	}
+	return st.view.PackProfile()
+}
+
 // Stats returns a snapshot of the store's statistics.
 func (s *Store) Stats() Stats {
 	s.readMu.RLock()

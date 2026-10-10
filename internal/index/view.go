@@ -8,6 +8,7 @@ import (
 	"cmp"
 	"fmt"
 	"maps"
+	"math/bits"
 	"slices"
 	"sort"
 
@@ -372,6 +373,96 @@ func (v *View) MemoryBreakdown() MemoryBreakdown {
 	}
 	b.ShardFixedBytes = uint64(b.Shards) * 48
 	return b
+}
+
+// PackBlockSize is the frame size used by PackProfile's block estimate: the
+// number of entries that share one bit width. 128 keeps a decoded frame in
+// 1-2 cache lines for the widths seen here, and bounds the random-access
+// decode to 128 deltas.
+const PackBlockSize = 128
+
+// PackProfile measures how far the shard columns would actually compress
+// under frame-of-reference bit packing — the main lever left on index memory.
+// Measured, not assumed: the win depends entirely on how clustered RowIDs are
+// and how small ItemOrdinals get, and both are workload properties.
+//
+// Two flavours, both lower bounds (neither counts frame headers, base values,
+// width tables or alignment):
+//
+//	Raw   — what the []uint64/[]uint32 cost today
+//	Var   — every delta carries its own width; the theoretical floor
+//	Block — every PackBlockSize deltas share one width, the max in the frame;
+//	        this is the shape you would actually implement
+type PackProfile struct {
+	Entries          int
+	RawRowIDBits     uint64
+	RawOrdinalBits   uint64
+	VarRowIDBits     uint64
+	VarOrdinalBits   uint64
+	BlockRowIDBits   uint64
+	BlockOrdinalBits uint64
+	Frames           int // number of PackBlockSize frames
+}
+
+// RowIDFrameBytes is the block flavour in bytes, plus one uint64 base per
+// frame — the minimum metadata a decoder needs to start a frame.
+func (p PackProfile) RowIDFrameBytes() uint64 {
+	return p.BlockRowIDBits/8 + uint64(p.Frames)*8
+}
+
+// OrdinalFrameBytes is the same for ordinals: one uint32 base per frame.
+func (p PackProfile) OrdinalFrameBytes() uint64 {
+	return p.BlockOrdinalBits/8 + uint64(p.Frames)*4
+}
+
+// PackProfile walks every shard and accumulates the bit widths above. RowIDs
+// are ascending within a shard, so the delta is unsigned; ordinals are not
+// monotonic across runs, so they are measured as raw values.
+func (v *View) PackProfile() PackProfile {
+	var p PackProfile
+	for _, byTable := range v.rows {
+		for _, sh := range byTable {
+			n := len(sh.rowIDs)
+			p.Entries += n
+			p.RawRowIDBits += uint64(n) * 64
+			p.RawOrdinalBits += uint64(n) * 32
+			for i := 0; i < n; i++ {
+				var d uint64
+				if i == 0 {
+					d = sh.rowIDs[i]
+				} else {
+					d = sh.rowIDs[i] - sh.rowIDs[i-1]
+				}
+				p.VarRowIDBits += uint64(bits.Len64(d))
+				p.VarOrdinalBits += uint64(bits.Len64(uint64(sh.ordinals[i])))
+			}
+			for base := 0; base < n; base += PackBlockSize {
+				end := base + PackBlockSize
+				if end > n {
+					end = n
+				}
+				var maxDelta, maxOrd uint64
+				for i := base; i < end; i++ {
+					var d uint64
+					if i == 0 {
+						d = sh.rowIDs[i]
+					} else {
+						d = sh.rowIDs[i] - sh.rowIDs[i-1]
+					}
+					if d > maxDelta {
+						maxDelta = d
+					}
+					if uint64(sh.ordinals[i]) > maxOrd {
+						maxOrd = uint64(sh.ordinals[i])
+					}
+				}
+				p.BlockRowIDBits += uint64(end-base) * uint64(bits.Len64(maxDelta))
+				p.BlockOrdinalBits += uint64(end-base) * uint64(bits.Len64(maxOrd))
+				p.Frames++
+			}
+		}
+	}
+	return p
 }
 
 // ResolveRow finds the row location for (snapshot, table, rowID) along the

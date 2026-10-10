@@ -52,7 +52,11 @@ type tableSpec struct {
 	name string
 	cols []rowpack.Column
 	rows int
-	fill func(rnd *rand.Rand, id uint64) rowpack.Row
+	// maxGap caps the RowID stride for this table when -rowid-gap is set. Only
+	// lookup needs it: its primary key is uint16, so a large stride would
+	// overflow the column.
+	maxGap int
+	fill   func(rnd *rand.Rand, id uint64) rowpack.Row
 }
 
 func text(rnd *rand.Rand, id uint64, maxWords int) string {
@@ -276,7 +280,8 @@ func tables(scale float64) []tableSpec {
 				{Name: "id", Type: rowpack.TypeUint16, PrimaryKey: true},
 				{Name: "code", Type: rowpack.TypeString},
 			},
-			rows: scaled(4000),
+			rows:   scaled(4000),
+			maxGap: 16, // uint16 primary key
 			fill: func(rnd *rand.Rand, id uint64) rowpack.Row {
 				return rowpack.Row{rowpack.Uint16(uint16(id)), rowpack.String(words[int(id)%len(words)])}
 			},
@@ -309,18 +314,31 @@ func main() {
 	scale := flag.Float64("scale", 1, "multiplies every table's row count")
 	snapshots := flag.Int("snapshots", 20, "number of DELTA snapshots after the FULL baseline")
 	seed := flag.Int64("seed", 20261010, "PRNG seed; fixed so the sample is byte-reproducible")
+	rowidGap := flag.Int("rowid-gap", 1,
+		"RowID stride: 1 = dense (consecutive IDs), N > 1 = sparse with gaps up to N. "+
+			"Only affects -rowid-gap>1 runs; the default matches the committed baseline.")
 	keep := flag.Bool("keep", true, "keep the generated store on disk (false removes it after reporting)")
 	flag.StringVar(&heapProfilePath, "memprofile", "",
 		"write a heap profile of the reopened store to this path (go tool pprof)")
 	flag.Parse()
 
-	if err := run(*out, *scale, *snapshots, *seed, *keep); err != nil {
+	if err := run(*out, *scale, *snapshots, *seed, *rowidGap, *keep); err != nil {
 		fmt.Fprintln(os.Stderr, "rowpack-sizesample:", err)
 		os.Exit(1)
 	}
 }
 
-func run(out string, scale float64, snapshots int, seed int64, keep bool) error {
+// nextRowID advances the RowID sequence. gap > 1 makes IDs sparse, which is
+// what -rowid-gap is for: bit-packed RowIDs only pay off when IDs cluster, so
+// the sample has to model both ends or the measurement is meaningless.
+func nextRowID(prev uint64, gap int, rnd *rand.Rand) uint64 {
+	if gap <= 1 {
+		return prev + 1
+	}
+	return prev + 1 + uint64(rnd.Intn(gap))
+}
+
+func run(out string, scale float64, snapshots int, seed int64, gap int, keep bool) error {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
 	}
@@ -359,10 +377,15 @@ func run(out string, scale float64, snapshots int, seed int64, keep bool) error 
 			return fmt.Errorf("define %s: %w", ts.name, err)
 		}
 		live[ts.name] = &liveRows{ids: make([]uint64, 0, ts.rows)}
-		nextID[ts.name] = 1
+		// 0, because nextRowID advances before handing out the first id.
+		nextID[ts.name] = 0
+		tgap := gap
+		if ts.maxGap > 0 && tgap > ts.maxGap {
+			tgap = ts.maxGap
+		}
 		for i := 0; i < ts.rows; i++ {
-			id := nextID[ts.name]
-			nextID[ts.name]++
+			id := nextRowID(nextID[ts.name], tgap, rnd)
+			nextID[ts.name] = id
 			if err := tx.Insert(ctx, ts.name, id, ts.fill(rnd, id)); err != nil {
 				return fmt.Errorf("insert %s %d: %w", ts.name, id, err)
 			}
@@ -432,9 +455,13 @@ func run(out string, scale float64, snapshots int, seed int64, keep bool) error 
 			}
 			// Inserts last, on fresh ids, so nothing above can collide.
 			ins := ts.rows/40 + 1
+			tgap := gap
+			if ts.maxGap > 0 && tgap > ts.maxGap {
+				tgap = ts.maxGap
+			}
 			for i := 0; i < ins; i++ {
-				id := nextID[ts.name]
-				nextID[ts.name]++
+				id := nextRowID(nextID[ts.name], tgap, rnd)
+				nextID[ts.name] = id
 				if err := tx.Insert(ctx, ts.name, id, ts.fill(rnd, id)); err != nil {
 					return fmt.Errorf("insert %s %d: %w", ts.name, id, err)
 				}
@@ -450,6 +477,7 @@ func run(out string, scale float64, snapshots int, seed int64, keep bool) error 
 
 	st := db.Stats()
 	mb := db.IndexMemoryBreakdown()
+	pp := db.IndexPackProfile()
 	storePath := filepath.Join(out, "sample")
 	if err := db.Close(); err != nil {
 		return err
@@ -478,7 +506,8 @@ func run(out string, scale float64, snapshots int, seed int64, keep bool) error 
 	fmt.Fprintf(&b, "# tables: %d  snapshots: %d  blocks: %d  logicalRows: %d\n",
 		st.Tables, st.Snapshots, st.Blocks, rows)
 	fmt.Fprintf(&b, "# writes: %d\n", writes)
-	fmt.Fprintf(&b, "# shards: %d  entries: %d  runs: %d\n", mb.Shards, mb.RowEntries, mb.Runs)
+	fmt.Fprintf(&b, "# shards: %d  entries: %d  runs: %d  frames: %d\n",
+		mb.Shards, mb.RowEntries, mb.Runs, pp.Frames)
 	fmt.Fprintf(&b, "# build: %s\n", time.Since(started).Round(time.Millisecond))
 	fmt.Fprintf(&b, "# note: 文件头含 StoreUUID/CreatedUnixNano，快照头含 CreatedUnixNano/WriterNonce，\n")
 	fmt.Fprintf(&b, "#       故字节不可复现；跨版本可比对的是体积（整数）与上面的形状行。\n")
@@ -500,6 +529,15 @@ func run(out string, scale float64, snapshots int, seed int64, keep bool) error 
 	fmt.Fprintf(&b, "%-20s %d\n", "idxShardFixedBytes", mb.ShardFixedBytes)
 	fmt.Fprintf(&b, "%-20s %d\n", "idxAccountedBytes", mb.AccountedBytes())
 	fmt.Fprintf(&b, "%-20s %d\n", "idxSlackBytes", mb.SlackBytes)
+	// 位打包的前景，用真实分布算而不是猜：Raw 是今天 []uint64/[]uint32 的
+	// 成本，Var 是每值自带位宽的理论下界，Frame 是每 128 条一帧、帧内共用
+	// 位宽（含每帧一个基准值）——最后一个才是可实现的方案。
+	fmt.Fprintf(&b, "%-20s %d\n", "packRowIDRawBytes", pp.RawRowIDBits/8)
+	fmt.Fprintf(&b, "%-20s %d\n", "packRowIDVarBytes", pp.VarRowIDBits/8)
+	fmt.Fprintf(&b, "%-20s %d\n", "packRowIDFrameBytes", pp.RowIDFrameBytes())
+	fmt.Fprintf(&b, "%-20s %d\n", "packOrdRawBytes", pp.RawOrdinalBits/8)
+	fmt.Fprintf(&b, "%-20s %d\n", "packOrdVarBytes", pp.VarOrdinalBits/8)
+	fmt.Fprintf(&b, "%-20s %d\n", "packOrdFrameBytes", pp.OrdinalFrameBytes())
 	fmt.Fprintf(&b, "%-20s %d\n", "heapAfterOpenBytes", heapBytes)
 	fmt.Fprintf(&b, "%-20s %d\n", "oversizedPages", st.OversizedRowPages)
 	pct := func(k string, v float64) { fmt.Fprintf(&b, "%-20s %.6f\n", k, v) }

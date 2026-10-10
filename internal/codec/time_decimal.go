@@ -1,6 +1,7 @@
 package codec
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
@@ -128,14 +129,14 @@ func appendDecimalBytes(buf []byte, u *big.Int, maxValue uint32) ([]byte, error)
 		if uint32(n) > maxValue {
 			return nil, fmt.Errorf("decimal unscaled of %d bytes exceeds limit %d", n, maxValue)
 		}
-		buf = appendU32(buf, uint32(n))
+		buf = binary.AppendUvarint(buf, uint64(n))
 		return appendInt64(buf, v), nil
 	}
 	raw := encodeBig(u)
 	if uint32(len(raw)) > maxValue {
 		return nil, fmt.Errorf("decimal unscaled of %d bytes exceeds limit %d", len(raw), maxValue)
 	}
-	buf = appendU32(buf, uint32(len(raw)))
+	buf = binary.AppendUvarint(buf, uint64(len(raw)))
 	return append(buf, raw...), nil
 }
 

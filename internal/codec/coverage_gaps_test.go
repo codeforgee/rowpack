@@ -83,7 +83,8 @@ func TestAppendValueInvalidValues(t *testing.T) {
 		{"decimal nil unscaled", Value{typ: TypeDecimal, d: Decimal{Scale: 3}}, defaults, "decimal unscaled is nil"},
 		{"decimal int64 over MaxValueBytes", DecimalValue(Decimal{Unscaled: big.NewInt(100000), Scale: 0}),
 			Limits{MaxValueBytes: 2, MaxRowBytes: defaults.MaxRowBytes}, "exceeds limit 2"},
-		{"decimal over MaxRowBytes", DecimalValue(Decimal{Unscaled: big.NewInt(100000), Scale: 0}),
+		// 1 B uvarint len + 4 B unscaled = 5 B, over the 4 B row limit.
+		{"decimal over MaxRowBytes", DecimalValue(Decimal{Unscaled: big.NewInt(100000000), Scale: 0}),
 			Limits{MaxValueBytes: defaults.MaxValueBytes, MaxRowBytes: 4}, "exceeds limit 4"},
 		{"unsupported type", Value{typ: Type(99)}, defaults, "unsupported type 99"},
 	}
@@ -132,7 +133,8 @@ func TestEncodeIntoRowBytesLimit(t *testing.T) {
 		{Name: "a", Type: TypeString},
 		{Name: "b", Type: TypeString},
 	}}
-	row := []Value{String(strings.Repeat("x", 12)), String("y")}
+	// 1 B null bitmap + (1 B uvarint len + 14 B) + (1 B uvarint len + 1 B) = 18.
+	row := []Value{String(strings.Repeat("x", 14)), String("y")}
 	if _, err := c.EncodeInto(schema, row, nil); err == nil || !strings.Contains(err.Error(), "exceeds limit 16") {
 		t.Fatalf("want row-bytes error, got %v", err)
 	}

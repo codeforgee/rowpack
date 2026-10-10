@@ -17,19 +17,23 @@
 | 文件 | SHA-256 |
 | --- | --- |
 | `empty-store.rpk` | `359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401` |
-| `rows-payload-all-types.bin` | `e95a2724cb1d8b486ee7934b5113cb328589243fdd814869ea5401692ec032a0` |
-| `full-delta-store.rpk` | `92e88440f926111cd20d00bddb8191e1dcd53d8214ee8c40eb922678eebf373c` |
-| `encrypted-store.rpk` | `e7b0f8a715b6af17b0bb7bbe4d7de75981243cd6b755fb6d4638403e4816bf14` |
+| `rows-payload-all-types.bin` | `1c6aad29604eb830d7cebfb06d02a15da44b3eeba0f573b22176e67b7c8d1f88` |
+| `full-delta-store.rpk` | `1b91b7970930093e4c3dc9c8ad44233939a240bbc10b60c2be6bca7decedf5f9` |
+| `encrypted-store.rpk` | `db4f4573babb81feb3d3c8c0c3f0010d4316d41a4a351b9163f10a1998ff6423` |
 
 摘要对应冻结的 v1 IndexTxn 格式（排序 Row Index Page + Fence Directory；Metadata/Block chunk
 为 delta/varint 条目流 + Zstd，见 docs/INDEX_TXN_FORMAT_V1.md §4.3）。修改任一摘要即视为
 有意的磁盘格式变更，必须经过格式审查并按版本策略建立新的 golden 样本族。
 
-最近一次变更：DateTime 改为秒+纳秒 12B(TZ 16B 含偏移)、RowsBlockHeader 从 24B 扩展到 32B（新增 BoundsOffset/BoundsLen，承载声明主键的
-每块 PK 边界段：`[u32 len][first][u32 len][last][u32 CRC32C]`，位于最后一个存储页之后），全部
-含 Rows 块的样本摘要随之更新；`empty-store.rpk` 无 Rows 块，字节与摘要保持不变。生成器见
+最近一次变更：String/Bytes/Decimal 的值长度前缀由定长 u32 改为 uvarint（每值省 3 B，
+短值场景收益最大），全类型负载样本 `rows-payload-all-types.bin` 因此 417 B → 390 B；含 Rows
+块的 `full-delta-store.rpk`(4833→4816 B) 与 `encrypted-store.rpk`(2184→2079 B) 摘要随之
+更新；`empty-store.rpk` 无 Rows 块，字节与摘要保持不变。生成器见
 `golden_store_test.go` 的 `goldenMetaFull`/`goldenMetaDelta` 与 `encryption_test.go` 的
 `TestGoldenEncryptedStoreGenerate`。
+
+上一次变更：DateTime 改为秒+纳秒 12B(TZ 16B 含偏移)、RowsBlockHeader 从 24B 扩展到 32B（新增 BoundsOffset/BoundsLen，承载声明主键的
+每块 PK 边界段：`[u32 len][first][u32 len][last][u32 CRC32C]`，位于最后一个存储页之后）。
 
 损坏样本不静态保存，由测试从健康 Store 动态构造：坏 Magic / 短头 / 未知主版本 →
 `TestReadDataHeaderCorruptFiles`（未知主版本要求 `ErrVersionUnsupported`）；Block 头与负载损坏 →

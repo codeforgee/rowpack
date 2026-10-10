@@ -13,13 +13,17 @@ import (
 
 // TypedTuple v1 row encoding:
 //
-//	u32 ColumnCount
-//	u32 NullBitmapBytes   // ceil(ColumnCount/8)
-//	bytes NullBitmap      // bit i = 1 => column i is NULL, LSB first
+//	bytes NullBitmap   // ceil(ColumnCount/8), bit i = 1 => column i is NULL, LSB first
 //	Value × non-null columns
 //
+// The column count and the bitmap width are implied by the Schema, not written.
 // Unused high bits of the last bitmap byte must be zero; decoding must leave
-// no trailing bytes. Value encodings are fixed by the v1 spec.
+// no trailing bytes.
+//
+// Fixed-width values (integers, floats, Date, Time, DateTime, DateTimeTZ) are
+// little-endian with no padding. Variable-width values (String, Bytes, Decimal)
+// are written as [uvarint length][bytes]: the prefix width tracks the value, so
+// a short string costs 1 prefix byte instead of 4.
 
 // ErrSchemaMismatch is returned when row and schema disagree.
 var ErrSchemaMismatch = errors.New("rowpack: schema mismatch")
@@ -457,31 +461,31 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 			tz:  int32(binary.LittleEndian.Uint32(raw[12:])),
 		}, 16, nil
 	case TypeString, TypeBytes:
-		ln, ok := getVarLen(b)
+		ln, pfx, ok := getVarLen(b)
 		if !ok {
 			return Value{}, 0, fmt.Errorf("truncated type %d length", col.Type)
 		}
 		if uint32(ln) > c.Limits.MaxValueBytes {
 			return Value{}, 0, fmt.Errorf("type %d value of %d bytes exceeds limit %d", col.Type, ln, c.Limits.MaxValueBytes)
 		}
-		raw, ok := need(4 + ln)
+		raw, ok := need(pfx + ln)
 		if !ok {
 			return Value{}, 0, fmt.Errorf("truncated type %d payload", col.Type)
 		}
-		payload := raw[4 : 4+ln]
+		payload := raw[pfx : pfx+ln]
 		if col.Type == TypeString && !utf8.Valid(payload) {
 			return Value{}, 0, errors.New("string is not valid UTF-8")
 		}
 		if col.Type == TypeString {
 			if sink != nil && sink.String != nil {
-				return Value{typ: TypeString, s: sink.String(payload)}, 4 + ln, nil
+				return Value{typ: TypeString, s: sink.String(payload)}, pfx + ln, nil
 			}
-			return String(string(payload)), 4 + ln, nil
+			return String(string(payload)), pfx + ln, nil
 		}
 		if sink != nil && sink.Bytes != nil {
-			return Value{typ: TypeBytes, by: sink.Bytes(payload)}, 4 + ln, nil
+			return Value{typ: TypeBytes, by: sink.Bytes(payload)}, pfx + ln, nil
 		}
-		return bytesValueInto(reuse, payload), 4 + ln, nil
+		return bytesValueInto(reuse, payload), pfx + ln, nil
 	case TypeDate:
 		raw, ok := need(4)
 		if !ok {
@@ -509,14 +513,14 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 			u:   uint64(binary.LittleEndian.Uint32(raw[8:])),
 		}, 12, nil
 	case TypeDecimal:
-		ln, ok := getVarLen(b)
+		ln, pfx, ok := getVarLen(b)
 		if !ok {
 			return Value{}, 0, errors.New("truncated decimal length")
 		}
 		if uint32(ln) > c.Limits.MaxValueBytes {
 			return Value{}, 0, fmt.Errorf("decimal unscaled of %d bytes exceeds limit %d", ln, c.Limits.MaxValueBytes)
 		}
-		raw, ok := need(4 + ln)
+		raw, ok := need(pfx + ln)
 		if !ok {
 			return Value{}, 0, errors.New("truncated decimal payload")
 		}
@@ -524,10 +528,10 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 		if u == nil {
 			u = new(big.Int)
 		}
-		if err := decodeBytesInto(u, raw[4:4+ln]); err != nil {
+		if err := decodeBytesInto(u, raw[pfx:pfx+ln]); err != nil {
 			return Value{}, 0, err
 		}
-		return Value{typ: TypeDecimal, d: Decimal{Unscaled: u, Scale: col.Scale}}, 4 + ln, nil
+		return Value{typ: TypeDecimal, d: Decimal{Unscaled: u, Scale: col.Scale}}, pfx + ln, nil
 	}
 	return Value{}, 0, fmt.Errorf("unsupported type %d", col.Type)
 }
@@ -563,13 +567,13 @@ func appendValue(buf []byte, v Value, limits Limits) ([]byte, error) {
 		if err := CheckString(v.s, limits); err != nil {
 			return nil, err
 		}
-		buf = appendU32(buf, uint32(len(v.s)))
+		buf = binary.AppendUvarint(buf, uint64(len(v.s)))
 		return append(buf, v.s...), nil
 	case TypeBytes:
 		if uint32(len(v.by)) > limits.MaxValueBytes {
 			return nil, fmt.Errorf("bytes value of %d bytes exceeds limit %d", len(v.by), limits.MaxValueBytes)
 		}
-		buf = appendU32(buf, uint32(len(v.by)))
+		buf = binary.AppendUvarint(buf, uint64(len(v.by)))
 		return append(buf, v.by...), nil
 	case TypeDate:
 		return appendU32(buf, uint32(int32(v.i))), nil
@@ -619,12 +623,24 @@ func fixedWidth(t Type) int {
 	return 0
 }
 
-// getVarLen reads a u32 length prefix, enforcing the value byte limit.
-func getVarLen(b []byte) (int, bool) {
-	if len(b) < 4 {
-		return 0, false
+// getVarLen reads a uvarint length prefix at the start of b. It returns the
+// decoded length, the number of bytes the prefix occupied and whether the
+// prefix was readable. A truncated prefix, a prefix longer than 10 bytes or a
+// length that cannot be represented as an int all report ok=false, so an
+// untrusted body can never turn into a huge slice bound.
+//
+// The prefix width is returned because it varies with the value: string,
+// bytes and decimal payloads are addressed relative to it rather than at a
+// fixed 4-byte offset.
+func getVarLen(b []byte) (ln int, prefix int, ok bool) {
+	v, n := binary.Uvarint(b)
+	if n <= 0 {
+		return 0, 0, false
 	}
-	return int(binary.LittleEndian.Uint32(b)), true
+	if v > uint64(int(^uint(0)>>1)) {
+		return 0, 0, false
+	}
+	return int(v), n, true
 }
 
 func appendFixed(buf []byte, v uint64, n int) []byte {

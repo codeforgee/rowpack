@@ -201,11 +201,11 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 		}
 		switch s.kind {
 		case decodeString, decodeBytes:
-			ln, ok := getVarLen(payload[pos:])
-			if !ok || uint32(ln) > d.codec.Limits.MaxValueBytes || ln > len(payload)-pos-4 {
+			ln, pfx, ok := getVarLen(payload[pos:])
+			if !ok || uint32(ln) > d.codec.Limits.MaxValueBytes || ln > len(payload)-pos-pfx {
 				return nil, false
 			}
-			raw := payload[pos+4 : pos+4+ln]
+			raw := payload[pos+pfx : pos+pfx+ln]
 			if s.kind == decodeString {
 				if !utf8.Valid(raw) {
 					return nil, false
@@ -222,13 +222,13 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 					row[i] = bytesValueInto(row[i], raw)
 				}
 			}
-			pos += 4 + ln
+			pos += pfx + ln
 		case decodeDecimal:
-			ln, ok := getVarLen(payload[pos:])
-			if !ok || uint32(ln) > d.codec.Limits.MaxValueBytes || ln > len(payload)-pos-4 {
+			ln, pfx, ok := getVarLen(payload[pos:])
+			if !ok || uint32(ln) > d.codec.Limits.MaxValueBytes || ln > len(payload)-pos-pfx {
 				return nil, false
 			}
-			raw := payload[pos+4 : pos+4+ln]
+			raw := payload[pos+pfx : pos+pfx+ln]
 			u := row[i].d.Unscaled
 			if u == nil {
 				u = new(big.Int)
@@ -237,7 +237,7 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 				return nil, false
 			}
 			row[i] = Value{typ: s.typ, d: Decimal{Unscaled: u, Scale: s.scale}}
-			pos += 4 + ln
+			pos += pfx + ln
 		default:
 			return nil, false
 		}

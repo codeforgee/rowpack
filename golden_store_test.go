@@ -26,9 +26,9 @@ func TestGoldenManifest(t *testing.T) {
 		// overrides it, the empty DELTA inherits), so they lock that block
 		// kind's bytes and its parent-chain resolution too.
 		"empty-store.rpk":            "359fb844c16095678cac65efd8c93b0e31d94639ae178cfc336b3def54f5c401",
-		"rows-payload-all-types.bin": "e95a2724cb1d8b486ee7934b5113cb328589243fdd814869ea5401692ec032a0",
-		"full-delta-store.rpk":       "92e88440f926111cd20d00bddb8191e1dcd53d8214ee8c40eb922678eebf373c",
-		"encrypted-store.rpk":        "e7b0f8a715b6af17b0bb7bbe4d7de75981243cd6b755fb6d4638403e4816bf14",
+		"rows-payload-all-types.bin": "1c6aad29604eb830d7cebfb06d02a15da44b3eeba0f573b22176e67b7c8d1f88",
+		"full-delta-store.rpk":       "1b91b7970930093e4c3dc9c8ad44233939a240bbc10b60c2be6bca7decedf5f9",
+		"encrypted-store.rpk":        "db4f4573babb81feb3d3c8c0c3f0010d4316d41a4a351b9163f10a1998ff6423",
 	}
 	for name, digest := range want {
 		data, err := os.ReadFile(goldenPath(name))

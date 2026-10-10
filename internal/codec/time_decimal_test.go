@@ -175,16 +175,16 @@ func TestDecimalEncoding(t *testing.T) {
 		u := big.NewInt(0)
 		buf, err := appendDecimalBytes(nil, u, 100)
 		require.NoError(t, err)
-		// u32 length (1) + 1 byte data (0x00)
-		require.Equal(t, []byte{1, 0, 0, 0, 0x00}, buf)
+		// uvarint length (1) + 1 byte data (0x00)
+		require.Equal(t, []byte{1, 0x00}, buf)
 	})
 
 	t.Run("positive fits int64", func(t *testing.T) {
 		u := big.NewInt(12345)
 		buf, err := appendDecimalBytes(nil, u, 100)
 		require.NoError(t, err)
-		// u32 length (2) + 2 bytes data (0x30, 0x39)
-		require.Equal(t, []byte{2, 0, 0, 0, 0x30, 0x39}, buf)
+		// uvarint length (2) + 2 bytes data (0x30, 0x39)
+		require.Equal(t, []byte{2, 0x30, 0x39}, buf)
 	})
 
 	t.Run("negative fits int64", func(t *testing.T) {

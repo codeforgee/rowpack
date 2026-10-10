@@ -99,14 +99,44 @@ func TestValueGettersWrongType(t *testing.T) {
 	}
 }
 
-// TestGetVarLenShort covers the short-input branch of the length-prefix read.
+// TestGetVarLenShort covers the rejection branches of the uvarint length
+// prefix: a truncated continuation and a prefix wider than 10 bytes.
 func TestGetVarLenShort(t *testing.T) {
-	if n, ok := getVarLen([]byte{1, 2}); ok || n != 0 {
-		t.Fatalf("getVarLen short = %d, %v", n, ok)
+	ln, pfx, ok := getVarLen([]byte{0x80})
+	require.False(t, ok, "truncated continuation must be rejected")
+	require.Zero(t, ln, "length must be zero on rejection")
+	require.Zero(t, pfx, "prefix width must be zero on rejection")
+
+	// 11 continuation bytes: Uvarint refuses to read past the 10-byte cap.
+	over := make([]byte, 11)
+	for i := range over {
+		over[i] = 0xFF
 	}
-	n, ok := getVarLen([]byte{4, 0, 0, 0, 'a', 'b', 'c', 'd'})
-	if !ok || n != 4 {
-		t.Fatalf("getVarLen = %d, %v", n, ok)
+	ln, pfx, ok = getVarLen(over)
+	require.False(t, ok, "over-wide prefix must be rejected")
+	require.Zero(t, ln, "length must be zero on rejection")
+	require.Zero(t, pfx, "prefix width must be zero on rejection")
+}
+
+// TestGetVarLenWidth pins that the prefix width tracks the value, which is
+// what callers use to address the payload that follows it.
+func TestGetVarLenWidth(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		ln   int
+		want int // prefix bytes
+	}{
+		{"one byte", []byte{0x04, 'a', 'b', 'c', 'd'}, 4, 1},
+		{"two bytes", []byte{0x80, 0x01, 'a'}, 128, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ln, pfx, ok := getVarLen(c.in)
+			require.True(t, ok, "getVarLen(%x) rejected", c.in)
+			require.Equal(t, c.ln, ln, "getVarLen(%x) length", c.in)
+			require.Equal(t, c.want, pfx, "getVarLen(%x) prefix width", c.in)
+		})
 	}
 }
 

@@ -506,8 +506,7 @@ func run(out string, scale float64, snapshots int, seed int64, gap int, keep boo
 	fmt.Fprintf(&b, "# tables: %d  snapshots: %d  blocks: %d  logicalRows: %d\n",
 		st.Tables, st.Snapshots, st.Blocks, rows)
 	fmt.Fprintf(&b, "# writes: %d\n", writes)
-	fmt.Fprintf(&b, "# shards: %d  entries: %d  runs: %d  frames: %d\n",
-		mb.Shards, mb.RowEntries, mb.Runs, pp.Frames)
+	fmt.Fprintf(&b, "# shards: %d  entries: %d  runs: %d\n", mb.Shards, mb.RowEntries, mb.Runs)
 	fmt.Fprintf(&b, "# build: %s\n", time.Since(started).Round(time.Millisecond))
 	fmt.Fprintf(&b, "# note: 文件头含 StoreUUID/CreatedUnixNano，快照头含 CreatedUnixNano/WriterNonce，\n")
 	fmt.Fprintf(&b, "#       故字节不可复现；跨版本可比对的是体积（整数）与上面的形状行。\n")
@@ -529,13 +528,12 @@ func run(out string, scale float64, snapshots int, seed int64, gap int, keep boo
 	fmt.Fprintf(&b, "%-20s %d\n", "idxShardFixedBytes", mb.ShardFixedBytes)
 	fmt.Fprintf(&b, "%-20s %d\n", "idxAccountedBytes", mb.AccountedBytes())
 	fmt.Fprintf(&b, "%-20s %d\n", "idxSlackBytes", mb.SlackBytes)
-	// RowIDs 已落地打包：Raw 是"若仍是 []uint64"的对照，Packed 是实际成本。
-	// ordinals 还没打包，Var/Frame 是剩余空间。
+	// 两列都已落地打包：Raw 是"若仍是 []uint64/[]uint32"的对照，Packed 是
+	// 实际成本。之前的 Var/Frame 是改造前的预估，已被实测取代。
 	fmt.Fprintf(&b, "%-20s %d\n", "packRowIDRawBytes", pp.RawRowIDBits/8)
 	fmt.Fprintf(&b, "%-20s %d\n", "packRowIDPackedBytes", pp.PackedRowIDBytes())
 	fmt.Fprintf(&b, "%-20s %d\n", "packOrdRawBytes", pp.RawOrdinalBits/8)
-	fmt.Fprintf(&b, "%-20s %d\n", "packOrdVarBytes", pp.VarOrdinalBits/8)
-	fmt.Fprintf(&b, "%-20s %d\n", "packOrdFrameBytes", pp.OrdinalFrameBytes())
+	fmt.Fprintf(&b, "%-20s %d\n", "packOrdPackedBytes", pp.PackedOrdinalBytes())
 	fmt.Fprintf(&b, "%-20s %d\n", "heapAfterOpenBytes", heapBytes)
 	fmt.Fprintf(&b, "%-20s %d\n", "oversizedPages", st.OversizedRowPages)
 	pct := func(k string, v float64) { fmt.Fprintf(&b, "%-20s %.6f\n", k, v) }

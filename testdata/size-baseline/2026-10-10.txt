@@ -1,37 +1,36 @@
 # RowPack 体积样本
-# date: 2026-10-10T06:59:41Z
-# git: dee344e
+# date: 2026-10-10T07:16:28Z
+# git: dbf36be
 # go: go version go1.27.1 darwin/arm64
 # os/arch: darwin/arm64
 # seed: 20261010  scale: 1  snapshots: 21
 # config: BlockSize 256K / PageSize 32K / Zstd L3
 # tables: 8  snapshots: 21  blocks: 291  logicalRows: 420298
 # writes: 332033
-# shards: 168  entries: 636033  runs: 394  frames: 39827
-# build: 1.742s
+# shards: 168  entries: 636033  runs: 394
+# build: 1.72s
 # note: 文件头含 StoreUUID/CreatedUnixNano，快照头含 CreatedUnixNano/WriterNonce，
 #       故字节不可复现；跨版本可比对的是体积（整数）与上面的形状行。
 
 dataBytes            18657987
 rawBytes             44813429
 storedBytes          18045637
-indexMemoryBytes     4125289
+indexMemoryBytes     2527692
 idxRowIDsBytes       906172
-idxOrdinalsBytes     2544132
+idxOrdinalsBytes     946535
 idxChangesBytes      636033
 idxRunStartBytes     2248
 idxBlockIDsBytes     3152
 idxShardFixedBytes   8064
-idxAccountedBytes    4099801
+idxAccountedBytes    2502204
 idxSlackBytes        13416
 packRowIDRawBytes    5088264
 packRowIDPackedBytes 906172
 packOrdRawBytes      2544132
-packOrdVarBytes      859776
-packOrdFrameBytes    1048455
-heapAfterOpenBytes   6159328
+packOrdPackedBytes   946535
+heapAfterOpenBytes   2839632
 oversizedPages       0
 ratio                0.402684
 bytePerRow           44.392281
 bytePerWrittenRow    24.800237
-idxBytePerRow        9.815153
+idxBytePerRow        6.014047

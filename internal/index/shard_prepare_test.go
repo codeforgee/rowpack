@@ -34,9 +34,9 @@ func TestPrepareSortsUnsortedEntries(t *testing.T) {
 		t.Fatalf("rowIDs len %d, want %d", sh.rowIDs.n, len(wantIDs))
 	}
 	for i := range wantIDs {
-		if sh.rowIDAt(i) != wantIDs[i] || sh.ordinals[i] != wantOrdinals[i] || sh.changes[i] != wantChanges[i] {
+		if sh.rowIDAt(i) != wantIDs[i] || sh.ordinals.at(i) != wantOrdinals[i] || sh.changes[i] != wantChanges[i] {
 			t.Fatalf("row %d = (%d, ord %d, ch %d), want (%d, %d, %d)", i,
-				sh.rowIDAt(i), sh.ordinals[i], sh.changes[i], wantIDs[i], wantOrdinals[i], wantChanges[i])
+				sh.rowIDAt(i), sh.ordinals.at(i), sh.changes[i], wantIDs[i], wantOrdinals[i], wantChanges[i])
 		}
 		if loc, ok := sh.lookup(wantIDs[i]); !ok || loc.ItemOrdinal != wantOrdinals[i] || loc.BlockID == 0 {
 			t.Fatalf("lookup(%d) = %+v ok=%v", wantIDs[i], loc, ok)

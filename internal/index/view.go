@@ -8,7 +8,6 @@ import (
 	"cmp"
 	"fmt"
 	"maps"
-	"math/bits"
 	"slices"
 	"sort"
 
@@ -105,11 +104,11 @@ type View struct {
 // bit-packed (see packedRowIDs), which is what keeps the Eager index inside its
 // memory gate. Immutable once built.
 type rowShard struct {
-	rowIDs   packedRowIDs // sorted by RowID, frame-of-reference bit-packed
-	ordinals []uint32     // ItemOrdinal per row
-	changes  []uint8      // ChangeType per row
-	runStart []uint32     // runStart[r] = first row index of run r; runStart[len]=n
-	blockIDs []uint64     // BlockID of each run
+	rowIDs   packedRowIDs   // sorted by RowID, frame-of-reference bit-packed
+	ordinals packedOrdinals // ItemOrdinal per row, bit-packed (raw values)
+	changes  []uint8        // ChangeType per row
+	runStart []uint32       // runStart[r] = first row index of run r; runStart[len]=n
+	blockIDs []uint64       // BlockID of each run
 }
 
 // len returns the number of rows.
@@ -132,7 +131,7 @@ func (sh *rowShard) runFor(i int) int {
 // rowLocAt returns the RowLoc of the row at index i.
 func (sh *rowShard) rowLocAt(i int) RowLoc {
 	r := sh.runFor(i)
-	return RowLoc{BlockID: sh.blockIDs[r], ItemOrdinal: sh.ordinals[i], ChangeType: format.ChangeType(sh.changes[i])}
+	return RowLoc{BlockID: sh.blockIDs[r], ItemOrdinal: sh.ordinals.at(i), ChangeType: format.ChangeType(sh.changes[i])}
 }
 
 // lookup binary-searches the shard for rowID and returns its location.
@@ -415,14 +414,13 @@ func (v *View) MemoryBreakdown() MemoryBreakdown {
 			b.RowEntries += sh.rowIDs.n
 			b.Runs += len(sh.blockIDs)
 			b.RowIDsBytes += sh.rowIDs.bytes()
-			b.OrdinalsBytes += uint64(len(sh.ordinals)) * 4
+			b.OrdinalsBytes += sh.ordinals.bytes()
 			b.ChangesBytes += uint64(len(sh.changes))
 			b.RunStartBytes += uint64(len(sh.runStart)) * 4
 			b.BlockIDsBytes += uint64(len(sh.blockIDs)) * 8
 			// Packed columns carry no append slack; the only over-allocation
-			// left in them is the +16 read pad on packedRowIDs.data.
-			b.SlackBytes += uint64(cap(sh.ordinals)-len(sh.ordinals))*4 +
-				uint64(cap(sh.changes)-len(sh.changes)) +
+			// left in them is the +16 read pad on their data.
+			b.SlackBytes += uint64(cap(sh.changes)-len(sh.changes)) +
 				uint64(cap(sh.runStart)-len(sh.runStart))*4 +
 				uint64(cap(sh.blockIDs)-len(sh.blockIDs))*8
 		}
@@ -431,43 +429,31 @@ func (v *View) MemoryBreakdown() MemoryBreakdown {
 	return b
 }
 
-// PackBlockSize is the frame size used by PackProfile's block estimate: the
-// number of entries that share one bit width. It tracks rowPackFrame so the
-// ordinal forecast is shaped like the RowID column that already ships.
-const PackBlockSize = rowPackFrame
-
-// PackProfile measures how far the shard columns compress under
-// frame-of-reference bit packing. RowIDs already ship packed, so they report a
-// measured pair; ordinals are still a []uint32, so they report a forecast.
-//
-//	Raw    — the counterfactual: a plain []uint64/[]uint32
-//	Packed — what the packed RowID column actually costs (RowIDs only)
-//	Var    — every value carries its own width; the theoretical floor
-//	Block  — every PackBlockSize values share one width, the max in the frame;
-//	         this is the shape you would actually implement
+// PackProfile reports what bit packing actually bought: for each column, the
+// counterfactual cost of the raw []uint64/[]uint32 against what the packed
+// column costs today. Both columns now ship packed, so this measures the
+// shipped layout rather than forecasting one — the Var/Block estimates it
+// carried before existed to decide whether to build this, and that is settled.
 type PackProfile struct {
 	Entries int
-	// RowIDs: already packed.
+	// RowIDs: raw counterfactual vs the packed delta column.
 	RawRowIDBits    uint64
 	PackedRowIDBits uint64
-	// Ordinals: still raw, so Var/Block are the headroom left over.
-	RawOrdinalBits   uint64
-	VarOrdinalBits   uint64
-	BlockOrdinalBits uint64
-	Frames           int // number of PackBlockSize frames
+	// Ordinals: same pair. This column stores raw values rather than deltas,
+	// so its win depends only on how large ItemOrdinals get, not on how
+	// clustered RowIDs are.
+	RawOrdinalBits    uint64
+	PackedOrdinalBits uint64
 }
 
-// PackedRowIDBytes is the real resident cost of the packed RowID column.
+// PackedRowIDBytes is the resident cost of the packed RowID column.
 func (p PackProfile) PackedRowIDBytes() uint64 { return p.PackedRowIDBits / 8 }
 
-// OrdinalFrameBytes is the block flavour for ordinals plus one uint32 base per
-// frame — the minimum metadata a decoder needs to start a frame.
-func (p PackProfile) OrdinalFrameBytes() uint64 {
-	return p.BlockOrdinalBits/8 + uint64(p.Frames)*4
-}
+// PackedOrdinalBytes is the resident cost of the packed ItemOrdinal column.
+func (p PackProfile) PackedOrdinalBytes() uint64 { return p.PackedOrdinalBits / 8 }
 
-// PackProfile walks every shard and accumulates the bit widths above. Ordinals
-// are not monotonic across runs, so they are measured as raw values.
+// PackProfile walks every shard and sums the two columns' costs. It is
+// O(shards): both columns know their own size, so nothing is measured per row.
 func (v *View) PackProfile() PackProfile {
 	var p PackProfile
 	for _, byTable := range v.rows {
@@ -477,20 +463,7 @@ func (v *View) PackProfile() PackProfile {
 			p.RawRowIDBits += uint64(n) * 64
 			p.PackedRowIDBits += sh.rowIDs.bytes() * 8
 			p.RawOrdinalBits += uint64(n) * 32
-			for i := 0; i < n; i++ {
-				p.VarOrdinalBits += uint64(bits.Len64(uint64(sh.ordinals[i])))
-			}
-			for base := 0; base < n; base += PackBlockSize {
-				end := min(base+PackBlockSize, n)
-				var maxOrd uint64
-				for i := base; i < end; i++ {
-					if uint64(sh.ordinals[i]) > maxOrd {
-						maxOrd = uint64(sh.ordinals[i])
-					}
-				}
-				p.BlockOrdinalBits += uint64(end-base) * uint64(bits.Len64(maxOrd))
-				p.Frames++
-			}
+			p.PackedOrdinalBits += sh.ordinals.bytes() * 8
 		}
 	}
 	return p
@@ -695,11 +668,11 @@ func (a *viewApply) finishMemory(nMeta, nBlocks int, rowMap map[uint32]*rowShard
 	a.next.memoryBytes = a.old.memoryBytes
 	a.next.memoryBytes += 64 + uint64(nMeta)*56 + uint64(nBlocks)*72
 	for _, sh := range rowMap {
-		// Columnar storage: packed RowID + ItemOrdinal (4) + ChangeType (1) per
-		// row, plus the block-run directory (BlockID + runStart per run).
+		// Columnar storage: packed RowID + packed ItemOrdinal + ChangeType (1)
+		// per row, plus the block-run directory (BlockID + runStart per run).
 		a.next.memoryBytes += 48 +
 			sh.rowIDs.bytes() +
-			uint64(len(sh.ordinals))*4 +
+			sh.ordinals.bytes() +
 			uint64(len(sh.changes))*1 +
 			uint64(len(sh.blockIDs))*8 +
 			uint64(len(sh.runStart))*4
@@ -928,8 +901,8 @@ func (sh *rowShard) prepare(entries []RowKeyLoc) error {
 		slices.SortFunc(entries, func(a, b RowKeyLoc) int { return cmp.Compare(a.RowID, b.RowID) })
 	}
 	n := len(entries)
-	rowIDs := make([]uint64, n) // filled, then packed; a shard keeps no raw column
-	sh.ordinals = make([]uint32, n)
+	rowIDs := make([]uint64, n)   // filled, then packed; a shard keeps no raw column
+	ordinals := make([]uint32, n) // likewise
 	sh.changes = make([]uint8, n)
 	sh.runStart = make([]uint32, 0, 8)
 	sh.blockIDs = make([]uint64, 0, 8)
@@ -939,7 +912,7 @@ func (sh *rowShard) prepare(entries []RowKeyLoc) error {
 			return fmt.Errorf("rowpack: duplicate row %d in snapshot", e.RowID)
 		}
 		rowIDs[i] = e.RowID
-		sh.ordinals[i] = e.Loc.ItemOrdinal
+		ordinals[i] = e.Loc.ItemOrdinal
 		sh.changes[i] = uint8(e.Loc.ChangeType)
 		if i == 0 || e.Loc.BlockID != entries[i-1].Loc.BlockID {
 			sh.runStart = append(sh.runStart, uint32(i))
@@ -948,6 +921,7 @@ func (sh *rowShard) prepare(entries []RowKeyLoc) error {
 	}
 	sh.runStart = append(sh.runStart, uint32(n))
 	sh.rowIDs = packRowIDs(rowIDs)
+	sh.ordinals = packOrdinals(ordinals)
 	return nil
 }
 

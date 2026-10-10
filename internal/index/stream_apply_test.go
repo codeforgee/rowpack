@@ -70,7 +70,7 @@ func compareRowShards(t *testing.T, a, b *View) {
 		}
 		for j := 0; j < sa.rowIDs.n; j++ {
 			require.Equal(t, sb.rowIDAt(j), sa.rowIDAt(j), "table %d row %d id %d != %d", tables[i], j, sa.rowIDAt(j), sb.rowIDAt(j))
-			require.Equal(t, sb.ordinals[j], sa.ordinals[j], "table %d row %d ordinal %d != %d", tables[i], j, sa.ordinals[j], sb.ordinals[j])
+			require.Equal(t, sb.ordinals.at(j), sa.ordinals.at(j), "table %d row %d ordinal %d != %d", tables[i], j, sa.ordinals.at(j), sb.ordinals.at(j))
 			require.Equal(t, sb.changes[j], sa.changes[j], "table %d row %d change %d != %d", tables[i], j, sa.changes[j], sb.changes[j])
 		}
 		if len(sa.runStart) != len(sb.runStart) || len(sa.blockIDs) != len(sb.blockIDs) {

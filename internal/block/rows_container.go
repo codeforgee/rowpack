@@ -407,10 +407,22 @@ func (c *RowsContainer) pageOwned(i int) (*RowsPage, error) {
 		c.pagesMu.Unlock()
 		return existing, nil
 	}
+	// Lazy random-access index growth: when RecordAt first builds the page's
+	// anchor table, re-charge the LRU entry under the same lock order used
+	// here (pagesMu → LRU), so memoized pages cannot outgrow CacheBytes.
+	p.onIndexBuilt = func(delta int64) {
+		c.pagesMu.Lock()
+		c.retainedBytes += delta
+		if c.onRetainedChange != nil {
+			c.onRetainedChange(c.retainedBytes)
+		}
+		c.pagesMu.Unlock()
+	}
 	c.pages[i] = p
-	// A page's retained bytes: raw payload + the columnar row slices
-	// (RowID 8B, page-end 4B, schema version 4B per row).
-	c.retainedBytes += int64(len(p.raw)) + int64(len(p.ids))*8 + int64(len(p.ends))*4 + int64(len(p.vers))*4
+	// A memoized page's retained bytes: the raw payload now, plus the lazy
+	// sparse index (anchor table) later if RecordAt ever builds it — that
+	// growth re-charges through p.onIndexBuilt → the same accounting path.
+	c.retainedBytes += int64(len(p.raw))
 	// Install and LRU accounting update under one pagesMu critical section:
 	// two goroutines memoizing different pages of the same container must not
 	// apply their absolute retained sizes out of order (a stale, smaller

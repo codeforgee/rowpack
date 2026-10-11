@@ -37,10 +37,11 @@ const decodeChunkRows = 128
 type batchBuffer struct {
 	_ noCopy
 
-	reqs  []batchReq // requests grouped by (blockID, ordinal)
-	out   []Row      // result, indexed by the caller's id slot
-	slab  []Value    // one contiguous value slab shared by every decoded row
-	arena strArena
+	reqs   []batchReq // requests grouped by (blockID, ordinal)
+	out    []Row      // result, indexed by the caller's id slot
+	slab   []Value    // one contiguous value slab shared by every decoded row
+	arena  strArena
+	cursor block.PageCursor // reused across pages by readPage
 }
 
 // noCopy makes go vet's copylocks check flag copies of a batchBuffer: copies
@@ -307,10 +308,15 @@ func (br *batchReader) readPage(rc *block.RowsContainer, pi, i, end int, sink *c
 	defer release()
 
 	first := rc.Dir[pi].FirstRecordOrdinal
+	// Requests are ordinal-ordered within the page, so a forward cursor pays
+	// sequential-decode cost per record; behind-target jumps (dedup etc.) fall
+	// back to the page's random-access path inside At. The cursor is reused
+	// across pages via the batch buffer.
+	cursor := br.buf.cursor.Reset(page)
 	var bodies [decodeChunkRows][]byte
 	var slots [decodeChunkRows]int
 	for i < end {
-		ver, n, err := br.collectChunk(page, first, i, end, bodies[:], slots[:])
+		ver, n, err := br.collectChunk(cursor, first, i, end, bodies[:], slots[:])
 		if err != nil {
 			return err
 		}
@@ -327,9 +333,9 @@ func (br *batchReader) readPage(rc *block.RowsContainer, pi, i, end int, sink *c
 // one schema version, up to len(bodies) rows, writing each record body and its
 // output slot into bodies and slots. It returns the run's schema version and
 // length.
-func (br *batchReader) collectChunk(page *block.RowsPage, first uint32, i, end int, bodies [][]byte, slots []int) (uint32, int, error) {
+func (br *batchReader) collectChunk(cursor *block.PageCursor, first uint32, i, end int, bodies [][]byte, slots []int) (uint32, int, error) {
 	reqs := br.buf.reqs
-	rec, err := page.RecordAt(reqs[i].ordinal - first)
+	rec, err := cursor.At(reqs[i].ordinal - first)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -337,7 +343,7 @@ func (br *batchReader) collectChunk(page *block.RowsPage, first uint32, i, end i
 	bodies[0], slots[0] = rec.Body, reqs[i].outIdx
 	n := 1
 	for n < len(bodies) && i+n < end {
-		rec, err := page.RecordAt(reqs[i+n].ordinal - first)
+		rec, err = cursor.At(reqs[i+n].ordinal - first)
 		if err != nil {
 			return 0, 0, err
 		}

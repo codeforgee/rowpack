@@ -141,8 +141,9 @@ func TestRowsPageBuilderResetAndDecodedIDs(t *testing.T) {
 	page := buildAndVerifyPage(t, 16<<10, want, bodies)
 
 	for i, w := range want {
-		got := page.ids[i]
-		require.Equal(t, w.rowID, got, "decoded id %d = %d, want %d", i, got, w.rowID)
+		rec, err := page.RecordAt(uint32(i))
+		require.NoError(t, err)
+		require.Equal(t, w.rowID, rec.RowID, "decoded id %d = %d, want %d", i, rec.RowID, w.rowID)
 	}
 
 	// Reset clears the builder for reuse.

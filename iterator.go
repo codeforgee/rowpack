@@ -91,6 +91,10 @@ type Iterator struct {
 	curPageIdx   int    // index into curContainer.Dir; -1 = none loaded
 	curPageRel   func() // returns the current page's pooled scratch
 	curPageNext  int    // block-scan: next record ordinal within page
+	// curCursor decodes the current page sequentially; it points into
+	// pageCursorScratch so moving page to page never allocates.
+	curCursor         *block.PageCursor
+	pageCursorScratch block.PageCursor
 
 	// decoders memoizes the schema-bound decoder for the current block and
 	// schema version (see blockDecoders).
@@ -252,11 +256,16 @@ func (it *Iterator) Next() (Row, bool) {
 func (it *Iterator) nextBlockRecord() (Row, bool) {
 	for {
 		if it.curContainer != nil && it.curPage != nil && it.curPageNext < int(it.curPage.Header().EntryCount) {
-			rec, err := it.curPage.RecordAt(uint32(it.curPageNext))
+			rec, ok, err := it.curCursor.Next()
 			if err != nil {
 				it.fail(err)
 				it.releasePage()
 				return nil, false
+			}
+			if !ok {
+				// Should not happen: curPageNext < EntryCount was just checked.
+				it.releasePage()
+				continue
 			}
 			it.curPageNext++
 			it.curRowID = RowID(rec.RowID)
@@ -294,6 +303,7 @@ func (it *Iterator) nextBlockRecord() (Row, bool) {
 			it.curPageRel = release
 			it.curPageIdx = next
 			it.curPageNext = 0
+			it.curCursor = it.pageCursorScratch.Reset(page)
 			continue
 		}
 		// Advance to the next block.
@@ -329,6 +339,7 @@ func (it *Iterator) loadBlock(bl *index.BlockLoc) error {
 	it.curPageRel = nil
 	it.curPageIdx = -1
 	it.curPageNext = 0
+	it.curCursor = nil
 	it.decoders.bind(it.state.schemas, bl)
 	return nil
 }
@@ -376,8 +387,13 @@ func (it *Iterator) rowAt(loc index.RowLoc, dst Row) (Row, error) {
 		it.curPage = page
 		it.curPageRel = release
 		it.curPageIdx = pi
+		it.curCursor = it.pageCursorScratch.Reset(page)
 	}
-	rec, err := it.curPage.RecordAt(loc.ItemOrdinal - it.curContainer.Dir[pi].FirstRecordOrdinal)
+	// The merge yields (table, rowID) globally ascending, but a page's records
+	// need not be RowID-sorted, so visits to one page are usually — not
+	// always — ascending. Cursor.At walks forward cheaply when they are and
+	// falls back to the page's random-access path when they are not.
+	rec, err := it.curCursor.At(loc.ItemOrdinal - it.curContainer.Dir[pi].FirstRecordOrdinal)
 	if err != nil {
 		return nil, it.store.recordError(it.curBlk, it.snapshot, it.table, err)
 	}
@@ -420,6 +436,7 @@ func (it *Iterator) locateBlock(loc index.RowLoc) error {
 	it.curPage = nil
 	it.curPageRel = nil
 	it.curPageIdx = -1
+	it.curCursor = nil
 	it.decoders.bind(it.state.schemas, bl)
 	return nil
 }
@@ -433,6 +450,7 @@ func (it *Iterator) releasePage() {
 	}
 	it.curPage = nil
 	it.curPageIdx = -1
+	it.curCursor = nil
 }
 
 // releaseBlock releases the current page and drops the block cursor.

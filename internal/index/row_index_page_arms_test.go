@@ -107,7 +107,7 @@ func TestBuildPagesPropagatesFailures(t *testing.T) {
 		e := riEntry(1, 2, 2, 1, format.ChangeType(9))
 		e.SnapshotID = 1
 		b.rows = append(b.rows, e)
-		_, err := b.buildPages(nil, 3, 0)
+		_, err := b.buildPages(newChunkCompressor(nil, 3), nil, 3)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "change type 9 not packable")
 	})
@@ -117,7 +117,7 @@ func TestBuildPagesPropagatesFailures(t *testing.T) {
 		crypto := &ChunkCrypto{
 			Seal: func(uint32, uint8, uint32, int, []byte) ([]byte, error) { return nil, sentinel },
 		}
-		_, err := testBuilder(t, 1).buildPages(crypto, 3, 0)
+		_, err := testBuilder(t, 1).buildPages(newChunkCompressor(crypto, 3), crypto, 3)
 		require.ErrorIs(t, err, sentinel, "a refused seal must reach the caller unchanged")
 	})
 }

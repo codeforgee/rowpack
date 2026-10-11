@@ -28,10 +28,10 @@ var errIndexPageCorrupt = errors.New("rowpack: index page corrupt")
 
 // pageBuild is one encoded (and optionally compressed/sealed) index
 // page plus its fence directory entry, produced by the builder for the txn
-// body. raw is the uncompressed page (for the plaintext-body CRC); stored is
-// the compressed (and, when encrypted, sealed) page bytes written to disk.
+// body. stored is the compressed (and, when encrypted, sealed) page bytes
+// written to disk; the page's plaintext is folded into the plaintext-body CRC
+// as the page is built and dropped, never retained on the pageBuild.
 type pageBuild struct {
-	raw    []byte
 	stored []byte
 	fence  format.RowIndexFenceEntry
 }
@@ -39,16 +39,19 @@ type pageBuild struct {
 // buildPages sorts the builder's rows by (TableID, RowID), partitions
 // them into indexPageEntryCount-entry pages, encodes/compresses (and, when
 // crypto != nil, seals) each page, and returns the pages plus their fence
-// entries. Fence.StoredOffset is zero here and patched by the caller once the
-// body layout (chunk region + directory) is known. pageSeqBase is the first
-// free chunk sequence in the surrounding txn so pages seal under distinct
-// nonces.
-func (b *Builder) buildPages(crypto *ChunkCrypto, level int, pageSeqBase uint32) ([]pageBuild, error) {
+// entries. Each page's plaintext is folded into cc's page CRC accumulator as
+// it is built and dropped immediately — the pages' raw bytes never coexist.
+// Fence.StoredOffset is zero here and patched by the caller once the
+// body layout (chunk region + directory) is known. cc supplies the first
+// free chunk sequence (so pages seal under distinct nonces) and the CRC
+// accumulator.
+func (b *Builder) buildPages(cc *chunkWriter, crypto *ChunkCrypto, level int) ([]pageBuild, error) {
 	n := len(b.rows)
 	if n == 0 {
 		b.pageCount = 0
 		return nil, nil
 	}
+	pageSeqBase := cc.seq
 	slices.SortFunc(b.rows, func(a, b format.RowIndexEntry) int {
 		if c := cmp.Compare(a.TableID, b.TableID); c != 0 {
 			return c
@@ -89,7 +92,10 @@ func (b *Builder) buildPages(crypto *ChunkCrypto, level int, pageSeqBase uint32)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, pageBuild{raw: page, stored: stored, fence: fence})
+			// Fold the page plaintext into the CRC accumulator and drop it:
+			// only one page's raw bytes are alive at a time.
+			cc.foldPageRaw(page)
+			out = append(out, pageBuild{stored: stored, fence: fence})
 		}
 		i = j
 	}

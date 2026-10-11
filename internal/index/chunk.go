@@ -54,14 +54,25 @@ type chunkWriter struct {
 	level  int
 	seq    uint32
 
-	out         []byte // stored body bytes (starts with the reserved snapshot chunk)
-	dir         []byte // directory entries (32B each)
-	rawParts    [][]byte
+	out      []byte // stored body bytes (starts with the reserved snapshot chunk)
+	dir      []byte // directory entries (32B each)
+	tailCRC  uint32 // CRC over the chunk plaintexts, folded from zero in add order
+	tailLen  uint64 // total chunk plaintext bytes folded into tailCRC
+	pagesCRC uint32 // CRC over the raw pages, folded from zero in build order
+	pagesLen uint64 // total raw page bytes folded into pagesCRC
 	snapPayload int // reserved snapshot chunk payload size (72B / 88B sealed)
 
 	// plainCRC is the CRC over the plaintext body in physical order:
-	// snapshot raw, streamed chunk raws, directory. Computed once at the end
-	// of the build (the snapshot raw is only available after bounds resolve).
+	// snapshot raw, streamed chunk raws, directory, raw pages, fences. The
+	// snapshot raw is only known after the bounds resolve, so each segment is
+	// folded into its own accumulator as it becomes available and the
+	// segments are joined in physical order at the end via CRC32CAdvance:
+	//
+	//	CRC(A || B) = CRC32CAdvance(CRC(A), len(B)) ^ CRC(B)
+	//
+	// No segment's bytes need to outlive its fold: chunk raws drop when their
+	// chunk is emitted, page raws drop when their page is built, and only the
+	// (crc, len) pairs remain for the final join.
 }
 
 func newChunkCompressor(crypto *ChunkCrypto, level int) *chunkWriter {
@@ -133,9 +144,20 @@ func (cc *chunkWriter) add(cb *chunkBuild) error {
 	de.StoredBytes = h.StoredBytes
 	de.EntryKind = cb.kind
 	_ = de.MarshalTo(cc.reserveDir(format.IndexChunkDirEntrySize)) // exact-size buffer: cannot fail
-	cc.rawParts = append(cc.rawParts, cb.raw)
+	// Fold the chunk's plaintext into the tail CRC and drop it: the caller
+	// may reuse cb.raw for the next chunk.
+	cc.tailCRC = format.CRC32CConcat(cc.tailCRC, cb.raw)
+	cc.tailLen += uint64(len(cb.raw))
 	cc.seq++
 	return nil
+}
+
+// foldPageRaw folds one row index page's plaintext into the page CRC
+// accumulator. Called from buildPages in physical page order, so the
+// accumulator is the pages segment's CRC from zero.
+func (cc *chunkWriter) foldPageRaw(raw []byte) {
+	cc.pagesCRC = format.CRC32CConcat(cc.pagesCRC, raw)
+	cc.pagesLen += uint64(len(raw))
 }
 
 func (cc *chunkWriter) reserve(n int) []byte {
@@ -158,6 +180,10 @@ func emitEntryChunks(cc *chunkWriter, kind uint8, n int, add func(dst []byte, i 
 	if n == 0 {
 		return nil
 	}
+	// One chunkBuild and one raw buffer are reused across chunks: add() only
+	// reads cb.raw (compress/seal/dir all copy or fold it), so resetting the
+	// length after each cut keeps the encoder's buffer from re-growing from
+	// scratch — and nothing pins the plaintext anymore.
 	cb := &chunkBuild{kind: kind}
 	for i := range n {
 		cb.raw = add(cb.raw, i)
@@ -166,7 +192,9 @@ func emitEntryChunks(cc *chunkWriter, kind uint8, n int, add func(dst []byte, i 
 			if err := cc.add(cb); err != nil {
 				return err
 			}
-			cb = &chunkBuild{kind: kind, firstOrdinal: uint32(i + 1)}
+			cb.firstOrdinal = uint32(i + 1)
+			cb.entries = 0
+			cb.raw = cb.raw[:0]
 			restart()
 		}
 	}
@@ -193,6 +221,21 @@ func (b *Builder) emitChunks(cc *chunkWriter) error {
 	return emitEntryChunks(cc, format.IndexChunkKindBlock, len(b.blocks),
 		func(dst []byte, i int) []byte { return blk.add(dst, b.blocks[i]) },
 		blk.restart)
+}
+
+// joinSegCRC extends a running plaintext CRC over the left neighbor segments
+// with one more segment given its from-zero CRC and length:
+//
+//	CRC(A || B) = CRC32CAdvance(CRC(A), len(B)) ^ CRC(B)
+//
+// (the CRC register is GF(2)-linear in (initial state, message), so appending
+// a segment shifts the register through a fixed operator and XORs in the
+// segment's own zero-based CRC).
+func joinSegCRC(acc uint32, segLen uint64, segCRC uint32) uint32 {
+	if segLen == 0 {
+		return acc
+	}
+	return format.CRC32CAdvance(acc, segLen) ^ segCRC
 }
 
 // BodyBounds is the resolved layout of one stored index-txn body: the
@@ -228,9 +271,10 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 	if err := b.emitChunks(cc); err != nil {
 		return nil, 0, nil, err
 	}
-	// Build the sorted Row Index Pages + Fence Directory. pageSeqBase is the
-	// next free chunk sequence so pages seal under distinct nonces.
-	pages, err := b.buildPages(crypto, level, cc.seq)
+	// Build the sorted Row Index Pages + Fence Directory. cc supplies the
+	// next free chunk sequence (page seal nonces) and takes each page's
+	// plaintext CRC fold.
+	pages, err := b.buildPages(cc, crypto, level)
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -304,22 +348,25 @@ func (b *Builder) BuildStoredBody(crypto *ChunkCrypto, level int, resolveBounds 
 	}
 	// Plaintext-body CRC covers the re-readable content in physical order:
 	// snapshot raw, metadata/block chunk raws, directory, raw pages, fences.
-	parts := make([][]byte, 0, len(cc.rawParts)+2+2*len(pages))
-	parts = append(parts, raw[:])
-	parts = append(parts, cc.rawParts...)
-	parts = append(parts, cc.dir)
-	for i := range pages {
-		parts = append(parts, pages[i].raw)
-	}
-	parts = append(parts, fenceBytes)
-	plainCRC = uint32(0)
-	for _, p := range parts {
-		plainCRC = format.CRC32CConcat(plainCRC, p)
-	}
-	body = cc.out
+	// Each segment's CRC was folded from zero as its bytes were produced (the
+	// snapshot raw here, chunk raws in add, pages in buildPages); joining
+	// neighbors needs only the (crc, len) pairs, so no segment's plaintext
+	// had to outlive its fold.
+	plainCRC = joinSegCRC(format.CRC32C(raw[:]), cc.tailLen, cc.tailCRC)
+	plainCRC = joinSegCRC(plainCRC, uint64(len(cc.dir)), format.CRC32C(cc.dir))
+	plainCRC = joinSegCRC(plainCRC, cc.pagesLen, cc.pagesCRC)
+	plainCRC = joinSegCRC(plainCRC, uint64(len(fenceBytes)), format.CRC32C(fenceBytes))
+	// Assemble the body into one exact-size buffer (bodyLen above is final)
+	// and release each intermediate as it is copied, so the peak holds the
+	// body plus at most one source segment rather than both worlds.
+	body = make([]byte, 0, bodyLen)
+	body = append(body, cc.out...)
+	cc.out = nil
 	body = append(body, cc.dir...)
+	cc.dir = nil
 	for i := range pages {
 		body = append(body, pages[i].stored...)
+		pages[i].stored = nil
 	}
 	body = append(body, fenceBytes...)
 	txn = &Txn{Snapshot: se, Metadata: b.metadata, Blocks: b.blocks, Rows: b.rows}

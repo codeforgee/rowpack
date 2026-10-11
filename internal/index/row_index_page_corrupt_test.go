@@ -64,7 +64,7 @@ func buildPageRegion(t *testing.T, rows []format.RowIndexEntry, snapshotID uint6
 			t.Fatal(err)
 		}
 	}
-	pages, err := b.buildPages(nil, 0, 0)
+	pages, err := b.buildPages(newChunkCompressor(nil, 0), nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

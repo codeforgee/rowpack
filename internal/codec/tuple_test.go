@@ -1,8 +1,8 @@
 package codec
 
 import (
-	"math"
 	"encoding/binary"
+	"math"
 	"math/big"
 	"testing"
 	"time"

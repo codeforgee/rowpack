@@ -54,13 +54,13 @@ type chunkWriter struct {
 	level  int
 	seq    uint32
 
-	out      []byte // stored body bytes (starts with the reserved snapshot chunk)
-	dir      []byte // directory entries (32B each)
-	tailCRC  uint32 // CRC over the chunk plaintexts, folded from zero in add order
-	tailLen  uint64 // total chunk plaintext bytes folded into tailCRC
-	pagesCRC uint32 // CRC over the raw pages, folded from zero in build order
-	pagesLen uint64 // total raw page bytes folded into pagesCRC
-	snapPayload int // reserved snapshot chunk payload size (72B / 88B sealed)
+	out         []byte // stored body bytes (starts with the reserved snapshot chunk)
+	dir         []byte // directory entries (32B each)
+	tailCRC     uint32 // CRC over the chunk plaintexts, folded from zero in add order
+	tailLen     uint64 // total chunk plaintext bytes folded into tailCRC
+	pagesCRC    uint32 // CRC over the raw pages, folded from zero in build order
+	pagesLen    uint64 // total raw page bytes folded into pagesCRC
+	snapPayload int    // reserved snapshot chunk payload size (72B / 88B sealed)
 
 	// plainCRC is the CRC over the plaintext body in physical order:
 	// snapshot raw, streamed chunk raws, directory, raw pages, fences. The

@@ -3,7 +3,7 @@ module github.com/codeforgee/rowpack
 go 1.25.0
 
 require (
-	github.com/klauspost/compress v1.20.0
+	github.com/klauspost/compress v1.20.1
 	github.com/stretchr/testify v1.12.1
 )
 

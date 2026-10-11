@@ -87,15 +87,33 @@ type MetadataLoc struct {
 // Row index memory: rows are stored as one compact sorted slice per
 // (snapshot, table) shard instead of per-row map cells, cutting the resident
 // footprint from ~120 B/row to 24 B/row (1M rows: ~320 MB -> ~24 MB).
+//
+// Block index memory: blocks live in a shared read-only base map plus a
+// per-view delta map (this commit's blocks, seeded with the parent's delta).
+// A commit therefore copies only the previous delta — O(blocks of one commit)
+// — instead of re-hashing every block in the store, and an old view held by
+// in-flight readers no longer duplicates the whole block table. The delta is
+// folded back into a fresh base whenever it outgrows its share, so the
+// amortized cost stays O(1) per block and lookups stay two map probes.
 type View struct {
 	snapshots      map[uint64]*SnapshotMeta
-	blocks         map[uint64]*BlockLoc
-	metadata       map[uint64]map[uint64]*MetadataLoc // SnapshotID -> ObjectID -> loc
-	metadataByType map[uint64]map[uint32][]uint64     // SnapshotID -> RecordType -> sorted ObjectIDs
+	blocksBase     map[uint64]*BlockLoc // shared with ancestor views, read-only
+	blocksDelta    map[uint64]*BlockLoc // this view's additions (parent's delta seeded in)
+	blocksN        int                  // len(blocksBase) + len(blocksDelta)
+	metadata       map[uint64]map[uint64]*MetadataLoc
+	metadataByType map[uint64]map[uint32][]uint64
 	rows           map[uint64]map[uint32]*rowShard
 
 	memoryBytes uint64
 }
+
+// Delta fold-back policy: a view whose delta reaches max(1024, blocksN/16)
+// entries rebuilds the base map once, so the per-commit copy stays O(delta)
+// and the amortized rebuild cost is O(16) per block over the store's life.
+const (
+	blocksFlattenMin = 1024
+	blocksFlattenDiv = 16
+)
 
 // rowShard is the compact per-(snapshot, table) row index: rows sorted by
 // RowID, stored columnar (RowIDs / ItemOrdinals / ChangeTypes) with the
@@ -266,7 +284,7 @@ func (v *View) RowIter(snapshot uint64, table uint32) *RowKeyIter {
 func EmptyView() *View {
 	return &View{
 		snapshots:      make(map[uint64]*SnapshotMeta),
-		blocks:         make(map[uint64]*BlockLoc),
+		blocksBase:     make(map[uint64]*BlockLoc),
 		metadata:       make(map[uint64]map[uint64]*MetadataLoc),
 		metadataByType: make(map[uint64]map[uint32][]uint64),
 		rows:           make(map[uint64]map[uint32]*rowShard),
@@ -297,13 +315,22 @@ func (v *View) Snapshots() []*SnapshotMeta {
 	return out
 }
 
-// Block returns the block location, or nil.
-func (v *View) Block(blockID uint64) *BlockLoc { return v.blocks[blockID] }
+// Block returns the block location, or nil. Two map probes worst case: the
+// view's own delta, then the shared base.
+func (v *View) Block(blockID uint64) *BlockLoc {
+	if b, ok := v.blocksDelta[blockID]; ok {
+		return b
+	}
+	return v.blocksBase[blockID]
+}
 
 // Blocks returns all block locations (order unspecified).
 func (v *View) Blocks() []*BlockLoc {
-	out := make([]*BlockLoc, 0, len(v.blocks))
-	for _, b := range v.blocks {
+	out := make([]*BlockLoc, 0, v.blocksN)
+	for _, b := range v.blocksBase {
+		out = append(out, b)
+	}
+	for _, b := range v.blocksDelta {
 		out = append(out, b)
 	}
 	return out
@@ -613,14 +640,17 @@ func (v *View) beginApply(se format.SnapshotIndexEntry, maxDepth uint32) (*View,
 }
 
 // applyBlocks validates and installs the txn's block entries into next,
-// accumulating stored bytes into meta.
+// accumulating stored bytes into meta. Blocks land in next's delta map —
+// seeded once with the parent view's delta so lookups see both — and the
+// delta folds into a fresh base when it outgrows its share (see the
+// blocksFlatten* constants).
 func (a *viewApply) applyBlocks(blocks []format.BlockIndexEntry) error {
 	for i := range blocks {
 		be := &blocks[i]
 		if be.SnapshotID != a.snapID {
 			return fmt.Errorf("rowpack: block %d belongs to snapshot %d, want %d", be.BlockID, be.SnapshotID, a.snapID)
 		}
-		if _, dup := a.old.blocks[be.BlockID]; dup {
+		if a.old.Block(be.BlockID) != nil {
 			return fmt.Errorf("rowpack: block %d already exists", be.BlockID)
 		}
 		bl := &BlockLoc{
@@ -629,8 +659,22 @@ func (a *viewApply) applyBlocks(blocks []format.BlockIndexEntry) error {
 			RawSize: be.RawSize, StoredSize: be.StoredSize, ItemCount: be.ItemCount,
 			RawCRC32C: be.RawCRC32C,
 		}
-		a.next.blocks[be.BlockID] = bl
+		if a.next.blocksDelta == nil {
+			// Parent's delta was nil (folded back or empty store): start one.
+			a.next.blocksDelta = make(map[uint64]*BlockLoc, len(blocks)+8)
+		}
+		a.next.blocksDelta[be.BlockID] = bl
+		a.next.blocksN++
 		a.meta.StoredBytes += uint64(be.StoredSize)
+	}
+	// Fold-back: the delta must stay a small minority of the block table, or
+	// the base+delta split turns into an unbounded side copy.
+	if d := len(a.next.blocksDelta); d >= blocksFlattenMin && d >= a.next.blocksN/blocksFlattenDiv {
+		base := make(map[uint64]*BlockLoc, a.next.blocksN+8)
+		maps.Copy(base, a.next.blocksBase)
+		maps.Copy(base, a.next.blocksDelta)
+		a.next.blocksBase = base
+		a.next.blocksDelta = nil
 	}
 	return nil
 }
@@ -926,17 +970,23 @@ func (sh *rowShard) prepare(entries []RowKeyLoc) error {
 }
 
 // shallowCopy copies the top-level maps so the new view can add the new
-// snapshot's keys without touching shared maps.
+// snapshot's keys without touching shared maps. The block table is NOT
+// copied: the new view shares the base map read-only and clones the parent's
+// delta as its own starting delta (see View's doc comment) — a commit no
+// longer re-hashes every block. The clone is unconditional: a commit that
+// adds no blocks must still see the parent's recent blocks, and the next
+// commit seeds from this view's delta.
 func (v *View) shallowCopy() *View {
 	nv := &View{
 		snapshots:      make(map[uint64]*SnapshotMeta, len(v.snapshots)+1),
-		blocks:         make(map[uint64]*BlockLoc, len(v.blocks)+8),
+		blocksBase:     v.blocksBase,
+		blocksDelta:    maps.Clone(v.blocksDelta),
+		blocksN:        v.blocksN,
 		metadata:       make(map[uint64]map[uint64]*MetadataLoc, len(v.metadata)+1),
 		metadataByType: make(map[uint64]map[uint32][]uint64, len(v.metadataByType)+1),
 		rows:           make(map[uint64]map[uint32]*rowShard, len(v.rows)+1),
 	}
 	maps.Copy(nv.snapshots, v.snapshots)
-	maps.Copy(nv.blocks, v.blocks)
 	maps.Copy(nv.metadata, v.metadata)
 	maps.Copy(nv.metadataByType, v.metadataByType)
 	maps.Copy(nv.rows, v.rows)

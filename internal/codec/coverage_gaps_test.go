@@ -74,13 +74,13 @@ func TestAppendValueInvalidValues(t *testing.T) {
 	}{
 		{"bytes over MaxValueBytes", Bytes(make([]byte, 9)), Limits{MaxValueBytes: 8, MaxRowBytes: defaults.MaxRowBytes},
 			"bytes value of 9 bytes exceeds limit 8"},
-		{"time negative", Value{typ: TypeTime, i: -1}, defaults, "time of day -1 out of range"},
-		{"time at MaxTimeOfDay", Value{typ: TypeTime, i: MaxTimeOfDay}, defaults, "out of range"},
+		{"time negative", func() Value { n := int64(-1); return Value{typ: TypeTime, num: uint64(n)} }(), defaults, "time of day -1 out of range"},
+		{"time at MaxTimeOfDay", Value{typ: TypeTime, num: uint64(MaxTimeOfDay)}, defaults, "out of range"},
 		{"decimal negative scale", DecimalValue(Decimal{Unscaled: big.NewInt(1), Scale: -1}), defaults,
 			"decimal scale -1 is negative"},
 		// DecimalValue() substitutes a zero big.Int, so build the raw value
 		// directly to exercise the nil-unscaled guard.
-		{"decimal nil unscaled", Value{typ: TypeDecimal, d: Decimal{Scale: 3}}, defaults, "decimal unscaled is nil"},
+		{"decimal nil unscaled", Value{typ: TypeDecimal, aux: 3}, defaults, "decimal unscaled is nil"},
 		{"decimal int64 over MaxValueBytes", DecimalValue(Decimal{Unscaled: big.NewInt(100000), Scale: 0}),
 			Limits{MaxValueBytes: 2, MaxRowBytes: defaults.MaxRowBytes}, "exceeds limit 2"},
 		// 1 B uvarint len + 4 B unscaled = 5 B, over the 4 B row limit.
@@ -121,7 +121,7 @@ func TestEncodeIntoWideSchemaBitmapFallback(t *testing.T) {
 	got, err := dec.DecodeInto(nil, body, nil)
 	require.NoError(t, err, "decode wide row")
 	for i := range ncols {
-		require.Equal(t, uint64(uint8(i)), got[i].u, "col %d = %d", i, got[i].u)
+		require.Equal(t, uint64(uint8(i)), got[i].num, "col %d = %d", i, got[i].num)
 	}
 }
 
@@ -168,8 +168,8 @@ func TestDecodeSinkMaterialization(t *testing.T) {
 	// Fast path: both sink funcs materialize the payloads.
 	row, err := dec.DecodeInto(nil, body, sink)
 	require.NoError(t, err, "fast decode")
-	if row[0].s != "hello" || string(row[1].by) != "\x01\x02\x03" {
-		t.Fatalf("fast decode values: %q %q", row[0].s, row[1].by)
+	if row[0].s != "hello" || row[1].s != "\x01\x02\x03" {
+		t.Fatalf("fast decode values: %q %q", row[0].s, row[1].s)
 	}
 	if len(gotStrings) != 1 || gotStrings[0] != "hello" || len(gotBytes) != 1 {
 		t.Fatalf("fast sink calls: %q %q", gotStrings, gotBytes)

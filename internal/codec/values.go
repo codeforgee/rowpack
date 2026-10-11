@@ -9,8 +9,10 @@ package codec
 
 import (
 	"errors"
+	"math"
 	"math/big"
 	"time"
+	"unsafe"
 
 	"github.com/codeforgee/rowpack/internal/format"
 )
@@ -62,22 +64,40 @@ type Decimal struct {
 }
 
 // Value is an immutable, strong-typed cell value. Constructors copy inputs and
-// getters return copies, so a Value never aliases caller-owned memory. NULL
-// carries no inherent type; the column's Schema type decides how it is written.
+// getters return copies, so a Value never aliases caller-owned memory (decoded
+// values may alias a caller-supplied Sink arena, per the decode contract).
+// NULL carries no inherent type; the column's Schema type decides how it is
+// written.
+//
+// Memory layout: 48 B with two pointer words (s, ref), down from the 104 B
+// all-variants-inlined struct it replaces. The fields are a tagged union in
+// practice — which members are meaningful is decided by typ:
+//
+//	num Int*/Uint* (raw bits), Date, Time, DateTime seconds, f64/f32 bit
+//	    patterns, Bool (0/1)
+//	aux DateTime: nanoseconds; DateTimeTZ: {tz uint32 << 32 | nanos};
+//	    Decimal: scale
+//	s   String; Bytes (owned copy, or a Sink-arena view on decode)
+//	ref Decimal.Unscaled
 type Value struct {
 	typ  Type
 	null bool
-
-	b   bool
-	i   int64  // Int*, Date, Time; DateTime/DateTimeTZ Unix seconds
-	u   uint64 // Uint*; DateTime/DateTimeTZ sub-second nanoseconds
-	tz  int32  // DateTimeTZ: zone offset in seconds east of UTC
-	f64 float64
-	f32 float32
-	s   string
-	by  []byte // immutable copy
-	d   Decimal
+	num  uint64
+	aux  uint64
+	s    string
+	ref  *big.Int
 }
+
+// packTZAux packs the DateTimeTZ aux word: zone offset in the high half,
+// sub-second nanoseconds in the low half. tz is round-tripped through uint32
+// so negative offsets survive the unsigned shift.
+func packTZAux(tz int32, nanos uint32) uint64 {
+	return uint64(uint32(tz))<<32 | uint64(nanos)
+}
+
+func tzFromAux(aux uint64) int32 { return int32(uint32(aux >> 32)) }
+
+func nanosFromAux(aux uint64) uint32 { return uint32(aux) }
 
 // ErrTypeMismatch is returned when a row value's type does not match its
 // column's Schema type.
@@ -89,53 +109,64 @@ var ErrTypeMismatch = errors.New("rowpack: value type mismatch with schema colum
 func Null() Value { return Value{null: true} }
 
 // Bool returns a boolean value.
-func Bool(v bool) Value { return Value{typ: TypeBool, b: v} }
+func Bool(v bool) Value {
+	n := uint64(0)
+	if v {
+		n = 1
+	}
+	return Value{typ: TypeBool, num: n}
+}
 
 // Int8 returns an int8 value.
-func Int8(v int8) Value { return Value{typ: TypeInt8, i: int64(v)} }
+func Int8(v int8) Value { return Value{typ: TypeInt8, num: uint64(v)} }
 
 // Int16 returns an int16 value.
-func Int16(v int16) Value { return Value{typ: TypeInt16, i: int64(v)} }
+func Int16(v int16) Value { return Value{typ: TypeInt16, num: uint64(v)} }
 
 // Int32 returns an int32 value.
-func Int32(v int32) Value { return Value{typ: TypeInt32, i: int64(v)} }
+func Int32(v int32) Value { return Value{typ: TypeInt32, num: uint64(v)} }
 
 // Int64 returns an int64 value.
-func Int64(v int64) Value { return Value{typ: TypeInt64, i: v} }
+func Int64(v int64) Value { return Value{typ: TypeInt64, num: uint64(v)} }
 
 // Uint8 returns a uint8 value.
-func Uint8(v uint8) Value { return Value{typ: TypeUint8, u: uint64(v)} }
+func Uint8(v uint8) Value { return Value{typ: TypeUint8, num: uint64(v)} }
 
 // Uint16 returns a uint16 value.
-func Uint16(v uint16) Value { return Value{typ: TypeUint16, u: uint64(v)} }
+func Uint16(v uint16) Value { return Value{typ: TypeUint16, num: uint64(v)} }
 
 // Uint32 returns a uint32 value.
-func Uint32(v uint32) Value { return Value{typ: TypeUint32, u: uint64(v)} }
+func Uint32(v uint32) Value { return Value{typ: TypeUint32, num: uint64(v)} }
 
 // Uint64 returns a uint64 value.
-func Uint64(v uint64) Value { return Value{typ: TypeUint64, u: v} }
+func Uint64(v uint64) Value { return Value{typ: TypeUint64, num: v} }
 
 // Float32 returns a float32 value preserving its exact bit pattern.
-func Float32(v float32) Value { return Value{typ: TypeFloat32, f32: v} }
+func Float32(v float32) Value { return Value{typ: TypeFloat32, num: uint64(math.Float32bits(v))} }
 
 // Float64 returns a float64 value.
-func Float64(v float64) Value { return Value{typ: TypeFloat64, f64: v} }
+func Float64(v float64) Value { return Value{typ: TypeFloat64, num: math.Float64bits(v)} }
 
 // String returns a string value.
 func String(v string) Value { return Value{typ: TypeString, s: v} }
 
-// Bytes returns a bytes value; v is copied.
+// Bytes returns a bytes value; v is copied. The copy is stored as an
+// immutable string: same ownership and aliasing semantics, one pointer word
+// less, and the accessor below still hands back a mutable copy.
 func Bytes(v []byte) Value {
+	if len(v) == 0 {
+		return Value{typ: TypeBytes}
+	}
 	cp := make([]byte, len(v))
 	copy(cp, v)
-	return Value{typ: TypeBytes, by: cp}
+	return Value{typ: TypeBytes, s: unsafe.String(&cp[0], len(cp))}
 }
 
 // DateValue returns a date value.
-func DateValue(v Date) Value { return Value{typ: TypeDate, i: int64(v)} }
+func DateValue(v Date) Value { return Value{typ: TypeDate, num: uint64(v)} }
 
 // TimeValue returns a time-of-day value.
-func TimeValue(v TimeOfDay) Value { return Value{typ: TypeTime, i: int64(v)} }
+func TimeValue(v TimeOfDay) Value { return Value{typ: TypeTime, num: uint64(v)} }
 
 // DateTime converts t to UTC, strips the monotonic clock and location, and
 // returns a DateTime value preserving nanosecond precision. Unlike UnixNano,
@@ -143,7 +174,7 @@ func TimeValue(v TimeOfDay) Value { return Value{typ: TypeTime, i: int64(v)} }
 // (year 1000..9999) and far beyond, with no int64-nanosecond overflow.
 func DateTime(t time.Time) Value {
 	t = t.UTC().Round(0)
-	return Value{typ: TypeDateTime, i: t.Unix(), u: uint64(t.Nanosecond())}
+	return Value{typ: TypeDateTime, num: uint64(t.Unix()), aux: uint64(t.Nanosecond())}
 }
 
 // DateTimeTZ returns a timezone-aware DateTime value preserving the instant
@@ -151,7 +182,7 @@ func DateTime(t time.Time) Value {
 func DateTimeTZ(t time.Time) Value {
 	t = t.Round(0)
 	_, off := t.Zone()
-	return Value{typ: TypeDateTimeTZ, i: t.Unix(), u: uint64(t.Nanosecond()), tz: int32(off)}
+	return Value{typ: TypeDateTimeTZ, num: uint64(t.Unix()), aux: packTZAux(int32(off), uint32(t.Nanosecond()))}
 }
 
 // DateTimeTZValue returns the time value with its original zone offset and
@@ -160,7 +191,7 @@ func (v Value) DateTimeTZValue() (time.Time, bool) {
 	if v.null || v.typ != TypeDateTimeTZ {
 		return time.Time{}, false
 	}
-	return time.Unix(v.i, int64(v.u)).In(time.FixedZone("", int(v.tz))), true
+	return time.Unix(int64(v.num), int64(nanosFromAux(v.aux))).In(time.FixedZone("", int(tzFromAux(v.aux)))), true
 }
 
 // DecimalValue returns a decimal value; v.Unscaled is copied.
@@ -169,7 +200,7 @@ func DecimalValue(v Decimal) Value {
 	if v.Unscaled != nil {
 		u.Set(v.Unscaled)
 	}
-	return Value{typ: TypeDecimal, d: Decimal{Unscaled: u, Scale: v.Scale}}
+	return Value{typ: TypeDecimal, aux: uint64(uint32(v.Scale)), ref: u}
 }
 
 // ---- accessors ----
@@ -181,14 +212,14 @@ func (v Value) Type() Type { return v.typ }
 func (v Value) IsNull() bool { return v.null }
 
 // Bool returns the boolean value and whether it is a non-NULL Bool.
-func (v Value) Bool() (bool, bool) { return v.b, !v.null && v.typ == TypeBool }
+func (v Value) Bool() (bool, bool) { return v.num != 0, !v.null && v.typ == TypeBool }
 
 // Int8 returns the int8 value and whether the accessor is valid.
 func (v Value) Int8() (int8, bool) {
 	if v.null || v.typ != TypeInt8 {
 		return 0, false
 	}
-	return int8(v.i), true
+	return int8(int64(v.num)), true
 }
 
 // Int16 returns the int16 value and whether the accessor is valid.
@@ -196,7 +227,7 @@ func (v Value) Int16() (int16, bool) {
 	if v.null || v.typ != TypeInt16 {
 		return 0, false
 	}
-	return int16(v.i), true
+	return int16(int64(v.num)), true
 }
 
 // Int32 returns the int32 value and whether the accessor is valid.
@@ -204,7 +235,7 @@ func (v Value) Int32() (int32, bool) {
 	if v.null || v.typ != TypeInt32 {
 		return 0, false
 	}
-	return int32(v.i), true
+	return int32(int64(v.num)), true
 }
 
 // Int64 returns the int64 value and whether the accessor is valid.
@@ -212,7 +243,7 @@ func (v Value) Int64() (int64, bool) {
 	if v.null || v.typ != TypeInt64 {
 		return 0, false
 	}
-	return v.i, true
+	return int64(v.num), true
 }
 
 // Uint8 returns the uint8 value and whether the accessor is valid.
@@ -220,7 +251,7 @@ func (v Value) Uint8() (uint8, bool) {
 	if v.null || v.typ != TypeUint8 {
 		return 0, false
 	}
-	return uint8(v.u), true
+	return uint8(v.num), true
 }
 
 // Uint16 returns the uint16 value and whether the accessor is valid.
@@ -228,7 +259,7 @@ func (v Value) Uint16() (uint16, bool) {
 	if v.null || v.typ != TypeUint16 {
 		return 0, false
 	}
-	return uint16(v.u), true
+	return uint16(v.num), true
 }
 
 // Uint32 returns the uint32 value and whether the accessor is valid.
@@ -236,7 +267,7 @@ func (v Value) Uint32() (uint32, bool) {
 	if v.null || v.typ != TypeUint32 {
 		return 0, false
 	}
-	return uint32(v.u), true
+	return uint32(v.num), true
 }
 
 // Uint64 returns the uint64 value and whether the accessor is valid.
@@ -244,7 +275,7 @@ func (v Value) Uint64() (uint64, bool) {
 	if v.null || v.typ != TypeUint64 {
 		return 0, false
 	}
-	return v.u, true
+	return v.num, true
 }
 
 // Float32 returns the float32 value and whether the accessor is valid.
@@ -252,7 +283,7 @@ func (v Value) Float32() (float32, bool) {
 	if v.null || v.typ != TypeFloat32 {
 		return 0, false
 	}
-	return v.f32, true
+	return math.Float32frombits(uint32(v.num)), true
 }
 
 // Float64 returns the float64 value and whether the accessor is valid.
@@ -260,7 +291,7 @@ func (v Value) Float64() (float64, bool) {
 	if v.null || v.typ != TypeFloat64 {
 		return 0, false
 	}
-	return v.f64, true
+	return math.Float64frombits(v.num), true
 }
 
 // String returns the string value and whether the accessor is valid.
@@ -276,8 +307,8 @@ func (v Value) Bytes() ([]byte, bool) {
 	if v.null || v.typ != TypeBytes {
 		return nil, false
 	}
-	cp := make([]byte, len(v.by))
-	copy(cp, v.by)
+	cp := make([]byte, len(v.s))
+	copy(cp, v.s)
 	return cp, true
 }
 
@@ -366,7 +397,7 @@ func (v Value) Date() (Date, bool) {
 	if v.null || v.typ != TypeDate {
 		return 0, false
 	}
-	return Date(v.i), true
+	return Date(int64(v.num)), true
 }
 
 // Time returns the time-of-day value and whether the accessor is valid.
@@ -374,7 +405,7 @@ func (v Value) Time() (TimeOfDay, bool) {
 	if v.null || v.typ != TypeTime {
 		return 0, false
 	}
-	return TimeOfDay(v.i), true
+	return TimeOfDay(int64(v.num)), true
 }
 
 // DateTimeValue returns the UTC time and whether the accessor is valid.
@@ -382,7 +413,7 @@ func (v Value) DateTimeValue() (time.Time, bool) {
 	if v.null || v.typ != TypeDateTime {
 		return time.Time{}, false
 	}
-	return time.Unix(v.i, int64(v.u)).UTC(), true
+	return time.Unix(int64(v.num), int64(nanosFromAux(v.aux))).UTC(), true
 }
 
 // Decimal returns the decimal value (unscaled copied) and whether the
@@ -392,8 +423,8 @@ func (v Value) Decimal() (Decimal, bool) {
 		return Decimal{}, false
 	}
 	u := big.NewInt(0)
-	if v.d.Unscaled != nil {
-		u.Set(v.d.Unscaled)
+	if v.ref != nil {
+		u.Set(v.ref)
 	}
-	return Decimal{Unscaled: u, Scale: v.d.Scale}, true
+	return Decimal{Unscaled: u, Scale: int32(v.aux)}, true
 }

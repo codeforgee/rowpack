@@ -2,9 +2,9 @@ package codec
 
 import (
 	"encoding/binary"
-	"math"
 	"math/big"
 	"unicode/utf8"
+	"unsafe"
 )
 
 // decodeKind is the decode operation of one column. The values are dense so
@@ -153,32 +153,32 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 				case 0:
 					row[i] = Value{typ: s.typ}
 				case 1:
-					row[i] = Value{typ: s.typ, b: true}
+					row[i] = Value{typ: s.typ, num: 1}
 				default:
 					return nil, false
 				}
 			case decodeInt8:
-				row[i] = Value{typ: s.typ, i: int64(int8(payload[pos]))}
+				row[i] = Value{typ: s.typ, num: uint64(int8(payload[pos]))}
 			case decodeInt16:
-				row[i] = Value{typ: s.typ, i: int64(int16(binary.LittleEndian.Uint16(payload[pos:])))}
+				row[i] = Value{typ: s.typ, num: uint64(int16(binary.LittleEndian.Uint16(payload[pos:])))}
 			case decodeInt32:
-				row[i] = Value{typ: s.typ, i: int64(int32(binary.LittleEndian.Uint32(payload[pos:])))}
+				row[i] = Value{typ: s.typ, num: uint64(int32(binary.LittleEndian.Uint32(payload[pos:])))}
 			case decodeInt64:
-				row[i] = Value{typ: s.typ, i: int64(binary.LittleEndian.Uint64(payload[pos:]))}
+				row[i] = Value{typ: s.typ, num: binary.LittleEndian.Uint64(payload[pos:])}
 			case decodeUint8:
-				row[i] = Value{typ: s.typ, u: uint64(payload[pos])}
+				row[i] = Value{typ: s.typ, num: uint64(payload[pos])}
 			case decodeUint16:
-				row[i] = Value{typ: s.typ, u: uint64(binary.LittleEndian.Uint16(payload[pos:]))}
+				row[i] = Value{typ: s.typ, num: uint64(binary.LittleEndian.Uint16(payload[pos:]))}
 			case decodeUint32:
-				row[i] = Value{typ: s.typ, u: uint64(binary.LittleEndian.Uint32(payload[pos:]))}
+				row[i] = Value{typ: s.typ, num: uint64(binary.LittleEndian.Uint32(payload[pos:]))}
 			case decodeUint64:
-				row[i] = Value{typ: s.typ, u: binary.LittleEndian.Uint64(payload[pos:])}
+				row[i] = Value{typ: s.typ, num: binary.LittleEndian.Uint64(payload[pos:])}
 			case decodeFloat32:
-				row[i] = Value{typ: s.typ, f32: math.Float32frombits(binary.LittleEndian.Uint32(payload[pos:]))}
+				row[i] = Value{typ: s.typ, num: uint64(binary.LittleEndian.Uint32(payload[pos:]))}
 			case decodeFloat64:
-				row[i] = Value{typ: s.typ, f64: math.Float64frombits(binary.LittleEndian.Uint64(payload[pos:]))}
+				row[i] = Value{typ: s.typ, num: binary.LittleEndian.Uint64(payload[pos:])}
 			case decodeDate:
-				row[i] = Value{typ: s.typ, i: int64(int32(binary.LittleEndian.Uint32(payload[pos:])))}
+				row[i] = Value{typ: s.typ, num: uint64(int32(binary.LittleEndian.Uint32(payload[pos:])))}
 			}
 			pos += w
 			continue
@@ -201,9 +201,14 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 				}
 			} else {
 				if sink != nil && sink.Bytes != nil {
-					row[i] = Value{typ: s.typ, by: sink.Bytes(raw)}
+					view := sink.Bytes(raw)
+					if len(view) == 0 {
+						row[i] = Value{typ: s.typ}
+					} else {
+						row[i] = Value{typ: s.typ, s: unsafe.String(&view[0], len(view))}
+					}
 				} else {
-					row[i] = bytesValueInto(row[i], raw)
+					row[i] = bytesValueOwned(raw)
 				}
 			}
 			pos += pfx + ln
@@ -213,14 +218,14 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 				return nil, false
 			}
 			raw := payload[pos+pfx : pos+pfx+ln]
-			u := row[i].d.Unscaled
+			u := row[i].ref
 			if u == nil {
 				u = new(big.Int)
 			}
 			if err := decodeBytesInto(u, raw); err != nil {
 				return nil, false
 			}
-			row[i] = Value{typ: s.typ, d: Decimal{Unscaled: u, Scale: s.scale}}
+			row[i] = Value{typ: s.typ, aux: uint64(uint32(s.scale)), ref: u}
 			pos += pfx + ln
 		case decodeTime:
 			// MaxTimeOfDay < 2^49, so a valid value always fits 7 bytes.
@@ -228,7 +233,7 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 			if n <= 0 || v >= uint64(MaxTimeOfDay) {
 				return nil, false
 			}
-			row[i] = Value{typ: s.typ, i: int64(v)}
+			row[i] = Value{typ: s.typ, num: v}
 			pos += n
 		case decodeDateTime, decodeDateTimeTZ:
 			// Seconds zigzag-varint, then nanoseconds varint (0 for whole
@@ -241,14 +246,14 @@ func (d Decoder) fastDecode(dst []Value, body []byte, sink *Sink) ([]Value, bool
 			if m <= 0 {
 				return nil, false
 			}
-			row[i] = Value{typ: s.typ, i: unzigzag64(secs), u: nanos}
+			row[i] = Value{typ: s.typ, num: uint64(unzigzag64(secs)), aux: nanos}
 			pos += n + m
 			if s.kind == decodeDateTimeTZ {
 				tz, k := binary.Uvarint(payload[pos:])
 				if k <= 0 {
 					return nil, false
 				}
-				row[i].tz = int32(unzigzag64(tz))
+				row[i].aux = packTZAux(int32(unzigzag64(tz)), uint32(nanos))
 				pos += k
 			}
 		default:

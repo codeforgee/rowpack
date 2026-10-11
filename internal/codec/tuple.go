@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/big"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/codeforgee/rowpack/internal/format"
 )
@@ -197,40 +198,40 @@ func (d Decoder) decodeFixedInto(dst []Value, payload []byte) ([]Value, bool) {
 			if x > 1 {
 				return nil, false
 			}
-			row[i] = Value{typ: TypeBool, b: x == 1}
+			row[i] = Value{typ: TypeBool, num: uint64(x)}
 			pos++
 		case TypeInt8:
-			row[i] = Value{typ: TypeInt8, i: int64(int8(payload[pos]))}
+			row[i] = Value{typ: TypeInt8, num: uint64(int8(payload[pos]))}
 			pos++
 		case TypeInt16:
-			row[i] = Value{typ: TypeInt16, i: int64(int16(binary.LittleEndian.Uint16(payload[pos:])))}
+			row[i] = Value{typ: TypeInt16, num: uint64(int16(binary.LittleEndian.Uint16(payload[pos:])))}
 			pos += 2
 		case TypeInt32:
-			row[i] = Value{typ: TypeInt32, i: int64(int32(binary.LittleEndian.Uint32(payload[pos:])))}
+			row[i] = Value{typ: TypeInt32, num: uint64(int32(binary.LittleEndian.Uint32(payload[pos:])))}
 			pos += 4
 		case TypeInt64:
-			row[i] = Value{typ: TypeInt64, i: int64(binary.LittleEndian.Uint64(payload[pos:]))}
+			row[i] = Value{typ: TypeInt64, num: binary.LittleEndian.Uint64(payload[pos:])}
 			pos += 8
 		case TypeUint8:
-			row[i] = Value{typ: TypeUint8, u: uint64(payload[pos])}
+			row[i] = Value{typ: TypeUint8, num: uint64(payload[pos])}
 			pos++
 		case TypeUint16:
-			row[i] = Value{typ: TypeUint16, u: uint64(binary.LittleEndian.Uint16(payload[pos:]))}
+			row[i] = Value{typ: TypeUint16, num: uint64(binary.LittleEndian.Uint16(payload[pos:]))}
 			pos += 2
 		case TypeUint32:
-			row[i] = Value{typ: TypeUint32, u: uint64(binary.LittleEndian.Uint32(payload[pos:]))}
+			row[i] = Value{typ: TypeUint32, num: uint64(binary.LittleEndian.Uint32(payload[pos:]))}
 			pos += 4
 		case TypeUint64:
-			row[i] = Value{typ: TypeUint64, u: binary.LittleEndian.Uint64(payload[pos:])}
+			row[i] = Value{typ: TypeUint64, num: binary.LittleEndian.Uint64(payload[pos:])}
 			pos += 8
 		case TypeFloat32:
-			row[i] = Value{typ: TypeFloat32, f32: math.Float32frombits(binary.LittleEndian.Uint32(payload[pos:]))}
+			row[i] = Value{typ: TypeFloat32, num: uint64(binary.LittleEndian.Uint32(payload[pos:]))}
 			pos += 4
 		case TypeFloat64:
-			row[i] = Value{typ: TypeFloat64, f64: math.Float64frombits(binary.LittleEndian.Uint64(payload[pos:]))}
+			row[i] = Value{typ: TypeFloat64, num: binary.LittleEndian.Uint64(payload[pos:])}
 			pos += 8
 		case TypeDate:
-			row[i] = Value{typ: TypeDate, i: int64(int32(binary.LittleEndian.Uint32(payload[pos:])))}
+			row[i] = Value{typ: TypeDate, num: uint64(int32(binary.LittleEndian.Uint32(payload[pos:])))}
 			pos += 4
 		// Time/DateTime/DateTimeTZ are varint-encoded: their width is 0, which
 		// turns off `fixed` for the whole schema, so this kernel never sees
@@ -296,8 +297,8 @@ func (c Codec) encodeBodyInto(buf []byte, schema *Schema, row []Value) ([]byte, 
 			return nil, fmt.Errorf("%w: column %q wants type %d but value is %d", ErrSchemaMismatch, col.Name, col.Type, v.Type())
 		}
 		if col.Type == TypeDecimal {
-			if v.d.Scale != col.Scale {
-				return nil, fmt.Errorf("%w: column %q has scale %d but value scale %d", ErrSchemaMismatch, col.Name, col.Scale, v.d.Scale)
+			if scale := int32(v.aux); scale != col.Scale {
+				return nil, fmt.Errorf("%w: column %q has scale %d but value scale %d", ErrSchemaMismatch, col.Name, col.Scale, scale)
 			}
 		}
 		var err error
@@ -464,9 +465,8 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 		}
 		return Value{
 			typ: TypeDateTimeTZ,
-			i:   unzigzag64(secs),
-			u:   nanos,
-			tz:  int32(unzigzag64(tz)),
+			num: uint64(unzigzag64(secs)),
+			aux: packTZAux(int32(unzigzag64(tz)), uint32(nanos)),
 		}, n + m + k, nil
 	case TypeString, TypeBytes:
 		ln, pfx, ok := getVarLen(b)
@@ -491,9 +491,13 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 			return String(string(payload)), pfx + ln, nil
 		}
 		if sink != nil && sink.Bytes != nil {
-			return Value{typ: TypeBytes, by: sink.Bytes(payload)}, pfx + ln, nil
+			view := sink.Bytes(payload)
+			if len(view) == 0 {
+				return Value{typ: TypeBytes}, pfx + ln, nil
+			}
+			return Value{typ: TypeBytes, s: unsafe.String(&view[0], len(view))}, pfx + ln, nil
 		}
-		return bytesValueInto(reuse, payload), pfx + ln, nil
+		return bytesValueOwned(payload), pfx + ln, nil
 	case TypeDate:
 		raw, ok := need(4)
 		if !ok {
@@ -518,7 +522,7 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 		if m <= 0 {
 			return Value{}, 0, errors.New("truncated datetime nanos")
 		}
-		return Value{typ: TypeDateTime, i: unzigzag64(secs), u: nanos}, n + m, nil
+		return Value{typ: TypeDateTime, num: uint64(unzigzag64(secs)), aux: nanos}, n + m, nil
 	case TypeDecimal:
 		ln, pfx, ok := getVarLen(b)
 		if !ok {
@@ -531,45 +535,49 @@ func (c Codec) readValueInto(reuse Value, b []byte, col Column, sink *Sink) (Val
 		if !ok {
 			return Value{}, 0, errors.New("truncated decimal payload")
 		}
-		u := reuse.d.Unscaled
+		u := reuse.ref
 		if u == nil {
 			u = new(big.Int)
 		}
 		if err := decodeBytesInto(u, raw[pfx:pfx+ln]); err != nil {
 			return Value{}, 0, err
 		}
-		return Value{typ: TypeDecimal, d: Decimal{Unscaled: u, Scale: col.Scale}}, pfx + ln, nil
+		return Value{typ: TypeDecimal, aux: uint64(uint32(col.Scale)), ref: u}, pfx + ln, nil
 	}
 	return Value{}, 0, fmt.Errorf("unsupported type %d", col.Type)
 }
 
-// bytesValueInto materializes a Bytes payload into the dst slot, reusing the
-// slot's backing array when it is large enough (overwriting it, like Decimal
-// reuse).
-func bytesValueInto(reuse Value, payload []byte) Value {
-	buf := reuse.by[:0]
-	if cap(buf) < len(payload) {
-		buf = make([]byte, 0, len(payload))
+// bytesValueOwned materializes a Bytes payload as an owned, immutable string.
+// The historical []byte form reused the slot's backing array across decodes
+// (overwriting the previous row's bytes); the string form cannot alias the
+// caller's payload and cannot be overwritten, so each decode materializes a
+// fresh copy — one allocation when no Sink is provided, the same as a String
+// without a Sink, and the previous row's Bytes stay valid.
+func bytesValueOwned(payload []byte) Value {
+	if len(payload) == 0 {
+		return Value{typ: TypeBytes}
 	}
-	return Value{typ: TypeBytes, by: append(buf, payload...)}
+	cp := make([]byte, len(payload))
+	copy(cp, payload)
+	return Value{typ: TypeBytes, s: unsafe.String(&cp[0], len(cp))}
 }
 
 // appendValue appends the encoding of v, returning the extended buffer.
 func appendValue(buf []byte, v Value, limits Limits) ([]byte, error) {
 	switch v.Type() {
 	case TypeBool:
-		if v.b {
+		if v.num != 0 {
 			return append(buf, 1), nil
 		}
 		return append(buf, 0), nil
 	case TypeInt8, TypeInt16, TypeInt32, TypeInt64:
-		return appendFixed(buf, uint64(v.i), fixedWidth(v.Type())), nil
+		return appendFixed(buf, v.num, fixedWidth(v.Type())), nil
 	case TypeUint8, TypeUint16, TypeUint32, TypeUint64:
-		return appendFixed(buf, v.u, fixedWidth(v.Type())), nil
+		return appendFixed(buf, v.num, fixedWidth(v.Type())), nil
 	case TypeFloat32:
-		return appendU32(buf, math.Float32bits(v.f32)), nil
+		return appendU32(buf, uint32(v.num)), nil
 	case TypeFloat64:
-		return appendU64(buf, math.Float64bits(v.f64)), nil
+		return appendU64(buf, v.num), nil
 	case TypeString:
 		if err := CheckString(v.s, limits); err != nil {
 			return nil, err
@@ -577,32 +585,33 @@ func appendValue(buf []byte, v Value, limits Limits) ([]byte, error) {
 		buf = binary.AppendUvarint(buf, uint64(len(v.s)))
 		return append(buf, v.s...), nil
 	case TypeBytes:
-		if uint32(len(v.by)) > limits.MaxValueBytes {
-			return nil, fmt.Errorf("bytes value of %d bytes exceeds limit %d", len(v.by), limits.MaxValueBytes)
+		if uint32(len(v.s)) > limits.MaxValueBytes {
+			return nil, fmt.Errorf("bytes value of %d bytes exceeds limit %d", len(v.s), limits.MaxValueBytes)
 		}
-		buf = binary.AppendUvarint(buf, uint64(len(v.by)))
-		return append(buf, v.by...), nil
+		buf = binary.AppendUvarint(buf, uint64(len(v.s)))
+		return append(buf, v.s...), nil
 	case TypeDate:
-		return appendU32(buf, uint32(int32(v.i))), nil
+		return appendU32(buf, uint32(int32(v.num))), nil
 	case TypeTime:
-		if v.i < 0 || v.i >= MaxTimeOfDay {
-			return nil, fmt.Errorf("time of day %d out of range", v.i)
+		if int64(v.num) < 0 || v.num >= uint64(MaxTimeOfDay) {
+			return nil, fmt.Errorf("time of day %d out of range", int64(v.num))
 		}
 		// MaxTimeOfDay < 2^49, so the uvarint is at most 7 bytes: never worse
 		// than the fixed 8 it replaces, and 1 byte near midnight.
-		return binary.AppendUvarint(buf, uint64(v.i)), nil
+		return binary.AppendUvarint(buf, v.num), nil
 	case TypeDateTime:
-		buf = binary.AppendUvarint(buf, zigzag64(v.i))
-		return binary.AppendUvarint(buf, v.u), nil
+		buf = binary.AppendUvarint(buf, zigzag64(int64(v.num)))
+		return binary.AppendUvarint(buf, uint64(nanosFromAux(v.aux))), nil
 	case TypeDateTimeTZ:
-		buf = binary.AppendUvarint(buf, zigzag64(v.i))
-		buf = binary.AppendUvarint(buf, v.u)
-		return binary.AppendUvarint(buf, zigzag64(int64(v.tz))), nil
+		buf = binary.AppendUvarint(buf, zigzag64(int64(v.num)))
+		buf = binary.AppendUvarint(buf, uint64(nanosFromAux(v.aux)))
+		return binary.AppendUvarint(buf, zigzag64(int64(tzFromAux(v.aux)))), nil
 	case TypeDecimal:
-		if v.d.Scale < 0 {
-			return nil, fmt.Errorf("decimal scale %d is negative", v.d.Scale)
+		scale := int32(v.aux)
+		if scale < 0 {
+			return nil, fmt.Errorf("decimal scale %d is negative", scale)
 		}
-		buf, err := appendDecimalBytes(buf, v.d.Unscaled, limits.MaxValueBytes)
+		buf, err := appendDecimalBytes(buf, v.ref, limits.MaxValueBytes)
 		if err != nil {
 			return nil, err
 		}

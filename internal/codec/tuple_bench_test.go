@@ -73,7 +73,7 @@ func benchmarkMixedFixture(b *testing.B, nullable bool) (Codec, *Schema, []byte)
 		{Name: "by", Type: TypeBytes},
 	}}
 	row := []Value{Uint64(42), Int64(-7), Int64(9), Float64(1.25),
-		String("row-00000123-payload"), Value{typ: TypeDateTime, i: 1_700_000_000_000_000_000}, Bytes([]byte{1, 2, 3, 4})}
+		String("row-00000123-payload"), Value{typ: TypeDateTime, num: 1_700_000_000, aux: 0}, Bytes([]byte{1, 2, 3, 4})}
 	body, err := c.EncodeInto(schema, row, nil)
 	if err != nil {
 		b.Fatal(err)

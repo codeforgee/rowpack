@@ -21,6 +21,9 @@ bench/
 **/testdata/tmpdb/
 .codegraph/
 
+# Local assistant workspace data (never commit)
+.workbuddy/
+
 # Go fuzz corpus (regenerate locally: go test -run TestGenerateFuzzCorpus .)
 testdata/fuzz/
 

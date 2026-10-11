@@ -1,6 +1,7 @@
 package codec
 
 import (
+	"math"
 	"encoding/binary"
 	"math/big"
 	"testing"
@@ -64,18 +65,18 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 			require.Equal(t, row[i].Type(), decoded[i].Type())
 			switch row[i].Type() {
 			case TypeUint64:
-				require.Equal(t, row[i].u, decoded[i].u)
+				require.Equal(t, row[i].num, decoded[i].num)
 			case TypeString:
 				require.Equal(t, row[i].s, decoded[i].s)
 			case TypeBool:
-				require.Equal(t, row[i].b, decoded[i].b)
+				require.Equal(t, row[i].num, decoded[i].num)
 			case TypeDecimal:
-				require.Equal(t, row[i].d.Unscaled.Int64(), decoded[i].d.Unscaled.Int64())
-				require.Equal(t, row[i].d.Scale, decoded[i].d.Scale)
+				require.Equal(t, row[i].ref.Int64(), decoded[i].ref.Int64())
+				require.Equal(t, int32(row[i].aux), int32(decoded[i].aux))
 			case TypeBytes:
-				require.Equal(t, row[i].by, decoded[i].by)
+				require.Equal(t, row[i].s, decoded[i].s)
 			case TypeFloat64:
-				require.Equal(t, row[i].f64, decoded[i].f64)
+				require.Equal(t, math.Float64frombits(row[i].num), math.Float64frombits(decoded[i].num))
 			}
 		}
 	})
@@ -121,8 +122,8 @@ func TestEncodeIntoReuse(t *testing.T) {
 
 		decoded, err := decodeTestBody(t, testCodec, schema, buf)
 		require.NoError(t, err)
-		require.Equal(t, uint64(i), decoded[0].u)
-		require.Equal(t, int64(i*10), decoded[1].i)
+		require.Equal(t, uint64(i), decoded[0].num)
+		require.Equal(t, int64(i*10), int64(decoded[1].num))
 	}
 }
 
@@ -142,7 +143,7 @@ func TestEncodeBodyInto(t *testing.T) {
 
 	decoded, err := decodeTestBody(t, testCodec, schema, body)
 	require.NoError(t, err)
-	require.Equal(t, uint64(100), decoded[0].u)
+	require.Equal(t, uint64(100), decoded[0].num)
 	require.Equal(t, "test-value", decoded[1].s)
 }
 
@@ -164,8 +165,8 @@ func TestDecodeIntoReuse(t *testing.T) {
 	for range 5 {
 		decoded, err := decodeTestBodyInto(t, testCodec, dst, schema, encoded)
 		require.NoError(t, err)
-		require.Equal(t, uint64(42), decoded[0].u)
-		require.Equal(t, int64(100), decoded[1].i)
+		require.Equal(t, uint64(42), decoded[0].num)
+		require.Equal(t, int64(100), int64(decoded[1].num))
 		dst = decoded
 	}
 }
@@ -483,7 +484,7 @@ func TestDecodeBodyInto(t *testing.T) {
 
 	decoded, err := decodeTestBody(t, testCodec, schema, body)
 	require.NoError(t, err)
-	require.Equal(t, uint64(100), decoded[0].u)
+	require.Equal(t, uint64(100), decoded[0].num)
 	require.Equal(t, "test-value", decoded[1].s)
 }
 
@@ -574,22 +575,21 @@ func TestAllTypes(t *testing.T) {
 		require.Equal(t, row[i].Type(), decoded[i].Type())
 		switch row[i].Type() {
 		case TypeBool:
-			require.Equal(t, row[i].b, decoded[i].b)
-		case TypeInt8, TypeInt16, TypeInt32, TypeInt64, TypeDate, TypeTime, TypeDateTime:
-			require.Equal(t, row[i].i, decoded[i].i)
-		case TypeUint8, TypeUint16, TypeUint32, TypeUint64:
-			require.Equal(t, row[i].u, decoded[i].u)
+			require.Equal(t, row[i].num, decoded[i].num)
+		case TypeInt8, TypeInt16, TypeInt32, TypeInt64, TypeDate, TypeTime, TypeDateTime,
+			TypeUint8, TypeUint16, TypeUint32, TypeUint64:
+			require.Equal(t, row[i].num, decoded[i].num)
 		case TypeFloat32:
-			require.InDelta(t, row[i].f32, decoded[i].f32, 0.001)
+			require.InDelta(t, math.Float32frombits(uint32(row[i].num)), math.Float32frombits(uint32(decoded[i].num)), 0.001)
 		case TypeFloat64:
-			require.InDelta(t, row[i].f64, decoded[i].f64, 0.000000000000001)
+			require.InDelta(t, math.Float64frombits(row[i].num), math.Float64frombits(decoded[i].num), 0.000000000000001)
 		case TypeString:
 			require.Equal(t, row[i].s, decoded[i].s)
 		case TypeBytes:
-			require.Equal(t, row[i].by, decoded[i].by)
+			require.Equal(t, row[i].s, decoded[i].s)
 		case TypeDecimal:
-			require.Equal(t, row[i].d.Unscaled.Int64(), decoded[i].d.Unscaled.Int64())
-			require.Equal(t, row[i].d.Scale, decoded[i].d.Scale)
+			require.Equal(t, row[i].ref.Int64(), decoded[i].ref.Int64())
+			require.Equal(t, int32(row[i].aux), int32(decoded[i].aux))
 		}
 	}
 }

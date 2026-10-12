@@ -374,20 +374,29 @@ func (it *Iterator) rowAt(loc index.RowLoc, dst Row) (Row, error) {
 	if err := it.locateBlock(loc); err != nil {
 		return nil, err
 	}
-	pi, err := it.curContainer.PageFor(loc.ItemOrdinal)
-	if err != nil {
-		return nil, it.store.recordError(it.curBlk, it.snapshot, it.table, err)
-	}
-	if it.curPage == nil || it.curPageIdx != pi {
-		it.releasePage()
-		page, release, err := it.curContainer.PageScratch(pi)
+	// Fast path: the currently loaded page usually already covers the ordinal
+	// — a scan visits runs of consecutive rows, and PageFor would re-answer
+	// the same question with a binary search on every row.
+	pi := -1
+	if it.curPage != nil && it.curContainer.Dir[it.curPageIdx].Covers(loc.ItemOrdinal) {
+		pi = it.curPageIdx
+	} else {
+		var err error
+		pi, err = it.curContainer.PageFor(loc.ItemOrdinal)
 		if err != nil {
 			return nil, it.store.recordError(it.curBlk, it.snapshot, it.table, err)
 		}
-		it.curPage = page
-		it.curPageRel = release
-		it.curPageIdx = pi
-		it.curCursor = it.pageCursorScratch.Reset(page)
+		if it.curPage == nil || it.curPageIdx != pi {
+			it.releasePage()
+			page, release, err := it.curContainer.PageScratch(pi)
+			if err != nil {
+				return nil, it.store.recordError(it.curBlk, it.snapshot, it.table, err)
+			}
+			it.curPage = page
+			it.curPageRel = release
+			it.curPageIdx = pi
+			it.curCursor = it.pageCursorScratch.Reset(page)
+		}
 	}
 	// The merge yields (table, rowID) globally ascending, but a page's records
 	// need not be RowID-sorted, so visits to one page are usually — not

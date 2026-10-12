@@ -169,6 +169,13 @@ type RowsPageDirEntry struct {
 	Flags              uint32 // bit0: oversized (single-row) page
 }
 
+// Covers reports whether the record ordinal falls inside this page's slice of
+// the block's record space. Read paths use it to skip the directory binary
+// search when the currently loaded page already holds the requested record.
+func (e *RowsPageDirEntry) Covers(ordinal uint32) bool {
+	return ordinal >= e.FirstRecordOrdinal && ordinal < e.FirstRecordOrdinal+e.RecordCount
+}
+
 // dirEntryFields is the number of uvarints in one encoded entry.
 const dirEntryFields = 8
 

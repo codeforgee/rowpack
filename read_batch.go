@@ -276,22 +276,18 @@ func (br *batchReader) readBlock(i, end int, sink *codec.Sink) error {
 
 // pageRun returns the index of the page holding reqs[i] and the end of the
 // run of requests inside that same page. reqs are ordinal-sorted, so the run
-// is a contiguous slice.
+// is a contiguous slice: it ends at the first request beyond the page's
+// record span — no per-request binary search. An ordinal at or beyond the
+// span is validated by the next iteration's PageFor (range or error).
 func (br *batchReader) pageRun(rc *block.RowsContainer, i, end int) (int, int, error) {
 	reqs := br.buf.reqs
 	pi, err := rc.PageFor(reqs[i].ordinal)
 	if err != nil {
 		return 0, 0, err
 	}
+	span := rc.Dir[pi].FirstRecordOrdinal + rc.Dir[pi].RecordCount
 	stop := i + 1
-	for stop < end {
-		next, err := rc.PageFor(reqs[stop].ordinal)
-		if err != nil {
-			return 0, 0, err
-		}
-		if next != pi {
-			break
-		}
+	for stop < end && reqs[stop].ordinal < span {
 		stop++
 	}
 	return pi, stop, nil

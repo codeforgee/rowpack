@@ -576,9 +576,5 @@ func (s *Store) rebuildIndexApply(view *index.View, c *committedSnapshot, maxDep
 		}
 	}
 
-	nv, err := ap.FinishView()
-	if err != nil {
-		return nil, err
-	}
-	return nv, nil
+	return ap.FinishView()
 }

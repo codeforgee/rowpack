@@ -151,10 +151,7 @@ func (r *Reader) ReadRowsPage(offset int64, c *RowsContainer, pageIdx int) (*Row
 		}
 		page, perr := r.rowsPageFrom(c, pageIdx, dir, stored, true)
 		done()
-		if perr != nil {
-			return nil, perr
-		}
-		return page, nil
+		return page, perr
 	}
 	stored := make([]byte, dir.StoredSize)
 	if _, err := r.ra.ReadAt(stored, pgOff); err != nil {

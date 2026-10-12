@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/codeforgee/rowpack/internal/block"
 	"github.com/codeforgee/rowpack/internal/format"
 )
 
@@ -42,6 +43,14 @@ type Builder struct {
 	// rejects duplicates at Insert time and View.Apply re-validates the
 	// built shards) disable it to skip the per-row dedup map.
 	dedupRows bool
+	// enc is the caller-owned store zstd encoder for Row Index Page
+	// compression, with pageScratch as its EncodeAll scratch. nil selects
+	// the pooled encoder (tooling / standalone builds). The encoder must not
+	// be used concurrently elsewhere while buildPages runs — the commit
+	// pipeline is single-goroutine, so sharing the store's encoder with the
+	// block builders is safe.
+	enc         *block.ZstdEncoder
+	pageScratch []byte
 }
 
 // NewBuilder creates a txn builder with the next sequence number.
@@ -55,6 +64,12 @@ func NewBuilder(sequence uint64) *Builder {
 // preserved by the caller's own uniqueness guarantee plus View.Apply's shard
 // duplicate check. Must be called before the first AddRow.
 func (b *Builder) SetRowDedup(enabled bool) { b.dedupRows = enabled }
+
+// SetZstdEncoder attaches a caller-owned zstd encoder used for Row Index
+// Page compression instead of the pooled one. The caller owns the encoder's
+// lifecycle and must keep it valid and uncontended until BuildStored
+// returns.
+func (b *Builder) SetZstdEncoder(e *block.ZstdEncoder) { b.enc = e }
 
 // SetSnapshot sets the snapshot summary entry.
 func (b *Builder) SetSnapshot(e format.SnapshotIndexEntry) error {

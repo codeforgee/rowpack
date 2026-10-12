@@ -177,6 +177,12 @@ func (w *writer) writeBlocks(cp *commitLayout) error {
 // phase.
 func (w *writer) writeIndexTxn(cp *commitLayout) (*index.Txn, error) {
 	txnBuilder := index.NewBuilder(w.store.txnSeq.Add(1))
+	// Row Index Pages compress through the store's persistent encoder (same
+	// one the block builders use; the pipeline is single-goroutine) so page
+	// build avoids the pooled-encoder round trip and per-page frame allocs.
+	if w.store.opts.Compression != CompressionNone {
+		txnBuilder.SetZstdEncoder(w.store.zstdEncoder())
+	}
 	// Entry totals are known from the flushed blocks: pre-reserving removes
 	// the slice-growth copies from the commit peak. Row dedup is skipped on
 	// this path: put() already rejects duplicate (table, row) pairs via the

@@ -11,8 +11,8 @@ import (
 // 超出最大分级、分级里拿到的缓冲不够用、预算满了、以及归还时不能把超大的缓冲塞回池里。
 //
 // 到不了的四条:
-//   - compress.go 的 decPool.New / poolForLevel.New / NewZstdEncoder 的 panic(81、101、
-//     127):三个地方的 zstd 选项都是固定的合法值,NewReader/NewWriter 没有失败输入。
+//   - compress.go 的 sharedDecoder / poolForLevel.New / NewZstdEncoder 的 panic:
+//     三处的 zstd 选项都是固定的合法值,NewReader/NewWriter 没有失败输入。
 //   - compress.go 210:EncodeAll 返回的容量只可能等于或大于传入的 scratch,不会更小,
 //     所以 EncodeZstdInto 里那个 else 分支没有输入。
 

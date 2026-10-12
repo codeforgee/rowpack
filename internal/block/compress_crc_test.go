@@ -25,8 +25,7 @@ func TestZstdFrameChecksumCompat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dec := decPool.Get().(*zstd.Decoder)
-	defer decPool.Put(dec)
+	dec := sharedDecoder()
 	for name, frame := range map[string][]byte{"legacy-with-checksum": legacyFrame, "own-no-checksum": ownFrame} {
 		out, err := dec.DecodeAll(frame, nil)
 		if err != nil {

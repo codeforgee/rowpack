@@ -95,7 +95,12 @@ var (
 	encodeDstPools [poolNumClasses]sync.Pool
 	encodeDstBytes atomic.Int64 // parked in encodeDstPools, capped by encodeDstBudget
 
-	decPool = sync.Pool{New: func() any {
+	// sharedDecoder is the package-level zstd decoder. Decoder.DecodeAll is
+	// goroutine-safe, so one retained decoder serves every caller: no
+	// per-call pool pinning and no rebuild after each GC cycle clears a
+	// sync.Pool (which cost a one-time latency spike and ~rebuild churn on
+	// every open-heavy workload).
+	sharedDecoder = sync.OnceValue(func() *zstd.Decoder {
 		d, err := zstd.NewReader(nil,
 			zstd.WithDecoderMaxMemory(zstdMaxDecoded),
 			zstd.WithDecoderLowmem(true),
@@ -105,7 +110,7 @@ var (
 			panic(err)
 		}
 		return d
-	}}
+	})
 )
 
 // poolForLevel returns the encoder pool for a zstd level.
@@ -250,9 +255,8 @@ func compressZstd(level int, src []byte) ([]byte, error) {
 }
 
 func decompressZstd(dst, src []byte, maxOut uint32) ([]byte, error) {
-	dec := decPool.Get().(*zstd.Decoder)
+	dec := sharedDecoder()
 	out, err := dec.DecodeAll(src, dst[:0])
-	decPool.Put(dec)
 	if err != nil {
 		return nil, fmt.Errorf("rowpack: zstd decode: %w", err)
 	}

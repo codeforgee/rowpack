@@ -75,9 +75,32 @@ func (b *Builder) buildPages(cc *chunkWriter, crypto *ChunkCrypto, level int) ([
 			if err != nil {
 				return nil, err
 			}
-			stored, err := block.Compress(format.CompressionZstd, level, page)
-			if err != nil {
-				return nil, err
+			var stored []byte
+			if b.enc != nil {
+				// Caller-owned store encoder: the frame is appended into a
+				// shared segment buffer (same pattern as RowsBuilder) so no
+				// per-page frame allocation or pool round trip is needed.
+				// Segments must stay alive until the chunk assembles them,
+				// so growth copies prior content rather than aliasing over.
+				start := len(b.pageScratch)
+				if cap(b.pageScratch)-start < len(page)+1<<10 {
+					grown := make([]byte, start, start+len(page)+1<<10)
+					copy(grown, b.pageScratch)
+					b.pageScratch = grown
+				}
+				out := b.enc.EncodeAll(page, b.pageScratch[start:start][:0])
+				if cap(out) == cap(b.pageScratch) && len(out) >= start && (start == 0 || &out[0] == &b.pageScratch[0]) {
+					b.pageScratch = out
+					stored = out[start:]
+				} else {
+					stored = out
+					b.pageScratch = out
+				}
+			} else {
+				stored, err = block.Compress(format.CompressionZstd, level, page)
+				if err != nil {
+					return nil, err
+				}
 			}
 			storedSize := uint32(len(stored))
 			if crypto != nil {

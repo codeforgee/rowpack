@@ -48,6 +48,11 @@ type PageBuilder struct {
 	maxRowID   uint64
 	count      uint32
 	started    bool
+
+	// rawPage is the Finish serialization scratch, reused across pages so a
+	// write path does not allocate one fresh ~32 KiB buffer per page. The
+	// slice handed out by Finish is valid until the next Finish.
+	rawPage []byte
 }
 
 // NewPageBuilder creates a page builder flushing at target raw bytes.
@@ -121,6 +126,11 @@ func (b *PageBuilder) NeedsFlush() bool {
 
 // Finish serializes the buffered records into one page and resets the
 // builder. Returns nil when nothing is buffered.
+//
+// The page is serialized into a scratch the builder reuses across Finish
+// calls: callers consume it before the next Finish (RowsBuilder compresses
+// it into an owned stored buffer immediately). Write paths whose compression
+// aliases the input (CompressionNone) must copy before retaining.
 func (b *PageBuilder) Finish() ([]byte, error) {
 	if b.count == 0 {
 		return nil, nil
@@ -138,13 +148,17 @@ func (b *PageBuilder) Finish() ([]byte, error) {
 		MinRowID:        b.minRowID,
 		MaxRowID:        b.maxRowID,
 	}
-	page := make([]byte, 0, format.RowsPageHeaderSize+h.StreamsBytes())
-	page = append(page, make([]byte, format.RowsPageHeaderSize)...)
-	page = append(page, b.rowIDs...)
-	page = append(page, b.offsets...)
-	page = append(page, b.schemaRLE...)
-	page = append(page, b.changeBits...)
-	page = append(page, b.tuples...)
+	total := format.RowsPageHeaderSize + h.StreamsBytes()
+	if cap(b.rawPage) < int(total) {
+		b.rawPage = make([]byte, total)
+	}
+	page := b.rawPage[:total]
+	n := format.RowsPageHeaderSize
+	n += copy(page[n:], b.rowIDs)
+	n += copy(page[n:], b.offsets)
+	n += copy(page[n:], b.schemaRLE)
+	n += copy(page[n:], b.changeBits)
+	n += copy(page[n:], b.tuples)
 	streams := page[format.RowsPageHeaderSize:]
 	h.CRC32C = format.CRC32C(streams)
 	if err := h.MarshalTo(page); err != nil {

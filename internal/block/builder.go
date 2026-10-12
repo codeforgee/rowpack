@@ -214,6 +214,15 @@ func (b *RowsBuilder) storePage(rawPage []byte, oversized bool) error {
 		stored, err = EncodeZstdInto(b.enc, &b.encDst, rawPage)
 	} else {
 		stored, err = Compress(b.compress, b.level, rawPage)
+		if err == nil && b.compress == format.CompressionNone && len(stored) > 0 {
+			// Compress(None) returns the input itself: rawPage is the page
+			// builder's reused serialization scratch, so the stored page
+			// (retained until Flush assembles the container) needs its own
+			// copy.
+			cp := make([]byte, len(stored))
+			copy(cp, stored)
+			stored = cp
+		}
 	}
 	if err != nil {
 		return err
@@ -310,6 +319,13 @@ func (b *RowsBuilder) Flush() error {
 	// Directory ownership transferred to the callback; fresh inputs next block.
 	b.entries = nil
 	b.dirEntries = b.dirEntries[:0]
+	// The kept storedPages backing array still references the flushed block's
+	// compressed page buffers; nil the slots so the builder does not pin ~one
+	// block of stored bytes (and everything those buffers alias) between
+	// flushes.
+	for i := range b.storedPages {
+		b.storedPages[i] = nil
+	}
 	b.storedPages = b.storedPages[:0]
 	b.rawSize = 0
 	b.recordOrdinal = 0

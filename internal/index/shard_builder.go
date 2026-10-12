@@ -2,6 +2,7 @@ package index
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/codeforgee/rowpack/internal/format"
 )
@@ -144,7 +145,11 @@ func (b *rowShardBuilder) AddPageRows(p *pageRows, snapID uint64) error {
 
 // finalize closes the current table's shard: append the terminal runStart
 // sentinel, install the completed rowShard, and reset the per-table arrays for
-// the next table. No-op when no table is active.
+// the next table. No-op when no table is active. The appended-into slices are
+// handed over exact-cap: changes/runStart/blockIDs keep referencing the
+// shard for the view's lifetime, so an append-doubled backing array (up to
+// 2x the row count for changes) would pin that slack forever. rowIDs and
+// ordinals are packed into fresh compact storage either way.
 func (b *rowShardBuilder) finalize() error {
 	if !b.have {
 		return nil
@@ -153,9 +158,9 @@ func (b *rowShardBuilder) finalize() error {
 	b.done[b.table] = &rowShard{
 		rowIDs:   packRowIDs(b.rowIDs),
 		ordinals: packOrdinals(b.ordinals),
-		changes:  b.changes,
-		runStart: b.runStart,
-		blockIDs: b.blockIDs,
+		changes:  slices.Clone(b.changes),
+		runStart: slices.Clone(b.runStart),
+		blockIDs: slices.Clone(b.blockIDs),
 	}
 	b.table = 0
 	b.have = false

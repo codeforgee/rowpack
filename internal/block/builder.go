@@ -339,8 +339,11 @@ func (b *RowsBuilder) Flush() error {
 	if err := b.onFlush(fb); err != nil {
 		return err
 	}
-	// Directory ownership transferred to the callback; fresh inputs next block.
-	b.entries = nil
+	// Directory ownership transferred to the callback; fresh inputs next
+	// block. The replacement comes from the row-directory pool when one of
+	// the right size is idle, so a builder that flushes many blocks per
+	// commit does not re-walk the append-growth chain for every block.
+	b.entries = getRowDirBuf()
 	b.dirEntries = b.dirEntries[:0]
 	// The kept storedPages backing array still references the flushed block's
 	// compressed page buffers; nil the slots so the builder does not pin ~one

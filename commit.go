@@ -445,6 +445,15 @@ func (w *writer) addBlocksToTxn(builder *index.Builder) error {
 			}
 		}
 	}
+	// The entries were copied into the index builder above: the directories
+	// are dead and their backing arrays return to the builder's pool, so the
+	// next commit's block flushes reuse them instead of re-growing from zero.
+	for _, blk := range w.pending {
+		if len(blk.rowsDir) > 0 {
+			block.PutRowDirBuf(blk.rowsDir)
+			blk.rowsDir = nil
+		}
+	}
 	return nil
 }
 

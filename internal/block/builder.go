@@ -72,10 +72,11 @@ type RowsBuilder struct {
 	oversizedPages uint32
 
 	// enc is the caller-owned zstd encoder (store-level, outliving GC pool
-	// churn); nil selects the pooled encoder. encDst is its EncodeAll scratch,
-	// held here for the same reason.
-	enc    *ZstdEncoder
-	encDst []byte
+	// churn); nil selects the pooled encoder. pageScratch is the shared
+	// append buffer the block's stored pages are compressed into: one growing
+	// scratch per builder instead of one fresh frame allocation per page.
+	enc         *ZstdEncoder
+	pageScratch []byte
 
 	// Flush returns each finished block; the consumer supplies the BlockID.
 	onFlush func(*FlushedBlock) error
@@ -204,28 +205,50 @@ func (b *RowsBuilder) finishPage() error {
 	return b.storePage(rawPage, false)
 }
 
-// storePage compresses one finished (uncompressed) page and records its
-// directory entry. StoredOffset is resolved at block assembly time, once the
-// directory length is known.
+// storePage compresses one finished (uncompressed) page into the builder's
+// shared pageScratch and records its directory entry. Stored pages live as
+// segments of the builder's scratch buffers until Flush assembles the
+// container, so no per-page frame allocation is needed. StoredOffset is
+// resolved at block assembly time, once the directory length is known.
 func (b *RowsBuilder) storePage(rawPage []byte, oversized bool) error {
+	start := len(b.pageScratch)
 	var stored []byte
-	var err error
 	if b.enc != nil && b.compress == format.CompressionZstd {
-		stored, err = EncodeZstdInto(b.enc, &b.encDst, rawPage)
-	} else {
-		stored, err = Compress(b.compress, b.level, rawPage)
-		if err == nil && b.compress == format.CompressionNone && len(stored) > 0 {
-			// Compress(None) returns the input itself: rawPage is the page
-			// builder's reused serialization scratch, so the stored page
-			// (retained until Flush assembles the container) needs its own
-			// copy.
-			cp := make([]byte, len(stored))
-			copy(cp, stored)
-			stored = cp
+		// Reserve room for the frame up front so EncodeAll's append lands in
+		// the scratch: zstd's worst case is raw-block storage (input plus
+		// per-block headers and frame overhead, bounded here by 1 KiB of
+		// slack). Earlier pages are NOT carried over on grow — they live as
+		// segments in storedPages aliasing wherever they were written, and
+		// Flush copies per segment.
+		if cap(b.pageScratch)-start < len(rawPage)+1<<10 {
+			b.pageScratch = make([]byte, 0, start+len(rawPage)+1<<10)
+			start = 0
 		}
-	}
-	if err != nil {
-		return err
+		out := b.enc.EncodeAll(rawPage, b.pageScratch[start:start][:0])
+		if cap(out) == cap(b.pageScratch) && len(out) >= start && (start == 0 || &out[0] == &b.pageScratch[0]) {
+			// Appended in place: the segment is the scratch tail.
+			b.pageScratch = out
+			stored = out[start:]
+		} else {
+			// EncodeAll reallocated despite the reservation: the frame is
+			// its own segment and the fresh buffer is adopted as the scratch.
+			stored = out
+			b.pageScratch = out
+		}
+	} else {
+		storedPool, cerr := Compress(b.compress, b.level, rawPage)
+		if cerr != nil {
+			return cerr
+		}
+		if b.compress == format.CompressionNone && len(storedPool) > 0 && len(rawPage) > 0 && &storedPool[0] == &rawPage[0] {
+			// Compress(None) returned the input itself: rawPage is the page
+			// builder's reused serialization scratch, so appending it into
+			// the page scratch makes the copy the segment needs.
+			b.pageScratch = append(b.pageScratch, rawPage...)
+		} else {
+			b.pageScratch = append(b.pageScratch, storedPool...)
+		}
+		stored = b.pageScratch[start:]
 	}
 	var h format.RowsPageHeader
 	if err := h.Unmarshal(rawPage, len(rawPage)); err != nil {
@@ -322,11 +345,14 @@ func (b *RowsBuilder) Flush() error {
 	// The kept storedPages backing array still references the flushed block's
 	// compressed page buffers; nil the slots so the builder does not pin ~one
 	// block of stored bytes (and everything those buffers alias) between
-	// flushes.
+	// flushes. The page scratch keeps its capacity (pages are appended into
+	// it in place) but re-tracks from zero: the dead bytes are overwritten by
+	// the next block's frames.
 	for i := range b.storedPages {
 		b.storedPages[i] = nil
 	}
 	b.storedPages = b.storedPages[:0]
+	b.pageScratch = b.pageScratch[:0]
 	b.rawSize = 0
 	b.recordOrdinal = 0
 	b.oversizedPages = 0

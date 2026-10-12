@@ -185,14 +185,29 @@ func (d *blockDecoders) forVersion(ver uint32) (codec.Decoder, error) {
 // One decode memo is shared across all snapshots: deriveTables for snapshot
 // S re-reads every ancestor layer's records, so without the memo an open
 // with N snapshots decompresses the same metadata blocks O(N²) times.
+//
+// Snapshots whose own layer adds no Table or Column records share their
+// parent's derivation result outright: without this, every no-change DELTA
+// re-allocated the full per-table codec.Schema/decoder set, so a long chain
+// of ordinary insert commits held one full schema copy per snapshot.
 func (s *Store) buildIndex(view *index.View) (*schemaIndex, error) {
 	si := newSchemaIndex()
 	memo := make(map[metaRecKey]*metadata.Record)
+	resolved := make(map[uint64]*derivedSchemas, len(si.bySnapshot)*2+8)
 	for _, sm := range view.Snapshots() {
-		d, err := s.deriveTables(view, sm.ID, memo)
-		if err != nil {
-			return nil, err
+		var d *derivedSchemas
+		// Snapshots() sorts by ID and a DELTA's parent ID is strictly
+		// smaller (validated at Apply), so the parent is always resolved.
+		if sm.Type == format.SnapshotDelta && schemaNeutralLayer(view, sm.ID) {
+			d = resolved[sm.Parent]
+		} else {
+			var err error
+			d, err = s.deriveTables(view, sm.ID, memo)
+			if err != nil {
+				return nil, err
+			}
 		}
+		resolved[sm.ID] = d
 		if len(d.tables) > 0 {
 			si.bySnapshot[sm.ID] = d.tables
 		}
@@ -201,6 +216,15 @@ func (s *Store) buildIndex(view *index.View) (*schemaIndex, error) {
 		}
 	}
 	return si, nil
+}
+
+// schemaNeutralLayer reports whether the snapshot's own layer carries no
+// Table or Column metadata records — the only records deriveTables consumes,
+// including their DELETE tombstones (indexed by record type) — so its derived
+// schemas are exactly its parent's.
+func schemaNeutralLayer(view *index.View, snap uint64) bool {
+	return len(view.MetadataByType(snap, uint32(format.RecordTable))) == 0 &&
+		len(view.MetadataByType(snap, uint32(format.RecordColumn))) == 0
 }
 
 // derivedSchemas is the schema derivation result for one snapshot.

@@ -151,6 +151,31 @@ func (l *blockLoader) LoadRows(offset int64, blockID uint64) (*block.RowsContain
 	return v.(*block.RowsContainer), nil
 }
 
+// LoadTransient is Load without the cache: the block is read, validated and
+// returned without entering the random-read LRU or merging concurrent loads.
+// One-shot full-store walks (Verify) use this so they cannot evict the
+// random-read hot set they are not part of.
+func (l *blockLoader) LoadTransient(offset int64, blockID uint64) (*block.Block, error) {
+	blk, err := l.reader.ReadAtBlock(offset)
+	if err != nil {
+		return nil, l.readError(offset, blockID, err)
+	}
+	return blk, nil
+}
+
+// LoadRowsTransient is LoadRows without the cache: the container is read and
+// validated fresh, never installed in the random-read LRU and never given the
+// lazy-page accounting hook. Verify uses it so a full-store pass neither
+// pollutes the hot set nor pays singleflight bookkeeping for blocks it will
+// never revisit.
+func (l *blockLoader) LoadRowsTransient(offset int64, blockID uint64) (*block.RowsContainer, error) {
+	rc, err := l.reader.ReadRowsDir(offset)
+	if err != nil {
+		return nil, l.readError(offset, blockID, err)
+	}
+	return rc, nil
+}
+
 // LoadScanRows serves streaming reads (Scan / ScanBlocks) of Rows page
 // containers. Lookup order is the random-read cache, then the scan window; a
 // miss is read once and — when the container fits the window — promoted into

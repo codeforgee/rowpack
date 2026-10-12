@@ -137,7 +137,10 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode, scope VerifyScope) 
 			// Rows blocks validate the page container (header/directory CRC
 			// and per-page bounds) without decompressing; full mode then walks
 			// every page, verifying each record's page CRC and decodability.
-			rc, err := s.loader.LoadRows(int64(bl.DataOffset), bl.BlockID)
+			// Transient load: a Verify pass visits every block exactly once,
+			// so caching them here would only evict the random-read hot set
+			// (ForEach below already walks pages without memoizing them).
+			rc, err := s.loader.LoadRowsTransient(int64(bl.DataOffset), bl.BlockID)
 			if err != nil {
 				return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: reasonOf(err)}
 			}
@@ -167,7 +170,7 @@ func (s *Store) Verify(ctx context.Context, mode VerifyMode, scope VerifyScope) 
 			}
 			continue
 		}
-		blk, err := s.loader.Load(int64(bl.DataOffset), bl.BlockID)
+		blk, err := s.loader.LoadTransient(int64(bl.DataOffset), bl.BlockID)
 		if err != nil {
 			return rep, &CorruptionError{File: s.dataPath, BlockID: bl.BlockID, SnapshotID: bl.SnapshotID, TableID: bl.TableID, Kind: ErrCorruptData, Cause: err, Reason: reasonOf(err)}
 		}

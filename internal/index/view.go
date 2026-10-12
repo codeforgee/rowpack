@@ -734,6 +734,26 @@ func (v *View) ApplyStreaming(data []byte, crypto *ChunkCrypto, maxDepth uint32)
 	return ap.ap.next, nil
 }
 
+// NewRebuildSink returns a streaming sink that applies a reconstructed (not
+// serialized) index txn through the same fused path as ApplyStreaming: rows
+// append straight into the new view's compact shard slices, so neither a
+// []RowIndexEntry nor a materialized Txn ever exists. The recovery rebuild
+// drives it while walking the snapshot's data blocks: SetSnapshot first (it
+// validates the parent chain exactly like Apply), then the block/metadata/
+// row entries, then Finish. Validation semantics are identical to Apply.
+func NewRebuildSink(old *View, maxDepth uint32, rowHint int) *streamApply {
+	return &streamApply{old: old, maxDepth: maxDepth, hint: rowHint}
+}
+
+// FinishView installs the buffered block/metadata entries and the accumulated
+// shards into the new view and returns it. The sink is spent afterwards.
+func (a *streamApply) FinishView() (*View, error) {
+	if err := a.finish(); err != nil {
+		return nil, err
+	}
+	return a.ap.next, nil
+}
+
 // streamApply is the TxnSink behind ApplyStreaming. Blocks and metadata are
 // few (per flushed block), so they buffer; rows — the per-row bulk — append
 // directly into an incremental rowShardBuilder, so no []RowKeyLoc intermediate

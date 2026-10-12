@@ -172,7 +172,7 @@ func TestRecoverRejectsForeignBlockOnRebuild(t *testing.T) {
 
 	_, err := Open(base, Options{Compression: CompressionNone})
 	require.ErrorContains(t, err, "rebuild snapshot")
-	require.ErrorContains(t, err, "snapshot mismatch")
+	require.ErrorContains(t, err, "belongs to snapshot")
 }
 
 // TestRecoverRejectsInconsistentFooterOffsets: the footer is the commit

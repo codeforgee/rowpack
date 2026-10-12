@@ -1,8 +1,10 @@
 package rowpack
 
 import (
+	"cmp"
 	"encoding/binary"
 	"fmt"
+	"slices"
 
 	"github.com/codeforgee/rowpack/internal/codec"
 	"github.com/codeforgee/rowpack/internal/format"
@@ -102,16 +104,12 @@ func (s *Store) recover() error {
 				continue
 			}
 		}
-		// IndexTxn missing/corrupt: rebuild from this snapshot's blocks. The
-		// rebuilt txn is applied eagerly (its row shards are materialized) — in
-		// The rebuilt txn is applied eagerly from the snapshot's data pages.
-		rtxn, err := s.rebuildIndex(&c)
+		// IndexTxn missing/corrupt: rebuild from this snapshot's blocks and
+		// apply through the fused streaming sink (no []RowIndexEntry or
+		// materialized Txn; the intermediate is a compact sorted row slice).
+		nv, err := s.rebuildIndexApply(view, &c, s.opts.Limits.MaxSnapshotDepth)
 		if err != nil {
 			return fmt.Errorf("rowpack: rebuild snapshot %d: %w", c.snapshotID, err)
-		}
-		nv, err := view.Apply(rtxn, s.opts.Limits.MaxSnapshotDepth)
-		if err != nil {
-			return fmt.Errorf("rowpack: snapshot %d chain invalid after rebuild: %w", c.snapshotID, err)
 		}
 		view = nv
 		report.performed = true
@@ -402,15 +400,21 @@ func (s *Store) hasValidFooterAfter(from, size int64) bool {
 	return false
 }
 
-// rebuildIndex reconstructs the index transaction for a committed
-// snapshot whose IndexTxn is missing or corrupt, by reading and parsing its
-// blocks in [BlocksStartOffset, BlocksEndOffset).
-func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
-	var blockEntries []format.BlockIndexEntry
-	var metaEntries []format.MetadataIndexEntry
-	var rowEntries []format.RowIndexEntry
-	// Footer counts passed CRC validation, but remain untrusted input. Bound
-	// capacity hints to avoid turning a forged footer into an OOM request.
+// rebuildIndexApply reconstructs the index for a committed snapshot whose
+// IndexTxn is missing or corrupt, by reading and parsing its blocks in
+// [BlocksStartOffset, BlocksEndOffset) and applying them through the fused
+// streaming sink: row records flow straight into the new view's compact
+// shard slices, so neither a []RowIndexEntry (~40 B/row) nor the buffered
+// Apply path's RowKeyLoc copies (~32 B/row) are ever materialized — the
+// rebuild peak stays at the resident shard footprint itself.
+//
+// The snapshot entry needs the block count up front but the sink requires it
+// before any row flows in, so block headers are walked once to count (a
+// 64-byte header read per block; payloads are only touched on the second
+// pass). Footer counts passed CRC validation but remain untrusted input:
+// capacity hints are bounded to avoid turning a forged footer into an OOM
+// request.
+func (s *Store) rebuildIndexApply(view *index.View, c *committedSnapshot, maxDepth uint32) (*index.View, error) {
 	const maxPreallocBytes = uint64(64 << 20)
 	boundedCap := func(count uint64, entrySize int) int {
 		limit := maxPreallocBytes / uint64(entrySize)
@@ -419,13 +423,16 @@ func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
 		}
 		return int(count)
 	}
-	blockEntries = make([]format.BlockIndexEntry, 0, boundedCap(uint64(c.blockCount), format.BlockIndexEntrySize))
-	metaEntries = make([]format.MetadataIndexEntry, 0, boundedCap(uint64(c.metaCount), format.MetadataIndexEntrySize))
-	rowEntries = make([]format.RowIndexEntry, 0, boundedCap(c.rowCount, format.RowIndexEntrySize))
-	var rowCount uint64
 
-	cur := c.blocksStart
-	for cur < c.blocksEnd {
+	// First pass: block headers only, collecting the index entries (few —
+	// per flushed block, not per row) plus the exact block and row counts
+	// the snapshot entry needs (row counts sum the headers' ItemCount, so
+	// they are derived from the data like the old implementation, not from
+	// the untrusted footer).
+	blockEntries := make([]format.BlockIndexEntry, 0, boundedCap(uint64(c.blockCount), format.BlockIndexEntrySize))
+	blockKinds := make([]format.BlockKind, 0, cap(blockEntries))
+	var rowCount uint64
+	for cur := c.blocksStart; cur < c.blocksEnd; {
 		var bhBuf [format.BlockHeaderSize]byte
 		if _, err := s.data.ReadAt(bhBuf[:], cur); err != nil {
 			return nil, err
@@ -446,51 +453,9 @@ func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
 			ItemCount:   bh.ItemCount,
 			RawCRC32C:   bh.RawCRC32C,
 		})
-		switch bh.BlockKind {
-		case format.BlockKindRows:
-			// Rebuild the row index from the page container stream: iterate
-			// every record (decompressing one page at a time) and emit the
-			// RowID/ChangeType each record carries. The whole block is never
-			// decompressed at once, so the rebuild peak stays bounded.
-			rc, err := s.loader.LoadRows(cur, bh.BlockID)
-			if err != nil {
-				return nil, err
-			}
-			// ItemOrdinal is the record's position inside its own block (that is what
-			// RowsContainer.RecordAt/PageFor resolve), so the counter restarts per
-			// block. A snapshot spanning more than one rows block must not carry a
-			// running total across blocks.
-			var ordinal uint32
-			err = rc.ForEach(func(rec codec.PageRecord) error {
-				rowEntries = append(rowEntries, format.RowIndexEntry{
-					SnapshotID: bh.SnapshotID, TableID: bh.TableID,
-					ChangeType: rec.ChangeType, RowID: rec.RowID,
-					BlockID: bh.BlockID, ItemOrdinal: ordinal,
-				})
-				ordinal++
-				rowCount++
-				return nil
-			})
-			if err != nil {
-				return nil, err
-			}
-		case format.BlockKindMetadata:
-			blk, err := s.loader.Load(cur, bh.BlockID)
-			if err != nil {
-				return nil, err
-			}
-			mp, err := metadata.Parse(blk.Raw)
-			if err != nil {
-				return nil, err
-			}
-			for i := range mp.Entries {
-				metaEntries = append(metaEntries, format.MetadataIndexEntry{
-					SnapshotID: bh.SnapshotID, ObjectID: mp.Entries[i].ObjectID,
-					Revision: mp.Entries[i].Revision, RecordType: mp.Entries[i].RecordType,
-					BlockID: bh.BlockID, ItemOrdinal: uint32(i),
-					Operation: mp.Entries[i].Operation, Critical: mp.Entries[i].Critical,
-				})
-			}
+		blockKinds = append(blockKinds, bh.BlockKind)
+		if bh.BlockKind == format.BlockKindRows {
+			rowCount += uint64(bh.ItemCount)
 		}
 		cur += format.BlockHeaderSize + int64(bh.StoredSize)
 	}
@@ -504,8 +469,7 @@ func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
 		return nil, err
 	}
 
-	builder := index.NewBuilder(0) // sequence filled by the writer on commit
-	builder.Reserve(len(metaEntries), len(blockEntries), len(rowEntries))
+	ap := index.NewRebuildSink(view, maxDepth, boundedCap(c.rowCount, 1))
 	snapEntry := format.SnapshotIndexEntry{
 		SnapshotID:       sh.SnapshotID,
 		ParentSnapshotID: sh.ParentSnapshotID,
@@ -517,30 +481,104 @@ func (s *Store) rebuildIndex(c *committedSnapshot) (*index.Txn, error) {
 		DataEnd:          uint64(c.end),
 		DataFooterCRC32C: c.footerCRC,
 	}
-	if err := builder.SetSnapshot(snapEntry); err != nil {
+	if err := ap.SetSnapshot(snapEntry); err != nil {
 		return nil, err
 	}
 	for i := range blockEntries {
-		if err := builder.AddBlock(blockEntries[i]); err != nil {
+		if err := ap.AddBlock(blockEntries[i]); err != nil {
 			return nil, err
 		}
 	}
-	for i := range metaEntries {
-		if err := builder.AddMetadata(metaEntries[i]); err != nil {
+
+	// Second pass: collect the row records into a compact 24 B/row form
+	// (field order minimizes padding), sort by (TableID, RowID) and feed the
+	// sink. Sorting is required, not an optimization: the rebuild stream
+	// follows the blocks' physical record order, where RowIDs are caller-
+	// chosen and may be arbitrary, while the shard builder (like every
+	// streaming path) requires strictly ascending RowIDs per table — the
+	// writer's own Builder.buildPages sorts the same way before persisting
+	// an IndexTxn. The compact form keeps the intermediate well below the
+	// old []RowIndexEntry (40 B/row) plus Apply's RowKeyLoc copies (32
+	// B/row): the rebuild peak is now this slice plus the resident shards.
+	// ItemOrdinal is the record's position inside its own block (that is
+	// what RowsContainer.RecordAt/PageFor resolve), so the counter restarts
+	// per block.
+	type rebuildRow struct {
+		tableID uint32
+		ordinal uint32
+		change  uint8
+		rowID   uint64
+		blockID uint64
+	}
+	rows := make([]rebuildRow, 0, boundedCap(rowCount, 24))
+	for i := range blockEntries {
+		if blockKinds[i] != format.BlockKindRows {
+			continue
+		}
+		bh := blockEntries[i]
+		rc, err := s.loader.LoadRows(int64(bh.DataOffset), bh.BlockID)
+		if err != nil {
+			return nil, err
+		}
+		var ordinal uint32
+		err = rc.ForEach(func(rec codec.PageRecord) error {
+			rows = append(rows, rebuildRow{
+				tableID: bh.TableID, ordinal: ordinal, change: uint8(rec.ChangeType),
+				rowID: rec.RowID, blockID: bh.BlockID,
+			})
+			ordinal++
+			return nil
+		})
+		if err != nil {
 			return nil, err
 		}
 	}
-	for i := range rowEntries {
-		if err := builder.AddRow(rowEntries[i]); err != nil {
+	slices.SortFunc(rows, func(a, b rebuildRow) int {
+		if c := cmp.Compare(a.tableID, b.tableID); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.rowID, b.rowID)
+	})
+	for i := range rows {
+		r := &rows[i]
+		if err := ap.AddRowEntry(format.RowIndexEntry{
+			SnapshotID: sh.SnapshotID, TableID: r.tableID,
+			ChangeType: format.ChangeType(r.change), RowID: r.rowID,
+			BlockID: r.blockID, ItemOrdinal: r.ordinal,
+		}); err != nil {
 			return nil, err
 		}
 	}
-	_, txn, err := builder.Build(index.BodyBounds{
-		DataStart: uint64(c.start), DataEnd: uint64(c.end),
-		TxnStart: c.txnStart, TxnEnd: c.txnEnd,
-	}, c.footerCRC)
+
+	// Metadata blocks are few (per flushed block): load and feed directly.
+	for i := range blockEntries {
+		if blockKinds[i] != format.BlockKindMetadata {
+			continue
+		}
+		bh := blockEntries[i]
+		blk, err := s.loader.Load(int64(bh.DataOffset), bh.BlockID)
+		if err != nil {
+			return nil, err
+		}
+		mp, err := metadata.Parse(blk.Raw)
+		if err != nil {
+			return nil, err
+		}
+		for j := range mp.Entries {
+			if err := ap.AddMetadata(format.MetadataIndexEntry{
+				SnapshotID: bh.SnapshotID, ObjectID: mp.Entries[j].ObjectID,
+				Revision: mp.Entries[j].Revision, RecordType: mp.Entries[j].RecordType,
+				BlockID: bh.BlockID, ItemOrdinal: uint32(j),
+				Operation: mp.Entries[j].Operation, Critical: mp.Entries[j].Critical,
+			}); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	nv, err := ap.FinishView()
 	if err != nil {
 		return nil, err
 	}
-	return txn, nil
+	return nv, nil
 }

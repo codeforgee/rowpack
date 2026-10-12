@@ -235,9 +235,9 @@ func TestRebuildBoundsHugeFooterCounts(t *testing.T) {
 
 // TestRebuildChainInvalidAfterParentForge: a committed DELTA whose IndexTxn
 // is corrupt falls back to the block rebuild; if its snapshot header has been
-// forged to claim a parent that was never committed, the rebuilt txn fails
-// Apply and open must refuse with "chain invalid after rebuild" instead of
-// silently grafting the snapshot onto the wrong parent.
+// forged to claim a parent that was never committed, the rebuilt snapshot
+// fails the sink's chain validation (the same check Apply runs) and open
+// refuses instead of silently grafting the snapshot onto the wrong parent.
 func TestRebuildChainInvalidAfterParentForge(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "chainforge")
 	db, err := Create(base, Options{BlockSize: 1024})
@@ -261,5 +261,6 @@ func TestRebuildChainInvalidAfterParentForge(t *testing.T) {
 	writeFileSpan(t, base, last.start, hdr)
 
 	_, err = Open(base, Options{BlockSize: 1024})
-	require.ErrorContains(t, err, "chain invalid after rebuild")
+	require.ErrorContains(t, err, "rebuild snapshot 2")
+	require.ErrorContains(t, err, "parent 999 not committed")
 }

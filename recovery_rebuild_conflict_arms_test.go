@@ -133,7 +133,7 @@ func TestRebuildRejectsBlockFromAnotherSnapshot(t *testing.T) {
 			patchBlockHeaderSnapshotID(t, f, offs[0], c.snapshotID+1000)
 		})
 	require.ErrorContains(t, err, "rebuild snapshot")
-	require.ErrorContains(t, err, "block entry snapshot mismatch")
+	require.ErrorContains(t, err, "block 1 belongs to snapshot")
 }
 
 // TestRebuildRejectsDuplicateRowAcrossBlocks: one snapshot, one (table, row).
@@ -149,7 +149,7 @@ func TestRebuildRejectsDuplicateRowAcrossBlocks(t *testing.T) {
 			cloneBlockOver(t, f, src, dst)
 		})
 	require.ErrorContains(t, err, "rebuild snapshot")
-	require.ErrorContains(t, err, "duplicate (table")
+	require.ErrorContains(t, err, "duplicate row")
 }
 
 // TestRebuildRejectsUnusableSnapshotType: the snapshot entry is rebuilt from the

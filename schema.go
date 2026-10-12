@@ -295,11 +295,17 @@ func (s *Store) deriveTables(view *index.View, snapshot uint64, memo map[metaRec
 		return nil
 	}
 	// Walk from the snapshot up to its FULL ancestor.
-	if sm := view.Snapshot(snapshot); sm != nil {
-		for _, snap := range sm.Chain() {
-			if err := walk(snap); err != nil {
-				return nil, err
+	if view.Snapshot(snapshot) != nil {
+		var werr error
+		view.WalkChain(snapshot, func(cur uint64) bool {
+			if err := walk(cur); err != nil {
+				werr = err
+				return false
 			}
+			return true
+		})
+		if werr != nil {
+			return nil, werr
 		}
 	}
 	for _, ts := range result {
@@ -478,33 +484,47 @@ type metaRecKey struct {
 // file via its index location, resolving along the parent chain. An optional
 // memo avoids decoding the same physical record repeatedly.
 func (s *Store) readMetadataCached(view *index.View, snapshot, objectID uint64, memo map[metaRecKey]*metadata.Record) (*metadata.Record, error) {
-	sm := view.Snapshot(snapshot)
-	if sm == nil {
+	if view.Snapshot(snapshot) == nil {
 		return nil, fmt.Errorf("%w: metadata object %d in snapshot %d", ErrNotFound, objectID, snapshot)
 	}
-	for _, cur := range sm.Chain() {
+	var (
+		rec  *metadata.Record
+		werr error
+	)
+	view.WalkChain(snapshot, func(cur uint64) bool {
 		loc := view.Metadata(cur, objectID)
 		if loc == nil {
-			continue
+			return true
 		}
 		if loc.Operation == format.OperationDelete {
-			return nil, fmt.Errorf("%w: metadata object %d deleted", ErrNotFound, objectID)
+			werr = fmt.Errorf("%w: metadata object %d deleted", ErrNotFound, objectID)
+			return false
 		}
 		if memo != nil {
 			key := metaRecKey{blockID: loc.BlockID, ordinal: loc.ItemOrdinal}
-			if rec, ok := memo[key]; ok {
-				return rec, nil
+			if cached, ok := memo[key]; ok {
+				rec = cached
+				return false
 			}
-			rec, err := s.decodeRecord(view, loc, objectID)
+			decoded, err := s.decodeRecord(view, loc, objectID)
 			if err != nil {
-				return nil, err
+				werr = err
+				return false
 			}
-			memo[key] = rec
-			return rec, nil
+			memo[key] = decoded
+			rec = decoded
+			return false
 		}
-		return s.decodeRecord(view, loc, objectID)
+		rec, werr = s.decodeRecord(view, loc, objectID)
+		return false
+	})
+	if werr != nil {
+		return nil, werr
 	}
-	return nil, fmt.Errorf("%w: metadata object %d in snapshot %d", ErrNotFound, objectID, snapshot)
+	if rec == nil {
+		return nil, fmt.Errorf("%w: metadata object %d in snapshot %d", ErrNotFound, objectID, snapshot)
+	}
+	return rec, nil
 }
 
 // decodeRecord loads, parses and decodes the metadata record at loc.

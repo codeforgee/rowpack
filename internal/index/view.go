@@ -29,24 +29,22 @@ type SnapshotMeta struct {
 	DataEnd            uint64
 	DataFooterCRC      uint32
 	Depth              uint32 // chain depth; FULL has depth 1
-
-	// chain is the ancestor chain, target first: [ID, Parent, ..., FULL
-	// root]. Precomputed at Apply time (the parent chain is validated there),
-	// so every chain-resolving read — row lookup, schema derivation, meta
-	// inheritance — iterates a slice instead of re-walking Parent links.
-	// Read-only: never mutated after Apply.
-	chain []uint64
 }
 
-// Chain returns the snapshot's ancestor chain, target first: [ID, Parent,
-// ..., FULL root]. The returned slice is shared immutable state; callers must
-// not modify it. A meta built outside Apply (tests) falls back to itself as
-// the only layer.
-func (m *SnapshotMeta) Chain() []uint64 {
-	if m.chain == nil {
-		return []uint64{m.ID}
+// WalkChain visits snap's ancestor chain, target first (snap, parent, ...,
+// FULL root), calling fn for each snapshot ID in order until fn returns
+// false. The walk is lazy — it follows Parent links through the view, one
+// map probe per layer — replacing the precomputed per-snapshot chain slices
+// that cost O(depth²) total storage across a long DELTA chain. Ancestors are
+// validated at Apply time, so the walk cannot hit a missing parent.
+func (v *View) WalkChain(snap uint64, fn func(cur uint64) bool) {
+	sm := v.snapshots[snap]
+	for sm != nil {
+		if !fn(sm.ID) {
+			return
+		}
+		sm = v.snapshots[sm.Parent]
 	}
-	return m.chain
 }
 
 // BlockLoc locates a block in the .rpk data file.
@@ -497,14 +495,11 @@ func (v *View) PackProfile() PackProfile {
 }
 
 // ResolveRow finds the row location for (snapshot, table, rowID) along the
-// parent chain.
+// parent chain. The walk is lazy (WalkChain): each layer costs one snapshots
+// probe plus v.Row's own probes, with no per-snapshot chain storage.
 func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool) {
-	sm := v.snapshots[snapshot]
-	if sm == nil {
-		return RowLoc{}, false
-	}
-	for _, cur := range sm.chain {
-		if loc, ok := v.Row(cur, table, rowID); ok {
+	for sm := v.snapshots[snapshot]; sm != nil; sm = v.snapshots[sm.Parent] {
+		if loc, ok := v.Row(sm.ID, table, rowID); ok {
 			return loc, true
 		}
 	}
@@ -515,13 +510,9 @@ func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, 
 // table after resolving overrides and tombstones along the parent chain. It
 // merges the per-layer sorted incremental indexes without reading blocks.
 func (v *View) LogicalRowCount(snapshot uint64, table uint32) uint64 {
-	sm := v.snapshots[snapshot]
-	if sm == nil {
-		return 0
-	}
-	layers := make([]*RowKeyIter, 0, len(sm.chain))
-	for _, cur := range sm.chain {
-		if keys := v.RowIter(cur, table); keys != nil && keys.Len() > 0 {
+	layers := make([]*RowKeyIter, 0, 4)
+	for sm := v.snapshots[snapshot]; sm != nil; sm = v.snapshots[sm.Parent] {
+		if keys := v.RowIter(sm.ID, table); keys != nil && keys.Len() > 0 {
 			layers = append(layers, keys)
 		}
 	}
@@ -598,7 +589,6 @@ func (v *View) beginApply(se format.SnapshotIndexEntry, maxDepth uint32) (*View,
 		return nil, nil, fmt.Errorf("rowpack: snapshot %d already committed", se.SnapshotID)
 	}
 	depth := uint32(1)
-	var chain []uint64
 	if se.SnapshotType == format.SnapshotDelta {
 		parent := v.snapshots[se.ParentSnapshotID]
 		if parent == nil {
@@ -611,13 +601,8 @@ func (v *View) beginApply(se format.SnapshotIndexEntry, maxDepth uint32) (*View,
 		if depth > maxDepth {
 			return nil, nil, fmt.Errorf("rowpack: snapshot %d depth %d exceeds limit %d", se.SnapshotID, depth, maxDepth)
 		}
-		chain = make([]uint64, 0, len(parent.chain)+1)
-		chain = append(chain, se.SnapshotID)
-		chain = append(chain, parent.chain...)
 	} else if se.SnapshotType != format.SnapshotFull {
 		return nil, nil, fmt.Errorf("rowpack: snapshot %d bad type %d", se.SnapshotID, se.SnapshotType)
-	} else {
-		chain = []uint64{se.SnapshotID}
 	}
 	if se.ParentSnapshotID != 0 && se.SnapshotType == format.SnapshotFull {
 		return nil, nil, fmt.Errorf("rowpack: FULL snapshot %d has parent %d", se.SnapshotID, se.ParentSnapshotID)
@@ -633,7 +618,6 @@ func (v *View) beginApply(se format.SnapshotIndexEntry, maxDepth uint32) (*View,
 		DataEnd:           se.DataEnd,
 		DataFooterCRC:     se.DataFooterCRC32C,
 		Depth:             depth,
-		chain:             chain,
 	}
 	nv.snapshots[se.SnapshotID] = meta
 	return nv, meta, nil

@@ -178,10 +178,10 @@ func (s *Store) scanLocked(ctx context.Context, snapshot SnapshotID, table strin
 	}
 	view := rc.st.view
 	// Build the parent chain layers (target snapshot first); the merge
-	// iterator dedups by RowID with the shallowest layer winning.
-	sm := view.Snapshot(uint64(snapshot))
-	layers := make([]*index.RowKeyIter, 0, len(sm.Chain()))
-	for _, cur := range sm.Chain() {
+	// iterator dedups by RowID with the shallowest layer winning. The chain
+	// walk is lazy (one probe per layer, no per-snapshot chain storage).
+	layers := make([]*index.RowKeyIter, 0, 4)
+	view.WalkChain(uint64(snapshot), func(cur uint64) bool {
 		keys := view.RowIter(cur, uint32(rc.tid))
 		if keys != nil && keys.Len() > 0 {
 			if opts.Start > 0 {
@@ -189,7 +189,8 @@ func (s *Store) scanLocked(ctx context.Context, snapshot SnapshotID, table strin
 			}
 			layers = append(layers, keys)
 		}
-	}
+		return true
+	})
 	it := &Iterator{store: s, state: rc.st, ctx: ctx, snapshot: snapshot, table: rc.tid, opts: opts, mode: scanModeMerge, merge: index.NewMergeIter(layers...), readHeld: true}
 	// Pre-bind the string-arena sink once (a method value allocated per
 	// expression evaluation would otherwise cost one allocation per Next).

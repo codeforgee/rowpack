@@ -218,12 +218,13 @@ func (s *Store) Tables(ctx context.Context, snapshot SnapshotID) ([]Table, error
 	// Gather candidates strictly along the target's parent chain. tableRecord
 	// below resolves deletes/overrides on that same chain.
 	seen := make(map[TableID]bool)
-	sm := st.view.Snapshot(uint64(snapshot)) // validated above
-	for _, cur := range sm.Chain() {
-		for _, oid := range st.view.MetadataByType(cur, uint32(format.RecordTable)) {
+	view := st.view
+	view.WalkChain(uint64(snapshot), func(cur uint64) bool {
+		for _, oid := range view.MetadataByType(cur, uint32(format.RecordTable)) {
 			seen[TableID(oid)] = true
 		}
-	}
+		return true
+	})
 	out := make([]Table, 0, len(seen))
 	for tid := range seen {
 		rec, err := s.tableRecord(st.view, snapshot, uint64(tid))
@@ -261,14 +262,32 @@ func (s *Store) TablesIn(ctx context.Context, snapshot SnapshotID, ns string) ([
 
 // tableRecord returns the Table metadata record visible at a snapshot.
 func (s *Store) tableRecord(view *index.View, snapshot uint64, tableOID uint64) (*metadata.Record, error) {
-	sm := view.Snapshot(snapshot)
-	if sm == nil {
+	if view.Snapshot(snapshot) == nil {
 		return nil, fmt.Errorf("%w: table object %d", ErrNotFound, tableOID)
 	}
-	for _, cur := range sm.Chain() {
-		if loc := view.Metadata(cur, tableOID); loc != nil {
-			return s.readMetadataCached(view, cur, tableOID, nil)
+	var (
+		rec *metadata.Record
+		wrr error
+	)
+	// Nearest ancestor holding the object wins; a delete tombstone hides it
+	// from deeper layers, exactly like readMetadataCached's chain walk.
+	view.WalkChain(snapshot, func(cur uint64) bool {
+		loc := view.Metadata(cur, tableOID)
+		if loc == nil {
+			return true
 		}
+		if loc.Operation == format.OperationDelete {
+			wrr = fmt.Errorf("%w: table object %d deleted", ErrNotFound, tableOID)
+			return false
+		}
+		rec, wrr = s.readMetadataCached(view, cur, tableOID, nil)
+		return false
+	})
+	if wrr != nil {
+		return nil, wrr
 	}
-	return nil, fmt.Errorf("%w: table object %d", ErrNotFound, tableOID)
+	if rec == nil {
+		return nil, fmt.Errorf("%w: table object %d", ErrNotFound, tableOID)
+	}
+	return rec, nil
 }

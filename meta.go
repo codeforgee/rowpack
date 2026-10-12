@@ -59,17 +59,19 @@ func (s *Store) Meta(ctx context.Context, snap SnapshotID) ([]byte, error) {
 // highest BlockID decides, so the answer stays a function of the committed
 // bytes rather than of Go map iteration order.
 func metaBlockLoc(view *index.View, snap SnapshotID) *index.BlockLoc {
-	// chain lists the snapshots allowed to answer, nearest first; a layer's
-	// chain position is its inheritance depth.
-	chain := view.Snapshot(uint64(snap)).Chain() // validated by Meta
-	depthOf := make(map[uint64]int, len(chain))
-	for i, id := range chain {
-		depthOf[id] = i
-	}
+	// depthOf lists the snapshots allowed to answer with their chain depth
+	// (nearest ancestor = 0), built by one lazy walk of the parent chain.
+	depthOf := make(map[uint64]int, 8)
+	depth := 0
+	view.WalkChain(uint64(snap), func(cur uint64) bool {
+		depthOf[cur] = depth
+		depth++
+		return true
+	})
 	// One traversal of the block list, not one per layer: a deep chain stays
 	// O(blocks + depth) instead of O(blocks × depth).
 	var best *index.BlockLoc
-	bestDepth := len(chain)
+	bestDepth := depth
 	for _, bl := range view.Blocks() {
 		if bl.Kind != format.BlockKindSnapshotMeta {
 			continue

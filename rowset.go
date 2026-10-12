@@ -66,10 +66,11 @@ func (s *rowIDSet) Insert(rowID uint64) {
 // Len returns the number of stored RowIDs.
 func (s *rowIDSet) Len() int { return s.count }
 
-// rehash grows the slot slice to twice its size (or the initial capacity)
-// and reinserts every live entry.
+// rehash grows the slot slice (4x — halves the number of full rehash passes
+// a large load pays versus doubling, at the cost of ≤2x transient slack on
+// the final growth) and reinserts every live entry.
 func (s *rowIDSet) rehash() {
-	newCap := len(s.slots) * 2
+	newCap := len(s.slots) * 4
 	if newCap == 0 {
 		newCap = rowIDSetInitialCap
 	}

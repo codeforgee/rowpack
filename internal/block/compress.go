@@ -24,7 +24,8 @@ func DefaultLimits() Limits {
 }
 
 // Compress encodes src with the given algorithm. Zstd output is a complete
-// independent frame (no dictionary) and is deterministic for a fixed level.
+// independent frame (no dictionary, no frame checksum) and is deterministic
+// for a fixed level and encoder configuration.
 func Compress(alg format.Compression, level int, src []byte) ([]byte, error) {
 	switch alg {
 	case format.CompressionNone:
@@ -115,10 +116,14 @@ func poolForLevel(level int) *sync.Pool {
 		return p
 	}
 	p := &sync.Pool{New: func() any {
-		// Single-goroutine, CRC-enabled encoding for deterministic output.
+		// Single-goroutine, CRC-free encoding for deterministic output. The
+		// zstd frame checksum is redundant here: every page and block payload
+		// is already CRC32C-protected (hardware-accelerated) by the format
+		// itself, and the frame checksum would make writers hash all input
+		// and readers verify it again on every decompress.
 		e, err := zstd.NewWriter(nil,
 			zstd.WithEncoderConcurrency(1),
-			zstd.WithEncoderCRC(true),
+			zstd.WithEncoderCRC(false),
 			zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)))
 		if err != nil {
 			panic(err)
@@ -134,7 +139,8 @@ func poolForLevel(level int) *sync.Pool {
 type ZstdEncoder = zstd.Encoder
 
 // NewZstdEncoder builds a reusable zstd encoder configured like the pooled
-// ones (single-goroutine, CRC-enabled deterministic output). Callers that own
+// ones (single-goroutine, CRC-free deterministic output — the format's own
+// page/block CRC32C covers integrity; see poolForLevel). Callers that own
 // a store-level encoder (one writer per store) pass it to block builders via
 // SetZstdEncoder, which keeps the ~1 MiB histogram alive across block flushes
 // even when GC cycles clear the sync.Pool. The encoder is safe for EncodeAll
@@ -144,7 +150,7 @@ type ZstdEncoder = zstd.Encoder
 func NewZstdEncoder(level int) *ZstdEncoder {
 	e, err := zstd.NewWriter(nil,
 		zstd.WithEncoderConcurrency(1),
-		zstd.WithEncoderCRC(true),
+		zstd.WithEncoderCRC(false),
 		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)))
 	if err != nil {
 		panic(err)

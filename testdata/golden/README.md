@@ -17,7 +17,15 @@
 这里不再静态列出样本的 SHA-256：摘要就是文件内容本身的函数，真正的锁定在测试侧
 （`TestGoldenManifest`），再抄一份到文档只会多一处必须同步、又不同步也不会报错的地方。
 
-最近一次变更：**不是格式变更**，但重写了两个 Store 样本——`applyDefaults` 漏了解析
+最近一次变更：**不是格式变更**。zstd encoder 关闭帧内容校验（`WithEncoderCRC(false)`）：
+帧校验对整个输入做 xxhash、读端再自动验证一遍，与格式自带的页级/块级 CRC32C（硬件指令）
+完全重叠，属于写+读双份的纯冗余 CPU。klauspost 解码器只在帧带 checksum 时才验证，
+因此新旧样本双向可读，字节布局、版本号、AAD 字段集合全部未动，**不提升格式版本**。
+证据是未压缩的 `empty-store.rpk` 与 `rows-payload-all-types.bin` 字节零变化，只有压缩样本
+每页少 4 B 帧校验：`full-delta-store.rpk` 4511→4459 B、`encrypted-store.rpk` 1976→1964 B。
+收益实测：`BenchmarkWriteFull` 提速、`BenchmarkGetCold` 提速（见提交说明）。
+
+上一次变更：**不是格式变更**，但重写了两个 Store 样本——`applyDefaults` 漏了解析
 `CompressionLevel`，零值一路泄漏到 `EncoderLevelFromZstd(0)`，而 `DefaultCompressionLvl = 3`
 这个常量全仓库从未被接线过。补上解析后默认档位从 0 变 9。字节布局、版本号、AAD 字段集合
 全部未动，zstd 帧格式与解压也不依赖压缩级别，因此新旧库双向可读，**不提升格式版本**。

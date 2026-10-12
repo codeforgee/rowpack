@@ -29,21 +29,24 @@ type SnapshotMeta struct {
 	DataEnd            uint64
 	DataFooterCRC      uint32
 	Depth              uint32 // chain depth; FULL has depth 1
+
+	// parentMeta is the direct link to the parent's meta, set once at Apply
+	// (nil for FULL). It makes chain walks a pointer chase — no per-layer map
+	// probe — while keeping storage O(depth) per view instead of the O(depth²)
+	// of precomputed per-snapshot chain slices.
+	parentMeta *SnapshotMeta
 }
 
 // WalkChain visits snap's ancestor chain, target first (snap, parent, ...,
 // FULL root), calling fn for each snapshot ID in order until fn returns
-// false. The walk is lazy — it follows Parent links through the view, one
-// map probe per layer — replacing the precomputed per-snapshot chain slices
-// that cost O(depth²) total storage across a long DELTA chain. Ancestors are
-// validated at Apply time, so the walk cannot hit a missing parent.
+// false. It chases the parentMeta links installed at Apply; ancestors are
+// validated there, so the walk cannot hit a missing parent. Hot paths that
+// need the lowest overhead iterate the links directly (see ResolveRow).
 func (v *View) WalkChain(snap uint64, fn func(cur uint64) bool) {
-	sm := v.snapshots[snap]
-	for sm != nil {
+	for sm := v.snapshots[snap]; sm != nil; sm = sm.parentMeta {
 		if !fn(sm.ID) {
 			return
 		}
-		sm = v.snapshots[sm.Parent]
 	}
 }
 
@@ -503,7 +506,7 @@ func (v *View) PackProfile() PackProfile {
 // parent chain. The walk is lazy (WalkChain): each layer costs one snapshots
 // probe plus v.Row's own probes, with no per-snapshot chain storage.
 func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, bool) {
-	for sm := v.snapshots[snapshot]; sm != nil; sm = v.snapshots[sm.Parent] {
+	for sm := v.snapshots[snapshot]; sm != nil; sm = sm.parentMeta {
 		if loc, ok := v.Row(sm.ID, table, rowID); ok {
 			return loc, true
 		}
@@ -516,7 +519,7 @@ func (v *View) ResolveRow(snapshot uint64, table uint32, rowID uint64) (RowLoc, 
 // merges the per-layer sorted incremental indexes without reading blocks.
 func (v *View) LogicalRowCount(snapshot uint64, table uint32) uint64 {
 	layers := make([]*RowKeyIter, 0, 4)
-	for sm := v.snapshots[snapshot]; sm != nil; sm = v.snapshots[sm.Parent] {
+	for sm := v.snapshots[snapshot]; sm != nil; sm = sm.parentMeta {
 		if keys := v.RowIter(sm.ID, table); keys != nil && keys.Len() > 0 {
 			layers = append(layers, keys)
 		}
@@ -594,15 +597,16 @@ func (v *View) beginApply(se format.SnapshotIndexEntry, maxDepth uint32) (*View,
 		return nil, nil, fmt.Errorf("rowpack: snapshot %d already committed", se.SnapshotID)
 	}
 	depth := uint32(1)
+	var parentMeta *SnapshotMeta
 	if se.SnapshotType == format.SnapshotDelta {
-		parent := v.snapshots[se.ParentSnapshotID]
-		if parent == nil {
+		parentMeta = v.snapshots[se.ParentSnapshotID]
+		if parentMeta == nil {
 			return nil, nil, fmt.Errorf("rowpack: DELTA snapshot %d parent %d not committed", se.SnapshotID, se.ParentSnapshotID)
 		}
 		if se.ParentSnapshotID >= se.SnapshotID {
 			return nil, nil, fmt.Errorf("rowpack: DELTA snapshot %d parent %d not smaller", se.SnapshotID, se.ParentSnapshotID)
 		}
-		depth = parent.Depth + 1
+		depth = parentMeta.Depth + 1
 		if depth > maxDepth {
 			return nil, nil, fmt.Errorf("rowpack: snapshot %d depth %d exceeds limit %d", se.SnapshotID, depth, maxDepth)
 		}
@@ -623,6 +627,7 @@ func (v *View) beginApply(se format.SnapshotIndexEntry, maxDepth uint32) (*View,
 		DataEnd:           se.DataEnd,
 		DataFooterCRC:     se.DataFooterCRC32C,
 		Depth:             depth,
+		parentMeta:        parentMeta,
 	}
 	nv.snapshots[se.SnapshotID] = meta
 	return nv, meta, nil

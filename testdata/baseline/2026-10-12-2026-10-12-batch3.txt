@@ -1,0 +1,106 @@
+# RowPack 性能基线
+# date: 2026-10-12T13:58:28Z
+# mode: quick  (make bench-quick)
+# git: 9398af0
+# go: go version go1.27.2 darwin/arm64
+# os/arch: darwin/arm64
+# cpu: Apple M1 Pro
+# mem: 16 GiB
+# zstd: v1.20.1
+# format: v1 single-file (Magic ROWPACK1, Major 1)
+# config: BlockSize 256K / PageSize 32K / Zstd default / mmap / SyncCommit
+# benchtime: 3x  count: 1
+# rows: 100000  rows1m: 1000000
+# command: make bench-quick BENCHTIME=3x BENCHCOUNT=1
+# json: {"ts":"2026-10-12T13:58:28Z","mode":"quick","git":"9398af0","go":"go1.27.2","os":"darwin","arch":"arm64","cpu":"Apple M1 Pro","mem":"16 GiB","zstd":"v1.20.1","format":"v1","magic":"ROWPACK1","benchtime":"3x","count":1,"rows":100000,"rows1m":1000000}
+
+mkdir -p bench
+ROWPACK_BENCH_ROWS=20000 ROWPACK_BENCH_ROWS1M=200000 \
+		go test -run '^$' -bench 'Benchmark(Env|MainMatrix|Latency|WriteFull|GetHot|GetCold|GetColdUnpooled|Scan|ReadBatch(Into)?1000|GetLoop1000|OpenReplay|DeepChainGet|EncryptedWrite|EncryptedGetHot)$' -benchmem -benchtime=3x -count=1 . 2>&1 | tee bench/results-quick.txt
+goos: darwin
+goarch: arm64
+pkg: github.com/codeforgee/rowpack
+cpu: Apple M1 Pro
+BenchmarkMainMatrix/get_hot/bs=64K/io=mmap-8         	       3	       819.3 ns/op	        12.39 bytePerRow	         0.2394 dataMB	        98.20 hitpct	         0.06818 idxMB	      1221 kget/s	         0.2121 ratio	        20.75 rssdMB	      16 B/op	       2 allocs/op
+BenchmarkMainMatrix/get_hot_into/bs=64K/io=mmap-8    	       3	       750.0 ns/op	        12.39 bytePerRow	         0.2394 dataMB	        98.20 hitpct	         0.06818 idxMB	      1333 kget/s	         0.2121 ratio	        34.02 rssdMB	      16 B/op	       2 allocs/op
+BenchmarkMainMatrix/get_cold/bs=64K/io=mmap-8        	       3	     53111 ns/op	        12.39 bytePerRow	         0.2394 dataMB	         0.06818 idxMB	        18.83 kget/s	         0.2121 ratio	         0.5000 rssdMB	   44160 B/op	      14 allocs/op
+BenchmarkMainMatrix/scan/bs=64K/cache=hot/io=mmap-8  	       3	   1823264 ns/op	        12.39 bytePerRow	         0.2394 dataMB	         7.143 hitpct	         0.06818 idxMB	     10969 krows/s	         0.2121 ratio	         0.5156 rssdMB	        80.00 scanhitpct	  328696 B/op	      24 allocs/op
+BenchmarkMainMatrix/scan/bs=64K/cache=cold/io=mmap-8 	       3	   3358917 ns/op	        12.39 bytePerRow	         0.2394 dataMB	         0.06818 idxMB	      5954 krows/s	         0.2121 ratio	         0.09375 rssdMB	 1804376 B/op	     294 allocs/op
+BenchmarkMainMatrix/get_hot/bs=256K/io=mmap-8        	       3	       652.7 ns/op	        12.38 bytePerRow	         0.2380 dataMB	        98.20 hitpct	         0.07078 idxMB	      1532 kget/s	         0.2119 ratio	         0.2812 rssdMB	      16 B/op	       2 allocs/op
+BenchmarkMainMatrix/get_hot_into/bs=256K/io=mmap-8   	       3	       708.3 ns/op	        12.38 bytePerRow	         0.2380 dataMB	        98.20 hitpct	         0.07078 idxMB	      1412 kget/s	         0.2119 ratio	         0.04688 rssdMB	      16 B/op	       2 allocs/op
+BenchmarkMainMatrix/get_cold/bs=256K/io=mmap-8       	       3	     47486 ns/op	        12.38 bytePerRow	         0.2380 dataMB	         0.07078 idxMB	        21.06 kget/s	         0.2119 ratio	         0.06250 rssdMB	   44496 B/op	      14 allocs/op
+BenchmarkMainMatrix/scan/bs=256K/cache=hot/io=mmap-8 	       3	   1819347 ns/op	        12.38 bytePerRow	         0.2380 dataMB	        21.21 hitpct	         0.07078 idxMB	     10993 krows/s	         0.2119 ratio	         0.2812 rssdMB	        80.00 scanhitpct	  328696 B/op	      24 allocs/op
+BenchmarkMainMatrix/scan/bs=256K/cache=cold/io=mmap-8         	       3	   3466000 ns/op	        12.38 bytePerRow	         0.2380 dataMB	         0.07078 idxMB	      5770 krows/s	         0.2119 ratio	         0.03125 rssdMB	 1798552 B/op	     203 allocs/op
+BenchmarkMainMatrix/get_hot/bs=1M/io=mmap-8                   	       3	       680.3 ns/op	        12.38 bytePerRow	         0.2377 dataMB	        98.20 hitpct	         0.07452 idxMB	      1470 kget/s	         0.2118 ratio	         0.2188 rssdMB	      16 B/op	       2 allocs/op
+BenchmarkMainMatrix/get_hot_into/bs=1M/io=mmap-8              	       3	       625.0 ns/op	        12.38 bytePerRow	         0.2377 dataMB	        98.20 hitpct	         0.07452 idxMB	      1600 kget/s	         0.2118 ratio	         0 rssdMB	      16 B/op	       2 allocs/op
+BenchmarkMainMatrix/get_cold/bs=1M/io=mmap-8                  	       3	     49014 ns/op	        12.38 bytePerRow	         0.2377 dataMB	         0.07452 idxMB	        20.40 kget/s	         0.2118 ratio	         0.03125 rssdMB	   45840 B/op	      14 allocs/op
+BenchmarkMainMatrix/scan/bs=1M/cache=hot/io=mmap-8            	       3	   1836653 ns/op	        12.38 bytePerRow	         0.2377 dataMB	        38.89 hitpct	         0.07452 idxMB	     10889 krows/s	         0.2118 ratio	         0.6875 rssdMB	        80.00 scanhitpct	  328696 B/op	      24 allocs/op
+BenchmarkMainMatrix/scan/bs=1M/cache=cold/io=mmap-8           	       3	   3511000 ns/op	        12.38 bytePerRow	         0.2377 dataMB	         0.07452 idxMB	      5696 krows/s	         0.2118 ratio	         0.5781 rssdMB	 1799328 B/op	     189 allocs/op
+BenchmarkMainMatrix/conc_get_g8/io=mmap-8                     	       3	      6139 ns/op	        12.38 bytePerRow	         0.2380 dataMB	        99.97 hitpct	         0.07078 idxMB	       162.9 kget/s	         0.2119 ratio	         0.03125 rssdMB	    1909 B/op	      13 allocs/op
+BenchmarkMainMatrix/conc_get_g64/io=mmap-8                    	       3	      5139 ns/op	        12.38 bytePerRow	         0.2380 dataMB	        99.97 hitpct	         0.07078 idxMB	       194.6 kget/s	         0.2119 ratio	         0.03125 rssdMB	    1738 B/op	      12 allocs/op
+BenchmarkMainMatrix/get_hot/bs=64K/io=readat-8                	       3	       680.3 ns/op	        12.39 bytePerRow	         0.2394 dataMB	        98.20 hitpct	         0.06818 idxMB	      1470 kget/s	         0.2121 ratio	         0 rssdMB	      16 B/op	       2 allocs/op
+BenchmarkMainMatrix/get_hot_into/bs=64K/io=readat-8           	       3	       666.7 ns/op	        12.39 bytePerRow	         0.2394 dataMB	        98.20 hitpct	         0.06818 idxMB	      1500 kget/s	         0.2121 ratio	         0 rssdMB	      16 B/op	       2 allocs/op
+BenchmarkMainMatrix/get_cold/bs=64K/io=readat-8               	       3	     53653 ns/op	        12.39 bytePerRow	         0.2394 dataMB	         0.06818 idxMB	        18.64 kget/s	         0.2121 ratio	         0 rssdMB	   51864 B/op	      18 allocs/op
+BenchmarkMainMatrix/scan/bs=64K/cache=hot/io=readat-8         	       3	   1783278 ns/op	        12.39 bytePerRow	         0.2394 dataMB	         7.143 hitpct	         0.06818 idxMB	     11215 krows/s	         0.2121 ratio	         0 rssdMB	        80.00 scanhitpct	  328696 B/op	      24 allocs/op
+BenchmarkMainMatrix/scan/bs=64K/cache=cold/io=readat-8        	       3	   3485708 ns/op	        12.39 bytePerRow	         0.2394 dataMB	         0.06818 idxMB	      5738 krows/s	         0.2121 ratio	         0 rssdMB	 2092936 B/op	     384 allocs/op
+BenchmarkMainMatrix/get_hot/bs=256K/io=readat-8               	       3	       666.7 ns/op	        12.38 bytePerRow	         0.2380 dataMB	        98.20 hitpct	         0.07078 idxMB	      1500 kget/s	         0.2119 ratio	         0 rssdMB	      16 B/op	       2 allocs/op
+BenchmarkMainMatrix/get_hot_into/bs=256K/io=readat-8          	       3	       652.7 ns/op	        12.38 bytePerRow	         0.2380 dataMB	        98.20 hitpct	         0.07078 idxMB	      1532 kget/s	         0.2119 ratio	         0 rssdMB	      16 B/op	       2 allocs/op
+BenchmarkMainMatrix/get_cold/bs=256K/io=readat-8              	       3	     54069 ns/op	        12.38 bytePerRow	         0.2380 dataMB	         0.07078 idxMB	        18.49 kget/s	         0.2119 ratio	         0 rssdMB	   52280 B/op	      18 allocs/op
+BenchmarkMainMatrix/scan/bs=256K/cache=hot/io=readat-8        	       3	   1845417 ns/op	        12.38 bytePerRow	         0.2380 dataMB	        21.21 hitpct	         0.07078 idxMB	     10838 krows/s	         0.2119 ratio	         0 rssdMB	        80.00 scanhitpct	  328696 B/op	      24 allocs/op
+BenchmarkMainMatrix/scan/bs=256K/cache=cold/io=readat-8       	       3	   3612514 ns/op	        12.38 bytePerRow	         0.2380 dataMB	         0.07078 idxMB	      5536 krows/s	         0.2119 ratio	         0 rssdMB	 2078016 B/op	     254 allocs/op
+BenchmarkMainMatrix/get_hot/bs=1M/io=readat-8                 	       3	       680.7 ns/op	        12.38 bytePerRow	         0.2377 dataMB	        98.20 hitpct	         0.07452 idxMB	      1469 kget/s	         0.2118 ratio	         0 rssdMB	      16 B/op	       2 allocs/op
+BenchmarkMainMatrix/get_hot_into/bs=1M/io=readat-8            	       3	      2055 ns/op	        12.38 bytePerRow	         0.2377 dataMB	        98.20 hitpct	         0.07452 idxMB	       486.5 kget/s	         0.2118 ratio	         0 rssdMB	      16 B/op	       2 allocs/op
+BenchmarkMainMatrix/get_cold/bs=1M/io=readat-8                	       3	     54875 ns/op	        12.38 bytePerRow	         0.2377 dataMB	         0.07452 idxMB	        18.22 kget/s	         0.2118 ratio	         0 rssdMB	   53992 B/op	      18 allocs/op
+BenchmarkMainMatrix/scan/bs=1M/cache=hot/io=readat-8          	       3	   1832250 ns/op	        12.38 bytePerRow	         0.2377 dataMB	        38.89 hitpct	         0.07452 idxMB	     10916 krows/s	         0.2118 ratio	         0 rssdMB	        80.00 scanhitpct	  328696 B/op	      24 allocs/op
+BenchmarkMainMatrix/scan/bs=1M/cache=cold/io=readat-8         	       3	   3550347 ns/op	        12.38 bytePerRow	         0.2377 dataMB	         0.07452 idxMB	      5633 krows/s	         0.2118 ratio	         0 rssdMB	 2076720 B/op	     231 allocs/op
+BenchmarkMainMatrix/conc_get_g8/io=readat-8                   	       3	      7208 ns/op	        12.38 bytePerRow	         0.2380 dataMB	        99.97 hitpct	         0.07078 idxMB	       138.7 kget/s	         0.2119 ratio	         0 rssdMB	     421 B/op	       9 allocs/op
+BenchmarkMainMatrix/conc_get_g64/io=readat-8                  	       3	      7014 ns/op	        12.38 bytePerRow	         0.2380 dataMB	        99.97 hitpct	         0.07078 idxMB	       142.6 kget/s	         0.2119 ratio	         0 rssdMB	     421 B/op	       9 allocs/op
+BenchmarkMainMatrix/write_full/bs=64K/dur=sync-8              	       3	  19379278 ns/op	        12.39 bytePerRow	         0.2394 dataMB	         0.06818 idxMB	      1032 krows/s	         0.2121 ratio	         8.781 rssdMB	18463608 B/op	   80512 allocs/op
+BenchmarkMainMatrix/write_iso/bs=64K/dur=sync-8               	       3	  11687291 ns/op	         0.2615 bytePerRow	         0.007788 dataMB	         0.06834 idxMB	      1711 krows/s	         0.004895 ratio	        39.05 rssdMB	17440805 B/op	     765 allocs/op
+BenchmarkMainMatrix/write_full/bs=64K/dur=async-8             	       3	  16550555 ns/op	        12.39 bytePerRow	         0.2394 dataMB	         0.06818 idxMB	      1208 krows/s	         0.2121 ratio	         4.062 rssdMB	18463549 B/op	   80511 allocs/op
+BenchmarkMainMatrix/write_iso/bs=64K/dur=async-8              	       3	   7207458 ns/op	         0.2615 bytePerRow	         0.007788 dataMB	         0.06834 idxMB	      2775 krows/s	         0.004895 ratio	         0.01562 rssdMB	17440800 B/op	     765 allocs/op
+BenchmarkMainMatrix/scan1m/bs=64K-8                           	       3	  23975514 ns/op	        12.98 bytePerRow	         2.497 dataMB	         1.292 hitpct	         0.6774 idxMB	      8342 krows/s	         0.2224 ratio	         2.969 rssdMB	        66.67 scanhitpct	 8172112 B/op	    1187 allocs/op
+BenchmarkMainMatrix/getrand1m/bs=64K-8                        	       3	     57042 ns/op	        12.98 bytePerRow	         2.497 dataMB	        63.64 hitpct	         0.6774 idxMB	        17.53 kget/s	         0.2224 ratio	         0 rssdMB	   44688 B/op	      19 allocs/op
+BenchmarkMainMatrix/get_deepchain/bs=64K-8                    	       3	      3306 ns/op	        24.75 bytePerRow	         0.5011 dataMB	        99.91 hitpct	         0.1792 idxMB	       302.5 kget/s	         0.1721 ratio	         0 rssdMB	     368 B/op	       3 allocs/op
+BenchmarkMainMatrix/scan_deepchain/bs=64K-8                   	       3	  12698875 ns/op	        24.75 bytePerRow	         0.5011 dataMB	        63.53 hitpct	         0.1792 idxMB	      4095 krows/s	         0.1721 ratio	         0 rssdMB	        66.67 scanhitpct	 1883962 B/op	     443 allocs/op
+BenchmarkMainMatrix/open_replay/bs=64K-8                      	       3	    622083 ns/op	  470840 B/op	     343 allocs/op
+BenchmarkMainMatrix/index_rebuild/bs=64K-8                    	       3	   2213903 ns/op	 1757720 B/op	     623 allocs/op
+BenchmarkMainMatrix/write_full/bs=256K/dur=sync-8             	       3	  22339028 ns/op	        12.38 bytePerRow	         0.2380 dataMB	         0.07078 idxMB	       895.3 krows/s	         0.2119 ratio	         0 rssdMB	26019608 B/op	   80388 allocs/op
+BenchmarkMainMatrix/write_iso/bs=256K/dur=sync-8              	       3	  10706694 ns/op	         0.2477 bytePerRow	         0.006636 dataMB	         0.07126 idxMB	      1868 krows/s	         0.004637 ratio	         0 rssdMB	17929216 B/op	     639 allocs/op
+BenchmarkMainMatrix/write_full/bs=256K/dur=async-8            	       3	  16709431 ns/op	        12.38 bytePerRow	         0.2380 dataMB	         0.07078 idxMB	      1197 krows/s	         0.2119 ratio	         0 rssdMB	26019736 B/op	   80389 allocs/op
+BenchmarkMainMatrix/write_iso/bs=256K/dur=async-8             	       3	   7311236 ns/op	         0.2477 bytePerRow	         0.006636 dataMB	         0.07126 idxMB	      2736 krows/s	         0.004637 ratio	         0 rssdMB	17929178 B/op	     639 allocs/op
+BenchmarkMainMatrix/scan1m/bs=256K-8                          	       3	  24056555 ns/op	        12.97 bytePerRow	         2.484 dataMB	         4.895 hitpct	         0.7052 idxMB	      8314 krows/s	         0.2221 ratio	         0.2344 rssdMB	        66.67 scanhitpct	 8126186 B/op	     740 allocs/op
+BenchmarkMainMatrix/getrand1m/bs=256K-8                       	       3	     57875 ns/op	        12.97 bytePerRow	         2.484 dataMB	        63.64 hitpct	         0.7052 idxMB	        17.28 kget/s	         0.2221 ratio	         0 rssdMB	   45024 B/op	      19 allocs/op
+BenchmarkMainMatrix/get_deepchain/bs=256K-8                   	       3	      2597 ns/op	        24.74 bytePerRow	         0.4997 dataMB	        99.97 hitpct	         0.1818 idxMB	       385.1 kget/s	         0.1720 ratio	         0 rssdMB	     368 B/op	       3 allocs/op
+BenchmarkMainMatrix/scan_deepchain/bs=256K-8                  	       3	  11044236 ns/op	        24.74 bytePerRow	         0.4997 dataMB	        70.13 hitpct	         0.1818 idxMB	      4708 krows/s	         0.1720 ratio	         0 rssdMB	        66.67 scanhitpct	 1867882 B/op	     399 allocs/op
+BenchmarkMainMatrix/open_replay/bs=256K-8                     	       3	    631125 ns/op	  469008 B/op	     306 allocs/op
+BenchmarkMainMatrix/index_rebuild/bs=256K-8                   	       3	   2301153 ns/op	 1256192 B/op	     429 allocs/op
+BenchmarkMainMatrix/write_full/bs=1M/dur=sync-8               	       3	  21635902 ns/op	        12.38 bytePerRow	         0.2377 dataMB	         0.07452 idxMB	       924.4 krows/s	         0.2118 ratio	         0 rssdMB	19672514 B/op	   80348 allocs/op
+BenchmarkMainMatrix/write_iso/bs=1M/dur=sync-8                	       3	  11462889 ns/op	         0.2445 bytePerRow	         0.006305 dataMB	         0.07540 idxMB	      1745 krows/s	         0.004577 ratio	         0 rssdMB	11928205 B/op	     601 allocs/op
+BenchmarkMainMatrix/write_full/bs=1M/dur=async-8              	       3	  18614125 ns/op	        12.38 bytePerRow	         0.2377 dataMB	         0.07452 idxMB	      1074 krows/s	         0.2118 ratio	         0 rssdMB	26798656 B/op	   80363 allocs/op
+BenchmarkMainMatrix/write_iso/bs=1M/dur=async-8               	       3	   7694292 ns/op	         0.2445 bytePerRow	         0.006305 dataMB	         0.07540 idxMB	      2599 krows/s	         0.004577 ratio	         0 rssdMB	19052026 B/op	     611 allocs/op
+BenchmarkMainMatrix/scan1m/bs=1M-8                            	       3	  24266597 ns/op	        12.97 bytePerRow	         2.481 dataMB	        15.91 hitpct	         0.7464 idxMB	      8242 krows/s	         0.2221 ratio	         0.1094 rssdMB	        66.67 scanhitpct	 8127261 B/op	     655 allocs/op
+BenchmarkMainMatrix/getrand1m/bs=1M-8                         	       3	     74264 ns/op	        12.97 bytePerRow	         2.481 dataMB	        63.64 hitpct	         0.7464 idxMB	        13.47 kget/s	         0.2221 ratio	         0 rssdMB	   46368 B/op	      19 allocs/op
+BenchmarkMainMatrix/get_deepchain/bs=1M-8                     	       3	      2403 ns/op	        24.73 bytePerRow	         0.4994 dataMB	        99.99 hitpct	         0.1855 idxMB	       416.1 kget/s	         0.1719 ratio	         0 rssdMB	     368 B/op	       3 allocs/op
+BenchmarkMainMatrix/scan_deepchain/bs=1M-8                    	       3	  12227695 ns/op	        24.73 bytePerRow	         0.4994 dataMB	        71.86 hitpct	         0.1855 idxMB	      4253 krows/s	         0.1719 ratio	         0 rssdMB	        66.67 scanhitpct	 1868029 B/op	     392 allocs/op
+BenchmarkMainMatrix/open_replay/bs=1M-8                       	       3	    604458 ns/op	  472184 B/op	     298 allocs/op
+BenchmarkMainMatrix/index_rebuild/bs=1M-8                     	       3	   2201180 ns/op	 1093904 B/op	     384 allocs/op
+BenchmarkLatency/get_hot-8                                    	       3	  10078972 ns/op	       375.0 p50ns	      1208 p95ns	      1333 p99ns	18430576 B/op	   29721 allocs/op
+BenchmarkLatency/get_hot_into-8                               	       3	  10113222 ns/op	       334.0 p50ns	       375.0 p95ns	       417.0 p99ns	18430642 B/op	   29722 allocs/op
+BenchmarkLatency/get_cold-8                                   	       3	  74343555 ns/op	     46708 p50ns	     52166 p95ns	     58125 p99ns	79158962 B/op	   47387 allocs/op
+BenchmarkLatency/get_deepchain-8                              	       3	  82560403 ns/op	      1083 p50ns	      1417 p95ns	      2584 p99ns	30319192 B/op	   76171 allocs/op
+BenchmarkEnv-8                                                	       3	   9198319 ns/op	         6.000 blocks	        12.38 bytePerRow	         0.2380 dataMB	         0.07078 idxMB	         0.2119 ratio	        58.43 rawB/row	18370517 B/op	   26887 allocs/op
+BenchmarkWriteFull-8                                          	       3	  21779431 ns/op	  58.77 MB/s	26019666 B/op	   80389 allocs/op
+BenchmarkGetHot-8                                             	       3	     22069 ns/op	   18602 B/op	       8 allocs/op
+BenchmarkGetCold-8                                            	       3	     56694 ns/op	     32804 rawB/op	      6692 readB/op	   44613 B/op	      14 allocs/op
+BenchmarkGetColdUnpooled-8                                    	       3	     53486 ns/op	     32804 rawB/op	      6692 readB/op	   44613 B/op	      14 allocs/op
+BenchmarkScan-8                                               	       3	   2348861 ns/op	  818850 B/op	      85 allocs/op
+BenchmarkReadBatch1000-8                                      	       3	    183375 ns/op	  454021 B/op	      11 allocs/op
+BenchmarkReadBatchInto1000-8                                  	       3	    175695 ns/op	  169872 B/op	       7 allocs/op
+BenchmarkGetLoop1000-8                                        	       3	    245042 ns/op	   45530 B/op	    2007 allocs/op
+BenchmarkOpenReplay-8                                         	       3	    614445 ns/op	  468928 B/op	     306 allocs/op
+BenchmarkDeepChainGet-8                                       	       3	     59083 ns/op	    6698 B/op	      14 allocs/op
+BenchmarkEncryptedWrite-8                                     	       3	  42178306 ns/op	  30.35 MB/s	28419618 B/op	  111087 allocs/op
+BenchmarkEncryptedGetHot-8                                    	       3	      7083 ns/op	    4800 B/op	      12 allocs/op
+PASS
+ok  	github.com/codeforgee/rowpack	7.148s

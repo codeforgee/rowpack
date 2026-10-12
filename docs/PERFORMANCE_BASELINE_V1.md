@@ -5,6 +5,15 @@
 > 格式：v1 单文件（Magic `ROWPACK1`，Major 1，Minor 0）
 > 运行器：`scripts/baseline.sh` · 入口 `make baseline [MODE=full|quick|1m]`
 > 状态：**v1 首个性能基线**；后续格式/算法变更需与本表对照，回退须有说明
+>
+> **2026-10-12 优化批次**（归档 `testdata/baseline/2026-10-12.txt`，11 项提交，
+> 磁盘字节除 zstd 帧少 4 B/页外不变）：热读 363.8→339.8 ns（-6.6%）、冷读
+> 49.75→51.0 µs（噪声内，B/op 57.9→44.8 KB 即 **-23%**）、Scan 热 6970→
+> 10547 krows/s（**+51%**）、Scan 冷 allocs 1606→947、Open 重放 2.36→2.91 ms
+> （allocs 持平，历史波动范围内）、IndexTxn 重建 17.59→12.0 ms（**-32%**，
+> B/op 28.8→6.1 MB）、WriteFull B/op 106.9→97.5 MB（-8.8%）。单项收益见
+> git log（zstd 帧校验关闭、mmap 零拷贝冷页、Scan 免逐行二分、Verify 缓存
+> 旁路、快照链/元数据/schema 索引瘦身、恢复重建与 publish 流式化）。
 
 ## 0. 如何建立新基线
 

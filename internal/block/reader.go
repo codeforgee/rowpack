@@ -136,13 +136,40 @@ func (r *Reader) ReadRowsDir(offset int64) (*RowsContainer, error) {
 // that page's stored bytes are pulled from the file, so a cold single-row read
 // does not read the whole container. Returns an owned RowsPage (its buffer is
 // a fresh allocation and valid for the containing container's lifetime).
+//
+// When the handle exposes file views (mmap-backed), the stored page is sliced
+// straight out of the mapping and decompressed in place — no intermediate
+// copy of the stored bytes. On plain ReadAt handles (and platforms without
+// mmap, where View itself is a fresh ReadAt copy) the page is read as before.
 func (r *Reader) ReadRowsPage(offset int64, c *RowsContainer, pageIdx int) (*RowsPage, error) {
 	dir := &c.Dir[pageIdx]
 	pgOff := offset + format.BlockHeaderSize + int64(dir.StoredOffset)
+	if v, ok := r.ra.(viewer); ok {
+		stored, done, err := v.View(pgOff, int64(dir.StoredSize))
+		if err != nil {
+			return nil, fmt.Errorf("rowpack: view page %d at %d: %w", pageIdx, pgOff, err)
+		}
+		page, perr := r.rowsPageFrom(c, pageIdx, dir, stored, true)
+		done()
+		if perr != nil {
+			return nil, perr
+		}
+		return page, nil
+	}
 	stored := make([]byte, dir.StoredSize)
 	if _, err := r.ra.ReadAt(stored, pgOff); err != nil {
 		return nil, fmt.Errorf("rowpack: read page %d at %d: %w", pageIdx, pgOff, err)
 	}
+	return r.rowsPageFrom(c, pageIdx, dir, stored, false)
+}
+
+// rowsPageFrom turns one page's stored bytes into a parsed RowsPage, shared
+// by the view and ReadAt paths. stored may alias a file mapping when viewed
+// is true: it is only read (decrypt, decompress) while the caller keeps the
+// view alive, and the returned page never aliases it — a plain uncompressed
+// page is copied before the view is released, matching readAtBlockView's
+// no-aliasing guarantee for potentially cached payloads.
+func (r *Reader) rowsPageFrom(c *RowsContainer, pageIdx int, dir *format.RowsPageDirEntry, stored []byte, viewed bool) (*RowsPage, error) {
 	r.readBytes.Add(uint64(len(stored)))
 	// Per-page encryption: the page directory is plaintext, so the stored
 	// bytes here are the sealed page; OPEN it (authenticate) before
@@ -159,10 +186,19 @@ func (r *Reader) ReadRowsPage(offset int64, c *RowsContainer, pageIdx int) (*Row
 			return nil, fmt.Errorf("rowpack: page %d opened %d bytes, want stored %d - tag", pageIdx, len(pt), dir.StoredSize)
 		}
 		stored = pt
+		viewed = false // decrypted into a fresh buffer
 	}
 	var raw []byte
 	if c.comp == format.CompressionNone {
-		raw = stored
+		if viewed {
+			// The mapping may be remapped or the view released at any time
+			// after we return; the parsed page must own its bytes.
+			cp := make([]byte, len(stored))
+			copy(cp, stored)
+			raw = cp
+		} else {
+			raw = stored
+		}
 	} else {
 		maxOut := min(dir.RawSize, c.limits.MaxRawBytes)
 		// Decode into a destination sized exactly RawSize: DecodeAll(nil, …)

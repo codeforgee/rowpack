@@ -95,10 +95,10 @@ type MetadataLoc struct {
 // amortized cost stays O(1) per block and lookups stay two map probes.
 type View struct {
 	snapshots      map[uint64]*SnapshotMeta
-	blocksBase     map[uint64]*BlockLoc // shared with ancestor views, read-only
-	blocksDelta    map[uint64]*BlockLoc // this view's additions (parent's delta seeded in)
-	blocksN        int                  // len(blocksBase) + len(blocksDelta)
-	metadata       map[uint64][]MetadataLoc          // per snapshot, sorted by ObjectID
+	blocksBase     map[uint64]*BlockLoc     // shared with ancestor views, read-only
+	blocksDelta    map[uint64]*BlockLoc     // this view's additions (parent's delta seeded in)
+	blocksN        int                      // len(blocksBase) + len(blocksDelta)
+	metadata       map[uint64][]MetadataLoc // per snapshot, sorted by ObjectID
 	metadataByType map[uint64]map[uint32][]uint64
 	rows           map[uint64]map[uint32]*rowShard
 

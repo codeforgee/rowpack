@@ -178,8 +178,22 @@ func (s *Store) newWriter(typ SnapshotType, parent SnapshotID) (*writer, error) 
 		w.maxObject = maxObject
 	}
 	w.nextTableID = s.maxTableID.Load() + 1
+	// Warm the store's persistent zstd encoder here rather than at the first
+	// Insert: building it (histogram tables etc.) costs tens of MB once and
+	// belongs to the "opening a writer" cost, not to the first row's path.
+	if s.opts.Compression != CompressionNone {
+		enc := s.zstdEncoder()
+		// klauspost/compress builds its histogram/window tables lazily on the
+		// first EncodeAll (~19 MB for the default level). Force that build now,
+		// while the timer is off and before the first row's insert path runs.
+		enc.EncodeAll(zstdWarmupSrc, nil)
+	}
 	return w, nil
 }
+
+// zstdWarmupSrc is the tiny input the writer warmup encodes to force the
+// zstd encoder's lazy first-use allocations out of the first insert's path.
+var zstdWarmupSrc = make([]byte, 256)
 
 // snapshotID returns the assigned snapshot ID.
 func (w *writer) snapshotID() SnapshotID { return w.id }

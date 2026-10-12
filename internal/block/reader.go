@@ -163,6 +163,90 @@ func (r *Reader) ReadRowsPage(offset int64, c *RowsContainer, pageIdx int) (*Row
 	return r.rowsPageFrom(c, pageIdx, dir, stored, false)
 }
 
+// ReadRowsPageTransient reads and decompresses one page for a single
+// sequential pass (Verify, recovery rebuild): the page is never installed in
+// the container's memo, and its raw buffer comes from the graded rawBuf pool
+// when possible, so a full-store pass does not churn one fresh ~32 KiB
+// allocation per page. The caller must putRawBuf the returned scratch once
+// the page (and every record body aliasing it) is no longer needed; a nil
+// scratch means the page owns its buffer. Semantics otherwise match
+// ReadRowsPage, including the no-aliasing guarantee for the parsed page.
+func (r *Reader) ReadRowsPageTransient(offset int64, c *RowsContainer, pageIdx int) (*RowsPage, *rawBuf, error) {
+	dir := &c.Dir[pageIdx]
+	pgOff := offset + format.BlockHeaderSize + int64(dir.StoredOffset)
+	if v, ok := r.ra.(viewer); ok {
+		stored, done, err := v.View(pgOff, int64(dir.StoredSize))
+		if err != nil {
+			return nil, nil, fmt.Errorf("rowpack: view page %d at %d: %w", pageIdx, pgOff, err)
+		}
+		page, buf, perr := r.rowsPageTransientFrom(c, pageIdx, dir, stored, true)
+		done()
+		if perr != nil {
+			return nil, nil, perr
+		}
+		return page, buf, nil
+	}
+	stored := make([]byte, dir.StoredSize)
+	if _, err := r.ra.ReadAt(stored, pgOff); err != nil {
+		return nil, nil, fmt.Errorf("rowpack: read page %d at %d: %w", pageIdx, pgOff, err)
+	}
+	return r.rowsPageTransientFrom(c, pageIdx, dir, stored, false)
+}
+
+// rowsPageTransientFrom is rowsPageFrom with pooled raw output: the
+// decompressed (or copied) page bytes land in a pool scratch the caller
+// returns when the transient page is dropped. A nil buf return means the
+// page owns its buffer and needs no return.
+func (r *Reader) rowsPageTransientFrom(c *RowsContainer, pageIdx int, dir *format.RowsPageDirEntry, stored []byte, viewed bool) (*RowsPage, *rawBuf, error) {
+	r.readBytes.Add(uint64(len(stored)))
+	if c.blockH.Encrypted {
+		if r.decrypter == nil {
+			return nil, nil, fmt.Errorf("rowpack: block %d page %d encrypted but no decrypter", c.blockH.BlockID, pageIdx)
+		}
+		pt, err := r.decrypter.OpenPage(c.blockH, *dir, stored)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(pt) != int(dir.StoredSize)-format.AESGCMTagLen {
+			return nil, nil, fmt.Errorf("rowpack: page %d opened %d bytes, want stored %d - tag", pageIdx, len(pt), dir.StoredSize)
+		}
+		stored = pt
+		viewed = false
+	}
+	var raw []byte
+	var buf *rawBuf
+	if c.comp == format.CompressionNone {
+		// Both sources (ReadAt copy, view copy) are transient here; pool the
+		// copy so sequential passes reuse one buffer across pages.
+		buf = getRawBuf(dir.RawSize)
+		raw = buf.data[:len(stored)]
+		copy(raw, stored)
+	} else {
+		maxOut := min(dir.RawSize, c.limits.MaxRawBytes)
+		buf = getRawBuf(dir.RawSize)
+		var err error
+		raw, err = decompressZstd(buf.data[:0], stored, maxOut)
+		if err != nil {
+			putRawBuf(buf)
+			return nil, nil, fmt.Errorf("rowpack: page %d: %w", pageIdx, err)
+		}
+	}
+	if uint32(len(raw)) != dir.RawSize {
+		putRawBuf(buf)
+		return nil, nil, fmt.Errorf("rowpack: page %d decompressed %d bytes, want %d", pageIdx, len(raw), dir.RawSize)
+	}
+	r.decompressedBytes.Add(uint64(len(raw)))
+	r.pageCtrs.loads.Add(1)
+	r.pageCtrs.raw.Add(uint64(dir.RawSize))
+	r.pageCtrs.stored.Add(uint64(dir.StoredSize))
+	page, err := c.parsePage(pageIdx, raw)
+	if err != nil {
+		putRawBuf(buf)
+		return nil, nil, err
+	}
+	return page, buf, nil
+}
+
 // rowsPageFrom turns one page's stored bytes into a parsed RowsPage, shared
 // by the view and ReadAt paths. stored may alias a file mapping when viewed
 // is true: it is only read (decrypt, decompress) while the caller keeps the

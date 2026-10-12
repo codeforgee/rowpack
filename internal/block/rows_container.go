@@ -453,20 +453,42 @@ func (c *RowsContainer) PageScratch(i int) (*RowsPage, func(), error) {
 // pageTransient returns page i for a single sequential pass over the container:
 // a page that is already memoized is reused, but a cold page is decoded without
 // being installed in the memo, so the pass does not pin every page it touches.
+// The decoded page's buffer is pooled: the second return is the scratch to
+// file back with putRawBuf once the page (and every record body aliasing it)
+// is no longer needed — nil means the page owns its buffer (memo hit, lazy
+// reader path). Callers pass the scratch back before requesting the next page.
 //
 // Verify and the recovery rebuild are one-shot full-container walks: memoizing
 // their pages would retain the whole decoded container (charged against the
 // block cache, and displacing or duplicating the random-read hot set) for a
 // pass that never revisits a page. The page is still owned and valid for the
 // duration of the call; only the memo entry is skipped.
-func (c *RowsContainer) pageTransient(i int) (*RowsPage, error) {
+func (c *RowsContainer) pageTransient(i int) (*RowsPage, *rawBuf, error) {
 	if i < 0 || i >= len(c.Dir) {
-		return nil, fmt.Errorf("rowpack: page index %d out of range (%d)", i, len(c.Dir))
+		return nil, nil, fmt.Errorf("rowpack: page index %d out of range (%d)", i, len(c.Dir))
 	}
 	if p := c.cachedPage(i); p != nil {
-		return p, nil
+		return p, nil, nil
 	}
-	return c.decodePage(i)
+	if c.lazy() {
+		p, buf, err := c.reader.ReadRowsPageTransient(c.blockOffset, c, i)
+		if err != nil {
+			return nil, nil, err
+		}
+		return p, buf, nil
+	}
+	buf := getRawBuf(c.Dir[i].RawSize)
+	raw, err := c.decompress(i, buf)
+	if err != nil {
+		putRawBuf(buf)
+		return nil, nil, err
+	}
+	p, err := c.parsePage(i, raw)
+	if err != nil {
+		putRawBuf(buf)
+		return nil, nil, err
+	}
+	return p, buf, nil
 }
 
 // RecordAt decodes one record by block item ordinal, decompressing only
@@ -498,12 +520,21 @@ func (c *RowsContainer) RecordAt(ordinal uint32) (codec.PageRecord, func(), erro
 // retained beyond the callback.
 // It is the recovery/rebuild/verify accessor.
 func (c *RowsContainer) ForEach(fn func(codec.PageRecord) error) error {
+	// prev holds the previous page's pooled scratch: it is filed back only
+	// after the callback has finished with that page's bodies and the next
+	// page is requested. putRawBuf(nil) is a no-op, and the deferred return
+	// covers early-error and panic exits.
+	var prev *rawBuf
+	defer putRawBuf(prev)
 	for i := range c.Dir {
-		page, err := c.pageTransient(i)
+		page, buf, err := c.pageTransient(i)
 		if err != nil {
 			return err
 		}
-		if err := page.Records(fn); err != nil {
+		err = page.Records(fn)
+		putRawBuf(prev)
+		prev = buf
+		if err != nil {
 			return err
 		}
 	}

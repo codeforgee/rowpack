@@ -303,9 +303,36 @@ func (w *writer) writeFooter(cp *commitLayout) error {
 // publish validates and installs the committed txn into a new immutable view
 // and swaps it into the store. It runs only after the durability sync, so
 // every failure is outcome-unknown.
+//
+// The txn flows through the same fused streaming sink the Open path uses:
+// rows go straight into the new view's compact shard slices, skipping
+// View.Apply→buildShards' per-row RowKeyLoc copies (~32 B/row off the commit
+// peak). This is safe because Builder.buildPages sorted txn.Rows by
+// (TableID, RowID) before persisting — exactly the ascending order the shard
+// builder requires — and the sink runs the identical validation chain
+// (parent chain, block ownership, per-snapshot row uniqueness/ascending).
 func (w *writer) publish(cp *commitLayout, txn *index.Txn) (SnapshotInfo, error) {
 	st := w.store.state.Load()
-	newView, err := st.view.Apply(txn, w.store.opts.Limits.MaxSnapshotDepth)
+	ap := index.NewRebuildSink(st.view, w.store.opts.Limits.MaxSnapshotDepth, len(txn.Rows))
+	if err := ap.SetSnapshot(txn.Snapshot); err != nil {
+		return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: true, Err: err}
+	}
+	for i := range txn.Blocks {
+		if err := ap.AddBlock(txn.Blocks[i]); err != nil {
+			return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: true, Err: err}
+		}
+	}
+	for i := range txn.Metadata {
+		if err := ap.AddMetadata(txn.Metadata[i]); err != nil {
+			return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: true, Err: err}
+		}
+	}
+	for i := range txn.Rows {
+		if err := ap.AddRowEntry(txn.Rows[i]); err != nil {
+			return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: true, Err: err}
+		}
+	}
+	newView, err := ap.FinishView()
 	if err != nil {
 		return SnapshotInfo{}, &CommitError{SnapshotID: w.id, Unknown: true, Err: err}
 	}

@@ -158,7 +158,7 @@ func (b *PageBuilder) Finish() ([]byte, error) {
 	n += copy(page[n:], b.offsets)
 	n += copy(page[n:], b.schemaRLE)
 	n += copy(page[n:], b.changeBits)
-	n += copy(page[n:], b.tuples)
+	copy(page[n:], b.tuples)
 	streams := page[format.RowsPageHeaderSize:]
 	h.CRC32C = format.CRC32C(streams)
 	if err := h.MarshalTo(page); err != nil {

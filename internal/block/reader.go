@@ -176,7 +176,7 @@ func (r *Reader) ReadRowsPageTransient(offset int64, c *RowsContainer, pageIdx i
 		if err != nil {
 			return nil, nil, fmt.Errorf("rowpack: view page %d at %d: %w", pageIdx, pgOff, err)
 		}
-		page, buf, perr := r.rowsPageTransientFrom(c, pageIdx, dir, stored, true)
+		page, buf, perr := r.rowsPageTransientFrom(c, pageIdx, dir, stored)
 		done()
 		if perr != nil {
 			return nil, nil, perr
@@ -187,14 +187,17 @@ func (r *Reader) ReadRowsPageTransient(offset int64, c *RowsContainer, pageIdx i
 	if _, err := r.ra.ReadAt(stored, pgOff); err != nil {
 		return nil, nil, fmt.Errorf("rowpack: read page %d at %d: %w", pageIdx, pgOff, err)
 	}
-	return r.rowsPageTransientFrom(c, pageIdx, dir, stored, false)
+	return r.rowsPageTransientFrom(c, pageIdx, dir, stored)
 }
 
 // rowsPageTransientFrom is rowsPageFrom with pooled raw output: the
 // decompressed (or copied) page bytes land in a pool scratch the caller
 // returns when the transient page is dropped. A nil buf return means the
-// page owns its buffer and needs no return.
-func (r *Reader) rowsPageTransientFrom(c *RowsContainer, pageIdx int, dir *format.RowsPageDirEntry, stored []byte, viewed bool) (*RowsPage, *rawBuf, error) {
+// page owns its buffer and needs no need. Unlike rowsPageFrom it never
+// aliases the stored bytes — even a view-sourced uncompressed page is copied
+// into the scratch — so the caller may release the view as soon as this
+// returns, and no viewed flag is needed.
+func (r *Reader) rowsPageTransientFrom(c *RowsContainer, pageIdx int, dir *format.RowsPageDirEntry, stored []byte) (*RowsPage, *rawBuf, error) {
 	r.readBytes.Add(uint64(len(stored)))
 	if c.blockH.Encrypted {
 		if r.decrypter == nil {
@@ -208,7 +211,6 @@ func (r *Reader) rowsPageTransientFrom(c *RowsContainer, pageIdx int, dir *forma
 			return nil, nil, fmt.Errorf("rowpack: page %d opened %d bytes, want stored %d - tag", pageIdx, len(pt), dir.StoredSize)
 		}
 		stored = pt
-		viewed = false
 	}
 	var raw []byte
 	var buf *rawBuf

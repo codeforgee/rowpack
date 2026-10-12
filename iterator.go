@@ -378,12 +378,8 @@ func (it *Iterator) rowAt(loc index.RowLoc, dst Row) (Row, error) {
 	// Fast path: the currently loaded page usually already covers the ordinal
 	// — a scan visits runs of consecutive rows, and PageFor would re-answer
 	// the same question with a binary search on every row.
-	pi := -1
-	if it.curPage != nil && it.curContainer.Dir[it.curPageIdx].Covers(loc.ItemOrdinal) {
-		pi = it.curPageIdx
-	} else {
-		var err error
-		pi, err = it.curContainer.PageFor(loc.ItemOrdinal)
+	if it.curPage == nil || !it.curContainer.Dir[it.curPageIdx].Covers(loc.ItemOrdinal) {
+		pi, err := it.curContainer.PageFor(loc.ItemOrdinal)
 		if err != nil {
 			return nil, it.store.recordError(it.curBlk, it.snapshot, it.table, err)
 		}
@@ -403,7 +399,7 @@ func (it *Iterator) rowAt(loc index.RowLoc, dst Row) (Row, error) {
 	// need not be RowID-sorted, so visits to one page are usually — not
 	// always — ascending. Cursor.At walks forward cheaply when they are and
 	// falls back to the page's random-access path when they are not.
-	rec, err := it.curCursor.At(loc.ItemOrdinal - it.curContainer.Dir[pi].FirstRecordOrdinal)
+	rec, err := it.curCursor.At(loc.ItemOrdinal - it.curContainer.Dir[it.curPageIdx].FirstRecordOrdinal)
 	if err != nil {
 		return nil, it.store.recordError(it.curBlk, it.snapshot, it.table, err)
 	}

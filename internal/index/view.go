@@ -98,7 +98,7 @@ type View struct {
 	blocksBase     map[uint64]*BlockLoc // shared with ancestor views, read-only
 	blocksDelta    map[uint64]*BlockLoc // this view's additions (parent's delta seeded in)
 	blocksN        int                  // len(blocksBase) + len(blocksDelta)
-	metadata       map[uint64]map[uint64]*MetadataLoc
+	metadata       map[uint64][]MetadataLoc          // per snapshot, sorted by ObjectID
 	metadataByType map[uint64]map[uint32][]uint64
 	rows           map[uint64]map[uint32]*rowShard
 
@@ -283,7 +283,7 @@ func EmptyView() *View {
 	return &View{
 		snapshots:      make(map[uint64]*SnapshotMeta),
 		blocksBase:     make(map[uint64]*BlockLoc),
-		metadata:       make(map[uint64]map[uint64]*MetadataLoc),
+		metadata:       make(map[uint64][]MetadataLoc),
 		metadataByType: make(map[uint64]map[uint32][]uint64),
 		rows:           make(map[uint64]map[uint32]*rowShard),
 	}
@@ -357,12 +357,18 @@ type RowKeyLoc struct {
 }
 
 // Metadata returns the metadata location of (snapshot, objectID), or nil.
+// Layers are sorted slices keyed by ObjectID — one 32 B value per record
+// instead of a map cell plus pointer — and the returned pointer aliases the
+// immutable slice, exactly like the map values it replaced.
 func (v *View) Metadata(snapshot uint64, objectID uint64) *MetadataLoc {
-	m := v.metadata[snapshot]
-	if m == nil {
+	locs := v.metadata[snapshot]
+	i, found := slices.BinarySearchFunc(locs, objectID, func(l MetadataLoc, oid uint64) int {
+		return cmp.Compare(l.ObjectID, oid)
+	})
+	if !found {
 		return nil
 	}
-	return m[objectID]
+	return &locs[i]
 }
 
 // MetadataByType returns the sorted object IDs of a record type in a snapshot.
@@ -374,15 +380,14 @@ func (v *View) MetadataByType(snapshot uint64, recordType uint32) []uint64 {
 // sorted ascending. Record types are not distinguished: callers that need to
 // bound an ID space must see records of types they do not otherwise query.
 func (v *View) MetadataObjects(snapshot uint64) []uint64 {
-	m := v.metadata[snapshot]
-	if len(m) == 0 {
+	locs := v.metadata[snapshot]
+	if len(locs) == 0 {
 		return nil
 	}
-	out := make([]uint64, 0, len(m))
-	for oid := range m {
-		out = append(out, oid)
+	out := make([]uint64, 0, len(locs))
+	for i := range locs {
+		out = append(out, locs[i].ObjectID)
 	}
-	slices.Sort(out)
 	return out
 }
 
@@ -664,37 +669,43 @@ func (a *viewApply) applyBlocks(blocks []format.BlockIndexEntry) error {
 }
 
 // applyMetadata builds and installs the metadata location maps for the
-// snapshot being applied.
+// snapshot being applied. Locations land in one sorted value slice (32 B per
+// record, no map cells); the type index stays a map — few types, queried
+// often — and keeps holding object IDs so callers need no re-lookup.
 func (a *viewApply) applyMetadata(metadata []format.MetadataIndexEntry) error {
-	metaMap := make(map[uint64]*MetadataLoc)
+	locs := make([]MetadataLoc, 0, len(metadata))
 	typeMap := make(map[uint32][]uint64)
 	for i := range metadata {
 		me := &metadata[i]
 		if me.SnapshotID != a.snapID {
 			return fmt.Errorf("rowpack: metadata entry %d wrong snapshot", me.ObjectID)
 		}
-		if _, dup := metaMap[me.ObjectID]; dup {
-			return fmt.Errorf("rowpack: metadata object %d duplicated in snapshot %d", me.ObjectID, a.snapID)
-		}
-		metaMap[me.ObjectID] = &MetadataLoc{
+		locs = append(locs, MetadataLoc{
 			ObjectID: me.ObjectID, Revision: me.Revision, RecordType: me.RecordType,
 			BlockID: me.BlockID, ItemOrdinal: me.ItemOrdinal, Operation: me.Operation,
-		}
+		})
 		typeMap[me.RecordType] = append(typeMap[me.RecordType], me.ObjectID)
+	}
+	slices.SortFunc(locs, func(x, y MetadataLoc) int { return cmp.Compare(x.ObjectID, y.ObjectID) })
+	for i := 1; i < len(locs); i++ {
+		if locs[i].ObjectID == locs[i-1].ObjectID {
+			return fmt.Errorf("rowpack: metadata object %d duplicated in snapshot %d", locs[i].ObjectID, a.snapID)
+		}
 	}
 	for k := range typeMap {
 		slices.Sort(typeMap[k])
 	}
-	a.next.metadata[a.snapID] = metaMap
+	a.next.metadata[a.snapID] = locs
 	a.next.metadataByType[a.snapID] = typeMap
 	return nil
 }
 
 // finishMemory applies the per-txn memory estimate to next: rough
 // per-entry overhead plus map cells and packed row-shard entries (24 B/row).
+// Metadata is one 32 B sorted-slice value per record plus slice slack.
 func (a *viewApply) finishMemory(nMeta, nBlocks int, rowMap map[uint32]*rowShard) {
 	a.next.memoryBytes = a.old.memoryBytes
-	a.next.memoryBytes += 64 + uint64(nMeta)*56 + uint64(nBlocks)*72
+	a.next.memoryBytes += 64 + uint64(nMeta)*40 + uint64(nBlocks)*72
 	for _, sh := range rowMap {
 		// Columnar storage: packed RowID + packed ItemOrdinal + ChangeType (1)
 		// per row, plus the block-run directory (BlockID + runStart per run).
@@ -966,7 +977,7 @@ func (v *View) shallowCopy() *View {
 		blocksBase:     v.blocksBase,
 		blocksDelta:    maps.Clone(v.blocksDelta),
 		blocksN:        v.blocksN,
-		metadata:       make(map[uint64]map[uint64]*MetadataLoc, len(v.metadata)+1),
+		metadata:       make(map[uint64][]MetadataLoc, len(v.metadata)+1),
 		metadataByType: make(map[uint64]map[uint32][]uint64, len(v.metadataByType)+1),
 		rows:           make(map[uint64]map[uint32]*rowShard, len(v.rows)+1),
 	}

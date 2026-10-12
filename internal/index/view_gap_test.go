@@ -62,12 +62,12 @@ func TestRowKeyIterSeek(t *testing.T) {
 func TestMetadataObjectsNilAndSorted(t *testing.T) {
 	v := EmptyView()
 	require.Nil(t, v.MetadataObjects(1), "absent snapshot must return nil")
-	// 手工构造一个含两个 object 的 snapshot。
+	// 手工构造一个含两个 object 的 snapshot（层内按 ObjectID 排序）。
 	v.snapshots[1] = &SnapshotMeta{ID: 1}
-	v.metadata[1] = map[uint64]*MetadataLoc{
-		9:  {ObjectID: 9},
-		2:  {ObjectID: 2},
-		77: {ObjectID: 77},
+	v.metadata[1] = []MetadataLoc{
+		{ObjectID: 2},
+		{ObjectID: 9},
+		{ObjectID: 77},
 	}
 	got := v.MetadataObjects(1)
 	if len(got) != 3 || got[0] != 2 || got[1] != 9 || got[2] != 77 {

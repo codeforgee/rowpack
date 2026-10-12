@@ -166,33 +166,82 @@ func ParseRowsDir(offset int64, r *Reader, h format.BlockHeader, limits Limits) 
 	// directory is not). So we can read the directory and OPEN+decompress
 	// individual pages on demand, which is the whole point of per-page
 	// encryption on the read path.
-	// Read the container header first (it carries PageCount so we know the
-	// directory length).
-	var ch [format.RowsBlockHeaderSize]byte
-	if _, err := r.ra.ReadAt(ch[:], offset+format.BlockHeaderSize); err != nil {
-		return nil, fmt.Errorf("rowpack: read container header at %d: %w", offset+format.BlockHeaderSize, err)
-	}
+	//
+	// On mmap-backed handles the container header and the header+directory
+	// region are sliced straight out of the mapping (no pread at all); on
+	// plain ReadAt handles the header+directory region is pulled with a
+	// single pread — the container header is its prefix, so no separate
+	// header read is needed.
+	dirRegionAt := offset + format.BlockHeaderSize
 	var rh format.RowsBlockHeader
+	if v, ok := r.ra.(viewer); ok {
+		ch, done, err := v.View(dirRegionAt, format.RowsBlockHeaderSize)
+		if err != nil {
+			return nil, fmt.Errorf("rowpack: read container header at %d: %w", dirRegionAt, err)
+		}
+		rerr := func() error {
+			if err := rh.Unmarshal(ch); err != nil {
+				return err
+			}
+			return validateRowCounts(&rh, h, limits)
+		}()
+		done()
+		if rerr != nil {
+			return nil, rerr
+		}
+		dirEnd := format.RowsBlockHeaderSize + int(rh.DirectoryBytes)
+		if dirEnd > int(h.StoredSize) {
+			return nil, fmt.Errorf("rowpack: container directory %d bytes overruns stored %d", rh.DirectoryBytes, h.StoredSize)
+		}
+		region, done2, err := v.View(dirRegionAt, int64(dirEnd))
+		if err != nil {
+			return nil, fmt.Errorf("rowpack: read container directory at %d: %w", dirRegionAt, err)
+		}
+		c, perr := r.parseRowsDirRegion(region, rh, h, offset, limits)
+		done2()
+		if perr != nil {
+			return nil, perr
+		}
+		return c, nil
+	}
+	// Plain ReadAt handle: the header+directory region is bounded by
+	// StoredSize before the container header is known, so pull the container
+	// header first and then one exact-size pread for the rest of the region
+	// (two preads total instead of three).
+	var ch [format.RowsBlockHeaderSize]byte
+	if _, err := r.ra.ReadAt(ch[:], dirRegionAt); err != nil {
+		return nil, fmt.Errorf("rowpack: read container header at %d: %w", dirRegionAt, err)
+	}
 	if err := rh.Unmarshal(ch[:]); err != nil {
 		return nil, err
 	}
 	if err := validateRowCounts(&rh, h, limits); err != nil {
 		return nil, err
 	}
-	// Read the directory region.
 	dirEnd := format.RowsBlockHeaderSize + int(rh.DirectoryBytes)
 	if dirEnd > int(h.StoredSize) {
 		return nil, fmt.Errorf("rowpack: container directory %d bytes overruns stored %d", rh.DirectoryBytes, h.StoredSize)
 	}
-	dirBytes := make([]byte, dirEnd)
-	if _, err := r.ra.ReadAt(dirBytes, offset+format.BlockHeaderSize); err != nil {
-		return nil, fmt.Errorf("rowpack: read container directory at %d: %w", offset+format.BlockHeaderSize, err)
+	region := make([]byte, dirEnd)
+	copy(region, ch[:])
+	if dirEnd > format.RowsBlockHeaderSize {
+		if _, err := r.ra.ReadAt(region[format.RowsBlockHeaderSize:], dirRegionAt+format.RowsBlockHeaderSize); err != nil {
+			return nil, fmt.Errorf("rowpack: read container directory at %d: %w", dirRegionAt, err)
+		}
 	}
+	return r.parseRowsDirRegion(region, rh, h, offset, limits)
+}
+
+// parseRowsDirRegion authenticates and parses a header+directory region that
+// starts at offset+BlockHeaderSize and is exactly RowsBlockHeaderSize +
+// DirectoryBytes long. It does not retain region: the parsed container reads
+// pages back through the reader.
+func (r *Reader) parseRowsDirRegion(region []byte, rh format.RowsBlockHeader, h format.BlockHeader, offset int64, limits Limits) (*RowsContainer, error) {
 	// The header/directory region is authenticated by the block header CRC.
-	if format.CRC32C(dirBytes) != h.RawCRC32C {
+	if format.CRC32C(region) != h.RawCRC32C {
 		return nil, fmt.Errorf("rowpack: block %d container header/dir CRC mismatch", h.BlockID)
 	}
-	dir, err := parsePageDir(dirBytes, &rh)
+	dir, err := parsePageDir(region, &rh)
 	if err != nil {
 		return nil, err
 	}

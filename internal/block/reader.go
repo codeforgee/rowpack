@@ -115,21 +115,47 @@ type viewer interface {
 // entry point for plain and encrypted Rows blocks alike; each page is OPENed
 // (authenticated) and decompressed only when accessed.
 func (r *Reader) ReadRowsDir(offset int64) (*RowsContainer, error) {
-	var hdr [format.BlockHeaderSize]byte
-	if _, err := r.ra.ReadAt(hdr[:], offset); err != nil {
+	var hdr []byte
+	if v, ok := r.ra.(viewer); ok {
+		// mmap-backed handle: slice the block header out of the mapping
+		// instead of issuing a pread — a cold get then touches the file
+		// through the page cache only.
+		b, done, err := v.View(offset, format.BlockHeaderSize)
+		if err != nil {
+			return nil, fmt.Errorf("rowpack: read block header at %d: %w", offset, err)
+		}
+		h, perr := r.parseRowsBlockHeader(offset, b)
+		done()
+		if perr != nil {
+			return nil, perr
+		}
+		return ParseRowsDir(offset, r, h, r.limits)
+	}
+	hdr = make([]byte, format.BlockHeaderSize)
+	if _, err := r.ra.ReadAt(hdr, offset); err != nil {
 		return nil, fmt.Errorf("rowpack: read block header at %d: %w", offset, err)
 	}
-	var h format.BlockHeader
-	if err := h.Unmarshal(hdr[:]); err != nil {
+	h, err := r.parseRowsBlockHeader(offset, hdr)
+	if err != nil {
 		return nil, err
-	}
-	if err := r.checkHeader(&h); err != nil {
-		return nil, err
-	}
-	if h.BlockKind != format.BlockKindRows {
-		return nil, fmt.Errorf("rowpack: block %d is kind %d, expected rows", h.BlockID, h.BlockKind)
 	}
 	return ParseRowsDir(offset, r, h, r.limits)
+}
+
+// parseRowsBlockHeader unmarshals and validates a Rows block header read
+// from offset. The buffer must be exactly BlockHeaderSize long.
+func (r *Reader) parseRowsBlockHeader(offset int64, b []byte) (format.BlockHeader, error) {
+	var h format.BlockHeader
+	if err := h.Unmarshal(b); err != nil {
+		return h, err
+	}
+	if err := r.checkHeader(&h); err != nil {
+		return h, err
+	}
+	if h.BlockKind != format.BlockKindRows {
+		return h, fmt.Errorf("rowpack: block %d is kind %d, expected rows", h.BlockID, h.BlockKind)
+	}
+	return h, nil
 }
 
 // ReadRowsPage reads and decompresses a single page of a lazy container. Only
